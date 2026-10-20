@@ -6,3 +6,4 @@ edition = "2021"
 [dependencies]
 mini-c-syntax = { path = "../syntax" }
 mini-c-preprocess = { path = "../preprocess" }
+mini-c-sema = { path = "../sema" }
