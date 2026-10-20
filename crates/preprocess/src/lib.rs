@@ -74,6 +74,51 @@ mod tests {
         );
     }
     #[test]
+    fn preprocessing_includes_macros_and_conditional_code() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!("mini c preprocess {} {nonce}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let header = dir.join("header with spaces.h");
+        let input = dir.join("source with spaces.c");
+        std::fs::write(&header, "#define VALUE 17\\n").unwrap();
+        std::fs::write(&input, "#include \\"header with spaces.h\\"\\n#if VALUE == 17\\nint result = VALUE;\\n#endif\\n").unwrap();
+        let result = file(&input, &Config::default());
+        let _ = std::fs::remove_dir_all(&dir);
+        let output = match result {
+            Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => return,
+            other => other.unwrap(),
+        };
+        assert!(output.contains("int result = 17;"), "{output}");
+        let map = source_map::SourceMap::from_preprocessed(&output, input.to_str().unwrap());
+        let origin = map.origin(output.find("int result").unwrap());
+        assert_eq!(origin.line, 3);
+        assert!(origin.file.ends_with("source with spaces.c"));
+        let mut parser = mini_c_syntax::parser::Parser::new(&output);
+        use mini_c_syntax::stream::ItemSource;
+        assert!(parser.next_item().unwrap().is_some());
+        assert!(parser.next_item().unwrap().is_none());
+    }
+
+    #[test]
+    fn preprocessing_reports_nonzero_exit_and_stderr() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let path = std::env::temp_dir().join(format!("mini-c-missing-{}-{nonce}.c", std::process::id()));
+        std::fs::write(&path, "#error mini_c_expected_failure\\n").unwrap();
+        let result = file(&path, &Config::default());
+        let _ = std::fs::remove_file(&path);
+        match result {
+            Err(Error::Failed { code, stderr }) => {
+                assert_ne!(code, Some(0));
+                assert!(stderr.contains("mini_c_expected_failure"), "{stderr}");
+            }
+            Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {},
+            other => panic!("expected failed preprocessing, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn missing_executable_is_an_error() {
         let config = Config {
             executable: OsString::from("mini-c-preprocessor-does-not-exist-982734"),
