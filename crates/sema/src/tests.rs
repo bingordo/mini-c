@@ -100,6 +100,40 @@ fn typedef_resolution_and_use() {
 }
 
 #[test]
+fn unsigned_integer_model_and_promotions() {
+    let items = check("unsigned char c = 1; unsigned int u = 2; unsigned long huge = 3; unsigned int f(unsigned char c, unsigned long l) { unsigned int x = c + u; return x + l; }").unwrap();
+    let CheckedItem::Declaration(c) = &items[0] else { panic!("declaration expected"); };
+    assert_eq!(c.ty, CType::Integer { rank: IntRank::Char, unsigned: true });
+    let CheckedItem::Declaration(u) = &items[1] else { panic!("declaration expected"); };
+    assert_eq!(u.ty, CType::Integer { rank: IntRank::Int, unsigned: true });
+    let CheckedItem::Declaration(l) = &items[2] else { panic!("declaration expected"); };
+    assert_eq!(l.ty, CType::Integer { rank: IntRank::Long, unsigned: true });
+    check("typedef unsigned long Index; Index value; int f(void) { Index index = 3; return index; }").unwrap();
+}
+
+#[test]
+fn local_typedef_scope_isolation() {
+    check("typedef int T; int f(void) { typedef long T; T x = 4; { int T = 2; T = T + 1; } return x; } T g;").unwrap();
+    reject("int f(void) { typedef int T; return T; }", "typedef name");
+    reject("int f(void) { typedef int T; typedef long T; return 0; }", "duplicate declaration");
+    check("int f(void) { typedef void Empty; return 0; }").unwrap();
+}
+
+#[test]
+fn static_and_extern_linkage() {
+    let items = check("static int counter = 3; extern int counter; static int helper(void) { static int x = 2; return counter + x; }").unwrap();
+    let CheckedItem::Declaration(counter) = &items[0] else { panic!("declaration expected"); };
+    assert_eq!(counter.linkage, Linkage::Internal);
+    let CheckedItem::Function(helper) = &items[2] else { panic!("function expected"); };
+    assert_eq!(helper.linkage, Linkage::Internal);
+    check("int f(void) { extern int external; return external; } extern int external;").unwrap();
+    reject("extern int n; static int n;", "conflicting linkage");
+    check("int f(void) { static int n = 2 + 1; return n; }").unwrap();
+    reject("int f(void) { static int n = f(); return n; }", "constant expression");
+    reject("int f(void) { extern int n = 3; return n; }", "cannot have an initializer");
+}
+
+#[test]
 fn checker_discards_completed_bodies() {
     let mut source = String::from("int shared;");
     for n in 0..200 {
