@@ -37,7 +37,9 @@ where
     while let Some(item) = source.next_item().map_err(StreamError::Source)? {
         match item {
             ExternalItem::Declaration(decl) => sink.declaration(decl).map_err(StreamError::Sink)?,
-            ExternalItem::Function(function) => sink.function(function).map_err(StreamError::Sink)?,
+            ExternalItem::Function(function) => {
+                sink.function(function).map_err(StreamError::Sink)?
+            }
         }
     }
     Ok(())
@@ -64,7 +66,10 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct Sink { functions: usize, declarations: usize }
+    struct Sink {
+        functions: usize,
+        declarations: usize,
+    }
     impl ItemSink for Sink {
         type Error = ();
         fn declaration(&mut self, _: Decl) -> Result<(), Self::Error> {
@@ -79,13 +84,15 @@ mod tests {
 
     #[test]
     fn delivers_many_functions_without_collecting() {
-        let functions = (0..1000).map(|i| ExternalItem::Function(Function {
-            name: format!("f{i}"),
-            result: Type::Int,
-            params: vec![],
-            body: Stmt::Block(vec![]),
-            span: Span::default(),
-        }));
+        let functions = (0..1000).map(|i| {
+            ExternalItem::Function(Function {
+                name: format!("f{i}"),
+                result: Type::Int,
+                params: vec![],
+                body: Stmt::Block(vec![]),
+                span: Span::default(),
+            })
+        });
         let mut source = Source(functions.collect());
         let mut sink = Sink::default();
         consume(&mut source, &mut sink).unwrap();
@@ -99,15 +106,25 @@ mod tests {
         struct Failing;
         impl ItemSink for Failing {
             type Error = &'static str;
-            fn declaration(&mut self, _: Decl) -> Result<(), Self::Error> { Ok(()) }
-            fn function(&mut self, _: Function) -> Result<(), Self::Error> { Err("stop") }
+            fn declaration(&mut self, _: Decl) -> Result<(), Self::Error> {
+                Ok(())
+            }
+            fn function(&mut self, _: Function) -> Result<(), Self::Error> {
+                Err("stop")
+            }
         }
         let function = ExternalItem::Function(Function {
-            name: "f".into(), result: Type::Int, params: vec![],
-            body: Stmt::Block(vec![]), span: Span::default(),
+            name: "f".into(),
+            result: Type::Int,
+            params: vec![],
+            body: Stmt::Block(vec![]),
+            span: Span::default(),
         });
         let mut source = Source(VecDeque::from([function.clone(), function]));
-        assert_eq!(consume(&mut source, &mut Failing), Err(StreamError::Sink("stop")));
+        assert_eq!(
+            consume(&mut source, &mut Failing),
+            Err(StreamError::Sink("stop"))
+        );
         assert_eq!(source.0.len(), 1);
     }
 }
