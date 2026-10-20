@@ -35,6 +35,7 @@ pub enum Type {
     Char,
     Int,
     Long,
+    Alias(Ident),
     Unsigned(Box<Type>),
     Pointer(Box<Type>),
     Array(Box<Type>, Option<Box<Expr>>),
