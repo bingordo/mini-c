@@ -92,17 +92,33 @@ impl<'a> Parser<'a> {
         let mut statements = Vec::new();
         loop {
             let Some(token) = self.peek()? else {
-                return Err(Diagnostic::new(Span::default(), "unterminated function body"));
+                return Err(Diagnostic::new(
+                    Span::default(),
+                    "unterminated function body",
+                ));
             };
             match token.text {
-                "}" => return Ok((Stmt::Block(statements), self.take()?.expect("peeked token").span.hi)),
-                ";" => { self.take()?; statements.push(Stmt::Expr(None)); }
+                "}" => {
+                    return Ok((
+                        Stmt::Block(statements),
+                        self.take()?.expect("peeked token").span.hi,
+                    ))
+                }
+                ";" => {
+                    self.take()?;
+                    statements.push(Stmt::Expr(None));
+                }
                 "return" => {
                     self.take()?;
                     self.expect(";")?;
                     statements.push(Stmt::Return(None));
                 }
-                _ => return Err(Diagnostic::new(token.span, "unsupported statement in function body")),
+                _ => {
+                    return Err(Diagnostic::new(
+                        token.span,
+                        "unsupported statement in function body",
+                    ))
+                }
             }
         }
     }
@@ -146,11 +162,17 @@ impl ItemSource for Parser<'_> {
             if self.peek()?.is_some_and(|token| token.text == "{") {
                 let (body, end) = self.parse_block()?;
                 return Ok(Some(ExternalItem::Function(Function {
-                    name: name.text.to_owned(), result: ty, params: Vec::new(), body,
+                    name: name.text.to_owned(),
+                    result: ty,
+                    params: Vec::new(),
+                    body,
                     span: Span { lo: start, hi: end },
                 })));
             }
-            return Err(Diagnostic::new(name.span, "function prototypes are not implemented yet"));
+            return Err(Diagnostic::new(
+                name.span,
+                "function prototypes are not implemented yet",
+            ));
         }
         let end = self.expect(";")?.span.hi;
         Ok(Some(ExternalItem::Declaration(Decl {
