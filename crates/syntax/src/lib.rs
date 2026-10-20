@@ -1,5 +1,6 @@
 //! Parser entry points; downstream crates depend on the AST, not LALRPOP.
 pub mod ast;
+pub mod scopes;
 lalrpop_util::lalrpop_mod!(pub grammar);
 
 pub fn parse_expression(source: &str) -> Result<ast::Expr, String> {
