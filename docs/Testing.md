@@ -36,3 +36,7 @@ Every commit: affected crate tests. Every milestone: full relevant suite, Clippy
 ## Early fuzzer milestone (M1.5)
 
 Add a deterministic Oberon-obgen-style C generator **before** native backend integration. A separate reference evaluator computes expected results without using Mini-C lowering or optimization. Generate only fully defined ISO C behavior: prevent signed overflow, zero divisors, INT_MIN/-1, invalid shifts, uninitialized reads, out-of-bounds pointers/arrays, unsequenced modifications and dependence on unspecified evaluation order. Bound loops and program size. Preserve seeds, generated source, expected result and tool versions for reproduction. Cross-check with GCC and Clang at -O0/-O2; run UBSan/ASan on reference binaries. Use small fixed seeds for push/PR and larger scheduled/manual batches, retaining regressions. Do not use -fwrapv to conceal undefined behavior.
+
+## Diagnostic quality gate (M2.25)
+
+Use table-driven malformed-C fixtures and assert diagnostic codes, primary spans, stable order and recovery behavior, not only rejection. Include missing punctuation, unexpected EOF, typedef scope ambiguity, invalid declarations, duplicate/unknown symbols, incompatible expressions and invalid calls/returns. Test UTF-8 and multiline locations. Run deterministic malformed-token mutation cases and preserve crash reproducers. Limit cascading errors, impose a configurable maximum, and keep core library APIs free of printing and process exits. Run targeted diagnostics tests on each relevant PR and review snapshots when wording changes.
