@@ -11,14 +11,33 @@ pub enum TokenKind { Identifier, TypedefName, Number, Punctuation }
 pub struct Token<'a> { pub kind: TokenKind, pub text: &'a str, pub span: Span }
 
 pub fn scan(source: &str) -> Result<Vec<Token<'_>>, Diagnostic> {
-    scan_with_scopes(source, None)
+    Scanner::new(source).collect()
 }
 
 /// Classifies identifiers against the caller's current ordinary-identifier scope.
 /// Re-scan after scope changes; parsing must not preclassify an entire translation unit.
 pub fn scan_with_scopes<'a>(source: &'a str, scopes: Option<&Scopes>) -> Result<Vec<Token<'a>>, Diagnostic> {
+    {
+    let mut scanner = Scanner::new(source);
     let mut tokens = Vec::new();
-    let mut offset = 0;
+    while let Some(token) = scanner.next_token(scopes)? { tokens.push(token); }
+    Ok(tokens)
+}
+}
+
+/// Incremental scanner: the parser can change the scope between calls to next_token.
+/// This avoids classifying future typedef names before declarations take effect.
+pub struct Scanner<'a> {
+    source: &'a str,
+    offset: usize,
+}
+
+impl<'a> Scanner<'a> {
+    pub fn new(source: &'a str) -> Self { Self { source, offset: 0 } }
+    pub fn with_scopes(source: &'a str, _scopes: Option<&Scopes>) -> Self { Self::new(source) }
+    pub fn next_token(&mut self, scopes: Option<&Scopes>) -> Result<Option<Token<'a>>, Diagnostic> {
+        let source = self.source;
+        let mut offset = self.offset;
     while offset < source.len() {
         let rest = &source[offset..];
         let ch = rest.chars().next().expect("nonempty remainder");
@@ -60,10 +79,20 @@ pub fn scan_with_scopes<'a>(source: &'a str, scopes: Option<&Scopes>) -> Result<
             else { return Err(Diagnostic::new(Span { lo: start, hi: start + ch.len_utf8() }, "invalid character")); }
             TokenKind::Punctuation
         };
-        tokens.push(Token { kind, text: &source[start..offset], span: Span { lo: start, hi: offset } });
+        self.offset = offset;
+        return Ok(Some(Token { kind, text: &source[start..offset], span: Span { lo: start, hi: offset } }));
     }
-    Ok(tokens)
+    self.offset = offset;
+    Ok(None)
+    }
+
+    pub fn collect(mut self) -> Result<Vec<Token<'a>>, Diagnostic> {
+        let mut tokens = Vec::new();
+        while let Some(token) = self.next_token(None)? { tokens.push(token); }
+        Ok(tokens)
+    }
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -87,6 +116,19 @@ mod tests {
         scopes.enter();
         scopes.declare("T", Binding::Ordinary);
         assert_eq!(scan_with_scopes("T x;", Some(&scopes)).unwrap()[0].kind, TokenKind::Identifier);
+    }
+    #[test]
+    fn incremental_typedef_scope_changes() {
+        use crate::scopes::Binding;
+        let mut scopes = Scopes::new();
+        let mut scanner = Scanner::new("T T T");
+        assert_eq!(scanner.next_token(Some(&scopes)).unwrap().unwrap().kind, TokenKind::Identifier);
+        scopes.declare("T", Binding::Typedef);
+        assert_eq!(scanner.next_token(Some(&scopes)).unwrap().unwrap().kind, TokenKind::TypedefName);
+        scopes.enter();
+        scopes.declare("T", Binding::Ordinary);
+        assert_eq!(scanner.next_token(Some(&scopes)).unwrap().unwrap().kind, TokenKind::Identifier);
+        assert!(scanner.next_token(Some(&scopes)).unwrap().is_none());
     }
     #[test]
     fn unsupported_suffix_rejected() {
