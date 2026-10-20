@@ -151,6 +151,7 @@ impl<'a> Parser<'a> {
         if name.kind != TokenKind::Identifier {
             return Err(Diagnostic::new(name.span, "expected identifier"));
         }
+        self.scopes.declare(name.text, Binding::Ordinary);
         let init = if self.peek()?.is_some_and(|t| t.text == "=") {
             self.take()?;
             Some(self.parse_expr()?)
@@ -158,7 +159,6 @@ impl<'a> Parser<'a> {
             None
         };
         let end = self.expect(";")?.span.hi;
-        self.scopes.declare(name.text, Binding::Ordinary);
         Ok(Decl {
             name: name.text.to_owned(),
             ty,
@@ -255,6 +255,7 @@ impl ItemSource for Parser<'_> {
         if name.kind != crate::lexer::TokenKind::Identifier {
             return Err(Diagnostic::new(name.span, "expected identifier"));
         }
+        self.scopes.declare(name.text, Binding::Ordinary);
         if self.peek()?.is_some_and(|token| token.text == "(") {
             self.take()?;
             let mut params = Vec::new();
@@ -317,7 +318,6 @@ impl ItemSource for Parser<'_> {
                 })));
             }
             let end = self.expect(";")?.span.hi;
-            self.scopes.declare(name.text, Binding::Ordinary);
             return Ok(Some(ExternalItem::Declaration(Decl {
                 name: name.text.to_owned(),
                 ty: Type::Function {
@@ -330,7 +330,6 @@ impl ItemSource for Parser<'_> {
         }
         let init = if self.peek()?.is_some_and(|t| t.text == "=") { self.take()?; Some(self.parse_expr()?) } else { None };
         let end = self.expect(";")?.span.hi;
-        self.scopes.declare(name.text, Binding::Ordinary);
         Ok(Some(ExternalItem::Declaration(Decl {
             name: name.text.to_owned(),
             ty,
@@ -462,6 +461,16 @@ mod tests {
             },
             _ => panic!("expected function"),
         }
+    }
+
+    #[test]
+    fn registers_identifiers_before_initializers() {
+        let mut parser = Parser::new("int x = x + 1; int f(void) { int y = y + 1; return y; }");
+        assert!(matches!(parser.next_item().unwrap(), Some(ExternalItem::Declaration(_))));
+        assert_eq!(parser.scopes.lookup("x"), Some(Binding::Ordinary));
+        assert!(matches!(parser.next_item().unwrap(), Some(ExternalItem::Function(_))));
+        assert_eq!(parser.scopes.lookup("y"), None);
+        assert_eq!(parser.scopes.lookup("f"), Some(Binding::Ordinary));
     }
 
     #[test]
