@@ -1,8 +1,8 @@
 //! Incremental parser for the first supported subset of external declarations.
 //! Each complete function body is returned separately; earlier bodies are not retained.
-use crate::ast::{Decl, Function, Span, Stmt, Type};
+use crate::ast::{BinOp, Decl, Expr, Function, Span, Stmt, Type, UnOp};
 use crate::diag::Diagnostic;
-use crate::lexer::{Scanner, Token};
+use crate::lexer::{Scanner, Token, TokenKind};
 use crate::stream::{ExternalItem, ItemSource};
 
 pub struct Parser<'a> {
@@ -44,6 +44,83 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn parse_expr(&mut self) -> Result<Expr, Diagnostic> { self.parse_assign() }
+
+    fn parse_assign(&mut self) -> Result<Expr, Diagnostic> {
+        let lhs = self.parse_binary(0)?;
+        if self.peek()?.is_some_and(|t| t.text == "=") {
+            self.take()?;
+            return Ok(Expr::Assign(Box::new(lhs), Box::new(self.parse_assign()?)));
+        }
+        Ok(lhs)
+    }
+
+    fn binary_op(text: &str) -> Option<(BinOp, u8)> {
+        Some(match text {
+            "||" => (BinOp::Or, 1), "&&" => (BinOp::And, 2),
+            "==" => (BinOp::Eq, 3), "!=" => (BinOp::Ne, 3),
+            "<" => (BinOp::Lt, 4), "<=" => (BinOp::Le, 4),
+            ">" => (BinOp::Gt, 4), ">=" => (BinOp::Ge, 4),
+            "+" => (BinOp::Add, 5), "-" => (BinOp::Sub, 5),
+            "*" => (BinOp::Mul, 6), "/" => (BinOp::Div, 6), "%" => (BinOp::Mod, 6),
+            _ => return None,
+        })
+    }
+
+    fn parse_binary(&mut self, min_prec: u8) -> Result<Expr, Diagnostic> {
+        let mut lhs = self.parse_unary()?;
+        loop {
+            let Some((op, prec)) = self.peek()?.and_then(|t| Self::binary_op(t.text)) else { break; };
+            if prec < min_prec { break; }
+            self.take()?;
+            let rhs = self.parse_binary(prec + 1)?;
+            lhs = Expr::Binary(op, Box::new(lhs), Box::new(rhs));
+        }
+        Ok(lhs)
+    }
+
+    fn parse_unary(&mut self) -> Result<Expr, Diagnostic> {
+        if let Some(op) = self.peek()?.and_then(|t| match t.text {
+            "+" => Some(UnOp::Plus), "-" => Some(UnOp::Neg),
+            "!" => Some(UnOp::Not), "&" => Some(UnOp::Address), "*" => Some(UnOp::Deref),
+            _ => None,
+        }) {
+            self.take()?;
+            return Ok(Expr::Unary(op, Box::new(self.parse_unary()?)));
+        }
+        let mut expr = match self.take()? {
+            Some(t) if t.kind == TokenKind::Number => Expr::Int(t.text.parse().map_err(|_| Diagnostic::new(t.span, "integer literal overflow"))?),
+            Some(t) if t.kind == TokenKind::Identifier => Expr::Name(t.text.to_owned()),
+            Some(t) if t.text == "(" => { let e = self.parse_expr()?; self.expect(")")?; e },
+            Some(t) => return Err(Diagnostic::new(t.span, "expected expression")),
+            None => return Err(Diagnostic::new(Span::default(), "expected expression")),
+        };
+        while self.peek()?.is_some_and(|t| t.text == "(") {
+            self.take()?;
+            let mut args = Vec::new();
+            if !self.peek()?.is_some_and(|t| t.text == ")") {
+                loop {
+                    args.push(self.parse_expr()?);
+                    if !self.peek()?.is_some_and(|t| t.text == ",") { break; }
+                    self.take()?;
+                }
+            }
+            self.expect(")")?;
+            expr = Expr::Call(Box::new(expr), args);
+        }
+        Ok(expr)
+    }
+
+    fn parse_decl(&mut self) -> Result<Decl, Diagnostic> {
+        let (mut ty, start) = self.parse_type()?.ok_or_else(|| Diagnostic::new(Span::default(), "expected type"))?;
+        while self.peek()?.is_some_and(|t| t.text == "*") { self.take()?; ty = Type::Pointer(Box::new(ty)); }
+        let name = self.take()?.ok_or_else(|| Diagnostic::new(Span::default(), "expected identifier"))?;
+        if name.kind != TokenKind::Identifier { return Err(Diagnostic::new(name.span, "expected identifier")); }
+        let init = if self.peek()?.is_some_and(|t| t.text == "=") { self.take()?; Some(self.parse_expr()?) } else { None };
+        let end = self.expect(";")?.span.hi;
+        Ok(Decl { name: name.text.to_owned(), ty, init, span: Span { lo: start, hi: end } })
+    }
+
     fn parse_block(&mut self) -> Result<(Stmt, usize), Diagnostic> {
         self.expect("{")?;
         let mut statements = Vec::new();
@@ -71,21 +148,15 @@ impl<'a> Parser<'a> {
                 }
                 "return" => {
                     self.take()?;
-                    if self.peek()?.is_some_and(|t| t.text == ";") {
-                        self.take()?;
-                        statements.push(Stmt::Return(None));
-                    } else {
-                        return Err(Diagnostic::new(
-                            token.span,
-                            "return expressions are not implemented yet",
-                        ));
-                    }
+                    let expr = if self.peek()?.is_some_and(|t| t.text == ";") { None } else { Some(self.parse_expr()?) };
+                    self.expect(";")?;
+                    statements.push(Stmt::Return(expr));
                 }
+                "int" | "char" | "long" | "void" => statements.push(Stmt::Decl(self.parse_decl()?)),
                 _ => {
-                    return Err(Diagnostic::new(
-                        token.span,
-                        "unsupported statement in function body",
-                    ))
+                    let expr = self.parse_expr()?;
+                    self.expect(";")?;
+                    statements.push(Stmt::Expr(Some(expr)));
                 }
             }
         }
@@ -126,13 +197,30 @@ impl ItemSource for Parser<'_> {
         }
         if self.peek()?.is_some_and(|token| token.text == "(") {
             self.take()?;
+            let mut params = Vec::new();
+            if !self.peek()?.is_some_and(|t| t.text == ")") {
+                if self.peek()?.is_some_and(|t| t.text == "void") {
+                    self.take()?;
+                    if !self.peek()?.is_some_and(|t| t.text == ")") { return Err(Diagnostic::new(name.span, "named void parameters are not supported")); }
+                } else {
+                    loop {
+                        let (mut param_ty, lo) = self.parse_type()?.ok_or_else(|| Diagnostic::new(name.span, "expected parameter type"))?;
+                        while self.peek()?.is_some_and(|t| t.text == "*") { self.take()?; param_ty = Type::Pointer(Box::new(param_ty)); }
+                        let param_name = self.take()?.ok_or_else(|| Diagnostic::new(name.span, "expected parameter name"))?;
+                        if param_name.kind != TokenKind::Identifier { return Err(Diagnostic::new(param_name.span, "expected parameter name")); }
+                        params.push(Decl { name: param_name.text.to_owned(), ty: param_ty, init: None, span: Span { lo, hi: param_name.span.hi } });
+                        if !self.peek()?.is_some_and(|t| t.text == ",") { break; }
+                        self.take()?;
+                    }
+                }
+            }
             self.expect(")")?;
             if self.peek()?.is_some_and(|token| token.text == "{") {
                 let (body, end) = self.parse_block()?;
                 return Ok(Some(ExternalItem::Function(Function {
                     name: name.text.to_owned(),
                     result: ty,
-                    params: Vec::new(),
+                    params,
                     body,
                     span: Span { lo: start, hi: end },
                 })));
@@ -224,6 +312,27 @@ mod tests {
             .unwrap_err()
             .message
             .contains("unterminated"));
+    }
+
+    #[test]
+    fn parses_parameters_locals_and_expressions() {
+        let mut parser = Parser::new("int add(int a, int b) { int sum = a + b * 2; return sum; } int z;");
+        match parser.next_item().unwrap().unwrap() {
+            ExternalItem::Function(f) => {
+                assert_eq!(f.params.len(), 2);
+                assert_eq!(f.params[0].name, "a");
+                match f.body {
+                    Stmt::Block(stmts) => {
+                        assert_eq!(stmts.len(), 2);
+                        assert!(matches!(&stmts[0], Stmt::Decl(Decl { init: Some(Expr::Binary(BinOp::Add, _, _)), .. })));
+                        assert_eq!(stmts[1], Stmt::Return(Some(Expr::Name("sum".into()))));
+                    }
+                    _ => panic!("expected block"),
+                }
+            }
+            _ => panic!("expected function"),
+        }
+        assert!(matches!(parser.next_item().unwrap(), Some(ExternalItem::Declaration(_))));
     }
 
     #[test]
