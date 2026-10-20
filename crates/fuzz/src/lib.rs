@@ -47,7 +47,7 @@ pub fn generate(seed: u64, steps: usize) -> Case {
     let mut value = 1i32;
     let mut instructions = Vec::with_capacity(steps);
     let mut source = String::from("int main(void) { int x = 1;\n");
-    for _ in 0..steps {
+    for iteration in 0..steps {
         let op = match rng.range(5) {
             0 => Op::Add, 1 => Op::Sub, 2 => Op::Mul,
             3 => Op::Div, _ => Op::Rem,
@@ -58,6 +58,36 @@ pub fn generate(seed: u64, steps: usize) -> Case {
             source.push_str(&format!("x = x {} {};\n", symbol(op), rhs));
             value = next;
             instructions.push(ins);
+        }
+
+        // Conditional that never leaves the portable C int interval.
+        // The recorded trace contains the *executed* branch only.
+        if iteration % 13 == 12 {
+            let chosen = if value >= 0 {
+                Instruction { op: Op::Sub, rhs: 1 }
+            } else {
+                Instruction { op: Op::Add, rhs: 1 }
+            };
+            value = checked_step(value, chosen).expect("guarded conditional arithmetic");
+            instructions.push(chosen);
+            source.push_str(
+                "if (x >= 0) { x = x - 1; } else { x = x + 1; }\n"
+            );
+        }
+
+        // Every iteration is bounded, and /2 cannot overflow or divide by zero.
+        // The block scope allows multiple loops without redeclaring one name.
+        if iteration % 29 == 28 {
+            let repetitions = (rng.range(4) + 1) as usize;
+            source.push_str(&format!(
+                "{{ int remaining = {repetitions}; while (remaining > 0) {{ \
+                 x = x / 2; remaining = remaining - 1; }} }}\n"
+            ));
+            for _ in 0..repetitions {
+                let division = Instruction { op: Op::Div, rhs: 2 };
+                value = checked_step(value, division).expect("division by two");
+                instructions.push(division);
+            }
         }
     }
     source.push_str(&format!("return x == {};\n}}\n", value));
@@ -89,6 +119,29 @@ mod tests {
         assert_eq!(checked_step(i32::MIN, Instruction { op: Op::Div, rhs: -1 }), None);
         assert_eq!(checked_step(1, Instruction { op: Op::Rem, rhs: 0 }), None);
     }
+    #[test]
+    fn recorded_trace_is_bounded_and_matches_oracle() {
+        for seed in [0, 1, 7, 42, 999, u64::MAX] {
+            let case = generate(seed, 250);
+            let mut value = 1i32;
+            for instruction in &case.instructions {
+                value = checked_step(value, *instruction).expect("valid generated arithmetic");
+                assert!((-32767..=32767).contains(&value), "seed {seed}: {value}");
+            }
+            assert_eq!(value, case.expected, "seed {seed}");
+            assert!(case.source.contains("if (x >= 0)"));
+            assert!(case.source.contains("while (remaining > 0)"));
+        }
+    }
+
+    #[test]
+    fn zero_step_case_is_valid() {
+        let case = generate(0, 0);
+        assert!(case.instructions.is_empty());
+        assert_eq!(case.expected, 1);
+        parse_case(&case).unwrap();
+    }
+
     #[test]
     fn seeded_parser_smoke() {
         for seed in 0..64 {
