@@ -8,6 +8,7 @@ use crate::ast::{Decl, Function};
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExternalItem {
     Declaration(Decl),
+    Typedef(Decl),
     Function(Function),
 }
 
@@ -18,6 +19,9 @@ pub trait ItemSink {
 
     fn declaration(&mut self, declaration: Decl) -> Result<(), Self::Error>;
     fn function(&mut self, function: Function) -> Result<(), Self::Error>;
+    fn typedef(&mut self, declaration: Decl) -> Result<(), Self::Error> {
+        self.declaration(declaration)
+    }
 }
 
 /// A source of one parsed item at a time. The parser owns any lookahead and
@@ -37,6 +41,7 @@ where
     while let Some(item) = source.next_item().map_err(StreamError::Source)? {
         match item {
             ExternalItem::Declaration(decl) => sink.declaration(decl).map_err(StreamError::Sink)?,
+            ExternalItem::Typedef(decl) => sink.typedef(decl).map_err(StreamError::Sink)?,
             ExternalItem::Function(function) => {
                 sink.function(function).map_err(StreamError::Sink)?
             }
