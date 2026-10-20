@@ -87,42 +87,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_block(&mut self) -> Result<(Stmt, usize), Diagnostic> {
-        self.expect("{")?;
-        let mut statements = Vec::new();
-        loop {
-            let Some(token) = self.peek()? else {
-                return Err(Diagnostic::new(
-                    Span::default(),
-                    "unterminated function body",
-                ));
-            };
-            match token.text {
-                "}" => {
-                    return Ok((
-                        Stmt::Block(statements),
-                        self.take()?.expect("peeked token").span.hi,
-                    ))
-                }
-                ";" => {
-                    self.take()?;
-                    statements.push(Stmt::Expr(None));
-                }
-                "return" => {
-                    self.take()?;
-                    self.expect(";")?;
-                    statements.push(Stmt::Return(None));
-                }
-                _ => {
-                    return Err(Diagnostic::new(
-                        token.span,
-                        "unsupported statement in function body",
-                    ))
-                }
-            }
-        }
-    }
-
     fn parse_type(&mut self) -> Result<Option<(Type, usize)>, Diagnostic> {
         let Some(token) = self.peek()? else {
             return Ok(None);
