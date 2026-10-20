@@ -5,12 +5,14 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'crates/**'
+      - 'tools/**'
       - '.github/workflows/syntax.yml'
   pull_request:
     paths:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'crates/**'
+      - 'tools/**'
       - '.github/workflows/syntax.yml'
   workflow_dispatch:
 
