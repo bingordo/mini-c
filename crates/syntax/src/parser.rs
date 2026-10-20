@@ -209,13 +209,21 @@ mod tests {
     fn nested_blocks_and_unterminated_body() {
         let mut parser = Parser::new("void f() { { return; } ; }");
         match parser.next_item().unwrap().unwrap() {
-            ExternalItem::Function(f) => assert_eq!(f.body, Stmt::Block(vec![
-                Stmt::Block(vec![Stmt::Return(None)]), Stmt::Expr(None),
-            ])),
+            ExternalItem::Function(f) => assert_eq!(
+                f.body,
+                Stmt::Block(vec![
+                    Stmt::Block(vec![Stmt::Return(None)]),
+                    Stmt::Expr(None),
+                ])
+            ),
             _ => panic!("expected function"),
         }
         let mut parser = Parser::new("void f() { { return; }");
-        assert!(parser.next_item().unwrap_err().message.contains("unterminated"));
+        assert!(parser
+            .next_item()
+            .unwrap_err()
+            .message
+            .contains("unterminated"));
     }
 
     #[test]
