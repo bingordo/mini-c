@@ -127,6 +127,11 @@ fn static_and_extern_linkage() {
     let CheckedItem::Function(helper) = &items[2] else { panic!("function expected"); };
     assert_eq!(helper.linkage, Linkage::Internal);
     check("int f(void) { extern int external; return external; } extern int external;").unwrap();
+    let inherited = check("static int file_var; int f(void) { extern int file_var; return file_var; }").unwrap();
+    let CheckedItem::Function(f) = &inherited[1] else { panic!("function expected"); };
+    let CheckedStmt::Block(stmts) = &f.body else { panic!("block expected"); };
+    let CheckedStmt::Decl(local) = &stmts[0] else { panic!("extern declaration expected"); };
+    assert_eq!(local.linkage, Linkage::Internal);
     reject("extern int n; static int n;", "conflicting linkage");
     check("int f(void) { static int n = 2 + 1; return n; }").unwrap();
     reject("int f(void) { static int n = f(); return n; }", "constant expression");
