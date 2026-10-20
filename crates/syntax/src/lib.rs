@@ -2,6 +2,7 @@
 pub mod ast;
 pub mod diag;
 pub mod lexer;
+pub mod parser;
 pub mod scopes;
 pub mod source;
 pub mod stream;
