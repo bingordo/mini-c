@@ -55,3 +55,7 @@ Before integrating the new `bingundu/compiler` native backend, add an optional C
 ## Defined-behavior generated test programs
 
 The early M1.5 fuzzer is modeled on Oberon's self-checking generator but produces ISO C programs with defined behavior by construction. It uses an independent expected-value oracle and excludes signed overflow, invalid division/shifts, uninitialized reads, invalid pointer access, unsequenced conflicting side effects, out-of-bounds indexing and unspecified-order dependencies. Its valid subset and assumptions are documented and extended alongside compiler support; see [M1.5](Implementation_Plan.md).
+
+## Diagnostic hardening milestone
+
+M2.25, after semantic analysis and before executable backends, tests and improves syntax and semantic error handling. Library APIs must provide deterministic structured errors with accurate source spans, useful recovery, bounded cascades, and no panics on malformed input. See [Implementation Plan](Implementation_Plan.md) and [Testing](Testing.md).
