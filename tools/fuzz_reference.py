@@ -44,6 +44,15 @@ def success(result: dict, expected: int = 0) -> bool:
     return result.get("returncode") == expected
 
 
+def sanitizer_reported(result: dict) -> bool:
+    """Detect sanitizer diagnostics even when their exit status equals success (1)."""
+    output = result.get("stderr", "") + "\n" + result.get("stdout", "")
+    return any(marker in output for marker in (
+        "AddressSanitizer", "UndefinedBehaviorSanitizer", "LeakSanitizer",
+        "runtime error:", "Sanitizer: ",
+    ))
+
+
 def variants(compiler: str, sanitizers: bool) -> list[tuple[str, list[str]]]:
     outputs = [("O0", ["-O0"]), ("O2", ["-O2"])]
     if sanitizers:
@@ -92,14 +101,18 @@ def check_seed(seed: int, args: argparse.Namespace, versions: dict) -> bool:
                 print(f"FAIL seed={seed} {compiler} {variant}: compile", file=sys.stderr)
                 return False
             environment = os.environ.copy()
-            environment["ASAN_OPTIONS"] = "detect_leaks=1:halt_on_error=1"
-            environment["UBSAN_OPTIONS"] = "halt_on_error=1:print_stacktrace=1"
+            # A sanitizer crash may otherwise return 1, which is also the
+            # generated program's expected success exit code.
+            environment["ASAN_OPTIONS"] = "detect_leaks=1:halt_on_error=1:exitcode=86"
+            environment["UBSAN_OPTIONS"] = "halt_on_error=1:print_stacktrace=1:exitcode=87"
             execution = invoke([str(executable)], timeout=args.timeout, env=environment)
             record(execution)
-            if not success(execution, EXPECTED_EXIT):
+            has_sanitizer_error = variant == "sanitized" and sanitizer_reported(execution)
+            if not success(execution, EXPECTED_EXIT) or has_sanitizer_error:
                 print(
                     f"FAIL seed={seed} {compiler} {variant}: expected exit "
-                    f"{EXPECTED_EXIT}, got {execution.get('returncode', 'timeout/error')}",
+                    f"{EXPECTED_EXIT}, got {execution.get('returncode', 'timeout/error')}; "
+                    f"sanitizer_error={has_sanitizer_error}",
                     file=sys.stderr,
                 )
                 return False
