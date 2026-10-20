@@ -4,6 +4,7 @@ pub mod diag;
 pub mod lexer;
 pub mod scopes;
 pub mod source;
+pub mod stream;
 lalrpop_util::lalrpop_mod!(pub grammar);
 
 /// Parse an expression and return a structured, byte-accurate diagnostic.
