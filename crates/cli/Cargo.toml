@@ -1,0 +1,7 @@
+[package]
+name = "mini-c"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+mini-c-syntax = { path = "../syntax" }
