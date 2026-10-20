@@ -78,10 +78,7 @@ impl<'a> Parser<'a> {
 
     fn parse_binary(&mut self, min_prec: u8) -> Result<Expr, Diagnostic> {
         let mut lhs = self.parse_unary()?;
-        loop {
-            let Some((op, prec)) = self.peek()?.and_then(|t| Self::binary_op(t.text)) else {
-                break;
-            };
+        while let Some((op, prec)) = self.peek()?.and_then(|t| Self::binary_op(t.text)) {
             if prec < min_prec {
                 break;
             }
