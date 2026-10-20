@@ -53,7 +53,13 @@ def sanitizer_reported(result: dict) -> bool:
     ))
 
 
-def variants(compiler: str, sanitizers: bool) -> list[tuple[str, list[str]]]:
+def variants(
+    compiler: str, sanitizers: bool, smoke: bool = False
+) -> list[tuple[str, list[str]]]:
+    # Fast CI deliberately covers a different compiler/optimization pairing
+    # with each compiler; the scheduled/manual campaign runs the full matrix.
+    if smoke:
+        return [("O0", ["-O0"])] if "clang" in Path(compiler).name else [("O2", ["-O2"])]
     outputs = [("O0", ["-O0"]), ("O2", ["-O2"])]
     if sanitizers:
         # GCC's UBSan and Clang's combined ASan/UBSan cover both sanitizers
@@ -89,7 +95,7 @@ def check_seed(seed: int, args: argparse.Namespace, versions: dict) -> bool:
         return False
     source.write_text(generation["stdout"])
     for compiler in args.compilers:
-        for variant, flags in variants(compiler, not args.skip_sanitizers):
+        for variant, flags in variants(compiler, not args.skip_sanitizers, args.smoke):
             executable = case_dir / f"{Path(compiler).name}-{variant}"
             cmd = [
                 compiler, "-std=c11", "-pedantic", "-Wall", "-Wextra",
@@ -129,6 +135,8 @@ def main() -> int:
     p.add_argument("--steps", type=int, default=120)
     p.add_argument("--compiler", dest="compilers", action="append")
     p.add_argument("--skip-sanitizers", action="store_true")
+    p.add_argument("--smoke", action="store_true",
+                   help="one compiler/optimization combination per compiler; no sanitizers")
     p.add_argument("--timeout", type=int, default=30)
     p.add_argument("--artifacts", type=Path, default=Path("target/fuzz-artifacts"))
     args = p.parse_args()
@@ -155,8 +163,10 @@ def main() -> int:
             return 1
         total += 1
         print(f"PASS seed={seed}", flush=True)
-    print(f"PASS {total} seeds, {len(args.compilers)} compilers, "
-          f"{'2' if args.skip_sanitizers else '3'} variants each")
+    matrix = "one optimization per compiler" if args.smoke else (
+        "two optimizations" if args.skip_sanitizers else "two optimizations + sanitizer"
+    )
+    print(f"PASS {total} seeds, {len(args.compilers)} compilers, {matrix}")
     return 0
 
 
