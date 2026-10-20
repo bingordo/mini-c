@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.dependencies]
+lalrpop = "0.23"
+lalrpop-util = "0.23"
