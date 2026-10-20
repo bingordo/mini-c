@@ -12,7 +12,10 @@ pub struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     pub fn new(source: &'a str) -> Self {
-        Self { scanner: Scanner::new(source), lookahead: None }
+        Self {
+            scanner: Scanner::new(source),
+            lookahead: None,
+        }
     }
 
     fn peek(&mut self) -> Result<Option<Token<'a>>, Diagnostic> {
@@ -30,13 +33,21 @@ impl<'a> Parser<'a> {
     fn expect(&mut self, expected: &str) -> Result<Token<'a>, Diagnostic> {
         match self.take()? {
             Some(token) if token.text == expected => Ok(token),
-            Some(token) => Err(Diagnostic::new(token.span, format!("expected '{expected}', found '{}'", token.text))),
-            None => Err(Diagnostic::new(Span::default(), format!("expected '{expected}', found end of input"))),
+            Some(token) => Err(Diagnostic::new(
+                token.span,
+                format!("expected '{expected}', found '{}'", token.text),
+            )),
+            None => Err(Diagnostic::new(
+                Span::default(),
+                format!("expected '{expected}', found end of input"),
+            )),
         }
     }
 
     fn parse_type(&mut self) -> Result<Option<(Type, usize)>, Diagnostic> {
-        let Some(token) = self.peek()? else { return Ok(None); };
+        let Some(token) = self.peek()? else {
+            return Ok(None);
+        };
         let ty = match token.text {
             "void" => Type::Void,
             "char" => Type::Char,
@@ -53,21 +64,30 @@ impl ItemSource for Parser<'_> {
     type Error = Diagnostic;
 
     fn next_item(&mut self) -> Result<Option<ExternalItem>, Self::Error> {
-        let Some((mut ty, start)) = self.parse_type()? else { return Ok(None); };
+        let Some((mut ty, start)) = self.parse_type()? else {
+            return Ok(None);
+        };
         while self.peek()?.is_some_and(|token| token.text == "*") {
             self.take()?;
             ty = Type::Pointer(Box::new(ty));
         }
-        let name = self.take()?.ok_or_else(|| Diagnostic::new(Span::default(), "expected identifier"))?;
+        let name = self
+            .take()?
+            .ok_or_else(|| Diagnostic::new(Span::default(), "expected identifier"))?;
         if name.kind != crate::lexer::TokenKind::Identifier {
             return Err(Diagnostic::new(name.span, "expected identifier"));
         }
         if self.peek()?.is_some_and(|token| token.text == "(") {
-            return Err(Diagnostic::new(name.span, "function declarators are not implemented yet"));
+            return Err(Diagnostic::new(
+                name.span,
+                "function declarators are not implemented yet",
+            ));
         }
         let end = self.expect(";")?.span.hi;
         Ok(Some(ExternalItem::Declaration(Decl {
-            name: name.text.to_owned(), ty, init: None,
+            name: name.text.to_owned(),
+            ty,
+            init: None,
             span: Span { lo: start, hi: end },
         })))
     }
@@ -86,7 +106,9 @@ mod tests {
             self.0.push(declaration);
             Ok(())
         }
-        fn function(&mut self, _: crate::ast::Function) -> Result<(), Self::Error> { unreachable!() }
+        fn function(&mut self, _: crate::ast::Function) -> Result<(), Self::Error> {
+            unreachable!()
+        }
     }
 
     #[test]
@@ -94,7 +116,10 @@ mod tests {
         let mut parser = Parser::new("int a; char *b; long c;");
         let mut sink = Collector::default();
         consume(&mut parser, &mut sink).unwrap();
-        assert_eq!(sink.0.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), ["a", "b", "c"]);
+        assert_eq!(
+            sink.0.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(),
+            ["a", "b", "c"]
+        );
         assert_eq!(sink.0[0].span, Span { lo: 0, hi: 6 });
         assert_eq!(sink.0[1].ty, Type::Pointer(Box::new(Type::Char)));
     }
@@ -102,6 +127,10 @@ mod tests {
     #[test]
     fn rejects_unsupported_declarators() {
         let mut parser = Parser::new("int f(void);");
-        assert!(parser.next_item().unwrap_err().message.contains("not implemented"));
+        assert!(parser
+            .next_item()
+            .unwrap_err()
+            .message
+            .contains("not implemented"));
     }
 }
