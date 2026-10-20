@@ -1,6 +1,9 @@
 name: Mini-C extended fuzz regression
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/fuzz.yml'
   schedule:
     - cron: '17 4 * * 6'
 
