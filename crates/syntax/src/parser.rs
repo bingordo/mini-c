@@ -110,7 +110,7 @@ impl<'a> Parser<'a> {
                     .parse()
                     .map_err(|_| Diagnostic::new(t.span, "integer literal overflow"))?,
             ),
-            Some(t) if t.kind == TokenKind::Identifier => Expr::Name(t.text.to_owned()),
+            Some(t) if matches!(t.kind, TokenKind::Identifier | TokenKind::TypedefName) => Expr::Name(t.text.to_owned()),
             Some(t) if t.text == "(" => {
                 let e = self.parse_expr()?;
                 self.expect(")")?;
@@ -148,7 +148,7 @@ impl<'a> Parser<'a> {
         let name = self
             .take()?
             .ok_or_else(|| Diagnostic::new(Span::default(), "expected identifier"))?;
-        if name.kind != TokenKind::Identifier {
+        if !matches!(name.kind, TokenKind::Identifier | TokenKind::TypedefName) {
             return Err(Diagnostic::new(name.span, "expected identifier"));
         }
         self.scopes.declare(name.text, Binding::Ordinary);
@@ -256,7 +256,7 @@ impl ItemSource for Parser<'_> {
         let name = self
             .take()?
             .ok_or_else(|| Diagnostic::new(Span::default(), "expected identifier"))?;
-        if name.kind != crate::lexer::TokenKind::Identifier {
+        if !matches!(name.kind, TokenKind::Identifier | TokenKind::TypedefName) {
             return Err(Diagnostic::new(name.span, "expected identifier"));
         }
         self.scopes.declare(name.text, if is_typedef { Binding::Typedef } else { Binding::Ordinary });
