@@ -18,6 +18,16 @@ Implement a stateful lexer, translation-unit grammar, declarators, function defi
 
 Exit: parse and reject a documented integer-C corpus; typedef shadowing and nested scopes correct.
 
+## M1.5 — Defined-behavior C fuzzer and independent oracle
+
+Create a deterministic, seed-reproducible C program generator inspired by `bingundu/oberon`'s `obgen`, before semantic analysis and code generation are complete. Generate only constructs currently supported by Mini-C, initially integer expressions and simple functions; extend to blocks, branches, loops, calls and arrays as milestones land. Generate expected outputs with an **independent evaluator** (not the compiler's AST evaluator, optimizer or backend) and emit self-checking C programs plus seed, generator version, and repro command. Use bounded execution/fuel for loops and recursion; avoid nontermination.
+
+**Defined behavior by construction:** use fixed known types and ranges, checked arithmetic in the generator; exclude signed overflow, division/remainder by zero, `INT_MIN / -1`, invalid shifts (negative or >= width), left shifts of negative or overflowing signed values, uninitialized reads, invalid pointers, out-of-bounds access, lifetime violations, strict-aliasing violations, unsequenced conflicting accesses, unspecified evaluation-order dependencies, and implementation-defined conversions/representations unless deliberately constrained to a documented target. Avoid `-fwrapv` as a substitute for valid ISO C semantics. Do not accidentally assume signed wraparound. Prefer unsigned arithmetic for intentionally modular operations, and explicit bounds for signed operations. Emit only initialized data, and prove indices/ranges at generation time. Keep an auditable generation rule catalog describing each invariant.
+
+Compile generated programs with GCC and Clang (when available), at `-O0` and `-O2`, with UBSan/ASan reference runs where applicable. Compare with independent expected values and persist every failure seed as a regression. Run a small deterministic smoke set on each relevant PR and larger seeded campaigns manually/weekly. Include negative tests for the generator itself (overflow/invalid shift/division guards), and a review of whether the oracle accidentally shares implementation logic with Mini-C.
+
+Exit: stable deterministic seeds, an independently computed oracle, sanitizer-clean GCC/Clang reference executions, documented defined-behavior invariants and an automated smoke corpus. Expand the corpus with each subsequent milestone.
+
 ## M2 — Typed C frontend
 
 Implement lexical scopes, declaration linkage/storage classes, signedness and integer conversions, lvalues, calls, constant expressions, return checking and control-flow legality. Keep a distinct checked representation. Add precise error spans and compile-fail cases.
@@ -62,7 +72,7 @@ Exit: green scheduled extended CI with reproducible seeds and documented unsuppo
 
 ## Work ordering
 
-Immediate order: fix M0 compilation; implement M1 grammar and typedef lexer; M2 type checking; M2.5 Cranelift executable reference; M3 backend integration. External preprocessor interface can land alongside M1, while full M6 coverage follows native execution. At every step prefer targeted tests; run full workspace/integration suites only on milestone completion or significant IR/backend changes.
+Immediate order: fix M0 compilation; implement M1 grammar and typedef lexer; M1.5 defined-behavior fuzzer; M2 type checking; M2.5 Cranelift executable reference; M3 backend integration. External preprocessor interface can land alongside M1, while full M6 coverage follows native execution. At every step prefer targeted tests; run full workspace/integration suites only on milestone completion or significant IR/backend changes.
 
 ## Cross-repository coordination
 
