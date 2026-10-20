@@ -103,3 +103,11 @@ Mini-C owns syntax/sema/lowering. `bingundu/compiler` owns shared IR, optimizati
 - M4-M7: expand bridge coverage while keeping standalone frontend tests independent of backend and CI secrets.
 
 Before completing M3, verify Cargo dependency graph is acyclic and test the embedded API directly from a separate integration crate. Do not put command-line parsing or external `cc -E` invocation in syntax/sema crates.
+
+## Incremental compilation contract
+
+The production compiler consumes input incrementally: preprocessing output through a reader or pipe, tokens on demand, and top-level declarations one at a time. A complete AST may be materialized for **one function at a time**, passed to semantic analysis and lowering, and discarded after compilation. Durable state consists of file-scope symbols, types, linkage, diagnostics, and necessary object-file/relocation metadata, not completed function ASTs. Peak memory should not scale with the number of completed function bodies.
+
+Typedef-sensitive lexing must classify names at token consumption time; parser lookahead must not permanently classify future identifiers across declaration or scope updates. The existing TranslationUnit AST remains a convenience for tests, not the production driver contract. The external preprocessor must eventually stream stdout instead of collecting its entire output. Tests should cover many functions and typedef shadowing at scope boundaries.
+
+A future inliner may optionally retain selected compact function IR bodies under a memory budget, but **no inliner is part of the current milestones**. Independent function compilation remains the default.
