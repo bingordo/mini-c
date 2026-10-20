@@ -43,7 +43,19 @@ Unary: Expr = {
     "!" <e:Unary> => Expr::Unary(UnOp::Not, Box::new(e)),
     "&" <e:Unary> => Expr::Unary(UnOp::Address, Box::new(e)),
     "*" <e:Unary> => Expr::Unary(UnOp::Deref, Box::new(e)),
+    Postfix,
+};
+Postfix: Expr = {
+    <callee:Postfix> "(" <args:CallArgs> ")" => Expr::Call(Box::new(callee), args),
     Primary,
+};
+CallArgs: Vec<Expr> = {
+    => vec![],
+    <first:Assign> <rest:("," <Assign>)*> => {
+        let mut args = vec![first];
+        args.extend(rest);
+        args
+    },
 };
 Primary: Expr = {
     <n:r"[0-9]+"> =>? n.parse::<u64>().map(Expr::Int).map_err(|_| lalrpop_util::ParseError::User { error: "integer literal exceeds u64 range" }),
