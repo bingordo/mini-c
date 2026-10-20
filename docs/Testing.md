@@ -40,3 +40,7 @@ Add a deterministic Oberon-obgen-style C generator **before** native backend int
 ## Diagnostic quality gate (M2.25)
 
 Use table-driven malformed-C fixtures and assert diagnostic codes, primary spans, stable order and recovery behavior, not only rejection. Include missing punctuation, unexpected EOF, typedef scope ambiguity, invalid declarations, duplicate/unknown symbols, incompatible expressions and invalid calls/returns. Test UTF-8 and multiline locations. Run deterministic malformed-token mutation cases and preserve crash reproducers. Limit cascading errors, impose a configurable maximum, and keep core library APIs free of printing and process exits. Run targeted diagnostics tests on each relevant PR and review snapshots when wording changes.
+
+## M1.25 external preprocessor tests
+
+Keep external `cc -E`/`clang -E` integration tests separate from parser unit tests. Test `--cpp=none`, command failures, paths with spaces, include-file line markers, macros, conditional compilation, and diagnostics mapping. Do not shell-interpolate source paths or user flags; retain stderr and exit codes. Verify source mapping does not invent macro-expansion columns.
