@@ -198,6 +198,7 @@ impl<'a> Parser<'a> {
             "break" => { self.take()?; self.expect(";")?; Ok(Stmt::Break) }
             "continue" => { self.take()?; self.expect(";")?; Ok(Stmt::Continue) }
             "int" | "char" | "long" | "void" => Ok(Stmt::Decl(self.parse_decl()?)),
+            _ if token.kind == TokenKind::TypedefName => Ok(Stmt::Decl(self.parse_decl()?)),
             _ => { let expr = self.parse_expr()?; self.expect(";")?; Ok(Stmt::Expr(Some(expr))) }
         }
     }
@@ -231,6 +232,7 @@ impl<'a> Parser<'a> {
             "char" => Type::Char,
             "int" => Type::Int,
             "long" => Type::Long,
+            _ if token.kind == TokenKind::TypedefName => Type::Alias(token.text.to_owned()),
             _ => return Err(Diagnostic::new(token.span, "expected a type specifier")),
         };
         self.take()?;
@@ -242,6 +244,8 @@ impl ItemSource for Parser<'_> {
     type Error = Diagnostic;
 
     fn next_item(&mut self) -> Result<Option<ExternalItem>, Self::Error> {
+        let is_typedef = self.peek()?.is_some_and(|t| t.text == "typedef");
+        if is_typedef { self.take()?; }
         let Some((mut ty, start)) = self.parse_type()? else {
             return Ok(None);
         };
@@ -255,7 +259,7 @@ impl ItemSource for Parser<'_> {
         if name.kind != crate::lexer::TokenKind::Identifier {
             return Err(Diagnostic::new(name.span, "expected identifier"));
         }
-        self.scopes.declare(name.text, Binding::Ordinary);
+        self.scopes.declare(name.text, if is_typedef { Binding::Typedef } else { Binding::Ordinary });
         if self.peek()?.is_some_and(|token| token.text == "(") {
             self.take()?;
             let mut params = Vec::new();
@@ -329,13 +333,10 @@ impl ItemSource for Parser<'_> {
             })));
         }
         let init = if self.peek()?.is_some_and(|t| t.text == "=") { self.take()?; Some(self.parse_expr()?) } else { None };
+        if is_typedef && init.is_some() { return Err(Diagnostic::new(name.span, "typedef cannot have an initializer")); }
         let end = self.expect(";")?.span.hi;
-        Ok(Some(ExternalItem::Declaration(Decl {
-            name: name.text.to_owned(),
-            ty,
-            init,
-            span: Span { lo: start, hi: end },
-        })))
+        let decl = Decl { name: name.text.to_owned(), ty, init, span: Span { lo: start, hi: end } };
+        Ok(Some(if is_typedef { ExternalItem::Typedef(decl) } else { ExternalItem::Declaration(decl) }))
     }
 }
 
@@ -471,6 +472,18 @@ mod tests {
         assert!(matches!(parser.next_item().unwrap(), Some(ExternalItem::Function(_))));
         assert_eq!(parser.scopes.lookup("y"), None);
         assert_eq!(parser.scopes.lookup("f"), Some(Binding::Ordinary));
+    }
+
+    #[test]
+    fn parses_typedefs_and_shadowing() {
+        let mut parser = Parser::new("typedef int T; T global; int f(void) { T x; { int T; T = 2; } T y; return 0; }");
+        assert!(matches!(parser.next_item().unwrap(), Some(ExternalItem::Typedef(_))));
+        match parser.next_item().unwrap().unwrap() {
+            ExternalItem::Declaration(d) => assert_eq!(d.ty, Type::Alias("T".into())),
+            _ => panic!("expected typedef-typed declaration"),
+        }
+        assert!(matches!(parser.next_item().unwrap(), Some(ExternalItem::Function(_))));
+        assert!(parser.next_item().unwrap().is_none());
     }
 
     #[test]
