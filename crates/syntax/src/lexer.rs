@@ -17,12 +17,10 @@ pub fn scan(source: &str) -> Result<Vec<Token<'_>>, Diagnostic> {
 /// Classifies identifiers against the caller's current ordinary-identifier scope.
 /// Re-scan after scope changes; parsing must not preclassify an entire translation unit.
 pub fn scan_with_scopes<'a>(source: &'a str, scopes: Option<&Scopes>) -> Result<Vec<Token<'a>>, Diagnostic> {
-    {
     let mut scanner = Scanner::new(source);
     let mut tokens = Vec::new();
     while let Some(token) = scanner.next_token(scopes)? { tokens.push(token); }
     Ok(tokens)
-}
 }
 
 /// Incremental scanner: the parser can change the scope between calls to next_token.
@@ -34,7 +32,6 @@ pub struct Scanner<'a> {
 
 impl<'a> Scanner<'a> {
     pub fn new(source: &'a str) -> Self { Self { source, offset: 0 } }
-    pub fn with_scopes(source: &'a str, _scopes: Option<&Scopes>) -> Self { Self::new(source) }
     pub fn next_token(&mut self, scopes: Option<&Scopes>) -> Result<Option<Token<'a>>, Diagnostic> {
         let source = self.source;
         let mut offset = self.offset;
