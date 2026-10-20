@@ -206,9 +206,6 @@ impl Checker {
         match item {
             ExternalItem::Typedef(decl) => {
                 let ty = self.resolve(&decl.ty, decl.span)?;
-                if !ty.is_object() && !matches!(ty, CType::Function { .. }) {
-                    return Err(type_error(decl.span, "typedef requires a valid type"));
-                }
                 self.declare_global(&decl.name, ty.clone(), SymbolKind::Typedef, false, decl.storage, decl.span)?;
                 Ok(CheckedItem::Typedef { name: decl.name, ty })
             }
