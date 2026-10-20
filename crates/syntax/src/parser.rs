@@ -163,6 +163,41 @@ impl<'a> Parser<'a> {
         })
     }
 
+    fn parse_stmt(&mut self) -> Result<Stmt, Diagnostic> {
+        let token = self.peek()?.ok_or_else(|| Diagnostic::new(Span::default(), "expected statement"))?;
+        match token.text {
+            "{" => Ok(self.parse_block()?.0),
+            ";" => { self.take()?; Ok(Stmt::Expr(None)) },
+            "return" => {
+                self.take()?;
+                let value = if self.peek()?.is_some_and(|t| t.text == ";") { None } else { Some(self.parse_expr()?) };
+                self.expect(";")?;
+                Ok(Stmt::Return(value))
+            }
+            "if" => {
+                self.take()?; self.expect("(")?;
+                let cond = self.parse_expr()?;
+                self.expect(")")?;
+                let then = Box::new(self.parse_stmt()?);
+                let otherwise = if self.peek()?.is_some_and(|t| t.text == "else") {
+                    self.take()?; Some(Box::new(self.parse_stmt()?))
+                } else { None };
+                Ok(Stmt::If { cond, then, otherwise })
+            }
+            "while" => {
+                self.take()?; self.expect("(")?;
+                let cond = self.parse_expr()?;
+                self.expect(")")?;
+                let body = Box::new(self.parse_stmt()?);
+                Ok(Stmt::While { cond, body })
+            }
+            "break" => { self.take()?; self.expect(";")?; Ok(Stmt::Break) }
+            "continue" => { self.take()?; self.expect(";")?; Ok(Stmt::Continue) }
+            "int" | "char" | "long" | "void" => Ok(Stmt::Decl(self.parse_decl()?)),
+            _ => { let expr = self.parse_expr()?; self.expect(";")?; Ok(Stmt::Expr(Some(expr))) }
+        }
+    }
+
     fn parse_block(&mut self) -> Result<(Stmt, usize), Diagnostic> {
         self.expect("{")?;
         let mut statements = Vec::new();
@@ -173,38 +208,10 @@ impl<'a> Parser<'a> {
                     "unterminated function body",
                 ));
             };
-            match token.text {
-                "}" => {
-                    return Ok((
-                        Stmt::Block(statements),
-                        self.take()?.expect("peeked token").span.hi,
-                    ))
-                }
-                "{" => {
-                    let (nested, _) = self.parse_block()?;
-                    statements.push(nested);
-                }
-                ";" => {
-                    self.take()?;
-                    statements.push(Stmt::Expr(None));
-                }
-                "return" => {
-                    self.take()?;
-                    let expr = if self.peek()?.is_some_and(|t| t.text == ";") {
-                        None
-                    } else {
-                        Some(self.parse_expr()?)
-                    };
-                    self.expect(";")?;
-                    statements.push(Stmt::Return(expr));
-                }
-                "int" | "char" | "long" | "void" => statements.push(Stmt::Decl(self.parse_decl()?)),
-                _ => {
-                    let expr = self.parse_expr()?;
-                    self.expect(";")?;
-                    statements.push(Stmt::Expr(Some(expr)));
-                }
+            if token.text == "}" {
+                return Ok((Stmt::Block(statements), self.take()?.expect("peeked token").span.hi));
             }
+            statements.push(self.parse_stmt()?);
         }
     }
 
@@ -303,11 +310,12 @@ impl ItemSource for Parser<'_> {
                 "function prototypes are not implemented yet",
             ));
         }
+        let init = if self.peek()?.is_some_and(|t| t.text == "=") { self.take()?; Some(self.parse_expr()?) } else { None };
         let end = self.expect(";")?.span.hi;
         Ok(Some(ExternalItem::Declaration(Decl {
             name: name.text.to_owned(),
             ty,
-            init: None,
+            init,
             span: Span { lo: start, hi: end },
         })))
     }
@@ -416,6 +424,25 @@ mod tests {
             parser.next_item().unwrap(),
             Some(ExternalItem::Declaration(_))
         ));
+    }
+
+    #[test]
+    fn parses_control_flow_and_global_initializer() {
+        let mut parser = Parser::new("int seed = 7; int f(int n) { while (n) { if (n == 1) break; else n = n - 1; continue; } return n; }");
+        match parser.next_item().unwrap().unwrap() {
+            ExternalItem::Declaration(d) => assert_eq!(d.init, Some(Expr::Int(7))),
+            _ => panic!("expected declaration"),
+        }
+        match parser.next_item().unwrap().unwrap() {
+            ExternalItem::Function(f) => match f.body {
+                Stmt::Block(stmts) => {
+                    assert!(matches!(&stmts[0], Stmt::While { .. }));
+                    assert!(matches!(&stmts[1], Stmt::Return(Some(_))));
+                }
+                _ => panic!("expected block"),
+            },
+            _ => panic!("expected function"),
+        }
     }
 
     #[test]
