@@ -134,6 +134,15 @@ fn static_and_extern_linkage() {
 }
 
 #[test]
+fn unnamed_prototype_parameters_and_function_typedefs() {
+    check("int zero(void); int f(int, void *); int f(int x, void *p) { return x + (p == 0); }").unwrap();
+    check("typedef int Callback(int); Callback called; int called(int x) { return x; }").unwrap();
+    reject("int bad(int) { return 0; }", "requires parameter names");
+    reject("typedef int wrong(void) { return 0; }", "typedef cannot define a function");
+    reject("int invalid(void x);", "parameter cannot have void");
+}
+
+#[test]
 fn checker_discards_completed_bodies() {
     let mut source = String::from("int shared;");
     for n in 0..200 {
