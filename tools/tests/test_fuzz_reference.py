@@ -36,6 +36,8 @@ class HarnessTests(unittest.TestCase):
         self.assertIn("-fsanitize=undefined", gcc[-1][1])
         self.assertIn("-fsanitize=address,undefined", clang[-1][1])
         self.assertEqual(len(runner.variants("gcc", False)), 2)
+        self.assertEqual(runner.variants("gcc", True, smoke=True), [("O2", ["-O2"])])
+        self.assertEqual(runner.variants("clang", True, smoke=True), [("O0", ["-O0"])])
 
     def test_command_is_argument_vector(self):
         result = runner.invoke([sys.executable, "-c", "import sys; sys.exit(1)"])
