@@ -26,6 +26,6 @@ jobs:
       - name: Format
         run: cargo fmt --all -- --check
       - name: Syntax tests
-        run: cargo test -p mini-c-syntax
+        run: cargo test -p mini-c-syntax -p mini-c-preprocess
       - name: Clippy
-        run: cargo clippy -p mini-c-syntax --all-targets -- -D warnings
+        run: cargo clippy -p mini-c-syntax -p mini-c-preprocess --all-targets -- -D warnings
