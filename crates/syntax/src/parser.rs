@@ -305,10 +305,16 @@ impl ItemSource for Parser<'_> {
                     span: Span { lo: start, hi: end },
                 })));
             }
-            return Err(Diagnostic::new(
-                name.span,
-                "function prototypes are not implemented yet",
-            ));
+            let end = self.expect(";")?.span.hi;
+            return Ok(Some(ExternalItem::Declaration(Decl {
+                name: name.text.to_owned(),
+                ty: Type::Function {
+                    result: Box::new(ty),
+                    params: params.into_iter().map(|p| p.ty).collect(),
+                },
+                init: None,
+                span: Span { lo: start, hi: end },
+            })));
         }
         let init = if self.peek()?.is_some_and(|t| t.text == "=") { self.take()?; Some(self.parse_expr()?) } else { None };
         let end = self.expect(";")?.span.hi;
@@ -446,12 +452,28 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unsupported_declarators() {
-        let mut parser = Parser::new("int f();");
-        assert!(parser
-            .next_item()
-            .unwrap_err()
-            .message
-            .contains("not implemented"));
+    fn parses_function_prototypes() {
+        let mut parser = Parser::new("int f(); long g(int a, char *p); int h(void);");
+        match parser.next_item().unwrap().unwrap() {
+            ExternalItem::Declaration(d) => assert_eq!(d.ty, Type::Function {
+                result: Box::new(Type::Int), params: vec![],
+            }),
+            _ => panic!("expected prototype"),
+        }
+        match parser.next_item().unwrap().unwrap() {
+            ExternalItem::Declaration(d) => assert_eq!(d.ty, Type::Function {
+                result: Box::new(Type::Long),
+                params: vec![Type::Int, Type::Pointer(Box::new(Type::Char))],
+            }),
+            _ => panic!("expected prototype"),
+        }
+        assert!(matches!(parser.next_item().unwrap(), Some(ExternalItem::Declaration(_))));
+        assert!(parser.next_item().unwrap().is_none());
+    }
+
+    #[test]
+    fn rejects_malformed_prototypes() {
+        let mut parser = Parser::new("int f(int a,);");
+        assert!(parser.next_item().is_err());
     }
 }
