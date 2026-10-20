@@ -4,7 +4,7 @@
 pub mod types;
 
 use std::collections::HashMap;
-use mini_c_syntax::ast::{BinOp, Decl, Expr, Function, Span, Stmt, Type, UnOp};
+use mini_c_syntax::ast::{BinOp, Decl, Expr, Function, Span, Stmt, StorageClass, Type, UnOp};
 use mini_c_syntax::diag::Diagnostic;
 use mini_c_syntax::stream::{ExternalItem, ItemSource};
 
@@ -12,7 +12,7 @@ pub use types::{CType, IntRank, Target};
 use types::type_error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Linkage { None, External }
+pub enum Linkage { None, Internal, External }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Category { Value, LValue, Function }
@@ -52,6 +52,7 @@ impl CheckedExpr {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CheckedDecl {
+    pub storage: StorageClass,
     pub name: String,
     pub ty: CType,
     pub linkage: Linkage,
@@ -74,6 +75,7 @@ pub enum CheckedStmt {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CheckedFunction {
+    pub linkage: Linkage,
     pub name: String,
     pub signature: CType,
     pub params: Vec<CheckedDecl>,
@@ -168,10 +170,25 @@ impl Checker {
         Ok(())
     }
 
-    fn declare_global(&mut self, name: &str, ty: CType, kind: SymbolKind, defining: bool, span: Span) -> Result<(), Diagnostic> {
+    fn declare_global(
+        &mut self, name: &str, ty: CType, kind: SymbolKind,
+        defining: bool, storage: StorageClass, span: Span
+    ) -> Result<(), Diagnostic> {
+        let requested = if kind == SymbolKind::Typedef {
+            Linkage::None
+        } else if storage == StorageClass::Static {
+            Linkage::Internal
+        } else {
+            Linkage::External
+        };
         if let Some(prior) = self.globals.get_mut(name) {
             if prior.kind != kind || prior.ty != ty {
                 return Err(type_error(span, format!("conflicting declaration of '{name}'")));
+            }
+            // An extern redeclaration inherits a previous internal linkage.
+            // Explicit static cannot follow a prior external declaration.
+            if prior.linkage != requested && storage != StorageClass::Extern {
+                return Err(type_error(span, format!("conflicting linkage for '{name}'")));
             }
             if defining && prior.defined {
                 return Err(type_error(span, format!("multiple definitions of '{name}'")));
@@ -179,7 +196,7 @@ impl Checker {
             prior.defined |= defining;
         } else {
             self.globals.insert(name.to_owned(), Symbol {
-                ty, kind, linkage: Linkage::External, defined: defining,
+                ty, kind, linkage: requested, defined: defining,
             });
         }
         Ok(())
@@ -192,7 +209,7 @@ impl Checker {
                 if !ty.is_object() && !matches!(ty, CType::Function { .. }) {
                     return Err(type_error(decl.span, "typedef requires a valid type"));
                 }
-                self.declare_global(&decl.name, ty.clone(), SymbolKind::Typedef, false, decl.span)?;
+                self.declare_global(&decl.name, ty.clone(), SymbolKind::Typedef, false, decl.storage, decl.span)?;
                 Ok(CheckedItem::Typedef { name: decl.name, ty })
             }
             ExternalItem::Declaration(decl) => self.check_global(decl).map(CheckedItem::Declaration),
@@ -210,7 +227,7 @@ impl Checker {
             return Err(type_error(decl.span, "function declaration cannot have an initializer"));
         }
         let defining = decl.init.is_some();
-        self.declare_global(&decl.name, ty.clone(), kind, defining, decl.span)?;
+        self.declare_global(&decl.name, ty.clone(), kind, defining, decl.storage, decl.span)?;
         let initializer = if let Some(initializer) = &decl.init {
             // The supported global integer initializer must be a C constant expression.
             if ty.is_integer() && const_integer(initializer).is_none() {
@@ -221,7 +238,8 @@ impl Checker {
         } else {
             None
         };
-        Ok(CheckedDecl { name: decl.name, ty, linkage: Linkage::External, initializer, span: decl.span })
+        let linkage = self.global(&decl.name).expect("registered global").linkage;
+        Ok(CheckedDecl { storage: decl.storage, name: decl.name, ty, linkage, initializer, span: decl.span })
     }
 
     fn check_function(&mut self, func: Function) -> Result<CheckedFunction, Diagnostic> {
@@ -235,14 +253,17 @@ impl Checker {
             if !ty.is_object() {
                 return Err(type_error(param.span, "function parameter cannot have void or function type"));
             }
-            params.push(CheckedDecl { name: param.name.clone(), ty, linkage: Linkage::None, initializer: None, span: param.span });
+            params.push(CheckedDecl {
+                storage: StorageClass::Default, name: param.name.clone(), ty,
+                linkage: Linkage::None, initializer: None, span: param.span,
+            });
         }
         let signature = CType::Function {
             result: Box::new(result.clone()),
             params: params.iter().map(|p| p.ty.clone()).collect(),
         };
         // Register before checking the body: recursive calls are legal.
-        self.declare_global(&func.name, signature.clone(), SymbolKind::Function, true, func.span)?;
+        self.declare_global(&func.name, signature.clone(), SymbolKind::Function, true, func.storage, func.span)?;
         self.locals.push(HashMap::new());
         self.result_ty = Some(result);
         for param in &params {
@@ -260,7 +281,8 @@ impl Checker {
         self.locals.pop();
         self.result_ty = None;
         let body = checked?;
-        Ok(CheckedFunction { name: func.name, signature, params, body, span: func.span })
+        let linkage = self.global(&func.name).expect("registered function").linkage;
+        Ok(CheckedFunction { linkage, name: func.name, signature, params, body, span: func.span })
     }
 
     fn check_statements(&mut self, statements: &[Stmt], span: Span) -> Result<Vec<CheckedStmt>, Diagnostic> {
@@ -280,12 +302,25 @@ impl Checker {
                 if !ty.is_object() {
                     return Err(type_error(decl.span, "local variable cannot have void or function type"));
                 }
+                if decl.storage == StorageClass::Extern {
+                    if decl.init.is_some() {
+                        return Err(type_error(decl.span, "block-scope extern cannot have an initializer"));
+                    }
+                    self.declare_global(&decl.name, ty.clone(), SymbolKind::Object, false, decl.storage, decl.span)?;
+                }
                 self.define_local(&decl.name, ty.clone(), SymbolKind::Object, decl.span)?;
+                if decl.storage == StorageClass::Static && decl.init.as_ref().is_some_and(|init| const_integer(init).is_none()) {
+                    return Err(type_error(decl.span, "static initializer is not an integer constant expression"));
+                }
                 let initializer = decl.init.as_ref().map(|value| -> Result<_, Diagnostic> {
                     let value = self.check_expr(value, decl.span)?;
                     self.convert_for_assignment(value, &ty, decl.init.as_ref().expect("initializer exists"), decl.span)
                 }).transpose()?;
-                CheckedStmt::Decl(CheckedDecl { name: decl.name.clone(), ty, linkage: Linkage::None, initializer, span: decl.span })
+                CheckedStmt::Decl(CheckedDecl {
+                    storage: decl.storage, name: decl.name.clone(), ty,
+                    linkage: if decl.storage == StorageClass::Extern { Linkage::External } else { Linkage::None },
+                    initializer, span: decl.span,
+                })
             }
             Stmt::Typedef(decl) => {
                 let ty = self.resolve(&decl.ty, decl.span)?;
