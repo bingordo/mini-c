@@ -18,6 +18,14 @@ Implement a stateful lexer, translation-unit grammar, declarators, function defi
 
 Exit: parse and reject a documented integer-C corpus; typedef shadowing and nested scopes correct.
 
+## M1.25 — External preprocessing and source mapping
+
+Add a separate preprocessing/driver integration layer immediately after M1. Accept raw C sources through a configurable external C preprocessor (`cc -E` or `clang -E`) and accept already-preprocessed inputs through `--cpp=none`. Keep preprocessing outside `mini-c-syntax` and semantic-analysis crates: library parsing must work directly on caller-provided source text. Invoke tools using argument vectors, never shell interpolation; preserve exit status, stderr, and executable path in diagnostics. Make executable and flags configurable; do not assume a specific host compiler is installed for syntax unit tests.
+
+Consume standard preprocessor line markers to map diagnostics back to original filenames and line numbers, including includes. Retain generated-source spans and a separate origin map; avoid silently claiming byte-exact columns when external macro expansion makes them unknowable. Test paths with spaces, failed preprocessing, nested includes, conditional compilation, predefined macros, and `--cpp=none` equivalence. Integration tests requiring a host compiler should be isolated from core unit tests.
+
+Exit: reproducible end-to-end parsing of preprocessed translation units, accurate file/line diagnostics for ordinary includes, and a documented preprocessor-off path. Internal preprocessing remains M6.
+
 ## M1.5 — Defined-behavior C fuzzer and independent oracle
 
 Create a deterministic, seed-reproducible C program generator inspired by `bingundu/oberon`'s `obgen`, before semantic analysis and code generation are complete. Generate only constructs currently supported by Mini-C, initially integer expressions and simple functions; extend to blocks, branches, loops, calls and arrays as milestones land. Generate expected outputs with an **independent evaluator** (not the compiler's AST evaluator, optimizer or backend) and emit self-checking C programs plus seed, generator version, and repro command. Use bounded execution/fuel for loops and recursion; avoid nontermination.
