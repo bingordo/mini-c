@@ -162,12 +162,12 @@ impl Checker {
         })
     }
 
-    fn define_local(&mut self, name: &str, ty: CType, kind: SymbolKind, span: Span) -> Result<(), Diagnostic> {
+    fn define_local(&mut self, name: &str, ty: CType, kind: SymbolKind, linkage: Linkage, span: Span) -> Result<(), Diagnostic> {
         let scope = self.locals.last_mut().expect("local declaration outside a function");
         if scope.contains_key(name) {
             return Err(type_error(span, format!("duplicate declaration of '{name}'")));
         }
-        scope.insert(name.to_owned(), Symbol { ty, kind, linkage: Linkage::None, defined: true });
+        scope.insert(name.to_owned(), Symbol { ty, kind, linkage, defined: true });
         Ok(())
     }
 
@@ -262,7 +262,7 @@ impl Checker {
         self.locals.push(HashMap::new());
         self.result_ty = Some(result);
         for param in &params {
-            if let Err(err) = self.define_local(&param.name, param.ty.clone(), SymbolKind::Object, param.span) {
+            if let Err(err) = self.define_local(&param.name, param.ty.clone(), SymbolKind::Object, Linkage::None, param.span) {
                 self.locals.pop();
                 self.result_ty = None;
                 return Err(err);
@@ -303,7 +303,10 @@ impl Checker {
                     }
                     self.declare_global(&decl.name, ty.clone(), SymbolKind::Object, false, decl.storage, decl.span)?;
                 }
-                self.define_local(&decl.name, ty.clone(), SymbolKind::Object, decl.span)?;
+                let linkage = if decl.storage == StorageClass::Extern {
+                    self.global(&decl.name).expect("registered extern").linkage
+                } else { Linkage::None };
+                self.define_local(&decl.name, ty.clone(), SymbolKind::Object, linkage, decl.span)?;
                 let initializer = decl.init.as_ref().map(|value| -> Result<_, Diagnostic> {
                     let expression = self.check_expr(value, decl.span)?;
                     if decl.storage == StorageClass::Static {
@@ -313,13 +316,13 @@ impl Checker {
                 }).transpose()?;
                 CheckedStmt::Decl(CheckedDecl {
                     storage: decl.storage, name: decl.name.clone(), ty,
-                    linkage: if decl.storage == StorageClass::Extern { Linkage::External } else { Linkage::None },
+                    linkage,
                     initializer, span: decl.span,
                 })
             }
             Stmt::Typedef(decl) => {
                 let ty = self.resolve(&decl.ty, decl.span)?;
-                self.define_local(&decl.name, ty.clone(), SymbolKind::Typedef, decl.span)?;
+                self.define_local(&decl.name, ty.clone(), SymbolKind::Typedef, Linkage::None, decl.span)?;
                 CheckedStmt::Typedef { name: decl.name.clone(), ty }
             }
             Stmt::Expr(expr) => {
