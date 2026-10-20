@@ -1,0 +1,11 @@
+[package]
+name = "mini-c-syntax"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+[dependencies]
+lalrpop-util = { workspace = true }
+
+[build-dependencies]
+lalrpop = { workspace = true }
