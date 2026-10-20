@@ -174,7 +174,7 @@ mod tests {
     }
     #[test]
     fn ignores_preprocessor_line_markers() {
-        let tokens = scan("# 1 \\"header.h\\" 1\\nint value;\\n#line 9 \\"main.c\\"\\nint next;").unwrap();
+        let tokens = scan("# 1 \"header.h\" 1\nint value;\n#line 9 \"main.c\"\nint next;").unwrap();
         assert_eq!(tokens.iter().map(|t| t.text).collect::<Vec<_>>(), ["int", "value", ";", "int", "next", ";"]);
     }
     #[test]
