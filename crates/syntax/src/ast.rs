@@ -1,6 +1,14 @@
 //! Unresolved C syntax AST. Source spans use UTF-8 byte offsets.
 pub type Ident = String;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum StorageClass {
+    #[default]
+    Default,
+    Extern,
+    Static,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Span {
     pub lo: usize,
     pub hi: usize,
@@ -16,6 +24,7 @@ pub enum Item {
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct Function {
+    pub storage: StorageClass,
     pub name: Ident,
     pub result: Type,
     pub params: Vec<Decl>,
@@ -24,6 +33,7 @@ pub struct Function {
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct Decl {
+    pub storage: StorageClass,
     pub name: Ident,
     pub ty: Type,
     pub init: Option<Expr>,
