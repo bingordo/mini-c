@@ -81,8 +81,8 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let header = dir.join("header with spaces.h");
         let input = dir.join("source with spaces.c");
-        std::fs::write(&header, "#define VALUE 17\\n").unwrap();
-        std::fs::write(&input, "#include \\"header with spaces.h\\"\\n#if VALUE == 17\\nint result = VALUE;\\n#endif\\n").unwrap();
+        std::fs::write(&header, "#define VALUE 17\n").unwrap();
+        std::fs::write(&input, "#include \"header with spaces.h\"\n#if VALUE == 17\nint result = VALUE;\n#endif\n").unwrap();
         let result = file(&input, &Config::default());
         let _ = std::fs::remove_dir_all(&dir);
         let output = match result {
@@ -105,7 +105,7 @@ mod tests {
         use std::time::{SystemTime, UNIX_EPOCH};
         let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
         let path = std::env::temp_dir().join(format!("mini-c-missing-{}-{nonce}.c", std::process::id()));
-        std::fs::write(&path, "#error mini_c_expected_failure\\n").unwrap();
+        std::fs::write(&path, "#error mini_c_expected_failure\n").unwrap();
         let result = file(&path, &Config::default());
         let _ = std::fs::remove_file(&path);
         match result {
