@@ -58,6 +58,10 @@ impl<'a> Scanner<'a> {
                 offset += ch.len_utf8();
                 continue;
             }
+            if ch == '#' && source[..offset].rsplit('\n').next().is_some_and(|prefix| prefix.trim().is_empty()) {
+                offset += rest.find('\n').unwrap_or(rest.len());
+                continue;
+            }
             if rest.starts_with("//") {
                 offset += rest.find('\n').unwrap_or(rest.len());
                 continue;
@@ -167,6 +171,11 @@ mod tests {
             tokens.iter().map(|t| t.text).collect::<Vec<_>>(),
             ["int", "x", "=", "42", ";", "x", "+=", "2", ";"]
         );
+    }
+    #[test]
+    fn ignores_preprocessor_line_markers() {
+        let tokens = scan("# 1 \\"header.h\\" 1\\nint value;\\n#line 9 \\"main.c\\"\\nint next;").unwrap();
+        assert_eq!(tokens.iter().map(|t| t.text).collect::<Vec<_>>(), ["int", "value", ";", "int", "next", ";"]);
     }
     #[test]
     fn invalid_utf8_character_span() {
