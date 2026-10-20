@@ -28,5 +28,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Syntax tests
         run: cargo test -p mini-c-syntax -p mini-c-preprocess
+      - name: CLI and preprocessing integration tests
+        run: cargo test -p mini-c
       - name: Clippy
-        run: cargo clippy -p mini-c-syntax -p mini-c-preprocess --all-targets -- -D warnings
+        run: cargo clippy -p mini-c-syntax -p mini-c-preprocess -p mini-c --all-targets -- -D warnings
