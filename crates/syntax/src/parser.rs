@@ -4,10 +4,12 @@ use crate::ast::{BinOp, Decl, Expr, Function, Span, Stmt, Type, UnOp};
 use crate::diag::Diagnostic;
 use crate::lexer::{Scanner, Token, TokenKind};
 use crate::stream::{ExternalItem, ItemSource};
+use crate::scopes::{Binding, Scopes};
 
 pub struct Parser<'a> {
     scanner: Scanner<'a>,
     lookahead: Option<Token<'a>>,
+    scopes: Scopes,
 }
 
 impl<'a> Parser<'a> {
@@ -15,12 +17,13 @@ impl<'a> Parser<'a> {
         Self {
             scanner: Scanner::new(source),
             lookahead: None,
+            scopes: Scopes::new(),
         }
     }
 
     fn peek(&mut self) -> Result<Option<Token<'a>>, Diagnostic> {
         if self.lookahead.is_none() {
-            self.lookahead = self.scanner.next_token(None)?;
+            self.lookahead = self.scanner.next_token(Some(&self.scopes))?;
         }
         Ok(self.lookahead)
     }
@@ -155,6 +158,7 @@ impl<'a> Parser<'a> {
             None
         };
         let end = self.expect(";")?.span.hi;
+        self.scopes.declare(name.text, Binding::Ordinary);
         Ok(Decl {
             name: name.text.to_owned(),
             ty,
@@ -200,6 +204,7 @@ impl<'a> Parser<'a> {
 
     fn parse_block(&mut self) -> Result<(Stmt, usize), Diagnostic> {
         self.expect("{")?;
+        self.scopes.enter();
         let mut statements = Vec::new();
         loop {
             let Some(token) = self.peek()? else {
@@ -209,7 +214,9 @@ impl<'a> Parser<'a> {
                 ));
             };
             if token.text == "}" {
-                return Ok((Stmt::Block(statements), self.take()?.expect("peeked token").span.hi));
+                let end = self.take()?.expect("peeked token").span.hi;
+                self.scopes.leave();
+                return Ok((Stmt::Block(statements), end));
             }
             statements.push(self.parse_stmt()?);
         }
@@ -296,7 +303,11 @@ impl ItemSource for Parser<'_> {
             }
             self.expect(")")?;
             if self.peek()?.is_some_and(|token| token.text == "{") {
-                let (body, end) = self.parse_block()?;
+                self.scopes.enter();
+                for param in &params { self.scopes.declare(&param.name, Binding::Ordinary); }
+                let parsed = self.parse_block();
+                self.scopes.leave();
+                let (body, end) = parsed?;
                 return Ok(Some(ExternalItem::Function(Function {
                     name: name.text.to_owned(),
                     result: ty,
@@ -306,6 +317,7 @@ impl ItemSource for Parser<'_> {
                 })));
             }
             let end = self.expect(";")?.span.hi;
+            self.scopes.declare(name.text, Binding::Ordinary);
             return Ok(Some(ExternalItem::Declaration(Decl {
                 name: name.text.to_owned(),
                 ty: Type::Function {
@@ -318,6 +330,7 @@ impl ItemSource for Parser<'_> {
         }
         let init = if self.peek()?.is_some_and(|t| t.text == "=") { self.take()?; Some(self.parse_expr()?) } else { None };
         let end = self.expect(";")?.span.hi;
+        self.scopes.declare(name.text, Binding::Ordinary);
         Ok(Some(ExternalItem::Declaration(Decl {
             name: name.text.to_owned(),
             ty,
@@ -449,6 +462,15 @@ mod tests {
             },
             _ => panic!("expected function"),
         }
+    }
+
+    #[test]
+    fn tracks_ordinary_identifier_scopes() {
+        let mut parser = Parser::new("int f(int a) { int b = a; { int a = 3; } return a; } int a;");
+        assert!(matches!(parser.next_item().unwrap(), Some(ExternalItem::Function(_))));
+        assert!(matches!(parser.next_item().unwrap(), Some(ExternalItem::Declaration(_))));
+        assert_eq!(parser.scopes.lookup("a"), Some(Binding::Ordinary));
+        assert_eq!(parser.scopes.lookup("b"), None);
     }
 
     #[test]
