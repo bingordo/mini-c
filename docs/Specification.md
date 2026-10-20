@@ -39,3 +39,11 @@ Only syntax crate depends on LALRPOP/lalrpop-util; standard library elsewhere wh
 ## Acceptance
 
 Each milestone requires positive and negative parser tests, semantic tests, executable GCC differential cases, and targeted CI gates. Record supported C features and limitations in README; no milestone is complete based solely on successful compilation.
+
+## Embeddable frontend contract
+
+Mini-C must be usable as a Rust library from `bingundu/compiler` without spawning a CLI or requiring a backend. The dependency graph is strictly one-way: `mini-c-syntax` -> `mini-c-sema` -> `mini-c-front`; a separate optional `mini-c-compiler-bridge` may depend on `compiler-ir`, but core Mini-C crates must never depend on `compiler`. The `compiler` driver can select the Mini-C frontend and use the same IR/optimization/backend pipeline as Oberon. Do not add a cyclic dependency.
+
+Public API design: `parse_translation_unit(&str) -> Result<TranslationUnit, Vec<Diagnostic>>`; `check_translation_unit(&TranslationUnit, &TargetInfo) -> Result<CheckedUnit, Vec<Diagnostic>>`; and bridge `lower_function(&CheckedFunction) -> Result<compiler_ir::Function, LowerError>`. These are proposed contracts, to be finalized as milestones land. Use explicit source-file identifiers, spans, target ABI/layout information, and an options struct; avoid global parser state. No process exit, printing, filesystem reads, subprocess invocation or hidden mutable singletons in library APIs. A separate CLI crate owns files, external preprocessing, diagnostics rendering and command-line parsing. Library tests must run without an installed C compiler. Prefer narrow stable public types; keep generated parser internals private.
+
+Integration strategy: pin a Git revision of Mini-C from the compiler driver, or later publish crates; keep a feature-free syntax/sema path. The backend bridge can live in `bingundu/compiler` to keep Mini-C entirely independent of compiler internals, or in an optional leaf crate with a one-way dependency. Initially prefer the bridge in compiler for the smallest coupling. Document compatibility and version bumps when checked representations change.
