@@ -2,6 +2,7 @@
 //! A caller delivers one external item at a time; completed function ASTs are
 //! never retained in the checker. No filesystem, global state or output side effects.
 pub mod types;
+pub mod const_eval;
 
 use std::collections::HashMap;
 use mini_c_syntax::ast::{BinOp, Decl, Expr, Function, Span, Stmt, StorageClass, Type, UnOp};
@@ -226,11 +227,8 @@ impl Checker {
         let defining = decl.init.is_some();
         self.declare_global(&decl.name, ty.clone(), kind, defining, decl.storage, decl.span)?;
         let initializer = if let Some(initializer) = &decl.init {
-            // The supported global integer initializer must be a C constant expression.
-            if ty.is_integer() && const_integer(initializer).is_none() {
-                return Err(type_error(decl.span, "global initializer is not an integer constant expression"));
-            }
             let expression = self.check_expr(initializer, decl.span)?;
+            self.validate_static_initializer(&expression, initializer, &ty, decl.span)?;
             Some(self.convert_for_assignment(expression, &ty, initializer, decl.span)?)
         } else {
             None
@@ -306,12 +304,12 @@ impl Checker {
                     self.declare_global(&decl.name, ty.clone(), SymbolKind::Object, false, decl.storage, decl.span)?;
                 }
                 self.define_local(&decl.name, ty.clone(), SymbolKind::Object, decl.span)?;
-                if decl.storage == StorageClass::Static && decl.init.as_ref().is_some_and(|init| const_integer(init).is_none()) {
-                    return Err(type_error(decl.span, "static initializer is not an integer constant expression"));
-                }
                 let initializer = decl.init.as_ref().map(|value| -> Result<_, Diagnostic> {
-                    let value = self.check_expr(value, decl.span)?;
-                    self.convert_for_assignment(value, &ty, decl.init.as_ref().expect("initializer exists"), decl.span)
+                    let expression = self.check_expr(value, decl.span)?;
+                    if decl.storage == StorageClass::Static {
+                        self.validate_static_initializer(&expression, value, &ty, decl.span)?;
+                    }
+                    self.convert_for_assignment(expression, &ty, value, decl.span)
                 }).transpose()?;
                 CheckedStmt::Decl(CheckedDecl {
                     storage: decl.storage, name: decl.name.clone(), ty,
@@ -372,18 +370,40 @@ impl Checker {
         Ok(typed)
     }
 
+    fn validate_static_initializer(
+        &self, expression: &CheckedExpr, original: &Expr, ty: &CType, span: Span
+    ) -> Result<(), Diagnostic> {
+        if ty.is_integer() {
+            const_eval::evaluate(expression, self.target).map_err(|why|
+                type_error(span, format!("initializer is not a valid integer constant expression: {why}")))?;
+        } else if matches!(ty, CType::Pointer(_)) {
+            let null = const_eval::evaluate(expression, self.target) == Ok(0);
+            let address_of_global = match original {
+                Expr::Unary(UnOp::Address, inner) => match inner.as_ref() {
+                    Expr::Name(name) => self.globals.get(name).is_some_and(|s| s.kind != SymbolKind::Typedef),
+                    _ => false,
+                },
+                _ => false,
+            };
+            if !null && !address_of_global {
+                return Err(type_error(span, "pointer initializer requires a null constant or address of global symbol"));
+            }
+        }
+        Ok(())
+    }
+
     fn convert(&self, expr: CheckedExpr, ty: &CType) -> CheckedExpr {
         let expr = expr.rvalue();
         if &expr.ty == ty { return expr; }
         CheckedExpr::value(ty.clone(), CheckedExprKind::Convert(Box::new(expr)))
     }
 
-    fn convert_for_assignment(&self, expr: CheckedExpr, ty: &CType, original: &Expr, span: Span) -> Result<CheckedExpr, Diagnostic> {
+    fn convert_for_assignment(&self, expr: CheckedExpr, ty: &CType, _original: &Expr, span: Span) -> Result<CheckedExpr, Diagnostic> {
         let compatible = match (ty, &expr.ty) {
             (CType::Integer { .. }, CType::Integer { .. }) => true,
             (CType::Pointer(lhs), CType::Pointer(rhs)) =>
                 lhs == rhs || **lhs == CType::Void || **rhs == CType::Void,
-            (CType::Pointer(_), CType::Integer { .. }) => const_integer(original) == Some(0),
+            (CType::Pointer(_), CType::Integer { .. }) => const_eval::evaluate(&expr, self.target) == Ok(0),
             _ => false,
         };
         if !compatible {
@@ -449,10 +469,11 @@ impl Checker {
                     }
                     return Ok(CheckedExpr::value(CType::int(), CheckedExprKind::Binary(*op, Box::new(left), Box::new(right))));
                 }
-                if relation && (matches!((&left.ty, &right.ty), (CType::Pointer(a), CType::Pointer(b)) if a == b)
+                if relation && (matches!((&left.ty, &right.ty), (CType::Pointer(a), CType::Pointer(b))
+                        if a == b || **a == CType::Void || **b == CType::Void)
                     || (matches!(op, BinOp::Eq | BinOp::Ne)
-                        && ((matches!(left.ty, CType::Pointer(_)) && const_integer(rhs) == Some(0))
-                            || (matches!(right.ty, CType::Pointer(_)) && const_integer(lhs) == Some(0))))) {
+                        && ((matches!(left.ty, CType::Pointer(_)) && const_eval::evaluate(&right, self.target) == Ok(0))
+                            || (matches!(right.ty, CType::Pointer(_)) && const_eval::evaluate(&left, self.target) == Ok(0))))) {
                     return Ok(CheckedExpr::value(CType::int(), CheckedExprKind::Binary(*op, Box::new(left), Box::new(right))));
                 }
                 let common = self.target.common_integer(&left.ty, &right.ty)
@@ -472,7 +493,7 @@ impl Checker {
                 Ok(CheckedExpr::value(lhs.ty.clone(), CheckedExprKind::Assign(Box::new(lhs), Box::new(rhs_typed))))
             }
             Expr::Call(callee, args) => {
-                let callee = self.check_expr(callee, span)?;
+                let callee = self.check_expr(callee, span)?.rvalue();
                 let signature = match &callee.ty {
                     CType::Function { result, params } => Some((result.as_ref(), params.as_slice())),
                     CType::Pointer(inner) => match inner.as_ref() {
@@ -496,37 +517,6 @@ impl Checker {
                 Ok(CheckedExpr::value(ty, CheckedExprKind::Call(Box::new(callee), checked_args)))
             }
         }
-    }
-}
-
-/// Minimal integer constant-expression evaluator, deliberately independent of
-/// the checked expression IR. Checked operations avoid host overflows/panics.
-fn const_integer(expr: &Expr) -> Option<i128> {
-    match expr {
-        Expr::Int(v) => Some(i128::from(*v)),
-        Expr::Unary(UnOp::Plus, e) => const_integer(e),
-        Expr::Unary(UnOp::Neg, e) => const_integer(e)?.checked_neg(),
-        Expr::Unary(UnOp::Not, e) => Some(i128::from(const_integer(e)? == 0)),
-        Expr::Binary(op, a, b) => {
-            let lhs = const_integer(a)?;
-            let rhs = const_integer(b)?;
-            match op {
-                BinOp::Add => lhs.checked_add(rhs),
-                BinOp::Sub => lhs.checked_sub(rhs),
-                BinOp::Mul => lhs.checked_mul(rhs),
-                BinOp::Div => lhs.checked_div(rhs),
-                BinOp::Mod => lhs.checked_rem(rhs),
-                BinOp::Eq => Some(i128::from(lhs == rhs)),
-                BinOp::Ne => Some(i128::from(lhs != rhs)),
-                BinOp::Lt => Some(i128::from(lhs < rhs)),
-                BinOp::Le => Some(i128::from(lhs <= rhs)),
-                BinOp::Gt => Some(i128::from(lhs > rhs)),
-                BinOp::Ge => Some(i128::from(lhs >= rhs)),
-                BinOp::And => Some(i128::from(lhs != 0 && rhs != 0)),
-                BinOp::Or => Some(i128::from(lhs != 0 || rhs != 0)),
-            }
-        }
-        _ => None,
     }
 }
 
