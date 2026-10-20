@@ -1,6 +1,6 @@
 //! Target-dependent C integer types and the conversions used by the supported subset.
 //! No host sizeof() assumptions: a caller selects the integer model.
-use mini_c_syntax::ast::{Type, Span};
+use mini_c_syntax::ast::Span;
 use mini_c_syntax::diag::Diagnostic;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
