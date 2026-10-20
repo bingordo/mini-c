@@ -263,7 +263,7 @@ impl<'a> Parser<'a> {
                     }
                     _ => Type::Int,
                 };
-                if unsigned { Type::Unsigned(Box::new(base)) } else { base }
+                if unsigned { Type::Unsigned(Box::new(base)) } else { Type::Signed(Box::new(base)) }
             }
             _ if token.kind == TokenKind::TypedefName => {
                 self.take()?;
