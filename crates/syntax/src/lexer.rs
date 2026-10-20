@@ -1,15 +1,22 @@
-//! A small, allocation-free token scanner for the C subset.
+//! A small, dependency-free token scanner for the C subset.
 //! It reports byte spans and rejects invalid characters rather than skipping them.
 use crate::ast::Span;
 use crate::diag::Diagnostic;
+use crate::scopes::Scopes;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TokenKind { Identifier, Number, Punctuation }
+pub enum TokenKind { Identifier, TypedefName, Number, Punctuation }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Token<'a> { pub kind: TokenKind, pub text: &'a str, pub span: Span }
 
 pub fn scan(source: &str) -> Result<Vec<Token<'_>>, Diagnostic> {
+    scan_with_scopes(source, None)
+}
+
+/// Classifies identifiers against the caller's current ordinary-identifier scope.
+/// Re-scan after scope changes; parsing must not preclassify an entire translation unit.
+pub fn scan_with_scopes<'a>(source: &'a str, scopes: Option<&Scopes>) -> Result<Vec<Token<'a>>, Diagnostic> {
     let mut tokens = Vec::new();
     let mut offset = 0;
     while offset < source.len() {
@@ -33,10 +40,17 @@ pub fn scan(source: &str) -> Result<Vec<Token<'_>>, Diagnostic> {
         let kind = if ch.is_ascii_alphabetic() || ch == '_' {
             offset += 1;
             while offset < source.len() && (source.as_bytes()[offset].is_ascii_alphanumeric() || source.as_bytes()[offset] == b'_') { offset += 1; }
-            TokenKind::Identifier
+            if scopes.is_some_and(|scope| scope.is_typedef(&source[start..offset])) {
+                TokenKind::TypedefName
+            } else {
+                TokenKind::Identifier
+            }
         } else if ch.is_ascii_digit() {
             offset += 1;
             while offset < source.len() && source.as_bytes()[offset].is_ascii_digit() { offset += 1; }
+            if offset < source.len() && (source.as_bytes()[offset].is_ascii_alphabetic() || source.as_bytes()[offset] == b'_') {
+                return Err(Diagnostic::new(Span { lo: start, hi: offset + 1 }, "unsupported numeric literal or suffix"));
+            }
             TokenKind::Number
         } else {
             let op = ["<<=", ">>=", "...", "==", "!=", "<=", ">=", "&&", "||", "++", "--", "->", "+=", "-=", "*=", "/=", "%=", "<<", ">>", "&=", "|=", "^="]
@@ -63,6 +77,20 @@ mod tests {
     fn invalid_utf8_character_span() {
         let error = scan("int β;").unwrap_err();
         assert_eq!(error.span, Span { lo: 4, hi: 6 });
+    }
+    #[test]
+    fn typedef_shadowing_classification() {
+        use crate::scopes::Binding;
+        let mut scopes = Scopes::new();
+        scopes.declare("T", Binding::Typedef);
+        assert_eq!(scan_with_scopes("T x;", Some(&scopes)).unwrap()[0].kind, TokenKind::TypedefName);
+        scopes.enter();
+        scopes.declare("T", Binding::Ordinary);
+        assert_eq!(scan_with_scopes("T x;", Some(&scopes)).unwrap()[0].kind, TokenKind::Identifier);
+    }
+    #[test]
+    fn unsupported_suffix_rejected() {
+        assert!(scan("123abc").is_err());
     }
     #[test]
     fn unterminated_comment() {
