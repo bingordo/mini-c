@@ -1,30 +1,80 @@
 name: Mini-C extended fuzz regression
 on:
   workflow_dispatch:
+    inputs:
+      seed_start:
+        description: First deterministic seed
+        type: number
+        default: 0
+      seed_count:
+        description: Number of generated programs
+        type: number
+        default: 64
+      steps:
+        description: Steps per generated program
+        type: number
+        default: 300
+  # Only changes to this workflow itself trigger an unscheduled verification.
   push:
+    branches: [main]
     paths:
       - '.github/workflows/fuzz.yml'
   schedule:
     - cron: '17 4 * * 6'
+
+concurrency:
+  group: mini-c-extended-fuzz-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
   reference:
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CARGO_INCREMENTAL: '1'
+      MANUAL_SEED_START: ${{ inputs.seed_start }}
+      MANUAL_SEED_COUNT: ${{ inputs.seed_count }}
+      MANUAL_STEPS: ${{ inputs.steps }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Full workspace regression and fuzzer build
+      - name: Use existing Rust tools
+        id: rust
         run: |
-          cargo test --workspace
-          cargo build -p mini-c-fuzz
-      - name: Run extended differential and sanitizer regression
-        run: python3 tools/fuzz_reference.py --seed-count 64 --steps 300
-      - name: Upload failed fuzz cases
+          rustc --version
+          cargo --version
+          echo "release=$(rustc -vV | sed -n 's/^release: //p')" >> "$GITHUB_OUTPUT"
+      - name: Restore shared incremental Rust builds and binaries
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/debug
+          key: mini-c-${{ runner.os }}-${{ steps.rust.outputs.release }}-${{ hashFiles('**/Cargo.toml', '**/Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            mini-c-${{ runner.os }}-${{ steps.rust.outputs.release }}-${{ hashFiles('**/Cargo.toml', '**/Cargo.lock') }}-
+            mini-c-${{ runner.os }}-${{ steps.rust.outputs.release }}-
+      # Syntax CI already runs all Rust and Python tests and Clippy. Do not
+      # repeat those suites here; rebuild only the executable if necessary.
+      - name: Build or reuse generator executable
+        run: cargo build -p mini-c-fuzz
+      - name: GCC/Clang O0, O2, and sanitizer corpus
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            start="${MANUAL_SEED_START:-0}"
+            count="${MANUAL_SEED_COUNT:-64}"
+            steps="${MANUAL_STEPS:-300}"
+          else
+            # Rotate weekly seeds, including unscheduled workflow verification.
+            count=16
+            steps=240
+            start=$(( (GITHUB_RUN_NUMBER - 1) * count ))
+          fi
+          python3 tools/fuzz_reference.py --seed-start "$start" --seed-count "$count" --steps "$steps"
+      - name: Retain only failed fuzz reproducers
         if: failure()
         uses: actions/upload-artifact@v4
         with:
