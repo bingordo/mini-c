@@ -61,3 +61,13 @@ Immediate order: fix M0 compilation; implement M1 grammar and typedef lexer; M2 
 ## Cross-repository coordination
 
 Mini-C owns syntax/sema/lowering. `bingundu/compiler` owns shared IR, optimizations and native backend. `bingundu/oberon` remains an architecture and differential-testing reference. Changes to shared IR require isolated compiler crate tests first, then Mini-C integration tests; document revision pins. Avoid cyclic Git dependencies.
+
+## Modular integration acceptance gate
+
+- M0: syntax builds as a library with no CLI or compiler dependency.
+- M1: parsing entry point takes source text and returns AST/diagnostics without filesystem or process side effects.
+- M2: checker exposed as a library; target/layout supplied by caller; no global symbol table.
+- M3: add a separate adapter in `bingundu/compiler` that consumes checked Mini-C functions and produces `compiler-ir`; keep Mini-C core crates backend-neutral. Add a compiler-driver smoke test selecting C input and reusing existing optimizer/backend.
+- M4-M7: expand bridge coverage while keeping standalone frontend tests independent of backend and CI secrets.
+
+Before completing M3, verify Cargo dependency graph is acyclic and test the embedded API directly from a separate integration crate. Do not put command-line parsing or external `cc -E` invocation in syntax/sema crates.
