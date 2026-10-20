@@ -15,9 +15,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Build and test fuzzer
+      - name: Full workspace regression and fuzzer build
         run: |
-          cargo test -p mini-c-fuzz
+          cargo test --workspace
           cargo build -p mini-c-fuzz
       - name: Run extended differential and sanitizer regression
         run: python3 tools/fuzz_reference.py --seed-count 64 --steps 300
