@@ -14,7 +14,10 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { executable: OsString::from("cc"), args: vec![OsString::from("-E")] }
+        Self {
+            executable: OsString::from("cc"),
+            args: vec![OsString::from("-E")],
+        }
     }
 }
 
@@ -29,7 +32,9 @@ impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Io(e) => write!(f, "cannot execute preprocessor: {e}"),
-            Self::Failed { code, stderr } => write!(f, "preprocessor failed (exit {code:?}): {stderr}"),
+            Self::Failed { code, stderr } => {
+                write!(f, "preprocessor failed (exit {code:?}): {stderr}")
+            }
             Self::InvalidUtf8(e) => write!(f, "preprocessor output is not UTF-8: {e}"),
         }
     }
@@ -54,18 +59,26 @@ pub fn file(path: &Path, config: &Config) -> Result<String, Error> {
 }
 
 /// For already-preprocessed input, bypass all subprocesses and preserve the bytes.
-pub fn already_preprocessed(source: &str) -> &str { source }
+pub fn already_preprocessed(source: &str) -> &str {
+    source
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
     fn bypass_preserves_input() {
-        assert_eq!(already_preprocessed("# 1 \"a.c\"\nint x;"), "# 1 \"a.c\"\nint x;");
+        assert_eq!(
+            already_preprocessed("# 1 \"a.c\"\nint x;"),
+            "# 1 \"a.c\"\nint x;"
+        );
     }
     #[test]
     fn missing_executable_is_an_error() {
-        let config = Config { executable: OsString::from("mini-c-preprocessor-does-not-exist-982734"), args: vec![] };
+        let config = Config {
+            executable: OsString::from("mini-c-preprocessor-does-not-exist-982734"),
+            args: vec![],
+        };
         assert!(matches!(file(Path::new("x.c"), &config), Err(Error::Io(_))));
     }
 }
