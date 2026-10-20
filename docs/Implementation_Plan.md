@@ -34,6 +34,14 @@ Implement lexical scopes, declaration linkage/storage classes, signedness and in
 
 Exit: valid integer programs type-check; invalid programs fail with stable diagnostics.
 
+## M2.25 — Syntax and semantic diagnostic quality
+
+Build a focused error-handling test suite and improve parser/checker diagnostics before executable backends. Cover invalid tokens, missing delimiters, malformed declarators, typedef ambiguity and shadowing, unexpected EOF, duplicate declarations, unknown identifiers, incompatible types, invalid lvalues, wrong argument counts, invalid returns, and scope errors. Verify exact source spans (including UTF-8, multi-line input and preprocessed source mapping), actionable messages, stable diagnostic ordering, and absence of panics. Prefer useful recovery at statement/declaration boundaries so a single source can produce multiple independent errors without cascading noise; impose a configurable error limit. Make error reporting deterministic and available through the embeddable library API without printing or exiting.
+
+Testing: table-driven positive/negative fixtures with expected diagnostic codes, primary spans and optional notes; malformed-input mutation/fuzz tests; regression tests for every reported crash; snapshot tests with deliberate review of wording changes. Keep tests targeted and fast in PR CI. The CLI may render annotated source, but syntax/sema only return structured diagnostics.
+
+Exit: robust recovery on representative malformed programs, stable diagnostic assertions, no crashes in bounded malformed-input fuzzing, and clear differentiation between syntax and semantic failures.
+
 ## M2.5 — Cranelift executable backend (before native compiler integration)
 
 Implement a small, separate Cranelift lowering crate consuming the checked Mini-C representation. Reuse patterns from `bingundu/oberon`'s Cranelift backend, but do not make Mini-C syntax or semantic crates depend on Cranelift or Oberon. Provide a standalone CLI or test harness that compiles supported integer functions to native objects, links them using the system C toolchain, and executes differential tests against GCC. Start with integer arithmetic, parameters, local variables, return, if/else and while; add calls and for loops as the checked frontend supports them. Use the same semantic fixtures as M2 and the eventual M3 backend, and document unsupported features.
