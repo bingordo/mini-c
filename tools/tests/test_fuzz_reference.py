@@ -17,6 +17,18 @@ class HarnessTests(unittest.TestCase):
         self.assertFalse(runner.success({"timeout_seconds": 1}, 1))
         self.assertFalse(runner.success({"returncode": -11}, 1))
 
+    def test_sanitizer_diagnostic_is_not_a_successful_exit_one(self):
+        report = {"returncode": 1, "stderr": "runtime error: signed integer overflow", "stdout": ""}
+        self.assertTrue(runner.success(report, 1))
+        self.assertTrue(runner.sanitizer_reported(report))
+        self.assertTrue(runner.sanitizer_reported({
+            "returncode": 1, "stderr": "ERROR: AddressSanitizer: heap-buffer-overflow",
+            "stdout": "",
+        }))
+        self.assertFalse(runner.sanitizer_reported({
+            "returncode": 1, "stderr": "", "stdout": "",
+        }))
+
     def test_variant_matrix(self):
         gcc = runner.variants("gcc", True)
         clang = runner.variants("/usr/bin/clang-19", True)
