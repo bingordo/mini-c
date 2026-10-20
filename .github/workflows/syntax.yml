@@ -32,6 +32,8 @@ jobs:
         run: cargo test -p mini-c
       - name: Deterministic fuzzer tests
         run: cargo test -p mini-c-fuzz
+      - name: Reference harness unit tests
+        run: python3 -m unittest discover -s tools/tests -p 'test_*.py'
       - name: Build fuzz generator
         run: cargo build -p mini-c-fuzz
       - name: GCC and Clang reference smoke
