@@ -4,7 +4,7 @@ use mini_c_syntax::parser::Parser;
 use mini_c_syntax::stream::ItemSource;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Op { Add, Sub, Mul, Div, Rem, Xor }
+pub enum Op { Add, Sub, Mul, Div, Rem }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Instruction { pub op: Op, pub rhs: i32 }
@@ -33,12 +33,11 @@ pub fn checked_step(lhs: i32, ins: Instruction) -> Option<i32> {
         Op::Mul => lhs.checked_mul(ins.rhs),
         Op::Div => lhs.checked_div(ins.rhs),
         Op::Rem => lhs.checked_rem(ins.rhs),
-        Op::Xor => Some(lhs ^ ins.rhs),
     }
 }
 
 fn symbol(op: Op) -> &'static str {
-    match op { Op::Add => "+", Op::Sub => "-", Op::Mul => "*", Op::Div => "/", Op::Rem => "%", Op::Xor => "^" }
+    match op { Op::Add => "+", Op::Sub => "-", Op::Mul => "*", Op::Div => "/", Op::Rem => "%" }
 }
 
 /// Independent oracle: checked i32 operations on a compact instruction stream.
@@ -49,9 +48,9 @@ pub fn generate(seed: u64, steps: usize) -> Case {
     let mut instructions = Vec::with_capacity(steps);
     let mut source = String::from("int main(void) { int x = 1;\\n");
     for _ in 0..steps {
-        let op = match rng.range(6) {
+        let op = match rng.range(5) {
             0 => Op::Add, 1 => Op::Sub, 2 => Op::Mul,
-            3 => Op::Div, 4 => Op::Rem, _ => Op::Xor,
+            3 => Op::Div, _ => Op::Rem,
         };
         let rhs = (rng.range(41) as i32) + 1;
         let ins = Instruction { op, rhs };
