@@ -46,7 +46,7 @@ pub fn generate(seed: u64, steps: usize) -> Case {
     let mut rng = Rng(seed);
     let mut value = 1i32;
     let mut instructions = Vec::with_capacity(steps);
-    let mut source = String::from("int main(void) { int x = 1;\\n");
+    let mut source = String::from("int main(void) { int x = 1;\n");
     for _ in 0..steps {
         let op = match rng.range(5) {
             0 => Op::Add, 1 => Op::Sub, 2 => Op::Mul,
@@ -55,12 +55,12 @@ pub fn generate(seed: u64, steps: usize) -> Case {
         let rhs = (rng.range(41) as i32) + 1;
         let ins = Instruction { op, rhs };
         if let Some(next) = checked_step(value, ins).filter(|v| (-32767..=32767).contains(v)) {
-            source.push_str(&format!("x = x {} {};\\n", symbol(op), rhs));
+            source.push_str(&format!("x = x {} {};\n", symbol(op), rhs));
             value = next;
             instructions.push(ins);
         }
     }
-    source.push_str(&format!("return x == {};\\n}}\\n", value));
+    source.push_str(&format!("return x == {};\n}}\n", value));
     Case { seed, instructions, expected: value, source }
 }
 
