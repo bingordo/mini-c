@@ -307,51 +307,55 @@ impl ItemSource for Parser<'_> {
             self.take()?;
             let mut params = Vec::new();
             if !self.peek()?.is_some_and(|t| t.text == ")") {
-                if self.peek()?.is_some_and(|t| t.text == "void") {
-                    self.take()?;
-                    if !self.peek()?.is_some_and(|t| t.text == ")") {
-                        return Err(Diagnostic::new(
-                            name.span,
-                            "named void parameters are not supported",
-                        ));
-                    }
-                } else {
-                    loop {
-                        let (mut param_ty, lo) = self
-                            .parse_type()?
-                            .ok_or_else(|| Diagnostic::new(name.span, "expected parameter type"))?;
-                        while self.peek()?.is_some_and(|t| t.text == "*") {
-                            self.take()?;
-                            param_ty = Type::Pointer(Box::new(param_ty));
-                        }
-                        let param_name = self
-                            .take()?
-                            .ok_or_else(|| Diagnostic::new(name.span, "expected parameter name"))?;
-                        if param_name.kind != TokenKind::Identifier {
-                            return Err(Diagnostic::new(
-                                param_name.span,
-                                "expected parameter name",
-                            ));
-                        }
-                        params.push(Decl {
-                            storage: StorageClass::Default,
-                            name: param_name.text.to_owned(),
-                            ty: param_ty,
-                            init: None,
-                            span: Span {
-                                lo,
-                                hi: param_name.span.hi,
-                            },
-                        });
-                        if !self.peek()?.is_some_and(|t| t.text == ",") {
-                            break;
-                        }
+                loop {
+                    let (mut param_ty, lo) = self
+                        .parse_type()?
+                        .ok_or_else(|| Diagnostic::new(name.span, "expected parameter type"))?;
+                    while self.peek()?.is_some_and(|t| t.text == "*") {
                         self.take()?;
+                        param_ty = Type::Pointer(Box::new(param_ty));
                     }
+                    if param_ty == Type::Void && params.is_empty()
+                        && self.peek()?.is_some_and(|t| t.text == ")")
+                    {
+                        break; // The single (void) parameter list means no parameters.
+                    }
+                    if param_ty == Type::Void {
+                        return Err(Diagnostic::new(name.span, "parameter cannot have void type"));
+                    }
+                    // Names are optional in declarations, required in definitions.
+                    let param_name = if self.peek()?.is_some_and(|t|
+                        matches!(t.kind, TokenKind::Identifier | TokenKind::TypedefName))
+                    {
+                        Some(self.take()?.expect("looked ahead"))
+                    } else {
+                        None
+                    };
+                    let (param_name, hi) = match param_name {
+                        Some(token) => (token.text.to_owned(), token.span.hi),
+                        None => (String::new(), lo),
+                    };
+                    params.push(Decl {
+                        storage: StorageClass::Default,
+                        name: param_name,
+                        ty: param_ty,
+                        init: None,
+                        span: Span { lo, hi },
+                    });
+                    if !self.peek()?.is_some_and(|t| t.text == ",") {
+                        break;
+                    }
+                    self.take()?;
                 }
             }
             self.expect(")")?;
             if self.peek()?.is_some_and(|token| token.text == "{") {
+                if is_typedef {
+                    return Err(Diagnostic::new(name.span, "typedef cannot define a function body"));
+                }
+                if params.iter().any(|p| p.name.is_empty()) {
+                    return Err(Diagnostic::new(name.span, "function definition requires parameter names"));
+                }
                 self.scopes.enter();
                 for param in &params { self.scopes.declare(&param.name, Binding::Ordinary); }
                 let parsed = self.parse_block();
@@ -367,7 +371,7 @@ impl ItemSource for Parser<'_> {
                 })));
             }
             let end = self.expect(";")?.span.hi;
-            return Ok(Some(ExternalItem::Declaration(Decl {
+            let decl = Decl {
                 storage,
                 name: name.text.to_owned(),
                 ty: Type::Function {
@@ -376,7 +380,12 @@ impl ItemSource for Parser<'_> {
                 },
                 init: None,
                 span: Span { lo: start, hi: end },
-            })));
+            };
+            return Ok(Some(if is_typedef {
+                ExternalItem::Typedef(decl)
+            } else {
+                ExternalItem::Declaration(decl)
+            }));
         }
         let init = if self.peek()?.is_some_and(|t| t.text == "=") { self.take()?; Some(self.parse_expr()?) } else { None };
         if is_typedef && init.is_some() { return Err(Diagnostic::new(name.span, "typedef cannot have an initializer")); }
