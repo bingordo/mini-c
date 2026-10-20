@@ -1,6 +1,6 @@
 //! Incremental parser for the first supported subset of external declarations.
 //! Each complete function body is returned separately; earlier bodies are not retained.
-use crate::ast::{BinOp, Decl, Expr, Function, Span, Stmt, Type, UnOp};
+use crate::ast::{BinOp, Decl, Expr, Function, Span, Stmt, StorageClass, Type, UnOp};
 use crate::diag::Diagnostic;
 use crate::lexer::{Scanner, Token, TokenKind};
 use crate::stream::{ExternalItem, ItemSource};
@@ -138,6 +138,14 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_decl(&mut self, is_typedef: bool) -> Result<Decl, Diagnostic> {
+        let storage = match self.peek()?.map(|t| t.text) {
+            Some("static") => { self.take()?; StorageClass::Static },
+            Some("extern") => { self.take()?; StorageClass::Extern },
+            _ => StorageClass::Default,
+        };
+        if is_typedef && storage != StorageClass::Default {
+            return Err(Diagnostic::new(Span::default(), "typedef cannot combine with storage class"));
+        }
         let (mut ty, start) = self
             .parse_type()?
             .ok_or_else(|| Diagnostic::new(Span::default(), "expected type"))?;
@@ -163,6 +171,7 @@ impl<'a> Parser<'a> {
         }
         let end = self.expect(";")?.span.hi;
         Ok(Decl {
+            storage,
             name: name.text.to_owned(),
             ty,
             init,
@@ -201,6 +210,7 @@ impl<'a> Parser<'a> {
             "break" => { self.take()?; self.expect(";")?; Ok(Stmt::Break) }
             "continue" => { self.take()?; self.expect(";")?; Ok(Stmt::Continue) }
             "typedef" => { self.take()?; Ok(Stmt::Typedef(self.parse_decl(true)?)) },
+            "static" | "extern" => Ok(Stmt::Decl(self.parse_decl(false)?)),
             "int" | "char" | "long" | "void" | "unsigned" | "signed" => Ok(Stmt::Decl(self.parse_decl(false)?)),
             _ if token.kind == TokenKind::TypedefName => Ok(Stmt::Decl(self.parse_decl(false)?)),
             _ => { let expr = self.parse_expr()?; self.expect(";")?; Ok(Stmt::Expr(Some(expr))) }
@@ -271,6 +281,14 @@ impl ItemSource for Parser<'_> {
     fn next_item(&mut self) -> Result<Option<ExternalItem>, Self::Error> {
         let is_typedef = self.peek()?.is_some_and(|t| t.text == "typedef");
         if is_typedef { self.take()?; }
+        let storage = match self.peek()?.map(|t| t.text) {
+            Some("static") => { self.take()?; StorageClass::Static },
+            Some("extern") => { self.take()?; StorageClass::Extern },
+            _ => StorageClass::Default,
+        };
+        if is_typedef && storage != StorageClass::Default {
+            return Err(Diagnostic::new(Span::default(), "typedef cannot combine with storage class"));
+        }
         let Some((mut ty, start)) = self.parse_type()? else {
             return Ok(None);
         };
@@ -316,6 +334,7 @@ impl ItemSource for Parser<'_> {
                             ));
                         }
                         params.push(Decl {
+                            storage: StorageClass::Default,
                             name: param_name.text.to_owned(),
                             ty: param_ty,
                             init: None,
@@ -339,6 +358,7 @@ impl ItemSource for Parser<'_> {
                 self.scopes.leave();
                 let (body, end) = parsed?;
                 return Ok(Some(ExternalItem::Function(Function {
+                    storage,
                     name: name.text.to_owned(),
                     result: ty,
                     params,
@@ -348,6 +368,7 @@ impl ItemSource for Parser<'_> {
             }
             let end = self.expect(";")?.span.hi;
             return Ok(Some(ExternalItem::Declaration(Decl {
+                storage,
                 name: name.text.to_owned(),
                 ty: Type::Function {
                     result: Box::new(ty),
@@ -360,7 +381,7 @@ impl ItemSource for Parser<'_> {
         let init = if self.peek()?.is_some_and(|t| t.text == "=") { self.take()?; Some(self.parse_expr()?) } else { None };
         if is_typedef && init.is_some() { return Err(Diagnostic::new(name.span, "typedef cannot have an initializer")); }
         let end = self.expect(";")?.span.hi;
-        let decl = Decl { name: name.text.to_owned(), ty, init, span: Span { lo: start, hi: end } };
+        let decl = Decl { storage, name: name.text.to_owned(), ty, init, span: Span { lo: start, hi: end } };
         Ok(Some(if is_typedef { ExternalItem::Typedef(decl) } else { ExternalItem::Declaration(decl) }))
     }
 }
