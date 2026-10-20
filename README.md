@@ -19,3 +19,7 @@ Run `cargo test --workspace` after adding the parser implementation.
 - [Testing and GitHub Actions strategy](docs/Testing.md)
 
 The initial targeted syntax CI workflow is [syntax.yml](.github/workflows/syntax.yml). Its first run must be verified before M0 can be considered complete.
+
+## Embedding in bingundu/compiler
+
+Mini-C is designed as reusable Rust library crates, not just a standalone compiler. See the [embeddable frontend contract](docs/Specification.md#embeddable-frontend-contract) and [integration acceptance gates](docs/Implementation_Plan.md#modular-integration-acceptance-gate). The compiler driver should depend on Mini-C's frontend libraries and provide the adapter to its existing `compiler-ir`; Mini-C's syntax and semantic crates remain backend-independent.
