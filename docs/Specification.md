@@ -59,3 +59,7 @@ The early M1.5 fuzzer is modeled on Oberon's self-checking generator but produce
 ## Diagnostic hardening milestone
 
 M2.25, after semantic analysis and before executable backends, tests and improves syntax and semantic error handling. Library APIs must provide deterministic structured errors with accurate source spans, useful recovery, bounded cascades, and no panics on malformed input. See [Implementation Plan](Implementation_Plan.md) and [Testing](Testing.md).
+
+## External preprocessing integration (M1.25)
+
+Raw C files use a configurable external preprocessor as an early standalone driver layer; already-preprocessed text is accepted without subprocesses. Preserve `#line` source origin mapping for diagnostics. No dependency on a system C compiler is permitted in core parser/sema tests. The internal preprocessor remains a separate M6 task.
