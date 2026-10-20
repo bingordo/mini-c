@@ -1,5 +1,7 @@
 //! Optional external preprocessing. The syntax and semantic crates do not depend on this crate.
 //! Commands are invoked directly, never through a shell.
+pub mod source_map;
+
 use std::ffi::OsString;
 use std::path::Path;
 use std::process::{Command, Stdio};
