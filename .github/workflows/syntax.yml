@@ -1,6 +1,7 @@
 name: Mini-C syntax
 on:
   push:
+    branches: [main]
     paths:
       - 'Cargo.toml'
       - 'Cargo.lock'
@@ -8,6 +9,7 @@ on:
       - 'tools/**'
       - '.github/workflows/syntax.yml'
   pull_request:
+    branches: [main]
     paths:
       - 'Cargo.toml'
       - 'Cargo.lock'
@@ -16,31 +18,52 @@ on:
       - '.github/workflows/syntax.yml'
   workflow_dispatch:
 
+# A new commit supersedes queued/active checks for the same branch or PR.
+concurrency:
+  group: mini-c-syntax-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
 jobs:
   syntax:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      # Unlike rust-cache, preserve and reuse workspace incremental objects.
+      CARGO_INCREMENTAL: '1'
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Use runner-provided Rust toolchain
+        id: rust
+        run: |
+          rustc --version
+          cargo --version
+          cargo clippy --version
+          echo "release=$(rustc -vV | sed -n 's/^release: //p')" >> "$GITHUB_OUTPUT"
+      - name: Restore incremental Rust builds and binaries
+        uses: actions/cache@v4
         with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-      - name: Syntax tests
-        run: cargo test -p mini-c-syntax -p mini-c-preprocess
-      - name: CLI and preprocessing integration tests
-        run: cargo test -p mini-c
-      - name: Deterministic fuzzer tests
-        run: cargo test -p mini-c-fuzz
-      - name: Reference harness unit tests
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/debug
+          key: mini-c-${{ runner.os }}-${{ steps.rust.outputs.release }}-${{ hashFiles('**/Cargo.toml', '**/Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            mini-c-${{ runner.os }}-${{ steps.rust.outputs.release }}-${{ hashFiles('**/Cargo.toml', '**/Cargo.lock') }}-
+            mini-c-${{ runner.os }}-${{ steps.rust.outputs.release }}-
+      - name: Workspace tests (single Cargo invocation)
+        run: cargo test --workspace
+      - name: Python reference harness tests
         run: python3 -m unittest discover -s tools/tests -p 'test_*.py'
-      - name: Build fuzz generator
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Build reusable generator executable
         run: cargo build -p mini-c-fuzz
-      - name: GCC and Clang reference smoke
-        run: python3 tools/fuzz_reference.py --seed-count 8 --steps 120
-      - name: Upload failed fuzz cases
+      - name: Fast GCC/Clang smoke (four seeds, two builds each)
+        run: python3 tools/fuzz_reference.py --seed-count 4 --steps 120 --smoke
+      - name: Retain only failed fuzz reproducers
         if: failure()
         uses: actions/upload-artifact@v4
         with:
@@ -48,5 +71,3 @@ jobs:
           path: target/fuzz-artifacts/
           if-no-files-found: ignore
           retention-days: 14
-      - name: Clippy
-        run: cargo clippy -p mini-c-syntax -p mini-c-preprocess -p mini-c -p mini-c-fuzz --all-targets -- -D warnings
