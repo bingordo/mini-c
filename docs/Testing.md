@@ -32,3 +32,7 @@ M0: syntax tests + format + Clippy. M1: lexer/parser regression fixtures. M2: se
 ## Review cadence
 
 Every commit: affected crate tests. Every milestone: full relevant suite, Clippy, a review of newly added code, and README/spec/plan accuracy. Occasionally run full workspace tests after cross-crate changes, not on every small parser edit. Use the testing strategy in bingundu/compiler as the baseline for shared-backend changes.
+
+## Early fuzzer milestone (M1.5)
+
+Add a deterministic Oberon-obgen-style C generator **before** native backend integration. A separate reference evaluator computes expected results without using Mini-C lowering or optimization. Generate only fully defined ISO C behavior: prevent signed overflow, zero divisors, INT_MIN/-1, invalid shifts, uninitialized reads, out-of-bounds pointers/arrays, unsequenced modifications and dependence on unspecified evaluation order. Bound loops and program size. Preserve seeds, generated source, expected result and tool versions for reproduction. Cross-check with GCC and Clang at -O0/-O2; run UBSan/ASan on reference binaries. Use small fixed seeds for push/PR and larger scheduled/manual batches, retaining regressions. Do not use -fwrapv to conceal undefined behavior.
