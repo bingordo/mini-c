@@ -158,6 +158,23 @@ fn static_initializers_respect_target_arithmetic_and_short_circuit() {
 }
 
 #[test]
+fn explicit_signed_char_overrides_target_plain_char() {
+    let target = Target { char_is_signed: false, ..Target::default() };
+    let mut checker = Checker::new(target).unwrap();
+    let mut parsed = Parser::new("char plain; signed char signed_value; unsigned char unsigned_value;");
+    let mut types = Vec::new();
+    check_stream(&mut parsed, &mut checker, |item| {
+        if let CheckedItem::Declaration(decl) = item { types.push(decl.ty); }
+        Ok(())
+    }).unwrap();
+    assert_eq!(types, vec![
+        CType::Integer { rank: IntRank::Char, unsigned: true },
+        CType::Integer { rank: IntRank::Char, unsigned: false },
+        CType::Integer { rank: IntRank::Char, unsigned: true },
+    ]);
+}
+
+#[test]
 fn checker_discards_completed_bodies() {
     let mut source = String::from("int shared;");
     for n in 0..200 {
