@@ -1,4 +1,5 @@
 use mini_c_preprocess::{self as preprocess, source_map::SourceMap};
+use mini_c_sema::{Checker, Target};
 use mini_c_syntax::parser::Parser;
 use mini_c_syntax::source::SourceFile;
 use mini_c_syntax::stream::ItemSource;
@@ -17,8 +18,13 @@ fn check(path: &str, cpp: Option<&preprocess::Config>) -> Result<(), String> {
     let file = SourceFile::new(path, &source);
     let map = cpp.map(|_| SourceMap::from_preprocessed(&source, path));
     let mut parser = Parser::new(&source);
+    let mut checker = Checker::new(Target::default()).expect("valid default target");
     loop {
-        match parser.next_item() {
+        // The checker only retains symbol/type state, not completed function ASTs.
+        let checked = parser.next_item().and_then(|item| {
+            item.map(|item| checker.check_item(item)).transpose()
+        });
+        match checked {
             Ok(Some(_)) => {},
             Ok(None) => return Ok(()),
             Err(error) => {
