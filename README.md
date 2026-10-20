@@ -11,3 +11,11 @@ Reference: ISO/IEC 9899:2024 (C23), public near-final draft [WG14 N3220](https:/
 Initial AST includes translation units, declarations, functions, blocks, conditionals, loops, calls, operators and pointers. C-specific type constructors are retained, rather than mimicking Oberon syntax. Semantic analysis, preprocessing, typedef-name ambiguity, full declarators, diagnostics, and code generation are future milestones.
 
 Run `cargo test --workspace` after adding the parser implementation.
+
+## Project documents
+
+- [Language and architecture specification](docs/Specification.md)
+- [Unified implementation milestones](docs/Implementation_Plan.md)
+- [Testing and GitHub Actions strategy](docs/Testing.md)
+
+The initial targeted syntax CI workflow is [syntax.yml](.github/workflows/syntax.yml). Its first run must be verified before M0 can be considered complete.
