@@ -131,6 +131,10 @@ impl Checker {
             Type::Char => CType::Integer { rank: IntRank::Char, unsigned: !self.target.char_is_signed },
             Type::Int => CType::int(),
             Type::Long => CType::Integer { rank: IntRank::Long, unsigned: false },
+            Type::Signed(inner) => match self.resolve(inner, span)? {
+                CType::Integer { rank, .. } => CType::Integer { rank, unsigned: false },
+                _ => return Err(type_error(span, "signed requires an integer type")),
+            },
             Type::Unsigned(inner) => match self.resolve(inner, span)? {
                 CType::Integer { rank, .. } => CType::Integer { rank, unsigned: true },
                 _ => return Err(type_error(span, "unsigned requires an integer type")),
