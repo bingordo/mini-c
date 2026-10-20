@@ -67,7 +67,7 @@ fn calls_and_explicit_conversions() {
     assert!(matches!(expr.kind, CheckedExprKind::Convert(_)));
     reject("int f(int x) { return f(); }", "expects 1 arguments");
     reject("int f(void) { int x; return x(); }", "not a function");
-    reject("int f(void) { return 3(2); }", "expected");
+    reject("int f(void) { return 3(2); }", "not a function");
 }
 
 #[test]
