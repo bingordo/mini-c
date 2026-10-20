@@ -2,9 +2,10 @@
 //! Tags and struct members have separate namespaces.
 use std::collections::HashMap;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Binding {
     Typedef,
+    #[default]
     Ordinary,
 }
 
@@ -40,11 +41,6 @@ impl Scopes {
     }
     pub fn is_typedef(&self, name: &str) -> bool {
         self.lookup(name) == Some(Binding::Typedef)
-    }
-}
-impl Default for Binding {
-    fn default() -> Self {
-        Self::Ordinary
     }
 }
 
