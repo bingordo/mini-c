@@ -137,7 +137,7 @@ impl<'a> Parser<'a> {
         Ok(expr)
     }
 
-    fn parse_decl(&mut self) -> Result<Decl, Diagnostic> {
+    fn parse_decl(&mut self, is_typedef: bool) -> Result<Decl, Diagnostic> {
         let (mut ty, start) = self
             .parse_type()?
             .ok_or_else(|| Diagnostic::new(Span::default(), "expected type"))?;
@@ -151,13 +151,16 @@ impl<'a> Parser<'a> {
         if !matches!(name.kind, TokenKind::Identifier | TokenKind::TypedefName) {
             return Err(Diagnostic::new(name.span, "expected identifier"));
         }
-        self.scopes.declare(name.text, Binding::Ordinary);
+        self.scopes.declare(name.text, if is_typedef { Binding::Typedef } else { Binding::Ordinary });
         let init = if self.peek()?.is_some_and(|t| t.text == "=") {
             self.take()?;
             Some(self.parse_expr()?)
         } else {
             None
         };
+        if is_typedef && init.is_some() {
+            return Err(Diagnostic::new(name.span, "typedef cannot have an initializer"));
+        }
         let end = self.expect(";")?.span.hi;
         Ok(Decl {
             name: name.text.to_owned(),
@@ -197,8 +200,9 @@ impl<'a> Parser<'a> {
             }
             "break" => { self.take()?; self.expect(";")?; Ok(Stmt::Break) }
             "continue" => { self.take()?; self.expect(";")?; Ok(Stmt::Continue) }
-            "int" | "char" | "long" | "void" => Ok(Stmt::Decl(self.parse_decl()?)),
-            _ if token.kind == TokenKind::TypedefName => Ok(Stmt::Decl(self.parse_decl()?)),
+            "typedef" => { self.take()?; Ok(Stmt::Typedef(self.parse_decl(true)?)) },
+            "int" | "char" | "long" | "void" | "unsigned" | "signed" => Ok(Stmt::Decl(self.parse_decl(false)?)),
+            _ if token.kind == TokenKind::TypedefName => Ok(Stmt::Decl(self.parse_decl(false)?)),
             _ => { let expr = self.parse_expr()?; self.expect(";")?; Ok(Stmt::Expr(Some(expr))) }
         }
     }
@@ -228,14 +232,35 @@ impl<'a> Parser<'a> {
             return Ok(None);
         };
         let ty = match token.text {
-            "void" => Type::Void,
-            "char" => Type::Char,
-            "int" => Type::Int,
-            "long" => Type::Long,
-            _ if token.kind == TokenKind::TypedefName => Type::Alias(token.text.to_owned()),
+            "void" => { self.take()?; Type::Void }
+            "char" => { self.take()?; Type::Char }
+            "int" => { self.take()?; Type::Int }
+            "long" => {
+                self.take()?;
+                if self.peek()?.is_some_and(|t| t.text == "int") { self.take()?; }
+                Type::Long
+            }
+            "unsigned" | "signed" => {
+                let unsigned = token.text == "unsigned";
+                self.take()?;
+                let base = match self.peek()?.map(|t| t.text) {
+                    Some("char") => { self.take()?; Type::Char },
+                    Some("int") => { self.take()?; Type::Int },
+                    Some("long") => {
+                        self.take()?;
+                        if self.peek()?.is_some_and(|t| t.text == "int") { self.take()?; }
+                        Type::Long
+                    }
+                    _ => Type::Int,
+                };
+                if unsigned { Type::Unsigned(Box::new(base)) } else { base }
+            }
+            _ if token.kind == TokenKind::TypedefName => {
+                self.take()?;
+                Type::Alias(token.text.to_owned())
+            }
             _ => return Err(Diagnostic::new(token.span, "expected a type specifier")),
         };
-        self.take()?;
         Ok(Some((ty, token.span.lo)))
     }
 }
