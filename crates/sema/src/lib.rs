@@ -63,6 +63,7 @@ pub struct CheckedDecl {
 pub enum CheckedStmt {
     Block(Vec<CheckedStmt>),
     Decl(CheckedDecl),
+    Typedef { name: String, ty: CType },
     Expr(Option<CheckedExpr>),
     Return(Option<CheckedExpr>),
     If { cond: CheckedExpr, then: Box<CheckedStmt>, otherwise: Option<Box<CheckedStmt>> },
@@ -285,6 +286,11 @@ impl Checker {
                     self.convert_for_assignment(value, &ty, decl.init.as_ref().expect("initializer exists"), decl.span)
                 }).transpose()?;
                 CheckedStmt::Decl(CheckedDecl { name: decl.name.clone(), ty, linkage: Linkage::None, initializer, span: decl.span })
+            }
+            Stmt::Typedef(decl) => {
+                let ty = self.resolve(&decl.ty, decl.span)?;
+                self.define_local(&decl.name, ty.clone(), SymbolKind::Typedef, decl.span)?;
+                CheckedStmt::Typedef { name: decl.name.clone(), ty }
             }
             Stmt::Expr(expr) => {
                 CheckedStmt::Expr(expr.as_ref().map(|e| self.check_expr(e, span)).transpose()?)
