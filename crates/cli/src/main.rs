@@ -92,3 +92,30 @@ fn main() -> ExitCode {
     }
     if failed { ExitCode::FAILURE } else { ExitCode::SUCCESS }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cli_checks_types_and_maps_semantic_locations() {
+        let unique = format!("mini-c-sema-check-{}.c", std::process::id());
+        let path = std::env::temp_dir().join(unique);
+        std::fs::write(&path, "int f(void) {\n return unknown;\n}\n").unwrap();
+        let error = check(path.to_str().unwrap(), None).unwrap_err();
+        std::fs::remove_file(&path).unwrap();
+        assert!(error.contains("undeclared identifier"), "{error}");
+        assert!(error.contains(".c:"), "{error}");
+    }
+
+    #[test]
+    fn cli_accepts_typed_valid_functions() {
+        let unique = format!("mini-c-sema-valid-{}.c", std::process::id());
+        let path = std::env::temp_dir().join(unique);
+        std::fs::write(&path, "typedef unsigned int Value;\nValue g = 2;\nint twice(int x) { return x + x; }\n").unwrap();
+        let result = check(path.to_str().unwrap(), None);
+        std::fs::remove_file(&path).unwrap();
+        assert!(result.is_ok(), "{result:?}");
+    }
+}
