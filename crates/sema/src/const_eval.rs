@@ -28,7 +28,7 @@ fn bounded_arithmetic(value: i128, ty: &CType, target: Target) -> Result<i128, &
     let CType::Integer { rank, unsigned } = ty else {
         return Err("arithmetic requires an integer type");
     };
-    if !unsigned {
+    if !*unsigned {
         let bits = target.bits(*rank);
         let bound = 1i128 << (bits - 1);
         if !(-bound..bound).contains(&value) {
