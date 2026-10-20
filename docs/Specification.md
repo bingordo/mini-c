@@ -51,3 +51,7 @@ Integration strategy: pin a Git revision of Mini-C from the compiler driver, or 
 ## Cranelift reference backend milestone
 
 Before integrating the new `bingundu/compiler` native backend, add an optional Cranelift code-generation crate that consumes the checked Mini-C representation. This is a standalone executable reference path, not the shared compiler IR and not a dependency of syntax or sema. Adapt implementation patterns from Oberon's Cranelift backend while preserving C integer and control-flow semantics. Test generated objects against GCC, then reuse the same corpus when integrating `compiler-ir` and its x86 backend. See milestone M2.5 in the [implementation plan](Implementation_Plan.md).
+
+## Defined-behavior generated test programs
+
+The early M1.5 fuzzer is modeled on Oberon's self-checking generator but produces ISO C programs with defined behavior by construction. It uses an independent expected-value oracle and excludes signed overflow, invalid division/shifts, uninitialized reads, invalid pointer access, unsequenced conflicting side effects, out-of-bounds indexing and unspecified-order dependencies. Its valid subset and assumptions are documented and extended alongside compiler support; see [M1.5](Implementation_Plan.md).
