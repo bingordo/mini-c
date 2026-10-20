@@ -1,0 +1,31 @@
+name: Mini-C extended fuzz regression
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 4 * * 6'
+
+permissions:
+  contents: read
+
+jobs:
+  reference:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build and test fuzzer
+        run: |
+          cargo test -p mini-c-fuzz
+          cargo build -p mini-c-fuzz
+      - name: Run extended differential and sanitizer regression
+        run: python3 tools/fuzz_reference.py --seed-count 64 --steps 300
+      - name: Upload failed fuzz cases
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mini-c-extended-fuzz-failures
+          path: target/fuzz-artifacts/
+          if-no-files-found: ignore
+          retention-days: 30
