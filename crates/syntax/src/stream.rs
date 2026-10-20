@@ -59,7 +59,7 @@ pub enum StreamError<SE, CE> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{Span, Stmt, Type};
+    use crate::ast::{Span, Stmt, StorageClass, Type};
     use std::collections::VecDeque;
 
     struct Source(VecDeque<ExternalItem>);
@@ -91,6 +91,7 @@ mod tests {
     fn delivers_many_functions_without_collecting() {
         let functions = (0..1000).map(|i| {
             ExternalItem::Function(Function {
+            storage: StorageClass::Default,
                 name: format!("f{i}"),
                 result: Type::Int,
                 params: vec![],
@@ -119,6 +120,7 @@ mod tests {
             }
         }
         let function = ExternalItem::Function(Function {
+            storage: StorageClass::Default,
             name: "f".into(),
             result: Type::Int,
             params: vec![],
