@@ -49,21 +49,40 @@ impl<'a> Parser<'a> {
         let mut statements = Vec::new();
         loop {
             let Some(token) = self.peek()? else {
-                return Err(Diagnostic::new(Span::default(), "unterminated function body"));
+                return Err(Diagnostic::new(
+                    Span::default(),
+                    "unterminated function body",
+                ));
             };
             match token.text {
-                "}" => return Ok((Stmt::Block(statements), self.take()?.expect("peeked token").span.hi)),
-                ";" => { self.take()?; statements.push(Stmt::Expr(None)); }
+                "}" => {
+                    return Ok((
+                        Stmt::Block(statements),
+                        self.take()?.expect("peeked token").span.hi,
+                    ))
+                }
+                ";" => {
+                    self.take()?;
+                    statements.push(Stmt::Expr(None));
+                }
                 "return" => {
                     self.take()?;
                     if self.peek()?.is_some_and(|t| t.text == ";") {
                         self.take()?;
                         statements.push(Stmt::Return(None));
                     } else {
-                        return Err(Diagnostic::new(token.span, "return expressions are not implemented yet"));
+                        return Err(Diagnostic::new(
+                            token.span,
+                            "return expressions are not implemented yet",
+                        ));
                     }
                 }
-                _ => return Err(Diagnostic::new(token.span, "unsupported statement in function body")),
+                _ => {
+                    return Err(Diagnostic::new(
+                        token.span,
+                        "unsupported statement in function body",
+                    ))
+                }
             }
         }
     }
@@ -159,7 +178,10 @@ mod tests {
             }
             _ => panic!("expected function"),
         }
-        assert!(matches!(parser.next_item().unwrap(), Some(ExternalItem::Declaration(_))));
+        assert!(matches!(
+            parser.next_item().unwrap(),
+            Some(ExternalItem::Declaration(_))
+        ));
         match parser.next_item().unwrap().unwrap() {
             ExternalItem::Function(f) => assert_eq!(f.name, "second"),
             _ => panic!("expected function"),
