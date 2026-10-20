@@ -143,6 +143,16 @@ fn unnamed_prototype_parameters_and_function_typedefs() {
 }
 
 #[test]
+fn static_initializers_respect_target_arithmetic_and_short_circuit() {
+    check("int x = 0 && (1 / 0); int y = 1 || (1 / 0); unsigned int u = 0 - 1;").unwrap();
+    reject("int bad = 2147483647 + 1;", "signed integer overflow");
+    reject("int bad = 1 / 0;", "integer constant expression");
+    check("int global; int *pointer = &global; int *nil = 0;").unwrap();
+    reject("int global; int *copy = &global; int *bad = copy;", "pointer initializer requires");
+    reject("int f(void) { int auto_var; static int *bad = &auto_var; return 0; }", "pointer initializer requires");
+}
+
+#[test]
 fn checker_discards_completed_bodies() {
     let mut source = String::from("int shared;");
     for n in 0..200 {
