@@ -48,6 +48,7 @@ pub enum Type {
 pub enum Stmt {
     Block(Vec<Stmt>),
     Decl(Decl),
+    Typedef(Decl),
     Expr(Option<Expr>),
     Return(Option<Expr>),
     If {
