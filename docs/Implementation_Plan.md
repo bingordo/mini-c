@@ -40,11 +40,15 @@ Compile generated programs with GCC and Clang (when available), at `-O0` and `-O
 
 Exit: stable deterministic seeds, an independently computed oracle, sanitizer-clean GCC/Clang reference executions, documented defined-behavior invariants and an automated smoke corpus. Expand the corpus with each subsequent milestone.
 
-## M2 — Typed C frontend
+## M2 — Typed C frontend (implemented, final CI verification pending)
 
-Implement lexical scopes, declaration linkage/storage classes, signedness and integer conversions, lvalues, calls, constant expressions, return checking and control-flow legality. Keep a distinct checked representation. Add precise error spans and compile-fail cases.
+Implemented in the backend-neutral `mini-c-sema` crate, with `Checker::check_item` and `check_stream` processing one external AST item/function at a time. Syntax supports signed/unsigned integer specifiers, block-scope typedefs, unnamed prototype parameters, function-type typedefs, and `static`/`extern` storage specifiers. Semantic analysis resolves lexical and file scopes, target-configurable signed/unsigned integers and conversions, explicit lvalue-to-rvalue loads, calls and argument coercion, linkage/redeclaration rules, return types, loop-only break/continue, and target-aware static constant expressions. Positive/negative regression tests and `mini-c check` integration tests are implemented. See [Semantics](Semantics.md).
 
-Exit: valid integer programs type-check; invalid programs fail with stable diagnostics.
+The typed frontend and its initial validation passed [CI run 39492343366](https://github.com/bingundu/mini-c/actions/runs/39492343366). Later improvements to prototype handling and typed constant-expression evaluation require a new complete CI run. Some recent attempts failed **before any runner was assigned** (job runner ID 0, no steps/logs), not at a compilation or test step. Do not mark CI verification complete until a full run executes.
+
+**Deliberate subset boundaries:** full declarators, aggregates, full C storage/linkage details, richer pointer semantics and expression-specific spans remain out of scope. Precise expression spans, error recovery, and stable diagnostic codes belong to M2.25.
+
+Exit: valid supported integer programs type-check; invalid programs reject with stable messages and declaration/function spans.
 
 ## M2.25 — Syntax and semantic diagnostic quality
 
