@@ -32,16 +32,17 @@ jobs:
         run: cargo test -p mini-c
       - name: Deterministic fuzzer tests
         run: cargo test -p mini-c-fuzz
-      - name: GCC reference smoke
-        run: |
-          for seed in 0 1 2 3 4 5 6 7; do
-            cargo run -q -p mini-c-fuzz -- "$seed" 100 > /tmp/mini-c-fuzz-case.c
-            cc -std=c11 -O2 /tmp/mini-c-fuzz-case.c -o /tmp/mini-c-fuzz-reference
-            set +e
-            /tmp/mini-c-fuzz-reference
-            status=$?
-            set -e
-            if [ "$status" -ne 1 ]; then echo "reference mismatch seed=$seed exit=$status"; exit 1; fi
-          done
+      - name: Build fuzz generator
+        run: cargo build -p mini-c-fuzz
+      - name: GCC and Clang reference smoke
+        run: python3 tools/fuzz_reference.py --seed-count 8 --steps 120
+      - name: Upload failed fuzz cases
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mini-c-fuzz-failures
+          path: target/fuzz-artifacts/
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Clippy
         run: cargo clippy -p mini-c-syntax -p mini-c-preprocess -p mini-c -p mini-c-fuzz --all-targets -- -D warnings
