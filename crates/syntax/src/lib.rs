@@ -90,6 +90,27 @@ mod tests {
         assert!(parse_expression("18446744073709551616").is_err());
     }
     #[test]
+    fn function_calls_and_arguments() {
+        assert_eq!(
+            parse_expression("f(1, 2 + 3)").unwrap(),
+            Expr::Call(
+                Box::new(Expr::Name("f".into())),
+                vec![
+                    Expr::Int(1),
+                    Expr::Binary(BinOp::Add, Box::new(Expr::Int(2)), Box::new(Expr::Int(3))),
+                ],
+            ),
+        );
+        assert_eq!(
+            parse_expression("factory()(x)").unwrap(),
+            Expr::Call(
+                Box::new(Expr::Call(Box::new(Expr::Name("factory".into())), vec![])),
+                vec![Expr::Name("x".into())],
+            ),
+        );
+        assert!(parse_expression("f(1,)").is_err());
+    }
+    #[test]
     fn names_and_parentheses() {
         assert!(parse_expression("(alpha + 4) / 2").is_ok());
         assert!(parse_expression("1 +").is_err());
