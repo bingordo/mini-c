@@ -1,0 +1,52 @@
+grammar;
+use crate::ast::{Expr, BinOp, UnOp};
+
+pub Expression: Expr = <e:Assign> => e;
+Assign: Expr = {
+    <l:LogicalOr> "=" <r:Assign> => Expr::Assign(Box::new(l), Box::new(r)),
+    LogicalOr,
+};
+LogicalOr: Expr = {
+    <l:LogicalOr> "||" <r:LogicalAnd> => Expr::Binary(BinOp::Or, Box::new(l), Box::new(r)),
+    LogicalAnd,
+};
+LogicalAnd: Expr = {
+    <l:LogicalAnd> "&&" <r:Equality> => Expr::Binary(BinOp::And, Box::new(l), Box::new(r)),
+    Equality,
+};
+Equality: Expr = {
+    <l:Equality> "==" <r:Relational> => Expr::Binary(BinOp::Eq, Box::new(l), Box::new(r)),
+    <l:Equality> "!=" <r:Relational> => Expr::Binary(BinOp::Ne, Box::new(l), Box::new(r)),
+    Relational,
+};
+Relational: Expr = {
+    <l:Relational> "<" <r:Additive> => Expr::Binary(BinOp::Lt, Box::new(l), Box::new(r)),
+    <l:Relational> ">" <r:Additive> => Expr::Binary(BinOp::Gt, Box::new(l), Box::new(r)),
+    <l:Relational> "<=" <r:Additive> => Expr::Binary(BinOp::Le, Box::new(l), Box::new(r)),
+    <l:Relational> ">=" <r:Additive> => Expr::Binary(BinOp::Ge, Box::new(l), Box::new(r)),
+    Additive,
+};
+Additive: Expr = {
+    <l:Additive> "+" <r:Multiplicative> => Expr::Binary(BinOp::Add, Box::new(l), Box::new(r)),
+    <l:Additive> "-" <r:Multiplicative> => Expr::Binary(BinOp::Sub, Box::new(l), Box::new(r)),
+    Multiplicative,
+};
+Multiplicative: Expr = {
+    <l:Multiplicative> "*" <r:Unary> => Expr::Binary(BinOp::Mul, Box::new(l), Box::new(r)),
+    <l:Multiplicative> "/" <r:Unary> => Expr::Binary(BinOp::Div, Box::new(l), Box::new(r)),
+    <l:Multiplicative> "%" <r:Unary> => Expr::Binary(BinOp::Mod, Box::new(l), Box::new(r)),
+    Unary,
+};
+Unary: Expr = {
+    "+" <e:Unary> => Expr::Unary(UnOp::Plus, Box::new(e)),
+    "-" <e:Unary> => Expr::Unary(UnOp::Neg, Box::new(e)),
+    "!" <e:Unary> => Expr::Unary(UnOp::Not, Box::new(e)),
+    "&" <e:Unary> => Expr::Unary(UnOp::Address, Box::new(e)),
+    "*" <e:Unary> => Expr::Unary(UnOp::Deref, Box::new(e)),
+    Primary,
+};
+Primary: Expr = {
+    <n:r"[0-9]+"> => Expr::Int(n.parse().unwrap()),
+    <n:r"[a-zA-Z_][a-zA-Z_0-9]*"> => Expr::Name(n.to_owned()),
+    "(" <e:Assign> ")" => e,
+};
