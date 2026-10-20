@@ -24,6 +24,12 @@ Implement lexical scopes, declaration linkage/storage classes, signedness and in
 
 Exit: valid integer programs type-check; invalid programs fail with stable diagnostics.
 
+## M2.5 — Cranelift executable backend (before native compiler integration)
+
+Implement a small, separate Cranelift lowering crate consuming the checked Mini-C representation. Reuse patterns from `bingundu/oberon`'s Cranelift backend, but do not make Mini-C syntax or semantic crates depend on Cranelift or Oberon. Provide a standalone CLI or test harness that compiles supported integer functions to native objects, links them using the system C toolchain, and executes differential tests against GCC. Start with integer arithmetic, parameters, local variables, return, if/else and while; add calls and for loops as the checked frontend supports them. Use the same semantic fixtures as M2 and the eventual M3 backend, and document unsupported features.
+
+Exit: a reproducible green Cranelift executable smoke suite with GCC comparisons, including loops, branches and function calls where implemented. The backend is an optional leaf crate and can be disabled without affecting parser/sema tests. This milestone precedes M3 so it provides an independent executable oracle while the new compiler backend is integrated.
+
 ## M3 — First executable native vertical slice
 
 Pin and integrate `bingundu/compiler` IR/optimizer/backend crates. Lower checked int functions, CFG branches/loops, short-circuit operators, calls where supported. Generate ELF64 object or assembly, link with cc and execute against a GCC-built reference. Fix backend gaps in the compiler repository, not by adding a parallel code generator.
@@ -56,7 +62,7 @@ Exit: green scheduled extended CI with reproducible seeds and documented unsuppo
 
 ## Work ordering
 
-Immediate order: fix M0 compilation; implement M1 grammar and typedef lexer; M2 type checking; M3 backend integration. External preprocessor interface can land alongside M1, while full M6 coverage follows native execution. At every step prefer targeted tests; run full workspace/integration suites only on milestone completion or significant IR/backend changes.
+Immediate order: fix M0 compilation; implement M1 grammar and typedef lexer; M2 type checking; M2.5 Cranelift executable reference; M3 backend integration. External preprocessor interface can land alongside M1, while full M6 coverage follows native execution. At every step prefer targeted tests; run full workspace/integration suites only on milestone completion or significant IR/backend changes.
 
 ## Cross-repository coordination
 
@@ -66,7 +72,7 @@ Mini-C owns syntax/sema/lowering. `bingundu/compiler` owns shared IR, optimizati
 
 - M0: syntax builds as a library with no CLI or compiler dependency.
 - M1: parsing entry point takes source text and returns AST/diagnostics without filesystem or process side effects.
-- M2: checker exposed as a library; target/layout supplied by caller; no global symbol table.
+- M2: checker exposed as a library; target/layout supplied by caller; no global symbol table.\n- M2.5: standalone Cranelift leaf crate consumes checked functions without introducing a dependency from syntax/sema to Cranelift.
 - M3: add a separate adapter in `bingundu/compiler` that consumes checked Mini-C functions and produces `compiler-ir`; keep Mini-C core crates backend-neutral. Add a compiler-driver smoke test selecting C input and reusing existing optimizer/backend.
 - M4-M7: expand bridge coverage while keeping standalone frontend tests independent of backend and CI secrets.
 
