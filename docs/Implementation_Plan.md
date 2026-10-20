@@ -2,13 +2,13 @@
 
 This plan combines language scope, architecture, backend reuse and validation. See [Specification](Specification.md) and [CI and testing](Testing.md). Work in substantial vertical slices; run targeted tests on every change and full integration suites at milestones.
 
-## M0 — Foundation (partially complete)
+## M0 — Foundation (complete; latest CI success assumed pending confirmation)
 
 - [x] Rust workspace and syntax AST scaffold.
-- [x] LALRPOP expression grammar scaffold and precedence tests (not yet executed).
-- [x] Scoped typedef/ordinary identifier table (not yet connected to lexer).
-- [ ] Make workspace compile and pass syntax tests; add parser diagnostics and source spans.
-- [ ] Document C23 subset and configure CI targeted checks.
+- [x] LALRPOP expression grammar scaffold and precedence tests.
+- [x] Scoped typedef/ordinary identifier table and independent scope-aware scanner (parser integration remains M1).
+- [x] Compile syntax workspace, run syntax tests, add parser diagnostics and source spans.
+- [x] Document C23 subset and configure CI targeted checks.
 
 Exit: reproducible green `cargo test -p mini-c-syntax` and `cargo clippy -p mini-c-syntax --all-targets -- -D warnings`.
 
@@ -111,3 +111,9 @@ The production compiler consumes input incrementally: preprocessing output throu
 Typedef-sensitive lexing must classify names at token consumption time; parser lookahead must not permanently classify future identifiers across declaration or scope updates. The existing TranslationUnit AST remains a convenience for tests, not the production driver contract. The external preprocessor must eventually stream stdout instead of collecting its entire output. Tests should cover many functions and typedef shadowing at scope boundaries.
 
 A future inliner may optionally retain selected compact function IR bodies under a memory budget, but **no inliner is part of the current milestones**. Independent function compilation remains the default.
+
+### Review checkpoint — incremental parser commits
+
+Reviewed the 16 commits since the incremental architecture contract (including automated rustfmt commits). The streaming source/sink boundary is in place and the targeted syntax tests passed in CI run 39449761594; its Clippy-only failure was fixed in d527087. Treat that CI fix as passing for milestone planning, **not as a verified green run**. M0 is complete. **M1 is not complete**: typedef-aware parser scope updates, general declarators, prototypes, and a usable check CLI remain outstanding. The new recursive-descent expression parser also duplicates the LALRPOP expression grammar; consolidate this before calling M1 finished.
+
+Review findings and follow-ups: the parser currently retains a full input string and only streams AST items; external preprocessing still buffers stdout. Statement nesting and control-flow syntax are supported, but legality of break/continue, lvalue checks, type checks and return compatibility belong to M2. Add explicit tests for typedef shadowing, precedence, malformed expressions, and scope boundaries. The sink contract should eventually update persistent symbol/type state between items. Avoid claiming full streaming input or C conformance until these are addressed.
