@@ -1,5 +1,5 @@
 //! Incremental parser for the first supported subset of external declarations.
-//! Function bodies are intentionally not accepted until statement parsing lands.
+//! Each complete function body is returned separately; earlier bodies are not retained.
 use crate::ast::{Decl, Function, Span, Stmt, Type};
 use crate::diag::Diagnostic;
 use crate::lexer::{Scanner, Token};
@@ -60,6 +60,10 @@ impl<'a> Parser<'a> {
                         Stmt::Block(statements),
                         self.take()?.expect("peeked token").span.hi,
                     ))
+                }
+                "{" => {
+                    let (nested, _) = self.parse_block()?;
+                    statements.push(nested);
                 }
                 ";" => {
                     self.take()?;
@@ -199,6 +203,19 @@ mod tests {
             _ => panic!("expected function"),
         }
         assert!(parser.next_item().unwrap().is_none());
+    }
+
+    #[test]
+    fn nested_blocks_and_unterminated_body() {
+        let mut parser = Parser::new("void f() { { return; } ; }");
+        match parser.next_item().unwrap().unwrap() {
+            ExternalItem::Function(f) => assert_eq!(f.body, Stmt::Block(vec![
+                Stmt::Block(vec![Stmt::Return(None)]), Stmt::Expr(None),
+            ])),
+            _ => panic!("expected function"),
+        }
+        let mut parser = Parser::new("void f() { { return; }");
+        assert!(parser.next_item().unwrap_err().message.contains("unterminated"));
     }
 
     #[test]
