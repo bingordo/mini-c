@@ -1,6 +1,6 @@
 //! Incremental parser for the first supported subset of external declarations.
 //! Function bodies are intentionally not accepted until statement parsing lands.
-use crate::ast::{Decl, Span, Type};
+use crate::ast::{Decl, Function, Span, Stmt, Type};
 use crate::diag::Diagnostic;
 use crate::lexer::{Scanner, Token};
 use crate::stream::{ExternalItem, ItemSource};
@@ -41,6 +41,30 @@ impl<'a> Parser<'a> {
                 Span::default(),
                 format!("expected '{expected}', found end of input"),
             )),
+        }
+    }
+
+    fn parse_block(&mut self) -> Result<(Stmt, usize), Diagnostic> {
+        self.expect("{")?;
+        let mut statements = Vec::new();
+        loop {
+            let Some(token) = self.peek()? else {
+                return Err(Diagnostic::new(Span::default(), "unterminated function body"));
+            };
+            match token.text {
+                "}" => return Ok((Stmt::Block(statements), self.take()?.expect("peeked token").span.hi)),
+                ";" => { self.take()?; statements.push(Stmt::Expr(None)); }
+                "return" => {
+                    self.take()?;
+                    if self.peek()?.is_some_and(|t| t.text == ";") {
+                        self.take()?;
+                        statements.push(Stmt::Return(None));
+                    } else {
+                        return Err(Diagnostic::new(token.span, "return expressions are not implemented yet"));
+                    }
+                }
+                _ => return Err(Diagnostic::new(token.span, "unsupported statement in function body")),
+            }
         }
     }
 
@@ -125,8 +149,27 @@ mod tests {
     }
 
     #[test]
+    fn streams_function_definitions() {
+        let mut parser = Parser::new("void first() { return; } int x; int second() { ; }");
+        let first = parser.next_item().unwrap().unwrap();
+        match first {
+            ExternalItem::Function(f) => {
+                assert_eq!(f.name, "first");
+                assert_eq!(f.body, Stmt::Block(vec![Stmt::Return(None)]));
+            }
+            _ => panic!("expected function"),
+        }
+        assert!(matches!(parser.next_item().unwrap(), Some(ExternalItem::Declaration(_))));
+        match parser.next_item().unwrap().unwrap() {
+            ExternalItem::Function(f) => assert_eq!(f.name, "second"),
+            _ => panic!("expected function"),
+        }
+        assert!(parser.next_item().unwrap().is_none());
+    }
+
+    #[test]
     fn rejects_unsupported_declarators() {
-        let mut parser = Parser::new("int f(void);");
+        let mut parser = Parser::new("int f();");
         assert!(parser
             .next_item()
             .unwrap_err()
