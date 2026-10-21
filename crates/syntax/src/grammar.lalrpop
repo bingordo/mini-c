@@ -1,4 +1,5 @@
-grammar;
+grammar<'input>;
+use crate::expr_lexer::ExprToken;
 use crate::ast::{Expr, BinOp, UnOp};
 
 pub Expression: Expr = <e:Assign> => e;
@@ -58,7 +59,36 @@ CallArgs: Vec<Expr> = {
     },
 };
 Primary: Expr = {
-    <n:r"[0-9]+"> =>? n.parse::<u64>().map(Expr::Int).map_err(|_| lalrpop_util::ParseError::User { error: "integer literal exceeds u64 range" }),
-    <n:r"[a-zA-Z_][a-zA-Z_0-9]*"> => Expr::Name(n.to_owned()),
+    <n:"number"> =>? n.parse::<u64>().map(Expr::Int).map_err(|_| lalrpop_util::ParseError::User { error: "integer literal exceeds u64 range" }),
+    <n:"ident"> => Expr::Name(n.to_owned()),
     "(" <e:Assign> ")" => e,
 };
+
+extern {
+    type Location = usize;
+    type Error = &'static str;
+    enum ExprToken<'input> {
+        "number" => ExprToken::Number(<&'input str>),
+        "ident" => ExprToken::Ident(<&'input str>),
+        "invalid" => ExprToken::Invalid(<&'input str>),
+        "=" => ExprToken::Assign,
+        "||" => ExprToken::OrOr,
+        "&&" => ExprToken::AndAnd,
+        "==" => ExprToken::EqEq,
+        "!=" => ExprToken::NotEq,
+        "<=" => ExprToken::LessEq,
+        ">=" => ExprToken::GreaterEq,
+        "<" => ExprToken::Less,
+        ">" => ExprToken::Greater,
+        "+" => ExprToken::Plus,
+        "-" => ExprToken::Minus,
+        "*" => ExprToken::Star,
+        "/" => ExprToken::Slash,
+        "%" => ExprToken::Percent,
+        "!" => ExprToken::Bang,
+        "&" => ExprToken::Amp,
+        "(" => ExprToken::LParen,
+        ")" => ExprToken::RParen,
+        "," => ExprToken::Comma,
+    }
+}

@@ -1,6 +1,7 @@
 //! Parser entry points; downstream crates depend on the AST, not LALRPOP.
 pub mod ast;
 pub mod diag;
+pub mod expr_lexer;
 pub mod lexer;
 pub mod parser;
 pub mod scopes;
@@ -14,8 +15,9 @@ pub mod grammar;
 /// This API is suitable for embedding; it never prints or exits.
 pub fn parse_expression_diagnostic(source: &str) -> Result<ast::Expr, diag::Diagnostic> {
     use lalrpop_util::ParseError;
+    let tokens = expr_lexer::tokenize(source)?;
     grammar::ExpressionParser::new()
-        .parse(source)
+        .parse(tokens.into_iter().map(Ok::<_, &'static str>))
         .map_err(|error| {
             let (span, message) = match error {
                 ParseError::InvalidToken { location } => (

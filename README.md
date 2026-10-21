@@ -43,6 +43,13 @@ Mini-C is designed as reusable Rust library crates, not just a standalone compil
 
 ## Updating the expression grammar
 
+The grammar generator is optional at build time, and the checked-in parser now
+uses the handwritten C lexer through LALRPOP's external-token interface.
+Normal `cargo test` therefore no longer resolves regex-automata. The small
+`lalrpop-util` parser runtime remains required.
+
+
+
 The main incremental C parser is handwritten and unchanged. The separate
 LALRPOP expression grammar remains editable in
 `crates/syntax/src/grammar.lalrpop`. Normal builds use the checked-in
