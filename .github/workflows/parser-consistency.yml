@@ -4,6 +4,9 @@ on:
     paths:
       - 'crates/syntax/src/grammar.lalrpop'
       - 'crates/syntax/src/grammar.rs'
+      - 'crates/syntax/src/expr_lexer.rs'
+      - 'crates/syntax/src/lib.rs'
+      - 'Cargo.toml'
       - 'tools/parser-codegen/**'
       - '.github/workflows/parser-consistency.yml'
   workflow_dispatch:
@@ -19,4 +22,4 @@ jobs:
         with:
           workspaces: tools/parser-codegen -> target
       - run: cargo run --manifest-path tools/parser-codegen/Cargo.toml -- --check
-      - run: cargo test -p mini-c-syntax -p mini-c-sema
+      # The main syntax workflow runs the tests; avoid redundant CI work here.

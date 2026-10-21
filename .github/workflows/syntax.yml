@@ -53,6 +53,16 @@ jobs:
           restore-keys: |
             mini-c-${{ runner.os }}-${{ steps.rust.outputs.release }}-${{ hashFiles('**/Cargo.toml', '**/Cargo.lock') }}-
             mini-c-${{ runner.os }}-${{ steps.rust.outputs.release }}-
+      - name: Assert the normal syntax dependency tree excludes the parser generator and regex lexer
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo tree -p mini-c-syntax --edges normal,build --prefix none --offline > /tmp/mini-c-syntax-deps.txt
+          if grep -Eq '^(lalrpop|regex|regex-automata) v[0-9]' /tmp/mini-c-syntax-deps.txt; then
+            cat /tmp/mini-c-syntax-deps.txt
+            echo 'Unexpected parser generator or regex dependency in normal syntax builds' >&2
+            exit 1
+          fi
       - name: Workspace tests (single Cargo invocation)
         run: cargo test --workspace
       - name: Python reference harness tests
