@@ -48,12 +48,12 @@ jobs:
             mini-c-native-${{ runner.os }}-${{ steps.rust.outputs.release }}-
       - name: Targeted Cranelift backend tests
         run: cargo test -p mini-c-cranelift
+      - name: Clippy backend
+        run: cargo clippy -p mini-c-cranelift --all-targets -- -D warnings
       - name: Build reusable backend and fuzzer executables
         run: cargo build -p mini-c-cranelift -p mini-c-fuzz
       - name: Compare emitted ELF executables with GCC
         run: python3 tools/test_cranelift.py --seed-count 4 --steps 100
-      - name: Clippy backend
-        run: cargo clippy -p mini-c-cranelift --all-targets -- -D warnings
       - name: Retain only failing Cranelift reproducers
         if: failure()
         uses: actions/upload-artifact@v4
