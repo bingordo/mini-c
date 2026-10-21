@@ -4,6 +4,7 @@
 //! Deliberately supports only integer scalar functions, local variables,
 //! control flow, and direct calls. Unsupported features fail explicitly.
 use cranelift_codegen::ir::{self, condcodes::IntCC, types, AbiParam, InstBuilder, Value};
+use cranelift_codegen::entity::EntityRef;
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_module::{default_libcall_names, FuncId, Linkage as ClLinkage, Module};
@@ -437,5 +438,63 @@ impl Lower<'_> {
                 Ok(false)
             }
         }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compiles_simple_arithmetic_to_native_object() {
+        let obj = compile_source("int main(void) { int x = 2; x = x * 3 + 1; return x; }").unwrap();
+        assert!(obj.len() > 128, "expected nontrivial ELF object");
+        assert_eq!(&obj[..4], b"\x7fELF");
+    }
+
+    #[test]
+    fn compiles_functions_calls_recursive_control_flow() {
+        let src = "int fact(int n) { if (n <= 1) return 1; return n * fact(n - 1); }\
+                   int main(void) { return fact(5); }";
+        assert!(!compile_source(src).unwrap().is_empty());
+    }
+
+    #[test]
+    fn compiles_nested_loops_break_continue_and_shadowing() {
+        let src = "int f(int limit) { int x = 0; while (x < limit) { \
+                   { int x = 3; if (x == 0) break; } \
+                   x = x + 1; if (x == 2) continue; if (x == 8) break; \
+                   } return x; } int main(void) { return f(10); }";
+        assert!(!compile_source(src).unwrap().is_empty());
+    }
+
+    #[test]
+    fn handles_unsigned_and_long_conversions() {
+        let src = "unsigned long a(unsigned long x, unsigned int y) { \
+                   return x + y * 2; } int main(void) { return a(50,3) == 56; }";
+        assert!(!compile_source(src).unwrap().is_empty());
+    }
+
+    #[test]
+    fn backend_rejects_unsupported_global_objects_and_pointers() {
+        let error = compile_source("int global = 3; int main(void) { return global; }").unwrap_err();
+        assert!(error.contains("global object"), "{error}");
+        let error = compile_source("int main(void) { int x = 2; int *p = &x; return *p; }").unwrap_err();
+        assert!(error.contains("pointer"), "{error}");
+    }
+
+    #[test]
+    fn rejects_fallthrough_in_non_main_nonvoid() {
+        let error = compile_source("int f(int x) { if (x) return x; }").unwrap_err();
+        assert!(error.contains("may reach its end"), "{error}");
+        assert!(!compile_source("int main(void) { int x = 1; }").unwrap().is_empty());
+    }
+
+    #[test]
+    fn accepts_prototypes_before_definition_and_externals() {
+        let src = "int add(int, int); int main(void) { return add(3,4); }\
+                   int add(int x, int y) { return x + y; }";
+        assert!(!compile_source(src).unwrap().is_empty());
     }
 }
