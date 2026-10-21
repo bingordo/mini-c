@@ -331,11 +331,12 @@ impl Lower<'_> {
                 let CheckedExprKind::Name(name) = &callee.kind else {
                     return Err("M2.5 only supports direct named function calls".into());
                 };
-                let known = self.functions.get(name)
+                let id = self.functions.get(name)
+                    .map(|known| known.id)
                     .ok_or_else(|| format!("M2.5 missing function declaration for '{name}'"))?;
                 let mut values = Vec::with_capacity(args.len());
                 for arg in args { values.push(self.integer_value(b, arg)?); }
-                let refid = self.module.declare_func_in_func(known.id, b.func);
+                let refid = self.module.declare_func_in_func(id, b.func);
                 let inst = b.ins().call(refid, &values);
                 let values = b.inst_results(inst);
                 if let Some(&result) = values.first() {
