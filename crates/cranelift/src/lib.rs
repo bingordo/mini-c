@@ -10,7 +10,7 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_module::{default_libcall_names, FuncId, Linkage as ClLinkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use mini_c_sema::{
-    Category, CType, CheckedDecl, CheckedExpr, CheckedExprKind, CheckedFunction,
+    CType, CheckedDecl, CheckedExpr, CheckedExprKind, CheckedFunction,
     CheckedItem, CheckedStmt, Checker, IntRank, Linkage, Target,
 };
 use mini_c_syntax::{ast::{BinOp, UnOp, StorageClass}, parser::Parser, stream::ItemSource};
