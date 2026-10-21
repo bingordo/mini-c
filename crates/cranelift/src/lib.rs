@@ -122,7 +122,7 @@ impl Compiler {
             let mut fb_ctx = FunctionBuilderContext::new();
             let mut builder = FunctionBuilder::new(&mut ctx.func, &mut fb_ctx);
             let mut lower = Lower {
-                module: &self.module, functions: &self.functions,
+                module: &mut self.module, functions: &self.functions,
                 scopes: vec![HashMap::new()], loops: Vec::new(),
                 result_ty: match &function.signature {
                     CType::Function { result, .. } => result.as_ref().clone(),
@@ -184,7 +184,7 @@ struct Local {
 }
 
 struct Lower<'a> {
-    module: &'a ObjectModule,
+    module: &'a mut ObjectModule,
     functions: &'a HashMap<String, KnownFunction>,
     scopes: Vec<HashMap<String, Local>>,
     loops: Vec<(ir::Block, ir::Block)>, // (break target, continue target)
@@ -209,7 +209,7 @@ impl Lower<'_> {
             .ok_or_else(|| format!("M2.5 does not support global objects or unresolved variable '{name}'"))
     }
 
-    fn integer_value(&self, b: &mut FunctionBuilder<'_>, expr: &CheckedExpr) -> Result<Value> {
+    fn integer_value(&mut self, b: &mut FunctionBuilder<'_>, expr: &CheckedExpr) -> Result<Value> {
         let result = self.expression(b, expr)?;
         if !expr.ty.is_integer() {
             return Err(format!("M2.5 integer expression expected, got {:?}", expr.ty));
@@ -217,7 +217,7 @@ impl Lower<'_> {
         Ok(result)
     }
 
-    fn condition(&self, b: &mut FunctionBuilder<'_>, expr: &CheckedExpr) -> Result<Value> {
+    fn condition(&mut self, b: &mut FunctionBuilder<'_>, expr: &CheckedExpr) -> Result<Value> {
         let value = self.integer_value(b, expr)?;
         Ok(b.ins().icmp_imm(IntCC::NotEqual, value, 0))
     }
@@ -240,7 +240,7 @@ impl Lower<'_> {
         }
     }
 
-    fn short_circuit(&self, b: &mut FunctionBuilder<'_>, op: BinOp, left: &CheckedExpr, right: &CheckedExpr) -> Result<Value> {
+    fn short_circuit(&mut self, b: &mut FunctionBuilder<'_>, op: BinOp, left: &CheckedExpr, right: &CheckedExpr) -> Result<Value> {
         let first = self.condition(b, left)?;
         let rhs_block = b.create_block();
         let shortcut = b.create_block();
@@ -264,7 +264,7 @@ impl Lower<'_> {
         Ok(b.use_var(var))
     }
 
-    fn expression(&self, b: &mut FunctionBuilder<'_>, expr: &CheckedExpr) -> Result<Value> {
+    fn expression(&mut self, b: &mut FunctionBuilder<'_>, expr: &CheckedExpr) -> Result<Value> {
         match &expr.kind {
             CheckedExprKind::Literal(n) => Ok(b.ins().iconst(scalar_type(&expr.ty)?, *n as i64)),
             CheckedExprKind::Name(name) => Ok(b.use_var(self.variable(name)?)),
