@@ -79,7 +79,7 @@ def run(command: list[str], timeout: int = 30) -> dict:
         return {"argv": command, "error": str(exc)}
 
 
-def test_case(name: str, src: str, args: argparse.Namespace) -> bool:
+def test_case(name: str, src: str, args: argparse.Namespace, expected: int | None = None) -> bool:
     case = args.artifacts / name
     case.mkdir(parents=True, exist_ok=True)
     (case / "input.c").write_text(src + "\n")
@@ -105,8 +105,14 @@ def test_case(name: str, src: str, args: argparse.Namespace) -> bool:
             print(f"FAIL {name}: execution failed: {result}", file=sys.stderr)
             return False
     mini, gcc = record["commands"][3:5]
-    if mini["returncode"] != gcc["returncode"] or mini["stdout"] != gcc["stdout"]:
-        print(f"FAIL {name}: Mini-C {mini}, GCC {gcc}", file=sys.stderr)
+    # A matching signal crash is not a successful differential comparison.
+    if (
+        mini["returncode"] < 0 or gcc["returncode"] < 0
+        or (expected is not None and gcc["returncode"] != expected)
+        or mini["returncode"] != gcc["returncode"]
+        or mini["stdout"] != gcc["stdout"]
+    ):
+        print(f"FAIL {name}: Mini-C {mini}, GCC {gcc}, expected={expected}", file=sys.stderr)
         return False
     shutil.rmtree(case)
     return True
@@ -145,7 +151,8 @@ def mixed_objects(name: str, mini_source: str, gcc_source: str, args: argparse.N
             print(f"FAIL {name}: execution: {result}", file=sys.stderr)
             return False
     if (
-        records[-2]["returncode"] != records[-1]["returncode"]
+        records[-2]["returncode"] < 0 or records[-1]["returncode"] < 0
+        or records[-2]["returncode"] != records[-1]["returncode"]
         or records[-2]["stdout"] != records[-1]["stdout"]
     ):
         print(f"FAIL {name}: ABI mismatch: {records[-2]} vs {records[-1]}", file=sys.stderr)
@@ -192,7 +199,7 @@ def main() -> int:
         if generated.get("returncode") != 0:
             print(f"FAIL generating seed={seed}: {generated}", file=sys.stderr)
             return 1
-        if not test_case(f"seed-{seed}", generated["stdout"], args):
+        if not test_case(f"seed-{seed}", generated["stdout"], args, expected=1):
             print(f"Failure reproducer retained: {args.artifacts / f'seed-{seed}'}", file=sys.stderr)
             return 1
     print(f"PASS {len(PROGRAMS)} standalone fixtures, {len(mixed)} mixed-object ABI cases, "
