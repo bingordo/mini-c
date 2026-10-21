@@ -63,6 +63,8 @@ PROGRAMS = {
         else { return 99; }
         return total;
     }""",
+    "external_libc": "int abs(int); int main(void) { return abs(-25); }",
+    "static_function": "static int next(int x) { return x + 1; } int main(void) { return next(6); }",
 }
 
 
