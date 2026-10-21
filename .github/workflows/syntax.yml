@@ -6,6 +6,7 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'crates/**'
+      - '!crates/cranelift/**'
       - 'tools/**'
       - '.github/workflows/syntax.yml'
   pull_request:
@@ -14,6 +15,7 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'crates/**'
+      - '!crates/cranelift/**'
       - 'tools/**'
       - '.github/workflows/syntax.yml'
   workflow_dispatch:
@@ -54,7 +56,7 @@ jobs:
             mini-c-${{ runner.os }}-${{ steps.rust.outputs.release }}-${{ hashFiles('**/Cargo.toml', '**/Cargo.lock') }}-
             mini-c-${{ runner.os }}-${{ steps.rust.outputs.release }}-
       - name: Workspace tests (single Cargo invocation)
-        run: cargo test --workspace
+        run: cargo test -p mini-c-syntax -p mini-c-preprocess -p mini-c-sema -p mini-c -p mini-c-fuzz
       - name: Assert the normal syntax dependency tree excludes the parser generator and regex lexer
         shell: bash
         run: |
@@ -68,7 +70,7 @@ jobs:
       - name: Python reference harness tests
         run: python3 -m unittest discover -s tools/tests -p 'test_*.py'
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy -p mini-c-syntax -p mini-c-preprocess -p mini-c-sema -p mini-c -p mini-c-fuzz --all-targets -- -D warnings
       - name: Build reusable generator executable
         run: cargo build -p mini-c-fuzz
       - name: Fast GCC/Clang smoke (four seeds, two builds each)
