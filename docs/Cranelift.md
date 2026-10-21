@@ -55,7 +55,7 @@ emitter and system linker, then separately with `cc -std=c11 -O2`.
 It executes both and checks exit status and stdout. The fixtures cover
 calls, mutual recursion, loops, shadowing, break/continue, unsigned/long
 arithmetic, short circuiting (including divisions that must be skipped),
-implicit `main` return and void calls. The seeded corpus is generated
+implicit `main` return, direct libc calls, internal functions, and void calls. It also links mixed object files in both directions (GCC calling a Mini-C-defined function and Mini-C calling a GCC-defined function), checking the x86-64 SysV integer ABI and relocations. The seeded corpus is generated
 by the *existing* `mini-c-fuzz` binary without rebuilding it for every
 seed. Failing cases preserve input source, command arguments, compiler
 version and outputs under `target/cranelift-failures/`; CI uploads the
