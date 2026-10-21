@@ -6,7 +6,9 @@ pub mod parser;
 pub mod scopes;
 pub mod source;
 pub mod stream;
-lalrpop_util::lalrpop_mod!(pub grammar);
+#[path = "grammar.rs"]
+#[allow(clippy::all)]
+pub mod grammar;
 
 /// Parse an expression and return a structured, byte-accurate diagnostic.
 /// This API is suitable for embedding; it never prints or exits.

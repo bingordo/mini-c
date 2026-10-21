@@ -3,5 +3,4 @@ resolver = "2"
 members = ["crates/*"]
 
 [workspace.dependencies]
-lalrpop = "0.23"
-lalrpop-util = "0.23"
+lalrpop-util = { version = "=0.23.1", default-features = false, features = ["lexer", "std"] }

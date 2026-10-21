@@ -39,4 +39,20 @@ For a preprocessed file, `--cpp=none` skips external tools. For ordinary C sourc
 
 ## Embedding in bingundu/compiler
 
-Mini-C exposes reusable parser and typed-frontend Rust library crates; no compiler backend dependency is introduced into syntax, preprocessing or semantic analysis. The native compiler driver should adapt `mini-c-sema::CheckedFunction` to `compiler-ir` and discard each checked body after lowering. See the [embeddable frontend contract](docs/Specification.md#embeddable-frontend-contract).
+Mini-C is designed as reusable Rust library crates, not just a standalone compiler. See the [embeddable frontend contract](docs/Specification.md#embeddable-frontend-contract) and [integration acceptance gates](docs/Implementation_Plan.md#modular-integration-acceptance-gate). The compiler driver should depend on Mini-C's frontend libraries and provide the adapter to its existing `compiler-ir`; Mini-C's syntax and semantic crates remain backend-independent.
+
+## Updating the expression grammar
+
+The main incremental C parser is handwritten and unchanged. The separate
+LALRPOP expression grammar remains editable in
+`crates/syntax/src/grammar.lalrpop`. Normal builds use the checked-in
+`crates/syntax/src/grammar.rs`, without compiling LALRPOP. After editing:
+
+```sh
+cargo run --manifest-path tools/parser-codegen/Cargo.toml -- --write
+cargo run --manifest-path tools/parser-codegen/Cargo.toml -- --check
+cargo test -p mini-c-syntax -p mini-c-sema
+```
+
+Commit both grammar files together. The generator is in an independent
+Cargo workspace and is only built on explicit regeneration or CI checks.

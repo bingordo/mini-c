@@ -1,0 +1,22 @@
+name: mini-c generated expression parser consistency
+on:
+  pull_request:
+    paths:
+      - 'crates/syntax/src/grammar.lalrpop'
+      - 'crates/syntax/src/grammar.rs'
+      - 'tools/parser-codegen/**'
+      - '.github/workflows/parser-consistency.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  generated-parser:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tools/parser-codegen -> target
+      - run: cargo run --manifest-path tools/parser-codegen/Cargo.toml -- --check
+      - run: cargo test -p mini-c-syntax -p mini-c-sema
