@@ -274,6 +274,9 @@ impl Lower<'_> {
                 Self::convert(b, v, &inner.ty, &expr.ty)
             }
             CheckedExprKind::Unary(op, inner) => {
+                if matches!(op, UnOp::Address | UnOp::Deref) {
+                    return Err("M2.5 pointer operations are unsupported".into());
+                }
                 let val = self.integer_value(b, inner)?;
                 match op {
                     UnOp::Plus => Ok(val),
@@ -282,7 +285,7 @@ impl Lower<'_> {
                         let cond = b.ins().icmp_imm(IntCC::Equal, val, 0);
                         Ok(Self::boolean(b, cond))
                     }
-                    UnOp::Address | UnOp::Deref => Err("M2.5 pointer operations are unsupported".into()),
+                    UnOp::Address | UnOp::Deref => unreachable!(),
                 }
             }
             CheckedExprKind::Assign(lhs, rhs) => {
