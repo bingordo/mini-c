@@ -1,0 +1,13 @@
+[package]
+name = "mini-c-cranelift"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+mini-c-syntax = { path = "../syntax" }
+mini-c-sema = { path = "../sema" }
+cranelift-codegen = "0.136.3"
+cranelift-frontend = "0.136.3"
+cranelift-module = "0.136.3"
+cranelift-object = "0.136.3"
+cranelift-native = "0.136.3"
