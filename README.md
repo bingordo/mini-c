@@ -9,20 +9,27 @@ A small, embeddable Rust frontend for a deliberately limited subset of C, modele
 - Independent `mini-c-sema` crate checks types, lexical scopes, linkage, integer conversions, lvalues, function calls, returns, constant initializers and loop-control legality. Typed expressions include explicit load/conversion nodes, suitable for later backends.
 - `mini-c check` now validates **syntax and semantics**, reports filename and source location, and supports external `cc -E`/`clang -E` or already-preprocessed input.
 - Deterministic defined-behavior C corpus generator (`mini-c-fuzz`) with an independent arithmetic oracle, reference validation against GCC/Clang, sanitizer smoke tests, failure-artifact capture, and an extended weekly GitHub Actions workflow.
+- An **optional Cranelift ELF object backend** (`mini-c-cranelift`, M2.5) compiles checked integer functions, locals, control flow and direct calls. The separate backend and GCC differential tests are isolated from normal syntax CI.
 
-**This is not a conforming ISO C implementation.** Its parser recognizes only a subset; full C declarators, many types, complete language semantics, internal preprocessing, precise expression-level diagnostics, and code generation remain incomplete or future work. C23 provides the language design reference ([WG14 N3220](https://www.open-std.org/jtc1/sc22/wg14/www/docs/n3220.pdf)).
+**This is not a conforming ISO C implementation.** Its parser recognizes only a subset; full C declarators, many types, complete language semantics, internal preprocessing, precise expression-level diagnostics, and the full native backend remain incomplete or future work. C23 provides the language design reference ([WG14 N3220](https://www.open-std.org/jtc1/sc22/wg14/www/docs/n3220.pdf)).
 
 ## Development and smoke tests
 
 ```sh
-cargo test --workspace
-cargo test -p mini-c-sema
-cargo clippy --workspace --all-targets -- -D warnings
+cargo test -p mini-c-syntax -p mini-c-preprocess -p mini-c-sema -p mini-c -p mini-c-fuzz
+cargo clippy -p mini-c-syntax -p mini-c-sema -p mini-c -p mini-c-fuzz --all-targets -- -D warnings
 cargo run -p mini-c -- check --cpp=none example.c
 cargo run -p mini-c -- check --cpp=cc example.c
 cargo run -q -p mini-c-fuzz -- 42 120 > case.c
 cargo build -p mini-c-fuzz
 python3 tools/fuzz_reference.py --seed-count 12 --steps 120
+
+# Optional Cranelift backend (separate, heavier dependency closure):
+cargo test -p mini-c-cranelift
+cargo build -p mini-c-cranelift -p mini-c-fuzz
+cargo run -p mini-c-cranelift -- --emit-obj /tmp/example.o example.c
+cc /tmp/example.o -o /tmp/example
+python3 tools/test_cranelift.py --seed-count 4
 ```
 
 For a preprocessed file, `--cpp=none` skips external tools. For ordinary C sources, use `--cpp=cc`, `--cpp=clang`, or `--cpp=/path/to/preprocessor`; additional preprocessor options use `--cpp-arg=<argument>`. The parser API itself never invokes a preprocessor.
@@ -34,8 +41,9 @@ For a preprocessed file, `--cpp=none` skips external tools. For ordinary C sourc
 - [Testing and CI strategy](docs/Testing.md)
 - [Defined-behavior fuzzer and reproducibility](docs/Fuzzing.md)
 - [Typed frontend API, target model, and limitations](docs/Semantics.md)
+- [Cranelift ELF backend, constraints, and executable tests](docs/Cranelift.md)
 
-[Targeted CI](.github/workflows/syntax.yml) runs syntax, preprocessing, driver, Clippy, and compiler-reference fuzzer checks. [Extended fuzz CI](.github/workflows/fuzz.yml) runs weekly or by manual dispatch. The Rust formatting gate is currently disabled by request.
+[Targeted CI](.github/workflows/syntax.yml) runs syntax, preprocessing, driver, Clippy, and compiler-reference fuzzer checks. [Extended fuzz CI](.github/workflows/fuzz.yml) runs weekly or by manual dispatch. [Cranelift CI](.github/workflows/cranelift.yml) independently builds and tests the optional executable backend. The Rust formatting gate is currently disabled by request.
 
 ## Embedding in bingundu/compiler
 
