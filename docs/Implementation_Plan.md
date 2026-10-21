@@ -58,11 +58,13 @@ Testing: table-driven positive/negative fixtures with expected diagnostic codes,
 
 Exit: robust recovery on representative malformed programs, stable diagnostic assertions, no crashes in bounded malformed-input fuzzing, and clear differentiation between syntax and semantic failures.
 
-## M2.5 — Cranelift executable backend (before native compiler integration)
+## M2.5 — Cranelift executable backend (implementation committed; CI verification outstanding)
 
-Implement a small, separate Cranelift lowering crate consuming the checked Mini-C representation. Reuse patterns from `bingundu/oberon`'s Cranelift backend, but do not make Mini-C syntax or semantic crates depend on Cranelift or Oberon. Provide a standalone CLI or test harness that compiles supported integer functions to native objects, links them using the system C toolchain, and executes differential tests against GCC. Start with integer arithmetic, parameters, local variables, return, if/else and while; add calls and for loops as the checked frontend supports them. Use the same semantic fixtures as M2 and the eventual M3 backend, and document unsupported features.
+The optional leaf crate `mini-c-cranelift` now consumes one `mini-c-sema::CheckedFunction` at a time, lowering typed expressions, SSA locals, integer conversions, signed/unsigned arithmetic and comparisons, short-circuit conditions, branches, while loops, break/continue, returns and direct calls (including recursion) to Cranelift IR. It emits PIC x86-64 Linux ELF object files that can be linked with `cc`, without introducing Cranelift dependencies into syntax or sema. The standalone `mini-c-cranelift --emit-obj OUTPUT.o INPUT.c` executable and embedded `compile_source` API are available; unsupported pointers, globals and aggregate types return explicit errors. See [Cranelift backend](Cranelift.md).
 
-Exit: a reproducible green Cranelift executable smoke suite with GCC comparisons, including loops, branches and function calls where implemented. The backend is an optional leaf crate and can be disabled without affecting parser/sema tests. This milestone precedes M3 so it provides an independent executable oracle while the new compiler backend is integrated.
+A dedicated, cached `.github/workflows/cranelift.yml` compiles and tests this crate, builds the generator/backend binaries once and uses `tools/test_cranelift.py` to compare linked Mini-C/GCC executables on arithmetic, control-flow, recursive calls and seeded defined-behavior programs. Heavy Cranelift builds were excluded from the fast syntax workflow's package list. The **exit gate remains a green full backend CI run**; do not mark M2.5 complete before one is recorded. GitHub Actions previously reported failures before runners were assigned (zero steps), so final compilation and runtime verification must be checked separately.
+
+Exit: a reproducible green Cranelift executable smoke suite with GCC comparisons, including loops, branches and calls. The backend remains an optional leaf crate ahead of M3.
 
 ## M3 — First executable native vertical slice
 
