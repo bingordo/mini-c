@@ -112,6 +112,47 @@ def test_case(name: str, src: str, args: argparse.Namespace) -> bool:
     return True
 
 
+
+def mixed_objects(name: str, mini_source: str, gcc_source: str, args: argparse.Namespace) -> bool:
+    """Validate SysV function ABI in both linking directions."""
+    directory = args.artifacts / name
+    directory.mkdir(parents=True, exist_ok=True)
+    mini_input = directory / "mini.c"
+    gcc_input = directory / "gcc.c"
+    mini_input.write_text(mini_source + "\n")
+    gcc_input.write_text(gcc_source + "\n")
+    obj = directory / "mini.o"
+    executable = directory / "combined.exe"
+    reference = directory / "reference.exe"
+    commands = [
+        [str(args.backend), "--emit-obj", str(obj), str(mini_input)],
+        [args.cc, str(obj), str(gcc_input), "-o", str(executable)],
+        [args.cc, "-std=c11", "-O2", str(mini_input), str(gcc_input), "-o", str(reference)],
+        [str(executable)],
+        [str(reference)],
+    ]
+    records = []
+    for idx, command in enumerate(commands):
+        result = run(command)
+        records.append(result)
+        (directory / "results.json").write_text(
+            json.dumps({"case": name, "commands": records}, indent=2) + "\n"
+        )
+        if idx < 3 and result.get("returncode") != 0:
+            print(f"FAIL {name}: link/compile: {result}", file=sys.stderr)
+            return False
+        if idx >= 3 and "returncode" not in result:
+            print(f"FAIL {name}: execution: {result}", file=sys.stderr)
+            return False
+    if (
+        records[-2]["returncode"] != records[-1]["returncode"]
+        or records[-2]["stdout"] != records[-1]["stdout"]
+    ):
+        print(f"FAIL {name}: ABI mismatch: {records[-2]} vs {records[-1]}", file=sys.stderr)
+        return False
+    shutil.rmtree(directory)
+    return True
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--backend", type=Path, default=Path("target/debug/mini-c-cranelift"))
@@ -136,6 +177,16 @@ def main() -> int:
         if not test_case(name, program, args):
             print(f"Failure reproducer retained: {args.artifacts / name}", file=sys.stderr)
             return 1
+    mixed = [
+        ("gcc_calls_mini", "int kernel(int x, int y) { return x * y + y; }",
+         "int kernel(int,int); int main(void) { return kernel(6,7); }"),
+        ("mini_calls_gcc", "int supply(int); int main(void) { return supply(20); }",
+         "int supply(int x) { return x + 3; }"),
+    ]
+    for name, mini_source, gcc_source in mixed:
+        if not mixed_objects(name, mini_source, gcc_source, args):
+            print(f"Failure reproducer retained: {args.artifacts / name}", file=sys.stderr)
+            return 1
     for seed in range(args.seed_count):
         generated = run([str(args.fuzzer), str(seed), str(args.steps)])
         if generated.get("returncode") != 0:
@@ -144,7 +195,8 @@ def main() -> int:
         if not test_case(f"seed-{seed}", generated["stdout"], args):
             print(f"Failure reproducer retained: {args.artifacts / f'seed-{seed}'}", file=sys.stderr)
             return 1
-    print(f"PASS {len(PROGRAMS)} fixtures and {args.seed_count} generated programs")
+    print(f"PASS {len(PROGRAMS)} standalone fixtures, {len(mixed)} mixed-object ABI cases, "
+          f"and {args.seed_count} generated programs")
     return 0
 
 
