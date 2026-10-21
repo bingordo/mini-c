@@ -53,6 +53,8 @@ jobs:
           restore-keys: |
             mini-c-${{ runner.os }}-${{ steps.rust.outputs.release }}-${{ hashFiles('**/Cargo.toml', '**/Cargo.lock') }}-
             mini-c-${{ runner.os }}-${{ steps.rust.outputs.release }}-
+      - name: Workspace tests (single Cargo invocation)
+        run: cargo test --workspace
       - name: Assert the normal syntax dependency tree excludes the parser generator and regex lexer
         shell: bash
         run: |
@@ -63,8 +65,6 @@ jobs:
             echo 'Unexpected parser generator or regex dependency in normal syntax builds' >&2
             exit 1
           fi
-      - name: Workspace tests (single Cargo invocation)
-        run: cargo test --workspace
       - name: Python reference harness tests
         run: python3 -m unittest discover -s tools/tests -p 'test_*.py'
       - name: Clippy
