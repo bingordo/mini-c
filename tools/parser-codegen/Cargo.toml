@@ -1,0 +1,13 @@
+[package]
+name = "mini-c-parser-codegen"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# A separate workspace, excluded from mini-c's ordinary Cargo resolution.
+[workspace]
+resolver = "2"
+
+# The expression grammar uses LALRPOP's built-in regexp lexer.
+[dependencies]
+lalrpop = { version = "=0.23.1", default-features = false }
