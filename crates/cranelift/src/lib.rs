@@ -4,7 +4,6 @@
 //! Deliberately supports only integer scalar functions, local variables,
 //! control flow, and direct calls. Unsupported features fail explicitly.
 use cranelift_codegen::ir::{self, condcodes::IntCC, types, AbiParam, InstBuilder, Value};
-use cranelift_codegen::entity::EntityRef;
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_module::{default_libcall_names, FuncId, Linkage as ClLinkage, Module};
@@ -219,7 +218,9 @@ impl Lower<'_> {
 
     fn condition(&mut self, b: &mut FunctionBuilder<'_>, expr: &CheckedExpr) -> Result<Value> {
         let value = self.integer_value(b, expr)?;
-        Ok(b.ins().icmp_imm(IntCC::NotEqual, value, 0))
+        let ty = b.func.dfg.value_type(value);
+        let zero = b.ins().iconst(ty, 0);
+        Ok(b.ins().icmp(IntCC::NotEqual, value, zero))
     }
 
     fn boolean(b: &mut FunctionBuilder<'_>, value: Value) -> Value {
@@ -282,7 +283,9 @@ impl Lower<'_> {
                     UnOp::Plus => Ok(val),
                     UnOp::Neg => Ok(b.ins().ineg(val)),
                     UnOp::Not => {
-                        let cond = b.ins().icmp_imm(IntCC::Equal, val, 0);
+                        let ty = b.func.dfg.value_type(val);
+                        let zero = b.ins().iconst(ty, 0);
+                        let cond = b.ins().icmp(IntCC::Equal, val, zero);
                         Ok(Self::boolean(b, cond))
                     }
                     UnOp::Address | UnOp::Deref => unreachable!(),
