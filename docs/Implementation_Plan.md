@@ -66,11 +66,15 @@ A dedicated, cached `.github/workflows/cranelift.yml` compiles and tests this cr
 
 Exit: a reproducible green Cranelift executable smoke suite with GCC comparisons, including loops, branches and calls. The backend remains an optional leaf crate ahead of M3.
 
-## M3 — First executable native vertical slice
+## M3 — First executable native vertical slice (initial implementation committed; verification outstanding)
 
-Pin and integrate `bingundu/compiler` IR/optimizer/backend crates. Lower checked int functions, CFG branches/loops, short-circuit operators, calls where supported. Generate ELF64 object or assembly, link with cc and execute against a GCC-built reference. Fix backend gaps in the compiler repository, not by adding a parallel code generator.
+Implemented the first checked C-to-native adapter in [`bingundu/compiler/tools/mini-c-driver`](https://github.com/bingundu/compiler/tree/main/tools/mini-c-driver), in an isolated Cargo workspace. It pins `mini-c-syntax` and `mini-c-sema` to commit `bf1a2b8524b0071ad0439671d3c3965485adeb40`, lowers each checked C function to the **real** `compiler-ir` block-argument SSA, invokes `compiler-opt`, and emits native GNU assembly or direct ELF64 through `compiler-backend-x86`. It uses the same optimizer and native backend as the Oberon compiler, not a second instruction emitter or the independent Cranelift reference backend.
 
-Exit: integer arithmetic/control-flow corpus executes with expected results on x86-64 SysV.
+Current signed-i32 subset: parameters, locals with nested scopes/shadowing, arithmetic `+`/`-`/`*`, comparisons and logical expressions, short-circuit `&&`/`||`, `if`/`else`, `while`, `break`/`continue`, and direct calls, including forward prototypes/recursion (up to sixteen SysV integer parameters). A C-to-ELF/assembly/GCC test harness contains fixed cases, seeded bounded arithmetic programs, negative cases and mixed-object interop. Unsupported division/remainder, wide/unsigned arithmetic, pointers, arrays, data objects and void returns are **explicitly rejected** rather than compiled incorrectly.
+
+The adapter builds a separate `compiler-mini-c` executable for development so that the main compiler's private Oberon and fast core Cargo dependency graphs remain unchanged. See [compiler's M3 integration documentation](https://github.com/bingundu/compiler/blob/main/docs/Mini_C_Integration.md). Its separate Actions workflow needs a `MINI_C_DEPLOY_KEY` for the private Mini-C repository. **This code is not yet CI-verified**: first Actions run failed before allocating a runner (zero executed steps). A passing local build/differential run or real CI job remains necessary before claiming the exit gate is met.
+
+Exit: green executable tests of the signed integer/control-flow corpus on x86-64 SysV. Expanding division/remainder and the complete defined-behavior generator corpus should follow without introducing a parallel code generator.
 
 ## M4 — C memory model essentials
 
