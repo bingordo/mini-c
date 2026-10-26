@@ -164,10 +164,11 @@ fn recovery_clears_failed_typedef_without_losing_prior_typedefs() {
 #[test]
 fn recovery_does_not_loop_on_invalid_utf8_or_missing_semicolon() {
     use mini_c_syntax::stream::ExternalItem;
-    for source in [
-        "int x = ; @; int y;",
-        "int x int y; int z;",
-        "int f(void) { /* unfinished",
+    for (source, expected_declarations) in [
+        ("int x = ; @; int y;", 1),
+        ("int x int y; int z;", 2),
+        ("int f(void) { /* unfinished", 0),
+        ("int a = 123abc; int y;", 1),
     ] {
         let mut parser = Parser::new(source);
         let mut count = 0;
@@ -176,7 +177,7 @@ fn recovery_does_not_loop_on_invalid_utf8_or_missing_semicolon() {
         });
         assert!(!errors.is_empty(), "{source:?}");
         assert!(errors.len() <= 4);
-        if source.contains("int y;") { assert_eq!(count, 1); }
+        assert_eq!(count, expected_declarations, "{source:?}");
     }
 }
 

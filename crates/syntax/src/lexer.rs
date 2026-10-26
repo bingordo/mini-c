@@ -107,10 +107,19 @@ impl<'a> Scanner<'a> {
                     && (source.as_bytes()[offset].is_ascii_alphabetic()
                         || source.as_bytes()[offset] == b'_')
                 {
+                    // Advance past the whole unsupported suffix. Recovery must
+                    // never encounter the same error at the same source offset.
+                    while offset < source.len()
+                        && (source.as_bytes()[offset].is_ascii_alphanumeric()
+                            || source.as_bytes()[offset] == b'_')
+                    {
+                        offset += 1;
+                    }
+                    self.offset = offset;
                     return Err(Diagnostic::lexical(
                         Span {
                             lo: start,
-                            hi: offset + 1,
+                            hi: offset,
                         },
                         "unsupported numeric literal or suffix",
                     ));
