@@ -189,12 +189,11 @@ impl Checker {
         } else {
             Linkage::External
         };
-        if self.rollback_log.is_some() {
+        if let Some(log) = &mut self.rollback_log {
             // Record the first value, before any tentative modification.
             // This includes block-scope externs encountered within a function.
             let previous = self.globals.get(name).cloned();
-            self.rollback_log.as_mut().expect("enabled log")
-                .entry(name.to_owned()).or_insert(previous);
+            log.entry(name.to_owned()).or_insert(previous);
         }
         if let Some(prior) = self.globals.get_mut(name) {
             if prior.kind != kind || prior.ty != ty {
