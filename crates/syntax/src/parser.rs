@@ -8,6 +8,7 @@ use crate::scopes::{Binding, Scopes};
 
 pub struct Parser<'a> {
     scanner: Scanner<'a>,
+    input_len: usize,
     lookahead: Option<Token<'a>>,
     scopes: Scopes,
 }
@@ -16,9 +17,16 @@ impl<'a> Parser<'a> {
     pub fn new(source: &'a str) -> Self {
         Self {
             scanner: Scanner::new(source),
+            input_len: source.len(),
             lookahead: None,
             scopes: Scopes::new(),
         }
+    }
+
+    // A missing token belongs at the actual end of input, not byte zero.
+    // In particular this must handle UTF-8 source preceding a truncated item.
+    fn eof_span(&self) -> Span {
+        Span { lo: self.input_len, hi: self.input_len }
     }
 
     fn peek(&mut self) -> Result<Option<Token<'a>>, Diagnostic> {
@@ -41,7 +49,7 @@ impl<'a> Parser<'a> {
                 format!("expected '{expected}', found '{}'", token.text),
             )),
             None => Err(Diagnostic::new(
-                Span::default(),
+                self.eof_span(),
                 format!("expected '{expected}', found end of input"),
             )),
         }
@@ -117,7 +125,7 @@ impl<'a> Parser<'a> {
                 e
             }
             Some(t) => return Err(Diagnostic::new(t.span, "expected expression")),
-            None => return Err(Diagnostic::new(Span::default(), "expected expression")),
+            None => return Err(Diagnostic::new(self.eof_span(), "expected expression")),
         };
         while self.peek()?.is_some_and(|t| t.text == "(") {
             self.take()?;
@@ -144,18 +152,18 @@ impl<'a> Parser<'a> {
             _ => StorageClass::Default,
         };
         if is_typedef && storage != StorageClass::Default {
-            return Err(Diagnostic::new(Span::default(), "typedef cannot combine with storage class"));
+            return Err(Diagnostic::new(self.eof_span(), "typedef cannot combine with storage class"));
         }
         let (mut ty, start) = self
             .parse_type()?
-            .ok_or_else(|| Diagnostic::new(Span::default(), "expected type"))?;
+            .ok_or_else(|| Diagnostic::new(self.eof_span(), "expected type"))?;
         while self.peek()?.is_some_and(|t| t.text == "*") {
             self.take()?;
             ty = Type::Pointer(Box::new(ty));
         }
         let name = self
             .take()?
-            .ok_or_else(|| Diagnostic::new(Span::default(), "expected identifier"))?;
+            .ok_or_else(|| Diagnostic::new(self.eof_span(), "expected identifier"))?;
         if !matches!(name.kind, TokenKind::Identifier | TokenKind::TypedefName) {
             return Err(Diagnostic::new(name.span, "expected identifier"));
         }
@@ -180,7 +188,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_stmt(&mut self) -> Result<Stmt, Diagnostic> {
-        let token = self.peek()?.ok_or_else(|| Diagnostic::new(Span::default(), "expected statement"))?;
+        let token = self.peek()?.ok_or_else(|| Diagnostic::new(self.eof_span(), "expected statement"))?;
         match token.text {
             "{" => Ok(self.parse_block()?.0),
             ";" => { self.take()?; Ok(Stmt::Expr(None)) },
@@ -220,21 +228,26 @@ impl<'a> Parser<'a> {
     fn parse_block(&mut self) -> Result<(Stmt, usize), Diagnostic> {
         self.expect("{")?;
         self.scopes.enter();
-        let mut statements = Vec::new();
-        loop {
-            let Some(token) = self.peek()? else {
-                return Err(Diagnostic::new(
-                    Span::default(),
-                    "unterminated function body",
-                ));
-            };
-            if token.text == "}" {
-                let end = self.take()?.expect("peeked token").span.hi;
-                self.scopes.leave();
-                return Ok((Stmt::Block(statements), end));
+        // Restore the scope even when parsing fails. This keeps typedef
+        // classification from leaking from an incomplete nested block.
+        let parsed = (|| {
+            let mut statements = Vec::new();
+            loop {
+                let Some(token) = self.peek()? else {
+                    return Err(Diagnostic::new(
+                        self.eof_span(),
+                        "unterminated function body",
+                    ));
+                };
+                if token.text == "}" {
+                    let end = self.take()?.expect("peeked token").span.hi;
+                    return Ok((Stmt::Block(statements), end));
+                }
+                statements.push(self.parse_stmt()?);
             }
-            statements.push(self.parse_stmt()?);
-        }
+        })();
+        self.scopes.leave();
+        parsed
     }
 
     fn parse_type(&mut self) -> Result<Option<(Type, usize)>, Diagnostic> {
@@ -287,9 +300,14 @@ impl ItemSource for Parser<'_> {
             _ => StorageClass::Default,
         };
         if is_typedef && storage != StorageClass::Default {
-            return Err(Diagnostic::new(Span::default(), "typedef cannot combine with storage class"));
+            return Err(Diagnostic::new(self.eof_span(), "typedef cannot combine with storage class"));
         }
         let Some((mut ty, start)) = self.parse_type()? else {
+            // EOF is only a successful end of the translation unit before any
+            // declaration specifier has been consumed.
+            if is_typedef || storage != StorageClass::Default {
+                return Err(Diagnostic::new(self.eof_span(), "expected type specifier"));
+            }
             return Ok(None);
         };
         while self.peek()?.is_some_and(|token| token.text == "*") {
@@ -298,7 +316,7 @@ impl ItemSource for Parser<'_> {
         }
         let name = self
             .take()?
-            .ok_or_else(|| Diagnostic::new(Span::default(), "expected identifier"))?;
+            .ok_or_else(|| Diagnostic::new(self.eof_span(), "expected identifier"))?;
         if !matches!(name.kind, TokenKind::Identifier | TokenKind::TypedefName) {
             return Err(Diagnostic::new(name.span, "expected identifier"));
         }

@@ -52,6 +52,15 @@ Exit: valid supported integer programs type-check; invalid programs reject with 
 
 ## M2.25 — Syntax and semantic diagnostic quality
 
+**Progress (2026-10-26):** The parser now rejects truncated top-level
+storage/typedef specifiers instead of treating them as EOF, reports exact
+end-of-input byte spans, restores nested typedef scopes on parse errors, and
+has table-driven malformed syntax tests plus a bounded deletion-mutation
+regression. These are incremental correctness improvements, **not** completion
+of M2.25: multi-error recovery, stable diagnostic codes, semantic expression
+spans, and an error limit remain open.
+
+
 Build a focused error-handling test suite and improve parser/checker diagnostics before executable backends. Cover invalid tokens, missing delimiters, malformed declarators, typedef ambiguity and shadowing, unexpected EOF, duplicate declarations, unknown identifiers, incompatible types, invalid lvalues, wrong argument counts, invalid returns, and scope errors. Verify exact source spans (including UTF-8, multi-line input and preprocessed source mapping), actionable messages, stable diagnostic ordering, and absence of panics. Prefer useful recovery at statement/declaration boundaries so a single source can produce multiple independent errors without cascading noise; impose a configurable error limit. Make error reporting deterministic and available through the embeddable library API without printing or exiting.
 
 Testing: table-driven positive/negative fixtures with expected diagnostic codes, primary spans and optional notes; malformed-input mutation/fuzz tests; regression tests for every reported crash; snapshot tests with deliberate review of wording changes. Keep tests targeted and fast in PR CI. The CLI may render annotated source, but syntax/sema only return structured diagnostics.
@@ -65,6 +74,13 @@ The optional leaf crate `mini-c-cranelift` now consumes one `mini-c-sema::Checke
 A dedicated, cached `.github/workflows/cranelift.yml` compiles and tests this crate, builds the generator/backend binaries once and uses `tools/test_cranelift.py` to compare linked Mini-C/GCC executables on arithmetic, control-flow, recursive calls and seeded defined-behavior programs. Heavy Cranelift builds were excluded from the fast syntax workflow's package list. The **exit gate remains a green full backend CI run**; do not mark M2.5 complete before one is recorded. GitHub Actions previously reported failures before runners were assigned (zero steps), so final compilation and runtime verification must be checked separately.
 
 Exit: a reproducible green Cranelift executable smoke suite with GCC comparisons, including loops, branches and calls. The backend remains an optional leaf crate ahead of M3.
+
+The **M2.5 Cranelift exit gate has now passed** in
+[bingordo CI run 40307103992](https://github.com/bingordo/mini-c/actions/runs/40307103992)
+on 2026-10-26 (targeted tests, Clippy, executable comparison). The regular
+syntax and preprocessing gate passed in
+[run 40307104216](https://github.com/bingordo/mini-c/actions/runs/40307104216).
+The M3 native integration in bingundu/compiler remains separately unverified.
 
 ## M3 — First executable native vertical slice (initial implementation committed; verification outstanding)
 
