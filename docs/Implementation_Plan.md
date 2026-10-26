@@ -73,8 +73,10 @@ storage/typedef specifiers instead of treating them as EOF, reports exact
 end-of-input byte spans, restores nested typedef scopes on parse errors, and
 has table-driven malformed syntax tests plus a bounded deletion-mutation
 regression. These are incremental correctness improvements, **not** completion
-of M2.25: multi-error recovery, stable diagnostic codes, semantic expression
-spans, and an error limit remain open.
+of M2.25: fine-grained diagnostic codes for individual error kinds, semantic
+expression spans, and recovery within a damaged function remain open.
+Bounded cross-declaration syntax/semantic recovery is implemented and verified
+in [bingordo syntax CI 40312729615](https://github.com/bingordo/mini-c/actions/runs/40312729615).
 
 
 Build a focused error-handling test suite and improve parser/checker diagnostics before executable backends. Cover invalid tokens, missing delimiters, malformed declarators, typedef ambiguity and shadowing, unexpected EOF, duplicate declarations, unknown identifiers, incompatible types, invalid lvalues, wrong argument counts, invalid returns, and scope errors. Verify exact source spans (including UTF-8, multi-line input and preprocessed source mapping), actionable messages, stable diagnostic ordering, and absence of panics. Prefer useful recovery at statement/declaration boundaries so a single source can produce multiple independent errors without cascading noise; impose a configurable error limit. Make error reporting deterministic and available through the embeddable library API without printing or exiting.
