@@ -120,3 +120,71 @@ fn broad_diagnostic_codes_remain_stable() {
     );
     assert_eq!(semantic.code.as_str(), "T0001");
 }
+
+#[test]
+fn recovers_multiple_bad_declarations_and_keeps_valid_following_items() {
+    use mini_c_syntax::stream::ExternalItem;
+    let source = "int first = ; int ok; int second = ; int tail;";
+    let mut parser = Parser::new(source);
+    let mut names = Vec::new();
+    let errors = parser.for_each_item_recovering(4, |item| {
+        if let ExternalItem::Declaration(decl) = item { names.push(decl.name); }
+    });
+    assert_eq!(errors.len(), 2, "{errors:?}");
+    assert_eq!(names, ["ok", "tail"]);
+    assert!(errors[0].span.lo < errors[1].span.lo);
+}
+
+#[test]
+fn recovery_skips_failed_function_body_and_resumes_at_next_item() {
+    use mini_c_syntax::stream::ExternalItem;
+    let source = "int bad(void) { int x = ; return 0; } int good;";
+    let mut parser = Parser::new(source);
+    let mut names = Vec::new();
+    let errors = parser.for_each_item_recovering(4, |item| {
+        if let ExternalItem::Declaration(decl) = item { names.push(decl.name); }
+    });
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert_eq!(names, ["good"]);
+}
+
+#[test]
+fn recovery_clears_failed_typedef_without_losing_prior_typedefs() {
+    use mini_c_syntax::stream::ExternalItem;
+    let source = "typedef int Good; typedef long Bad = ; Good ok; Bad broken;";
+    let mut parser = Parser::new(source);
+    let mut names = Vec::new();
+    let errors = parser.for_each_item_recovering(8, |item| {
+        if let ExternalItem::Declaration(decl) = item { names.push(decl.name); }
+    });
+    assert_eq!(names, ["ok"]);
+    assert_eq!(errors.len(), 2, "{errors:?}");
+}
+
+#[test]
+fn recovery_does_not_loop_on_invalid_utf8_or_missing_semicolon() {
+    use mini_c_syntax::stream::ExternalItem;
+    for source in [
+        "int x = ; @; int y;",
+        "int x int y; int z;",
+        "int f(void) { /* unfinished",
+    ] {
+        let mut parser = Parser::new(source);
+        let mut count = 0;
+        let errors = parser.for_each_item_recovering(4, |item| {
+            if matches!(item, ExternalItem::Declaration(_)) { count += 1; }
+        });
+        assert!(!errors.is_empty(), "{source:?}");
+        assert!(errors.len() <= 4);
+        if source.contains("int y;") { assert_eq!(count, 1); }
+    }
+}
+
+#[test]
+fn recovery_error_limit_bounds_work_and_zero_disables_parsing() {
+    let source = "int a = ; int b = ; int c = ; int good;";
+    let mut parser = Parser::new(source);
+    assert!(parser.for_each_item_recovering(0, |_| panic!("should not parse")).is_empty());
+    let errors = parser.for_each_item_recovering(2, |_| ());
+    assert_eq!(errors.len(), 2);
+}

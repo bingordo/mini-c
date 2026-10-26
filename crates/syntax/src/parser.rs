@@ -11,6 +11,8 @@ pub struct Parser<'a> {
     input_len: usize,
     lookahead: Option<Token<'a>>,
     scopes: Scopes,
+    brace_depth: usize,
+    pending_file_binding: Option<(String, Option<Binding>)>,
 }
 
 impl<'a> Parser<'a> {
@@ -20,6 +22,8 @@ impl<'a> Parser<'a> {
             input_len: source.len(),
             lookahead: None,
             scopes: Scopes::new(),
+            brace_depth: 0,
+            pending_file_binding: None,
         }
     }
 
@@ -29,21 +33,108 @@ impl<'a> Parser<'a> {
         Span { lo: self.input_len, hi: self.input_len }
     }
 
+    /// Skip a damaged external item after `next_item` has reported an error.
+    /// This is opt-in: ordinary users of `ItemSource` remain fail-fast.
+    ///
+    /// Resynchronize at a top-level semicolon or a function's closing brace.
+    /// A missing semicolon followed by a new type specifier may be repaired
+    /// without consuming the following declaration.
+    fn recover_to_next_item(&mut self, error: &Diagnostic) -> bool {
+        // A malformed typedef must not poison future typedef classification.
+        if let Some((name, previous)) = self.pending_file_binding.take() {
+            self.scopes.restore_file_binding(&name, previous);
+        }
+        if self.brace_depth == 0
+            && error.message.starts_with("expected ';'")
+            && self.peek().ok().flatten().is_some_and(|t| matches!(
+                t.text, "int" | "char" | "long" | "void" | "signed" |
+                    "unsigned" | "static" | "extern" | "typedef"
+            ) || t.kind == TokenKind::TypedefName)
+        {
+            return true;
+        }
+        loop {
+            // Lexical errors advance the underlying scanner; discard stray
+            // invalid characters while synchronizing to avoid cascades.
+            let token = match self.take() {
+                Ok(Some(token)) => token,
+                Ok(None) => return false,
+                Err(_) => continue,
+            };
+            if self.brace_depth == 0 && matches!(token.text, ";" | "}") {
+                return true;
+            }
+        }
+    }
+
+    /// Deliver valid external declarations while collecting up to `max_errors`
+    /// syntax/lexer errors, without retaining function ASTs.
+    ///
+    /// Recovery is intentionally conservative: a damaged function is skipped
+    /// through its closing brace. Semantic errors are not accumulated here,
+    /// since a semantic checker may have mutated its symbol state.
+    pub fn for_each_item_recovering<F>(
+        &mut self, max_errors: usize, mut receive: F
+    ) -> Vec<Diagnostic>
+    where
+        F: FnMut(ExternalItem),
+    {
+        let mut errors = Vec::new();
+        if max_errors == 0 { return errors; }
+        loop {
+            match self.next_item() {
+                Ok(Some(item)) => receive(item),
+                Ok(None) => break,
+                Err(error) => {
+                    let can_resume = if errors.len() + 1 < max_errors {
+                        self.recover_to_next_item(&error)
+                    } else {
+                        false
+                    };
+                    errors.push(error);
+                    if !can_resume { break; }
+                }
+            }
+        }
+        errors
+    }
+
     fn peek(&mut self) -> Result<Option<Token<'a>>, Diagnostic> {
         if self.lookahead.is_none() {
             self.lookahead = self.scanner.next_token(Some(&self.scopes))?;
+        }
+        // Scope changes can occur while a token is held in lookahead.
+        if let Some(token) = self.lookahead.as_mut() {
+            if matches!(token.kind, TokenKind::Identifier | TokenKind::TypedefName) {
+                token.kind = if self.scopes.is_typedef(token.text) {
+                    TokenKind::TypedefName
+                } else {
+                    TokenKind::Identifier
+                };
+            }
         }
         Ok(self.lookahead)
     }
 
     fn take(&mut self) -> Result<Option<Token<'a>>, Diagnostic> {
         self.peek()?;
-        Ok(self.lookahead.take())
+        let next = self.lookahead.take();
+        if let Some(token) = next {
+            match token.text {
+                "{" => self.brace_depth += 1,
+                "}" => self.brace_depth = self.brace_depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+        Ok(next)
     }
 
     fn expect(&mut self, expected: &str) -> Result<Token<'a>, Diagnostic> {
-        match self.take()? {
-            Some(token) if token.text == expected => Ok(token),
+        // Do not consume a mismatching token: the recovery API needs to see
+        // structural delimiters to resume at the next external declaration.
+        match self.peek()? {
+            Some(token) if token.text == expected =>
+                Ok(self.take()?.expect("matching token was peeked")),
             Some(token) => Err(Diagnostic::new(
                 token.span,
                 format!("expected '{expected}', found '{}'", token.text),
@@ -111,6 +202,12 @@ impl<'a> Parser<'a> {
         }) {
             self.take()?;
             return Ok(Expr::Unary(op, Box::new(self.parse_unary()?)));
+        }
+        // Keep synchronization tokens available to the recovery path.
+        if let Some(token) = self.peek()? {
+            if matches!(token.text, ";" | "}") {
+                return Err(Diagnostic::new(token.span, "expected expression"));
+            }
         }
         let mut expr = match self.take()? {
             Some(t) if t.kind == TokenKind::Number => Expr::Int(
@@ -292,6 +389,7 @@ impl ItemSource for Parser<'_> {
     type Error = Diagnostic;
 
     fn next_item(&mut self) -> Result<Option<ExternalItem>, Self::Error> {
+        self.pending_file_binding = None;
         let is_typedef = self.peek()?.is_some_and(|t| t.text == "typedef");
         if is_typedef { self.take()?; }
         let storage = match self.peek()?.map(|t| t.text) {
@@ -320,6 +418,7 @@ impl ItemSource for Parser<'_> {
         if !matches!(name.kind, TokenKind::Identifier | TokenKind::TypedefName) {
             return Err(Diagnostic::new(name.span, "expected identifier"));
         }
+        self.pending_file_binding = Some((name.text.to_owned(), self.scopes.lookup(name.text)));
         self.scopes.declare(name.text, if is_typedef { Binding::Typedef } else { Binding::Ordinary });
         if self.peek()?.is_some_and(|token| token.text == "(") {
             self.take()?;

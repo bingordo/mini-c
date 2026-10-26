@@ -33,6 +33,14 @@ impl Scopes {
             .expect("file scope")
             .insert(name.into(), binding);
     }
+    pub(crate) fn restore_file_binding(&mut self, name: &str, previous: Option<Binding>) {
+        let file_scope = self.stack.first_mut().expect("file scope");
+        match previous {
+            Some(binding) => { file_scope.insert(name.to_owned(), binding); }
+            None => { file_scope.remove(name); }
+        }
+    }
+
     pub fn lookup(&self, name: &str) -> Option<Binding> {
         self.stack
             .iter()

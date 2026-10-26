@@ -52,6 +52,14 @@ Exit: valid supported integer programs type-check; invalid programs reject with 
 
 ## M2.25 — Syntax and semantic diagnostic quality
 
+**Recovery slice:** `Parser::for_each_item_recovering(limit, callback)` can
+deliver unaffected external items and return a bounded, source-ordered list
+of lexical/syntax diagnostics. Synchronization stops at top-level
+semicolons or the end of a damaged function. This is an explicit opt-in;
+normal parser/checker calls remain fail-fast. Recovery rolls back invalid
+file-scope bindings and handles malformed UTF-8 source tokens.
+Semantic multi-error collection and expression-level spans remain open.
+
 **Progress (2026-10-26):** Diagnostics now expose stable lexical/syntax/semantic
 category codes (L0001/S0001/T0001) without requiring callers to parse English
 messages; lexical errors also advance the scanner for recovery. The parser
