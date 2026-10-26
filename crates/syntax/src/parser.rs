@@ -328,7 +328,7 @@ impl ItemSource for Parser<'_> {
                 loop {
                     let (mut param_ty, lo) = self
                         .parse_type()?
-                        .ok_or_else(|| Diagnostic::new(name.span, "expected parameter type"))?;
+                        .ok_or_else(|| Diagnostic::new(self.eof_span(), "expected parameter type"))?;
                     while self.peek()?.is_some_and(|t| t.text == "*") {
                         self.take()?;
                         param_ty = Type::Pointer(Box::new(param_ty));
