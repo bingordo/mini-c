@@ -40,11 +40,11 @@ Compile generated programs with GCC and Clang (when available), at `-O0` and `-O
 
 Exit: stable deterministic seeds, an independently computed oracle, sanitizer-clean GCC/Clang reference executions, documented defined-behavior invariants and an automated smoke corpus. Expand the corpus with each subsequent milestone.
 
-## M2 — Typed C frontend (implemented, final CI verification pending)
+## M2 — Typed C frontend (implemented, CI verified)
 
 Implemented in the backend-neutral `mini-c-sema` crate, with `Checker::check_item` and `check_stream` processing one external AST item/function at a time. Syntax supports signed/unsigned integer specifiers, block-scope typedefs, unnamed prototype parameters, function-type typedefs, and `static`/`extern` storage specifiers. Semantic analysis resolves lexical and file scopes, target-configurable signed/unsigned integers and conversions, explicit lvalue-to-rvalue loads, calls and argument coercion, linkage/redeclaration rules, return types, loop-only break/continue, and target-aware static constant expressions. Positive/negative regression tests and `mini-c check` integration tests are implemented. See [Semantics](Semantics.md).
 
-The typed frontend and its initial validation passed [CI run 39492343366](https://github.com/bingundu/mini-c/actions/runs/39492343366). Later improvements to prototype handling and typed constant-expression evaluation require a new complete CI run. Some recent attempts failed **before any runner was assigned** (job runner ID 0, no steps/logs), not at a compilation or test step. Do not mark CI verification complete until a full run executes.
+The typed frontend and its initial validation passed [CI run 39492343366](https://github.com/bingundu/mini-c/actions/runs/39492343366). Later improvements to prototype handling and typed constant-expression evaluation require a new complete CI run. The later [bingordo/mini-c syntax run 40307104216](https://github.com/bingordo/mini-c/actions/runs/40307104216) completed successfully with unit tests, Clippy, and GCC/Clang smoke tests, superseding earlier unallocated-runner failures.
 
 **Deliberate subset boundaries:** full declarators, aggregates, full C storage/linkage details, richer pointer semantics and expression-specific spans remain out of scope. Precise expression spans, error recovery, and stable diagnostic codes belong to M2.25.
 
@@ -67,11 +67,11 @@ Testing: table-driven positive/negative fixtures with expected diagnostic codes,
 
 Exit: robust recovery on representative malformed programs, stable diagnostic assertions, no crashes in bounded malformed-input fuzzing, and clear differentiation between syntax and semantic failures.
 
-## M2.5 — Cranelift executable backend (implementation committed; CI verification outstanding)
+## M2.5 — Cranelift executable backend (implemented, CI verified)
 
 The optional leaf crate `mini-c-cranelift` now consumes one `mini-c-sema::CheckedFunction` at a time, lowering typed expressions, SSA locals, integer conversions, signed/unsigned arithmetic and comparisons, short-circuit conditions, branches, while loops, break/continue, returns and direct calls (including recursion) to Cranelift IR. It emits PIC x86-64 Linux ELF object files that can be linked with `cc`, without introducing Cranelift dependencies into syntax or sema. The standalone `mini-c-cranelift --emit-obj OUTPUT.o INPUT.c` executable and embedded `compile_source` API are available; unsupported pointers, globals and aggregate types return explicit errors. See [Cranelift backend](Cranelift.md).
 
-A dedicated, cached `.github/workflows/cranelift.yml` compiles and tests this crate, builds the generator/backend binaries once and uses `tools/test_cranelift.py` to compare linked Mini-C/GCC executables on arithmetic, control-flow, recursive calls and seeded defined-behavior programs. Heavy Cranelift builds were excluded from the fast syntax workflow's package list. The **exit gate remains a green full backend CI run**; do not mark M2.5 complete before one is recorded. GitHub Actions previously reported failures before runners were assigned (zero steps), so final compilation and runtime verification must be checked separately.
+A dedicated, cached `.github/workflows/cranelift.yml` compiles and tests this crate, builds the generator/backend binaries once and uses `tools/test_cranelift.py` to compare linked Mini-C/GCC executables on arithmetic, control-flow, recursive calls and seeded defined-behavior programs. Heavy Cranelift builds were excluded from the fast syntax workflow's package list. The exit gate is met by [bingordo/mini-c run 40307103992](https://github.com/bingordo/mini-c/actions/runs/40307103992): targeted Cranelift tests, Clippy, executable build, and GCC differential comparisons all passed. Earlier failures before runner allocation are historical and no longer block M2.5.
 
 Exit: a reproducible green Cranelift executable smoke suite with GCC comparisons, including loops, branches and calls. The backend remains an optional leaf crate ahead of M3.
 
