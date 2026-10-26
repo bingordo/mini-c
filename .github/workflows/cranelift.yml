@@ -3,13 +3,25 @@ on:
   push:
     branches: [main]
     paths:
+      # Exercise native codegen whenever one of its local dependencies changes.
+      - 'Cargo.toml'
+      - 'Cargo.lock'
       - 'crates/cranelift/**'
+      - 'crates/syntax/**'
+      - 'crates/sema/**'
+      - 'crates/fuzz/**'
       - 'tools/test_cranelift.py'
       - '.github/workflows/cranelift.yml'
   pull_request:
     branches: [main]
     paths:
+      # Exercise native codegen whenever one of its local dependencies changes.
+      - 'Cargo.toml'
+      - 'Cargo.lock'
       - 'crates/cranelift/**'
+      - 'crates/syntax/**'
+      - 'crates/sema/**'
+      - 'crates/fuzz/**'
       - 'tools/test_cranelift.py'
       - '.github/workflows/cranelift.yml'
   workflow_dispatch:

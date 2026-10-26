@@ -8,6 +8,8 @@ on:
       - 'crates/**'
       - '!crates/cranelift/**'
       - 'tools/**'
+      # Only native executable harness changes should trigger the native job.
+      - '!tools/test_cranelift.py'
       - '.github/workflows/syntax.yml'
   pull_request:
     branches: [main]
@@ -17,6 +19,8 @@ on:
       - 'crates/**'
       - '!crates/cranelift/**'
       - 'tools/**'
+      # Only native executable harness changes should trigger the native job.
+      - '!tools/test_cranelift.py'
       - '.github/workflows/syntax.yml'
   workflow_dispatch:
 
