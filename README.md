@@ -20,6 +20,7 @@ cargo test -p mini-c-syntax -p mini-c-preprocess -p mini-c-sema -p mini-c -p min
 cargo clippy -p mini-c-syntax -p mini-c-sema -p mini-c -p mini-c-fuzz --all-targets -- -D warnings
 cargo run -p mini-c -- check --cpp=none example.c
 cargo run -p mini-c -- check --cpp=cc example.c
+cargo run -p mini-c -- check --max-errors=8 example.c
 cargo run -q -p mini-c-fuzz -- 42 120 > case.c
 cargo build -p mini-c-fuzz
 python3 tools/fuzz_reference.py --seed-count 12 --steps 120
@@ -32,7 +33,10 @@ cc /tmp/example.o -o /tmp/example
 python3 tools/test_cranelift.py --seed-count 4
 ```
 
-For a preprocessed file, `--cpp=none` skips external tools. For ordinary C sources, use `--cpp=cc`, `--cpp=clang`, or `--cpp=/path/to/preprocessor`; additional preprocessor options use `--cpp-arg=<argument>`. The parser API itself never invokes a preprocessor.
+For a preprocessed file, `--cpp=none` skips external tools. For ordinary C sources, use `--cpp=cc`, `--cpp=clang`, or `--cpp=/path/to/preprocessor`; additional preprocessor options use `--cpp-arg=<argument>`. The parser API itself never invokes a preprocessor. The default CLI continues to stop at the first error; passing
+`--max-errors=N` enables bounded syntax and semantic recovery across
+external declarations and prints stable L0001/S0001/T0001 category codes.
+This does not yet recover multiple independent errors inside one function.
 
 ## Project documents
 

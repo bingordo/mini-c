@@ -41,8 +41,38 @@ fn check(path: &str, cpp: Option<&preprocess::Config>) -> Result<(), String> {
     }
 }
 
+/// Opt-in multi-error checking: each item is checked transactionally and
+/// unsuccessful items do not poison later typedef or semantic symbol state.
+fn check_recovering(
+    path: &str, cpp: Option<&preprocess::Config>, max_errors: usize
+) -> Result<(), String> {
+    let source = match cpp {
+        Some(config) => preprocess::file(Path::new(path), config)
+            .map_err(|e| format!("{path}: {e}"))?,
+        None => fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?,
+    };
+    let file = SourceFile::new(path, &source);
+    let map = cpp.map(|_| SourceMap::from_preprocessed(&source, path));
+    let mut parser = Parser::new(&source);
+    let mut checker = Checker::new(Target::default()).expect("valid default target");
+    let errors = mini_c_sema::diagnose_stream_recovering(
+        &mut parser, &mut checker, max_errors,
+    );
+    if errors.is_empty() { return Ok(()); }
+    Err(errors.into_iter().map(|error| {
+        let location = if let Some(ref map) = map {
+            let origin = map.origin(error.span.lo);
+            format!("{}:{}", origin.file, origin.line)
+        } else {
+            let (line, column) = file.location(error.span.lo);
+            format!("{path}:{line}:{column}")
+        };
+        format!("{location}: error[{}]: {}", error.code.as_str(), error.message)
+    }).collect::<Vec<_>>().join("\n"))
+}
+
 fn usage() {
-    eprintln!("usage: mini-c check [--cpp=none|--cpp=cc|--cpp=clang|--cpp=<path>] [--cpp-arg=<arg>] <file.c> [file.c ...]");
+    eprintln!("usage: mini-c check [--cpp=none|--cpp=cc|--cpp=clang|--cpp=<path>] [--cpp-arg=<arg>] [--max-errors=<positive integer>] <file.c> [file.c ...]");
 }
 
 fn main() -> ExitCode {
@@ -53,6 +83,7 @@ fn main() -> ExitCode {
     }
     let mut cpp: Option<preprocess::Config> = None;
     let mut paths = Vec::new();
+    let mut max_errors = None;
     for arg in args {
         if let Some(executable) = arg.strip_prefix("--cpp=") {
             cpp = if executable == "none" {
@@ -71,6 +102,14 @@ fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             }
+        } else if let Some(value) = arg.strip_prefix("--max-errors=") {
+            match value.parse::<usize>() {
+                Ok(n) if n > 0 => max_errors = Some(n),
+                _ => {
+                    eprintln!("--max-errors requires a positive integer");
+                    return ExitCode::FAILURE;
+                }
+            }
         } else if arg.starts_with('-') {
             eprintln!("unknown option: {arg}");
             usage();
@@ -85,7 +124,11 @@ fn main() -> ExitCode {
     }
     let mut failed = false;
     for path in paths {
-        if let Err(error) = check(&path, cpp.as_ref()) {
+        let result = match max_errors {
+            Some(limit) => check_recovering(&path, cpp.as_ref(), limit),
+            None => check(&path, cpp.as_ref()),
+        };
+        if let Err(error) = result {
             eprintln!("{error}");
             failed = true;
         }
@@ -118,4 +161,26 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         assert!(result.is_ok(), "{result:?}");
     }
+    #[test]
+    fn opt_in_multi_error_cli_reports_bounded_codes_and_locations() {
+        let path = std::env::temp_dir().join(format!(
+            "mini-c-multi-diagnostic-{}.c", std::process::id(),
+        ));
+        std::fs::write(
+            &path,
+            "int broken = ;\nint okay(void) { return 1; }\nint wrong(void) { return missing; }\nint next(void) { return unknown; }\n",
+        ).unwrap();
+        let filename = path.to_str().unwrap();
+        let first_two = check_recovering(filename, None, 2).unwrap_err();
+        assert!(first_two.contains("error[S0001]"), "{first_two}");
+        assert!(first_two.contains("error[T0001]"), "{first_two}");
+        assert!(!first_two.contains("unknown"), "{first_two}");
+        assert_eq!(first_two.lines().count(), 2, "{first_two}");
+
+        let all = check_recovering(filename, None, 4).unwrap_err();
+        assert_eq!(all.lines().count(), 3, "{all}");
+        assert!(all.contains("unknown"), "{all}");
+        std::fs::remove_file(path).unwrap();
+    }
+
 }

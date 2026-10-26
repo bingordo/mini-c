@@ -61,7 +61,9 @@ file-scope bindings and handles malformed UTF-8 source tokens.
 Opt-in semantic recovery now uses per-item symbol undo logs, preserving
 successful earlier declarations while reverting failed global definitions and
 nested externs. It is accessible through `diagnose_stream_recovering`.
-Expression-level semantic spans and richer statement-local recovery remain open.
+The `mini-c check --max-errors=N` CLI now exposes bounded multi-error
+reporting without changing the default fail-fast path. Expression-level
+semantic spans and richer statement-local recovery remain open.
 
 **Progress (2026-10-26):** Diagnostics now expose stable lexical/syntax/semantic
 category codes (L0001/S0001/T0001) without requiring callers to parse English
