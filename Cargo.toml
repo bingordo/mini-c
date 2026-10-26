@@ -3,4 +3,7 @@ resolver = "2"
 members = ["crates/*"]
 
 [workspace.dependencies]
-lalrpop-util = { version = "=0.23.1", default-features = false, features = ["std"] }
+# The generated expression parser consumes tokens from the handwritten lexer.
+# LALRPOP 0.23.1 `std` also activates the optional regex-automata crate;
+# disabling all optional features keeps the normal workspace dependency-free.
+lalrpop-util = { version = "=0.23.1", default-features = false }

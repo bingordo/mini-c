@@ -21,6 +21,16 @@ Run one combined workspace test invocation on main pushes and pull requests rath
 - Scheduled weekly extended run: `.github/workflows/fuzz.yml` rotates through 16 seeds of 240 steps with GCC/Clang at O0/O2 plus the sanitizer variants (96 reference compilations per week). The manual dispatch defaults to 64 seeds / 300 steps and supports custom seed start/count/steps. The extended job **does not rerun** the workspace tests, Python unit tests or Clippy; those belong to the regular CI gate. Only changes to the extended workflow itself cause an extra verification push run.
 - On failure: retain logs, generated C, preprocessed .i, emitted .s/.o, seed, compiler revisions, target triple and repro command as artifacts.
 
+## Runtime parser dependency policy
+
+`mini-c-syntax` uses the checked-in LALRPOP parser and a handwritten
+expression lexer. Its runtime `lalrpop-util = 0.23.1` must disable
+**all** optional features, including `std`: the latter enables the
+optional `regex-automata` dependency in LALRPOP 0.23.1. Normal CI
+runs `cargo tree -p mini-c-syntax` and fails if it sees regex crates
+or the code generator. The standalone generator has an independent
+Cargo workspace and is invoked only on grammar changes.
+
 ## Cache and credentials
 
 Use the Rust/Cargo binaries already present on the Ubuntu 24.04 runner; avoid downloading/installing a duplicate toolchain on each job. `actions/cache@v4` restores `~/.cargo/registry`, `~/.cargo/git` and `target/debug` (including the workspace's binaries and `target/debug/incremental`). Set `CARGO_INCREMENTAL=1`, and key the cache by operating system, rustc release, the workspace manifests/lockfile and commit SHA. Prefix restore keys permit later commits to **incrementally reuse** objects produced by earlier commits, while Cargo fingerprints and compiler-version keys determine whether an object is still valid. Both CI workflows use the same cache prefix, so the extended job can reuse a generator built by regular CI. Avoid `rust-cache` for this project while workspace incremental artifacts and binaries are required: its normal cache cleanup drops incremental objects and workspace crates.

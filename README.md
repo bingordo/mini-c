@@ -54,7 +54,10 @@ Mini-C is designed as reusable Rust library crates, not just a standalone compil
 The grammar generator is optional at build time, and the checked-in parser now
 uses the handwritten C lexer through LALRPOP's external-token interface.
 Normal `cargo test` therefore no longer resolves regex-automata. The small
-`lalrpop-util` parser runtime remains required.
+`lalrpop-util` parser runtime remains required. In version 0.23.1, even
+enabling `lalrpop-util/std` pulls `regex-automata` back into the graph,
+so the dependency uses `default-features = false` with no extra features.
+The syntax CI checks the normal Cargo dependency closure.
 
 
 
