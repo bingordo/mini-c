@@ -338,6 +338,9 @@ impl ItemSource for Parser<'_> {
                     {
                         break; // The single (void) parameter list means no parameters.
                     }
+                    if param_ty == Type::Void && params.is_empty() && self.peek()?.is_none() {
+                        return Err(Diagnostic::new(self.eof_span(), "expected ')'"));
+                    }
                     if param_ty == Type::Void {
                         return Err(Diagnostic::new(name.span, "parameter cannot have void type"));
                     }
