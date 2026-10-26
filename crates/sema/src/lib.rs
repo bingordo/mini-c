@@ -110,11 +110,14 @@ pub struct Checker {
     locals: Vec<HashMap<String, Symbol>>,
     result_ty: Option<CType>,
     loop_depth: usize,
+    // Enabled only by the recovery API. Normal compilation has no
+    // transactional logging or symbol-table copying overhead.
+    rollback_log: Option<HashMap<String, Option<Symbol>>>,
 }
 
 impl Checker {
     pub fn new(target: Target) -> Result<Self, Diagnostic> {
-        Ok(Self { target: target.validate()?, globals: HashMap::new(), locals: Vec::new(), result_ty: None, loop_depth: 0 })
+        Ok(Self { target: target.validate()?, globals: HashMap::new(), locals: Vec::new(), result_ty: None, loop_depth: 0, rollback_log: None })
     }
 
     pub fn global(&self, name: &str) -> Option<&Symbol> { self.globals.get(name) }
@@ -186,6 +189,13 @@ impl Checker {
         } else {
             Linkage::External
         };
+        if self.rollback_log.is_some() {
+            // Record the first value, before any tentative modification.
+            // This includes block-scope externs encountered within a function.
+            let previous = self.globals.get(name).cloned();
+            self.rollback_log.as_mut().expect("enabled log")
+                .entry(name.to_owned()).or_insert(previous);
+        }
         if let Some(prior) = self.globals.get_mut(name) {
             if prior.kind != kind || prior.ty != ty {
                 return Err(type_error(span, format!("conflicting declaration of '{name}'")));
@@ -205,6 +215,27 @@ impl Checker {
             });
         }
         Ok(())
+    }
+
+    /// Check an external item transactionally, rolling back only the globals
+    /// touched on failure. The normal fail-fast entry point stays allocation
+    /// free beyond the compilation's necessary symbol table operations.
+    pub fn check_item_recovering(
+        &mut self, item: ExternalItem
+    ) -> Result<CheckedItem, Diagnostic> {
+        assert!(self.rollback_log.is_none(), "nested semantic transactions are unsupported");
+        self.rollback_log = Some(HashMap::new());
+        let result = self.check_item(item);
+        let changed = self.rollback_log.take().expect("transaction log");
+        if result.is_err() {
+            for (name, previous) in changed {
+                match previous {
+                    Some(symbol) => { self.globals.insert(name, symbol); }
+                    None => { self.globals.remove(&name); }
+                }
+            }
+        }
+        result
     }
 
     pub fn check_item(&mut self, item: ExternalItem) -> Result<CheckedItem, Diagnostic> {
@@ -525,6 +556,19 @@ impl Checker {
             }
         }
     }
+}
+
+/// Opt-in bounded syntax + semantic error collection. Each completed function
+/// is released immediately; a failed semantic item does not poison later items.
+/// The checker retains only committed file-scope declarations.
+pub fn diagnose_stream_recovering(
+    parser: &mut mini_c_syntax::parser::Parser<'_>,
+    checker: &mut Checker,
+    max_errors: usize,
+) -> Vec<Diagnostic> {
+    parser.for_each_item_with_diagnostics(max_errors, |item| {
+        checker.check_item_recovering(item).map(|_| ())
+    })
 }
 
 /// Consume one translation unit without collecting its function ASTs.

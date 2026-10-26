@@ -190,3 +190,64 @@ fn checker_discards_completed_bodies() {
     assert_eq!(checker.globals.len(), 201);
     assert!(checker.locals.is_empty());
 }
+
+#[test]
+fn diagnostic_collection_recovers_syntax_and_semantic_errors() {
+    use mini_c_syntax::diag::DiagnosticCode;
+    let source = concat!(
+        "int syntax_bad = ;\n",
+        "int good(void) { return 1; }\n",
+        "int semantic_bad(void) { return not_declared; }\n",
+        "int still_good(void) { return good(); }\n",
+    );
+    let mut parser = Parser::new(source);
+    let mut checker = Checker::new(Target::default()).unwrap();
+    let errors = diagnose_stream_recovering(&mut parser, &mut checker, 8);
+    assert_eq!(errors.len(), 2, "{errors:?}");
+    assert_eq!(errors[0].code, DiagnosticCode::Syntax);
+    assert_eq!(errors[1].code, DiagnosticCode::Semantic);
+    assert!(errors[0].span.lo < errors[1].span.lo);
+    assert!(checker.global("syntax_bad").is_none());
+    assert!(checker.global("semantic_bad").is_none());
+    assert!(checker.global("good").is_some());
+    assert!(checker.global("still_good").is_some());
+}
+
+#[test]
+fn semantic_rollback_restores_preexisting_globals_and_nested_externs() {
+    let source = concat!(
+        "int x;\n",
+        "int broken(void) { extern int future; return missing; }\n",
+        "int after(void) { return x; }\n",
+    );
+    let mut parser = Parser::new(source);
+    let mut checker = Checker::new(Target::default()).unwrap();
+    let errors = diagnose_stream_recovering(&mut parser, &mut checker, 8);
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(errors[0].message.contains("undeclared identifier"));
+    assert!(checker.global("broken").is_none());
+    assert!(checker.global("future").is_none());
+    assert!(checker.global("x").is_some());
+    assert!(checker.global("after").is_some());
+}
+
+#[test]
+fn semantic_rollback_does_not_mark_failed_global_definition_as_defined() {
+    let source = "int value = unknown; int value = 3;";
+    let mut parser = Parser::new(source);
+    let mut checker = Checker::new(Target::default()).unwrap();
+    let errors = diagnose_stream_recovering(&mut parser, &mut checker, 4);
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(errors[0].message.contains("undeclared identifier"));
+    assert!(checker.global("value").is_some_and(|symbol| symbol.defined));
+}
+
+#[test]
+fn semantic_error_limit_is_respected() {
+    let mut parser = Parser::new("int a = missing; int b = also_missing; int good;");
+    let mut checker = Checker::new(Target::default()).unwrap();
+    let errors = diagnose_stream_recovering(&mut parser, &mut checker, 1);
+    assert_eq!(errors.len(), 1);
+    assert!(checker.global("a").is_none());
+    assert!(checker.global("good").is_none());
+}

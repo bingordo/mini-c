@@ -39,11 +39,15 @@ impl<'a> Parser<'a> {
     /// Resynchronize at a top-level semicolon or a function's closing brace.
     /// A missing semicolon followed by a new type specifier may be repaired
     /// without consuming the following declaration.
-    fn recover_to_next_item(&mut self, error: &Diagnostic) -> bool {
-        // A malformed typedef must not poison future typedef classification.
+    fn rollback_last_file_binding(&mut self) {
         if let Some((name, previous)) = self.pending_file_binding.take() {
             self.scopes.restore_file_binding(&name, previous);
         }
+    }
+
+    fn recover_to_next_item(&mut self, error: &Diagnostic) -> bool {
+        // A malformed typedef must not poison future typedef classification.
+        self.rollback_last_file_binding();
         if self.brace_depth == 0
             && error.message.starts_with("expected ';'")
             && self.peek().ok().flatten().is_some_and(|t| matches!(
@@ -69,21 +73,40 @@ impl<'a> Parser<'a> {
 
     /// Deliver valid external declarations while collecting up to `max_errors`
     /// syntax/lexer errors, without retaining function ASTs.
-    ///
-    /// Recovery is intentionally conservative: a damaged function is skipped
-    /// through its closing brace. Semantic errors are not accumulated here,
-    /// since a semantic checker may have mutated its symbol state.
     pub fn for_each_item_recovering<F>(
         &mut self, max_errors: usize, mut receive: F
     ) -> Vec<Diagnostic>
     where
         F: FnMut(ExternalItem),
     {
+        self.for_each_item_with_diagnostics(max_errors, |item| {
+            receive(item);
+            Ok(())
+        })
+    }
+
+    /// Streaming syntax and consumer-error recovery, bounded by `max_errors`.
+    ///
+    /// A failing consumer must roll back its own state (e.g., by using the
+    /// semantic checker's transactional entry point). This method restores
+    /// parser typedef bindings for failed consumer items.
+    pub fn for_each_item_with_diagnostics<F>(
+        &mut self, max_errors: usize, mut receive: F
+    ) -> Vec<Diagnostic>
+    where
+        F: FnMut(ExternalItem) -> Result<(), Diagnostic>,
+    {
         let mut errors = Vec::new();
         if max_errors == 0 { return errors; }
         loop {
             match self.next_item() {
-                Ok(Some(item)) => receive(item),
+                Ok(Some(item)) => {
+                    if let Err(error) = receive(item) {
+                        self.rollback_last_file_binding();
+                        errors.push(error);
+                        if errors.len() >= max_errors { break; }
+                    }
+                }
                 Ok(None) => break,
                 Err(error) => {
                     let can_resume = if errors.len() + 1 < max_errors {
