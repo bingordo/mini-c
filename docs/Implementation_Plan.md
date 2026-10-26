@@ -52,7 +52,10 @@ Exit: valid supported integer programs type-check; invalid programs reject with 
 
 ## M2.25 — Syntax and semantic diagnostic quality
 
-**Progress (2026-10-26):** The parser now rejects truncated top-level
+**Progress (2026-10-26):** Diagnostics now expose stable lexical/syntax/semantic
+category codes (L0001/S0001/T0001) without requiring callers to parse English
+messages; lexical errors also advance the scanner for recovery. The parser
+rejects truncated top-level
 storage/typedef specifiers instead of treating them as EOF, reports exact
 end-of-input byte spans, restores nested typedef scopes on parse errors, and
 has table-driven malformed syntax tests plus a bounded deletion-mutation

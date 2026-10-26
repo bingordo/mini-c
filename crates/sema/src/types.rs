@@ -35,7 +35,7 @@ impl Default for Target {
 impl Target {
     pub fn validate(self) -> Result<Self, Diagnostic> {
         if !(16..=64).contains(&self.int_bits) || !(self.int_bits..=64).contains(&self.long_bits) {
-            return Err(Diagnostic::new(Span::default(), "invalid target: expected 16 <= int_bits <= long_bits <= 64"));
+            return Err(Diagnostic::semantic(Span::default(), "invalid target: expected 16 <= int_bits <= long_bits <= 64"));
         }
         Ok(self)
     }
@@ -86,7 +86,7 @@ impl Target {
 }
 
 pub fn type_error(span: Span, message: impl Into<String>) -> Diagnostic {
-    Diagnostic::new(span, message)
+    Diagnostic::semantic(span, message)
 }
 
 #[cfg(test)]

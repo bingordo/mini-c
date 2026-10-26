@@ -73,13 +73,14 @@ impl<'a> Scanner<'a> {
                         continue;
                     }
                     None => {
-                        return Err(Diagnostic::new(
+                        self.offset = source.len();
+                        return Err(Diagnostic::lexical(
                             Span {
                                 lo: offset,
                                 hi: source.len(),
                             },
                             "unterminated block comment",
-                        ))
+                        ));
                     }
                 }
             }
@@ -106,7 +107,7 @@ impl<'a> Scanner<'a> {
                     && (source.as_bytes()[offset].is_ascii_alphabetic()
                         || source.as_bytes()[offset] == b'_')
                 {
-                    return Err(Diagnostic::new(
+                    return Err(Diagnostic::lexical(
                         Span {
                             lo: start,
                             hi: offset + 1,
@@ -128,10 +129,11 @@ impl<'a> Scanner<'a> {
                 } else if "{}()[];,?:~!+-*/%<>=&|^.#".contains(ch) {
                     offset += 1;
                 } else {
-                    return Err(Diagnostic::new(
+                    self.offset = start + ch.len_utf8();
+                    return Err(Diagnostic::lexical(
                         Span {
                             lo: start,
-                            hi: start + ch.len_utf8(),
+                            hi: self.offset,
                         },
                         "invalid character",
                     ));

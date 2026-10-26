@@ -103,3 +103,20 @@ fn bad_input_mutations_terminate_without_panicking() {
         assert!(completed.is_ok(), "parser panic for mutation at {i}");
     }
 }
+
+#[test]
+fn broad_diagnostic_codes_remain_stable() {
+    use mini_c_syntax::diag::DiagnosticCode;
+    let syntax = syntax_error("int = 4;");
+    assert_eq!(syntax.code, DiagnosticCode::Syntax);
+    assert_eq!(syntax.code.as_str(), "S0001");
+
+    let lexical = syntax_error("int x; @");
+    assert_eq!(lexical.code, DiagnosticCode::Lexical);
+    assert_eq!(lexical.code.as_str(), "L0001");
+
+    let semantic = mini_c_syntax::diag::Diagnostic::semantic(
+        Span { lo: 3, hi: 4 }, "bad type",
+    );
+    assert_eq!(semantic.code.as_str(), "T0001");
+}
