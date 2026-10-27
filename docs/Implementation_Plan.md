@@ -65,16 +65,19 @@ The `mini-c check --max-errors=N` CLI now exposes bounded multi-error
 reporting without changing the default fail-fast path. Expression-level
 semantic spans and richer statement-local recovery remain open.
 
-**Progress (2026-10-26):** Diagnostics now expose stable lexical/syntax/semantic
-category codes (L0001/S0001/T0001) without requiring callers to parse English
-messages; lexical errors also advance the scanner for recovery. The parser
+**Progress:** Diagnostics expose stable lexical/syntax/semantic
+category codes (L0001/S0001/T0001) and specific codes for common lexer errors,
+syntax errors, undeclared identifiers, duplicate/conflicting declarations,
+multiple definitions, invalid assignment targets, assignment type mismatches,
+and argument-count errors. Codes are assigned at error creation, not by
+matching messages. Lexical errors advance the scanner for recovery. The parser
 rejects truncated top-level
 storage/typedef specifiers instead of treating them as EOF, reports exact
 end-of-input byte spans, restores nested typedef scopes on parse errors, and
 has table-driven malformed syntax tests plus a bounded deletion-mutation
 regression. These are incremental correctness improvements, **not** completion
-of M2.25: fine-grained diagnostic codes for individual error kinds, semantic
-expression spans, and recovery within a damaged function remain open.
+of M2.25: not every diagnostic has a specific code yet; semantic
+expression spans and recovery within a damaged function remain open.
 Bounded cross-declaration syntax/semantic recovery is implemented and verified
 in [bingordo syntax CI 40312729615](https://github.com/bingordo/mini-c/actions/runs/40312729615).
 

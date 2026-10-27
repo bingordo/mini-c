@@ -1,7 +1,7 @@
 //! Incremental parser for the first supported subset of external declarations.
 //! Each complete function body is returned separately; earlier bodies are not retained.
 use crate::ast::{BinOp, Decl, Expr, Function, Span, Stmt, StorageClass, Type, UnOp};
-use crate::diag::Diagnostic;
+use crate::diag::{Diagnostic, DiagnosticCode};
 use crate::lexer::{Scanner, Token, TokenKind};
 use crate::stream::{ExternalItem, ItemSource};
 use crate::scopes::{Binding, Scopes};
@@ -158,12 +158,14 @@ impl<'a> Parser<'a> {
         match self.peek()? {
             Some(token) if token.text == expected =>
                 Ok(self.take()?.expect("matching token was peeked")),
-            Some(token) => Err(Diagnostic::new(
+            Some(token) => Err(Diagnostic::coded(
                 token.span,
+                DiagnosticCode::SyntaxExpectedToken,
                 format!("expected '{expected}', found '{}'", token.text),
             )),
-            None => Err(Diagnostic::new(
+            None => Err(Diagnostic::coded(
                 self.eof_span(),
+                DiagnosticCode::SyntaxExpectedToken,
                 format!("expected '{expected}', found end of input"),
             )),
         }
@@ -229,14 +231,14 @@ impl<'a> Parser<'a> {
         // Keep synchronization tokens available to the recovery path.
         if let Some(token) = self.peek()? {
             if matches!(token.text, ";" | "}") {
-                return Err(Diagnostic::new(token.span, "expected expression"));
+                return Err(Diagnostic::coded(token.span, DiagnosticCode::SyntaxExpectedExpression, "expected expression"));
             }
         }
         let mut expr = match self.take()? {
             Some(t) if t.kind == TokenKind::Number => Expr::Int(
                 t.text
                     .parse()
-                    .map_err(|_| Diagnostic::new(t.span, "integer literal overflow"))?,
+                    .map_err(|_| Diagnostic::coded(t.span, DiagnosticCode::SyntaxIntegerOverflow, "integer literal overflow"))?,
             ),
             Some(t) if matches!(t.kind, TokenKind::Identifier | TokenKind::TypedefName) => Expr::Name(t.text.to_owned()),
             Some(t) if t.text == "(" => {
@@ -244,8 +246,8 @@ impl<'a> Parser<'a> {
                 self.expect(")")?;
                 e
             }
-            Some(t) => return Err(Diagnostic::new(t.span, "expected expression")),
-            None => return Err(Diagnostic::new(self.eof_span(), "expected expression")),
+            Some(t) => return Err(Diagnostic::coded(t.span, DiagnosticCode::SyntaxExpectedExpression, "expected expression")),
+            None => return Err(Diagnostic::coded(self.eof_span(), DiagnosticCode::SyntaxExpectedExpression, "expected expression")),
         };
         while self.peek()?.is_some_and(|t| t.text == "(") {
             self.take()?;

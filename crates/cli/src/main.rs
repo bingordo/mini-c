@@ -172,8 +172,8 @@ mod tests {
         ).unwrap();
         let filename = path.to_str().unwrap();
         let first_two = check_recovering(filename, None, 2).unwrap_err();
-        assert!(first_two.contains("error[S0001]"), "{first_two}");
-        assert!(first_two.contains("error[T0001]"), "{first_two}");
+        assert!(first_two.contains("error[S0102]"), "{first_two}");
+        assert!(first_two.contains("error[T0105]"), "{first_two}");
         assert!(!first_two.contains("unknown"), "{first_two}");
         assert_eq!(first_two.lines().count(), 2, "{first_two}");
 

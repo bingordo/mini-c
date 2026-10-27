@@ -1,13 +1,28 @@
 //! Structured source diagnostics, independent of CLI presentation.
 use crate::ast::Span;
 
-/// Stable broad diagnostic categories. Wording can improve without breaking
-/// clients that distinguish lexical, syntactic and semantic failures.
+/// Stable diagnostic codes. General categories are retained for compatibility;
+/// new kinds identify actionable errors independently of English messages.
+/// Codes are never derived by matching diagnostic text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiagnosticCode {
     Lexical,
     Syntax,
     Semantic,
+    LexicalUnterminatedComment,
+    LexicalNumericSuffix,
+    LexicalInvalidCharacter,
+    SyntaxExpectedToken,
+    SyntaxExpectedExpression,
+    SyntaxIntegerOverflow,
+    SemanticUnknownTypedef,
+    SemanticDuplicateDeclaration,
+    SemanticConflictingDeclaration,
+    SemanticMultipleDefinitions,
+    SemanticUndeclaredIdentifier,
+    SemanticInvalidAssignmentTarget,
+    SemanticWrongArgumentCount,
+    SemanticIncompatibleAssignment,
 }
 
 impl DiagnosticCode {
@@ -16,6 +31,20 @@ impl DiagnosticCode {
             Self::Lexical => "L0001",
             Self::Syntax => "S0001",
             Self::Semantic => "T0001",
+            Self::LexicalUnterminatedComment => "L0101",
+            Self::LexicalNumericSuffix => "L0102",
+            Self::LexicalInvalidCharacter => "L0103",
+            Self::SyntaxExpectedToken => "S0101",
+            Self::SyntaxExpectedExpression => "S0102",
+            Self::SyntaxIntegerOverflow => "S0103",
+            Self::SemanticUnknownTypedef => "T0101",
+            Self::SemanticDuplicateDeclaration => "T0102",
+            Self::SemanticConflictingDeclaration => "T0103",
+            Self::SemanticMultipleDefinitions => "T0104",
+            Self::SemanticUndeclaredIdentifier => "T0105",
+            Self::SemanticInvalidAssignmentTarget => "T0106",
+            Self::SemanticWrongArgumentCount => "T0107",
+            Self::SemanticIncompatibleAssignment => "T0108",
         }
     }
 }
@@ -39,5 +68,8 @@ impl Diagnostic {
     }
     pub fn semantic(span: Span, message: impl Into<String>) -> Self {
         Self { span, message: message.into(), code: DiagnosticCode::Semantic }
+    }
+    pub fn coded(span: Span, code: DiagnosticCode, message: impl Into<String>) -> Self {
+        Self { span, message: message.into(), code }
     }
 }

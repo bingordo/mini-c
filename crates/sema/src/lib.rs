@@ -6,7 +6,7 @@ pub mod const_eval;
 
 use std::collections::HashMap;
 use mini_c_syntax::ast::{BinOp, Decl, Expr, Function, Span, Stmt, StorageClass, Type, UnOp};
-use mini_c_syntax::diag::Diagnostic;
+use mini_c_syntax::diag::{Diagnostic, DiagnosticCode};
 use mini_c_syntax::stream::{ExternalItem, ItemSource};
 
 pub use types::{CType, IntRank, Target};
@@ -143,7 +143,7 @@ impl Checker {
                 _ => return Err(type_error(span, "unsigned requires an integer type")),
             },
             Type::Alias(name) => {
-                let symbol = self.lookup(name).ok_or_else(|| type_error(span, format!("unknown typedef '{name}'")))?;
+                let symbol = self.lookup(name).ok_or_else(|| Diagnostic::coded(span, DiagnosticCode::SemanticUnknownTypedef, format!("unknown typedef '{name}'")))?;
                 if symbol.kind != SymbolKind::Typedef {
                     return Err(type_error(span, format!("'{name}' does not name a type")));
                 }
@@ -172,7 +172,7 @@ impl Checker {
     fn define_local(&mut self, name: &str, ty: CType, kind: SymbolKind, linkage: Linkage, span: Span) -> Result<(), Diagnostic> {
         let scope = self.locals.last_mut().expect("local declaration outside a function");
         if scope.contains_key(name) {
-            return Err(type_error(span, format!("duplicate declaration of '{name}'")));
+            return Err(Diagnostic::coded(span, DiagnosticCode::SemanticDuplicateDeclaration, format!("duplicate declaration of '{name}'")));
         }
         scope.insert(name.to_owned(), Symbol { ty, kind, linkage, defined: true });
         Ok(())
@@ -197,7 +197,7 @@ impl Checker {
         }
         if let Some(prior) = self.globals.get_mut(name) {
             if prior.kind != kind || prior.ty != ty {
-                return Err(type_error(span, format!("conflicting declaration of '{name}'")));
+                return Err(Diagnostic::coded(span, DiagnosticCode::SemanticConflictingDeclaration, format!("conflicting declaration of '{name}'")));
             }
             // An extern redeclaration inherits a previous internal linkage.
             // Explicit static cannot follow a prior external declaration.
@@ -205,7 +205,7 @@ impl Checker {
                 return Err(type_error(span, format!("conflicting linkage for '{name}'")));
             }
             if defining && prior.defined {
-                return Err(type_error(span, format!("multiple definitions of '{name}'")));
+                return Err(Diagnostic::coded(span, DiagnosticCode::SemanticMultipleDefinitions, format!("multiple definitions of '{name}'")));
             }
             prior.defined |= defining;
         } else {
@@ -444,7 +444,7 @@ impl Checker {
             _ => false,
         };
         if !compatible {
-            return Err(type_error(span, format!("incompatible assignment: {:?} to {:?}", expr.ty, ty)));
+            return Err(Diagnostic::coded(span, DiagnosticCode::SemanticIncompatibleAssignment, format!("incompatible assignment: {:?} to {:?}", expr.ty, ty)));
         }
         Ok(self.convert(expr, ty))
     }
@@ -456,7 +456,7 @@ impl Checker {
                 Ok(CheckedExpr::value(ty, CheckedExprKind::Literal(*number)))
             }
             Expr::Name(name) => {
-                let symbol = self.lookup(name).ok_or_else(|| type_error(span, format!("undeclared identifier '{name}'")))?;
+                let symbol = self.lookup(name).ok_or_else(|| Diagnostic::coded(span, DiagnosticCode::SemanticUndeclaredIdentifier, format!("undeclared identifier '{name}'")))?;
                 let category = match symbol.kind {
                     SymbolKind::Typedef => return Err(type_error(span, format!("typedef name '{name}' used as expression"))),
                     SymbolKind::Function => Category::Function,
@@ -523,7 +523,7 @@ impl Checker {
             Expr::Assign(lhs, rhs) => {
                 let lhs = self.check_expr(lhs, span)?;
                 if lhs.category != Category::LValue {
-                    return Err(type_error(span, "left side of assignment must be a modifiable lvalue"));
+                    return Err(Diagnostic::coded(span, DiagnosticCode::SemanticInvalidAssignmentTarget, "left side of assignment must be a modifiable lvalue"));
                 }
                 let rhs_typed = self.check_expr(rhs, span)?;
                 let rhs_typed = self.convert_for_assignment(rhs_typed, &lhs.ty, rhs, span)?;
@@ -543,7 +543,7 @@ impl Checker {
                     return Err(type_error(span, "called expression is not a function"));
                 };
                 if args.len() != params.len() {
-                    return Err(type_error(span, format!("function expects {} arguments, got {}", params.len(), args.len())));
+                    return Err(Diagnostic::coded(span, DiagnosticCode::SemanticWrongArgumentCount, format!("function expects {} arguments, got {}", params.len(), args.len())));
                 }
                 let mut checked_args = Vec::with_capacity(args.len());
                 for (arg, ty) in args.iter().zip(params) {

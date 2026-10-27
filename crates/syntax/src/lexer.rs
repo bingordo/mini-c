@@ -74,11 +74,12 @@ impl<'a> Scanner<'a> {
                     }
                     None => {
                         self.offset = source.len();
-                        return Err(Diagnostic::lexical(
+                        return Err(Diagnostic::coded(
                             Span {
                                 lo: offset,
                                 hi: source.len(),
                             },
+                            crate::diag::DiagnosticCode::LexicalUnterminatedComment,
                             "unterminated block comment",
                         ));
                     }
@@ -116,11 +117,12 @@ impl<'a> Scanner<'a> {
                         offset += 1;
                     }
                     self.offset = offset;
-                    return Err(Diagnostic::lexical(
+                    return Err(Diagnostic::coded(
                         Span {
                             lo: start,
                             hi: offset,
                         },
+                        crate::diag::DiagnosticCode::LexicalNumericSuffix,
                         "unsupported numeric literal or suffix",
                     ));
                 }
@@ -139,11 +141,12 @@ impl<'a> Scanner<'a> {
                     offset += 1;
                 } else {
                     self.offset = start + ch.len_utf8();
-                    return Err(Diagnostic::lexical(
+                    return Err(Diagnostic::coded(
                         Span {
                             lo: start,
                             hi: self.offset,
                         },
+                        crate::diag::DiagnosticCode::LexicalInvalidCharacter,
                         "invalid character",
                     ));
                 }

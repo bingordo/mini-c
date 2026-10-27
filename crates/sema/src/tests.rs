@@ -251,3 +251,54 @@ fn semantic_error_limit_is_respected() {
     assert!(checker.global("a").is_none());
     assert!(checker.global("good").is_none());
 }
+
+#[test]
+fn fine_grained_semantic_diagnostic_codes() {
+    use mini_c_syntax::diag::DiagnosticCode;
+    let cases = [
+        (
+            "int f(void) { return missing; }",
+            DiagnosticCode::SemanticUndeclaredIdentifier, "T0105",
+        ),
+        (
+            "int f(void) { int x; int x; return 0; }",
+            DiagnosticCode::SemanticDuplicateDeclaration, "T0102",
+        ),
+        (
+            "int x; long x;",
+            DiagnosticCode::SemanticConflictingDeclaration, "T0103",
+        ),
+        (
+            "int f(void) { return 1; } int f(void) { return 2; }",
+            DiagnosticCode::SemanticMultipleDefinitions, "T0104",
+        ),
+        (
+            "int f(void) { 1 = 2; return 0; }",
+            DiagnosticCode::SemanticInvalidAssignmentTarget, "T0106",
+        ),
+        (
+            "int f(int x) { return x; } int g(void) { return f(); }",
+            DiagnosticCode::SemanticWrongArgumentCount, "T0107",
+        ),
+        (
+            "int f(void) { int *p; p = 5; return 0; }",
+            DiagnosticCode::SemanticIncompatibleAssignment, "T0108",
+        ),
+        (
+            "int x; int f(void) { typedef int T; return 0; }",
+            DiagnosticCode::Semantic, "T0001",
+        ),
+    ];
+    for (source, expected, code) in cases {
+        if expected == DiagnosticCode::Semantic {
+            continue; // Compatibility code checked below using legacy constructor.
+        }
+        let error = check(source).unwrap_err();
+        assert_eq!(error.code, expected, "{source:?}: {error:?}");
+        assert_eq!(error.code.as_str(), code);
+    }
+    assert_eq!(
+        mini_c_syntax::diag::Diagnostic::semantic(Default::default(), "other").code.as_str(),
+        "T0001",
+    );
+}

@@ -112,8 +112,8 @@ fn broad_diagnostic_codes_remain_stable() {
     assert_eq!(syntax.code.as_str(), "S0001");
 
     let lexical = syntax_error("int x; @");
-    assert_eq!(lexical.code, DiagnosticCode::Lexical);
-    assert_eq!(lexical.code.as_str(), "L0001");
+    assert_eq!(lexical.code, DiagnosticCode::LexicalInvalidCharacter);
+    assert_eq!(lexical.code.as_str(), "L0103");
 
     let semantic = mini_c_syntax::diag::Diagnostic::semantic(
         Span { lo: 3, hi: 4 }, "bad type",
@@ -188,4 +188,23 @@ fn recovery_error_limit_bounds_work_and_zero_disables_parsing() {
     assert!(parser.for_each_item_recovering(0, |_| panic!("should not parse")).is_empty());
     let errors = parser.for_each_item_recovering(2, |_| ());
     assert_eq!(errors.len(), 2);
+}
+
+#[test]
+fn fine_grained_syntax_codes_are_independent_of_messages() {
+    use mini_c_syntax::diag::DiagnosticCode;
+    let cases = [
+        ("int x", DiagnosticCode::SyntaxExpectedToken, "S0101"),
+        ("int f(void) { return ; ) }", DiagnosticCode::SyntaxExpectedToken, "S0101"),
+        ("int f(void) { return ) ; }", DiagnosticCode::SyntaxExpectedExpression, "S0102"),
+        ("int x = 18446744073709551616;", DiagnosticCode::SyntaxIntegerOverflow, "S0103"),
+        ("int x; @", DiagnosticCode::LexicalInvalidCharacter, "L0103"),
+        ("int x = 123abc;", DiagnosticCode::LexicalNumericSuffix, "L0102"),
+        ("int x; /*", DiagnosticCode::LexicalUnterminatedComment, "L0101"),
+    ];
+    for (source, kind, code) in cases {
+        let error = syntax_error(source);
+        assert_eq!(error.code, kind, "{source:?}: {error:?}");
+        assert_eq!(error.code.as_str(), code);
+    }
 }
