@@ -96,14 +96,31 @@ impl<'a> Parser<'a> {
     where
         F: FnMut(ExternalItem) -> Result<(), Diagnostic>,
     {
+        self.for_each_item_collecting(max_errors, |item, _remaining| {
+            receive(item).err().into_iter().collect()
+        })
+    }
+
+    /// Allow an external item to produce several diagnostics, for instance
+    /// errors from independent statements in one function. The callback gets
+    /// the remaining error budget and should never return more than that many
+    /// diagnostics. Parser recovery and its end-of-file guarantees are shared
+    /// with the simpler single-error API.
+    pub fn for_each_item_collecting<F>(
+        &mut self, max_errors: usize, mut receive: F
+    ) -> Vec<Diagnostic>
+    where
+        F: FnMut(ExternalItem, usize) -> Vec<Diagnostic>,
+    {
         let mut errors = Vec::new();
         if max_errors == 0 { return errors; }
         loop {
             match self.next_item() {
                 Ok(Some(item)) => {
-                    if let Err(error) = receive(item) {
+                    let new_errors = receive(item, max_errors - errors.len());
+                    if !new_errors.is_empty() {
                         self.rollback_last_file_binding();
-                        errors.push(error);
+                        errors.extend(new_errors.into_iter().take(max_errors - errors.len()));
                         if errors.len() >= max_errors { break; }
                     }
                 }

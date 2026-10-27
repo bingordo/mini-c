@@ -295,3 +295,69 @@ fn fine_grained_semantic_diagnostic_codes() {
         "T0001",
     );
 }
+
+#[test]
+fn collects_two_independent_semantic_errors_in_one_function() {
+    use mini_c_syntax::diag::DiagnosticCode;
+    let source = concat!(
+        "int fail(void) {\n",
+        "  int good = 1;\n",
+        "  int x = missing_x;\n",
+        "  int y = missing_y;\n",
+        "  return good;\n",
+        "}\n",
+        "int later(void) { return 0; }\n",
+    );
+    let mut parser = Parser::new(source);
+    let mut checker = Checker::new(Target::default()).unwrap();
+    let errors = diagnose_stream_recovering(&mut parser, &mut checker, 4);
+    assert_eq!(errors.len(), 2, "{errors:?}");
+    assert!(errors.iter().all(|e|
+        e.code == DiagnosticCode::SemanticUndeclaredIdentifier
+    ));
+    assert!(errors[0].message.contains("missing_x"), "{errors:?}");
+    assert!(errors[1].message.contains("missing_y"), "{errors:?}");
+    assert!(checker.global("fail").is_none());
+    assert!(checker.global("later").is_some());
+}
+
+#[test]
+fn failed_statement_does_not_declare_a_local_for_following_statements() {
+    use mini_c_syntax::diag::DiagnosticCode;
+    let source = "int broken(void) { int bad = unknown; return bad; } int fine;";
+    let mut parser = Parser::new(source);
+    let mut checker = Checker::new(Target::default()).unwrap();
+    let errors = diagnose_stream_recovering(&mut parser, &mut checker, 4);
+    assert_eq!(errors.len(), 2, "{errors:?}");
+    assert!(errors.iter().all(|e|
+        e.code == DiagnosticCode::SemanticUndeclaredIdentifier
+    ));
+    assert!(checker.global("broken").is_none());
+    assert!(checker.global("fine").is_some());
+}
+
+#[test]
+fn function_recovery_preserves_outer_locals_and_respects_total_error_limit() {
+    let source = concat!(
+        "int f(void) { int ok = 1; int a = unknown; int b = missing; return ok; }\n",
+        "int g(void) { return absent; }\n",
+    );
+    let mut parser = Parser::new(source);
+    let mut checker = Checker::new(Target::default()).unwrap();
+    let errors = diagnose_stream_recovering(&mut parser, &mut checker, 2);
+    assert_eq!(errors.len(), 2);
+    assert!(errors[0].message.contains("unknown"));
+    assert!(errors[1].message.contains("missing"));
+    assert!(checker.global("f").is_none());
+    assert!(checker.global("g").is_none());
+}
+
+#[test]
+fn no_extra_diagnostics_from_successful_functions() {
+    let source = "int f(void) { int a = 2; return a; } int g(void) { return f(); }";
+    let mut parser = Parser::new(source);
+    let mut checker = Checker::new(Target::default()).unwrap();
+    assert!(diagnose_stream_recovering(&mut parser, &mut checker, 5).is_empty());
+    assert!(checker.global("f").is_some());
+    assert!(checker.global("g").is_some());
+}

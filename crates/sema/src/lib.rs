@@ -113,11 +113,16 @@ pub struct Checker {
     // Enabled only by the recovery API. Normal compilation has no
     // transactional logging or symbol-table copying overhead.
     rollback_log: Option<HashMap<String, Option<Symbol>>>,
+    statement_undo: Option<HashMap<String, Option<Symbol>>>,
+    recovery_errors: Option<Vec<Diagnostic>>,
+    recovery_limit: usize,
+    recovery_depth: usize,
 }
 
 impl Checker {
     pub fn new(target: Target) -> Result<Self, Diagnostic> {
-        Ok(Self { target: target.validate()?, globals: HashMap::new(), locals: Vec::new(), result_ty: None, loop_depth: 0, rollback_log: None })
+        Ok(Self { target: target.validate()?, globals: HashMap::new(), locals: Vec::new(), result_ty: None, loop_depth: 0, rollback_log: None, statement_undo: None,
+            recovery_errors: None, recovery_limit: 0, recovery_depth: 0 })
     }
 
     pub fn global(&self, name: &str) -> Option<&Symbol> { self.globals.get(name) }
@@ -189,11 +194,17 @@ impl Checker {
         } else {
             Linkage::External
         };
-        if let Some(log) = &mut self.rollback_log {
-            // Record the first value, before any tentative modification.
-            // This includes block-scope externs encountered within a function.
+        if self.rollback_log.is_some() || self.statement_undo.is_some() {
+            // Log the first value before a tentative mutation. The outer
+            // transaction covers the whole external item; the inner one
+            // covers a single statement during diagnostic recovery.
             let previous = self.globals.get(name).cloned();
-            log.entry(name.to_owned()).or_insert(previous);
+            if let Some(log) = &mut self.rollback_log {
+                log.entry(name.to_owned()).or_insert_with(|| previous.clone());
+            }
+            if let Some(log) = &mut self.statement_undo {
+                log.entry(name.to_owned()).or_insert(previous);
+            }
         }
         if let Some(prior) = self.globals.get_mut(name) {
             if prior.kind != kind || prior.ty != ty {
@@ -214,6 +225,44 @@ impl Checker {
             });
         }
         Ok(())
+    }
+
+    fn restore_symbols(&mut self, changed: HashMap<String, Option<Symbol>>) {
+        for (name, previous) in changed {
+            match previous {
+                Some(symbol) => { self.globals.insert(name, symbol); }
+                None => { self.globals.remove(&name); }
+            }
+        }
+    }
+
+    /// Diagnostic-only entry point. Independent top-level statements inside
+    /// each function body can produce separate errors, while the failed
+    /// function is never committed to the persistent symbol table.
+    /// A successful function still commits normally.
+    pub fn check_item_diagnostics(
+        &mut self, item: ExternalItem, max_errors: usize
+    ) -> Vec<Diagnostic> {
+        if max_errors == 0 { return Vec::new(); }
+        assert!(self.rollback_log.is_none() && self.recovery_errors.is_none(),
+            "nested semantic diagnostic recovery is unsupported");
+        self.rollback_log = Some(HashMap::new());
+        self.recovery_errors = Some(Vec::new());
+        self.recovery_limit = max_errors;
+        self.recovery_depth = 0;
+        let result = self.check_item(item);
+        let mut errors = self.recovery_errors.take().expect("diagnostic collection");
+        if let Err(error) = result {
+            if errors.len() < max_errors { errors.push(error); }
+        }
+        let changed = self.rollback_log.take().expect("symbol transaction");
+        if !errors.is_empty() {
+            self.restore_symbols(changed);
+        }
+        self.statement_undo = None;
+        self.recovery_limit = 0;
+        self.recovery_depth = 0;
+        errors
     }
 
     /// Check an external item transactionally, rolling back only the globals
@@ -315,7 +364,37 @@ impl Checker {
     }
 
     fn check_statements(&mut self, statements: &[Stmt], span: Span) -> Result<Vec<CheckedStmt>, Diagnostic> {
-        statements.iter().map(|s| self.check_stmt(s, span)).collect()
+        // In normal compilation, or while inside an already checked nested
+        // statement, keep the original fail-fast behavior and no snapshots.
+        if self.recovery_errors.is_none() || self.recovery_depth != 0 {
+            return statements.iter().map(|s| self.check_stmt(s, span)).collect();
+        }
+        let mut checked = Vec::with_capacity(statements.len());
+        for statement in statements {
+            if self.recovery_errors.as_ref()
+                .is_some_and(|errors| errors.len() >= self.recovery_limit) {
+                break;
+            }
+            // Recovery-only local snapshot. Global changes use undo logs,
+            // avoiding O(total globals) clones on every statement.
+            let local_snapshot = self.locals.clone();
+            let loop_depth = self.loop_depth;
+            self.statement_undo = Some(HashMap::new());
+            self.recovery_depth += 1;
+            let result = self.check_stmt(statement, span);
+            self.recovery_depth -= 1;
+            let changed = self.statement_undo.take().expect("statement transaction");
+            match result {
+                Ok(stmt) => checked.push(stmt),
+                Err(error) => {
+                    self.locals = local_snapshot;
+                    self.loop_depth = loop_depth;
+                    self.restore_symbols(changed);
+                    self.recovery_errors.as_mut().expect("diagnostic collection").push(error);
+                }
+            }
+        }
+        Ok(checked)
     }
 
     fn check_stmt(&mut self, stmt: &Stmt, span: Span) -> Result<CheckedStmt, Diagnostic> {
@@ -565,8 +644,8 @@ pub fn diagnose_stream_recovering(
     checker: &mut Checker,
     max_errors: usize,
 ) -> Vec<Diagnostic> {
-    parser.for_each_item_with_diagnostics(max_errors, |item| {
-        checker.check_item_recovering(item).map(|_| ())
+    parser.for_each_item_collecting(max_errors, |item, remaining| {
+        checker.check_item_diagnostics(item, remaining)
     })
 }
 

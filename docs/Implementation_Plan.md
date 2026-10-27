@@ -62,8 +62,12 @@ Opt-in semantic recovery now uses per-item symbol undo logs, preserving
 successful earlier declarations while reverting failed global definitions and
 nested externs. It is accessible through `diagnose_stream_recovering`.
 The `mini-c check --max-errors=N` CLI now exposes bounded multi-error
-reporting without changing the default fail-fast path. Expression-level
-semantic spans and richer statement-local recovery remain open.
+reporting without changing the default fail-fast path. Diagnostic-only checking
+continues after independent erroneous statements in the outermost function
+block using per-statement local snapshots and global undo logs. Nested
+statements still fail fast within that statement; diagnostic-only recovery
+discards failed functions rather than emitting partial code.
+Expression-level semantic spans and nested statement recovery remain open.
 
 **Progress:** Diagnostics expose stable lexical/syntax/semantic
 category codes (L0001/S0001/T0001) and specific codes for common lexer errors,
