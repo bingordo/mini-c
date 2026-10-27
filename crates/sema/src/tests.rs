@@ -204,8 +204,8 @@ fn diagnostic_collection_recovers_syntax_and_semantic_errors() {
     let mut checker = Checker::new(Target::default()).unwrap();
     let errors = diagnose_stream_recovering(&mut parser, &mut checker, 8);
     assert_eq!(errors.len(), 2, "{errors:?}");
-    assert_eq!(errors[0].code, DiagnosticCode::Syntax);
-    assert_eq!(errors[1].code, DiagnosticCode::Semantic);
+    assert_eq!(errors[0].code, DiagnosticCode::SyntaxExpectedExpression);
+    assert_eq!(errors[1].code, DiagnosticCode::SemanticUndeclaredIdentifier);
     assert!(errors[0].span.lo < errors[1].span.lo);
     assert!(checker.global("syntax_bad").is_none());
     assert!(checker.global("semantic_bad").is_none());
@@ -284,15 +284,8 @@ fn fine_grained_semantic_diagnostic_codes() {
             "int f(void) { int *p; p = 5; return 0; }",
             DiagnosticCode::SemanticIncompatibleAssignment, "T0108",
         ),
-        (
-            "int x; int f(void) { typedef int T; return 0; }",
-            DiagnosticCode::Semantic, "T0001",
-        ),
     ];
     for (source, expected, code) in cases {
-        if expected == DiagnosticCode::Semantic {
-            continue; // Compatibility code checked below using legacy constructor.
-        }
         let error = check(source).unwrap_err();
         assert_eq!(error.code, expected, "{source:?}: {error:?}");
         assert_eq!(error.code.as_str(), code);

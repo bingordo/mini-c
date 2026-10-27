@@ -195,7 +195,7 @@ fn fine_grained_syntax_codes_are_independent_of_messages() {
     use mini_c_syntax::diag::DiagnosticCode;
     let cases = [
         ("int x", DiagnosticCode::SyntaxExpectedToken, "S0101"),
-        ("int f(void) { return ; ) }", DiagnosticCode::SyntaxExpectedToken, "S0101"),
+        ("int f(void) { return 3 ) }", DiagnosticCode::SyntaxExpectedToken, "S0101"),
         ("int f(void) { return ) ; }", DiagnosticCode::SyntaxExpectedExpression, "S0102"),
         ("int x = 18446744073709551616;", DiagnosticCode::SyntaxIntegerOverflow, "S0103"),
         ("int x; @", DiagnosticCode::LexicalInvalidCharacter, "L0103"),
