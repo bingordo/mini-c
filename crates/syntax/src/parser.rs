@@ -6,6 +6,42 @@ use crate::lexer::{Scanner, Token, TokenKind};
 use crate::stream::{ExternalItem, ItemSource};
 use crate::scopes::{Binding, Scopes};
 
+/// Syntactic declarator operators, stored inside-out until the base type is known.
+/// Applying them from the outside inward gives the C binding order:
+/// `int *a[3]` is an array of pointers; `int (*a)[3]` is a pointer to an array.
+/// This is parser-internal, so checked/frontend APIs still use `Type`.
+enum Declarator {
+    Name(String),
+    Pointer(Box<Self>),
+    Array(Box<Self>, Option<Expr>),
+    Function(Box<Self>, Vec<Decl>),
+}
+
+impl Declarator {
+    fn finish(self, base: Type) -> (String, Type, Option<Vec<Decl>>) {
+        match self {
+            Self::Name(name) => (name, base, None),
+            Self::Pointer(inner) => inner.finish(Type::Pointer(Box::new(base))),
+            Self::Array(inner, bound) => inner.finish(Type::Array(Box::new(base), bound.map(Box::new))),
+            Self::Function(inner, params) => {
+                let param_types = params.iter().map(|param| param.ty.clone()).collect();
+                let (name, ty, inner_params) = inner.finish(Type::Function {
+                    result: Box::new(base),
+                    params: param_types,
+                });
+                // The parameter names for a definition belong to the resulting
+                // function, not to a function nested inside a pointer type.
+                let definition_params = if matches!(&ty, Type::Function { .. }) {
+                    Some(params)
+                } else {
+                    inner_params
+                };
+                (name, ty, definition_params)
+            }
+        }
+    }
+}
+
 pub struct Parser<'a> {
     scanner: Scanner<'a>,
     input_len: usize,
@@ -284,6 +320,93 @@ impl<'a> Parser<'a> {
         Ok(expr)
     }
 
+    /// Parse C declarator binding order independently of the base type.
+    /// Named declarators are required for ordinary definitions and declarations;
+    /// parameter declarators may omit their name.
+    fn parse_declarator_shape(&mut self, allow_abstract: bool) -> Result<Declarator, Diagnostic> {
+        let mut stars = 0;
+        while self.peek()?.is_some_and(|token| token.text == "*") {
+            self.take()?;
+            stars += 1;
+        }
+        let mut direct = if self.peek()?.is_some_and(|token| token.text == "(") {
+            self.take()?;
+            let inner = self.parse_declarator_shape(allow_abstract)?;
+            self.expect(")")?;
+            inner
+        } else if let Some(token) = self.peek()?.filter(|token| {
+            matches!(token.kind, TokenKind::Identifier | TokenKind::TypedefName)
+                && !matches!(token.text, "int" | "char" | "long" | "void"
+                    | "unsigned" | "signed" | "typedef" | "static" | "extern"
+                    | "if" | "else" | "while" | "return" | "break" | "continue")
+        }) {
+            self.take()?;
+            Declarator::Name(token.text.to_owned())
+        } else if allow_abstract {
+            Declarator::Name(String::new())
+        } else {
+            let span = self.peek()?.map_or(self.eof_span(), |token| token.span);
+            return Err(Diagnostic::new(span, "expected identifier in declarator"));
+        };
+
+        loop {
+            if self.peek()?.is_some_and(|token| token.text == "[") {
+                self.take()?;
+                let bound = if self.peek()?.is_some_and(|token| token.text == "]") {
+                    None
+                } else {
+                    Some(self.parse_expr()?)
+                };
+                self.expect("]")?;
+                direct = Declarator::Array(Box::new(direct), bound);
+            } else if self.peek()?.is_some_and(|token| token.text == "(") {
+                self.take()?;
+                let params = self.parse_parameter_list()?;
+                self.expect(")")?;
+                direct = Declarator::Function(Box::new(direct), params);
+            } else {
+                break;
+            }
+        }
+        for _ in 0..stars {
+            direct = Declarator::Pointer(Box::new(direct));
+        }
+        Ok(direct)
+    }
+
+    fn parse_parameter_list(&mut self) -> Result<Vec<Decl>, Diagnostic> {
+        let mut params = Vec::new();
+        if self.peek()?.is_some_and(|token| token.text == ")") {
+            return Ok(params);
+        }
+        loop {
+            let (base, lo) = self.parse_type()?
+                .ok_or_else(|| Diagnostic::new(self.eof_span(), "expected parameter type"))?;
+            // The entire parameter list (void) denotes no parameters.
+            if base == Type::Void && params.is_empty()
+                && self.peek()?.is_some_and(|token| token.text == ")")
+            {
+                return Ok(params);
+            }
+            let (name, ty, _) = self.parse_declarator_shape(true)?.finish(base);
+            if ty == Type::Void {
+                return Err(Diagnostic::new(Span { lo, hi: lo }, "parameter cannot have void type"));
+            }
+            params.push(Decl {
+                storage: StorageClass::Default,
+                name,
+                ty,
+                init: None,
+                span: Span { lo, hi: lo },
+            });
+            if !self.peek()?.is_some_and(|token| token.text == ",") {
+                break;
+            }
+            self.take()?;
+        }
+        Ok(params)
+    }
+
     fn parse_decl(&mut self, is_typedef: bool) -> Result<Decl, Diagnostic> {
         let storage = match self.peek()?.map(|t| t.text) {
             Some("static") => { self.take()?; StorageClass::Static },
@@ -293,20 +416,10 @@ impl<'a> Parser<'a> {
         if is_typedef && storage != StorageClass::Default {
             return Err(Diagnostic::new(self.eof_span(), "typedef cannot combine with storage class"));
         }
-        let (mut ty, start) = self
-            .parse_type()?
+        let (base, start) = self.parse_type()?
             .ok_or_else(|| Diagnostic::new(self.eof_span(), "expected type"))?;
-        while self.peek()?.is_some_and(|t| t.text == "*") {
-            self.take()?;
-            ty = Type::Pointer(Box::new(ty));
-        }
-        let name = self
-            .take()?
-            .ok_or_else(|| Diagnostic::new(self.eof_span(), "expected identifier"))?;
-        if !matches!(name.kind, TokenKind::Identifier | TokenKind::TypedefName) {
-            return Err(Diagnostic::new(name.span, "expected identifier"));
-        }
-        self.scopes.declare(name.text, if is_typedef { Binding::Typedef } else { Binding::Ordinary });
+        let (name, ty, _) = self.parse_declarator_shape(false)?.finish(base);
+        self.scopes.declare(&name, if is_typedef { Binding::Typedef } else { Binding::Ordinary });
         let init = if self.peek()?.is_some_and(|t| t.text == "=") {
             self.take()?;
             Some(self.parse_expr()?)
@@ -314,16 +427,10 @@ impl<'a> Parser<'a> {
             None
         };
         if is_typedef && init.is_some() {
-            return Err(Diagnostic::new(name.span, "typedef cannot have an initializer"));
+            return Err(Diagnostic::new(Span { lo: start, hi: start }, "typedef cannot have an initializer"));
         }
         let end = self.expect(";")?.span.hi;
-        Ok(Decl {
-            storage,
-            name: name.text.to_owned(),
-            ty,
-            init,
-            span: Span { lo: start, hi: end },
-        })
+        Ok(Decl { storage, name, ty, init, span: Span { lo: start, hi: end } })
     }
 
     fn parse_stmt(&mut self) -> Result<Stmt, Diagnostic> {
@@ -442,117 +549,53 @@ impl ItemSource for Parser<'_> {
         if is_typedef && storage != StorageClass::Default {
             return Err(Diagnostic::new(self.eof_span(), "typedef cannot combine with storage class"));
         }
-        let Some((mut ty, start)) = self.parse_type()? else {
-            // EOF is only a successful end of the translation unit before any
-            // declaration specifier has been consumed.
+        let Some((base, start)) = self.parse_type()? else {
+            // EOF only succeeds when no declaration specifiers were consumed.
             if is_typedef || storage != StorageClass::Default {
                 return Err(Diagnostic::new(self.eof_span(), "expected type specifier"));
             }
             return Ok(None);
         };
-        while self.peek()?.is_some_and(|token| token.text == "*") {
-            self.take()?;
-            ty = Type::Pointer(Box::new(ty));
-        }
-        let name = self
-            .take()?
-            .ok_or_else(|| Diagnostic::new(self.eof_span(), "expected identifier"))?;
-        if !matches!(name.kind, TokenKind::Identifier | TokenKind::TypedefName) {
-            return Err(Diagnostic::new(name.span, "expected identifier"));
-        }
-        self.pending_file_binding = Some((name.text.to_owned(), self.scopes.lookup(name.text)));
-        self.scopes.declare(name.text, if is_typedef { Binding::Typedef } else { Binding::Ordinary });
-        if self.peek()?.is_some_and(|token| token.text == "(") {
-            self.take()?;
-            let mut params = Vec::new();
-            if !self.peek()?.is_some_and(|t| t.text == ")") {
-                loop {
-                    let (mut param_ty, lo) = self
-                        .parse_type()?
-                        .ok_or_else(|| Diagnostic::new(self.eof_span(), "expected parameter type"))?;
-                    while self.peek()?.is_some_and(|t| t.text == "*") {
-                        self.take()?;
-                        param_ty = Type::Pointer(Box::new(param_ty));
-                    }
-                    if param_ty == Type::Void && params.is_empty()
-                        && self.peek()?.is_some_and(|t| t.text == ")")
-                    {
-                        break; // The single (void) parameter list means no parameters.
-                    }
-                    if param_ty == Type::Void && params.is_empty() && self.peek()?.is_none() {
-                        return Err(Diagnostic::new(self.eof_span(), "expected ')'"));
-                    }
-                    if param_ty == Type::Void {
-                        return Err(Diagnostic::new(name.span, "parameter cannot have void type"));
-                    }
-                    // Names are optional in declarations, required in definitions.
-                    let param_name = if self.peek()?.is_some_and(|t|
-                        matches!(t.kind, TokenKind::Identifier | TokenKind::TypedefName))
-                    {
-                        Some(self.take()?.expect("looked ahead"))
-                    } else {
-                        None
-                    };
-                    let (param_name, hi) = match param_name {
-                        Some(token) => (token.text.to_owned(), token.span.hi),
-                        None => (String::new(), lo),
-                    };
-                    params.push(Decl {
-                        storage: StorageClass::Default,
-                        name: param_name,
-                        ty: param_ty,
-                        init: None,
-                        span: Span { lo, hi },
-                    });
-                    if !self.peek()?.is_some_and(|t| t.text == ",") {
-                        break;
-                    }
-                    self.take()?;
-                }
-            }
-            self.expect(")")?;
-            if self.peek()?.is_some_and(|token| token.text == "{") {
-                if is_typedef {
-                    return Err(Diagnostic::new(name.span, "typedef cannot define a function body"));
-                }
-                if params.iter().any(|p| p.name.is_empty()) {
-                    return Err(Diagnostic::new(name.span, "function definition requires parameter names"));
-                }
-                self.scopes.enter();
-                for param in &params { self.scopes.declare(&param.name, Binding::Ordinary); }
-                let parsed = self.parse_block();
-                self.scopes.leave();
-                let (body, end) = parsed?;
-                return Ok(Some(ExternalItem::Function(Function {
-                    storage,
-                    name: name.text.to_owned(),
-                    result: ty,
-                    params,
-                    body,
-                    span: Span { lo: start, hi: end },
-                })));
-            }
-            let end = self.expect(";")?.span.hi;
-            let decl = Decl {
-                storage,
-                name: name.text.to_owned(),
-                ty: Type::Function {
-                    result: Box::new(ty),
-                    params: params.into_iter().map(|p| p.ty).collect(),
-                },
-                init: None,
-                span: Span { lo: start, hi: end },
+        let (name, ty, definition_params) = self.parse_declarator_shape(false)?.finish(base);
+        self.pending_file_binding = Some((name.clone(), self.scopes.lookup(&name)));
+        self.scopes.declare(&name, if is_typedef { Binding::Typedef } else { Binding::Ordinary });
+
+        if self.peek()?.is_some_and(|token| token.text == "{") {
+            let Type::Function { result, .. } = ty else {
+                return Err(Diagnostic::new(Span { lo: start, hi: start }, "function body requires a function declarator"));
             };
-            return Ok(Some(if is_typedef {
-                ExternalItem::Typedef(decl)
-            } else {
-                ExternalItem::Declaration(decl)
-            }));
+            if is_typedef {
+                return Err(Diagnostic::new(Span { lo: start, hi: start }, "typedef cannot define a function body"));
+            }
+            let params = definition_params.unwrap_or_default();
+            if params.iter().any(|p| p.name.is_empty()) {
+                return Err(Diagnostic::new(Span { lo: start, hi: start }, "function definition requires parameter names"));
+            }
+            self.scopes.enter();
+            for param in &params { self.scopes.declare(&param.name, Binding::Ordinary); }
+            let parsed = self.parse_block();
+            self.scopes.leave();
+            let (body, end) = parsed?;
+            return Ok(Some(ExternalItem::Function(Function {
+                storage,
+                name,
+                result: *result,
+                params,
+                body,
+                span: Span { lo: start, hi: end },
+            })));
         }
-        let init = if self.peek()?.is_some_and(|t| t.text == "=") { self.take()?; Some(self.parse_expr()?) } else { None };
-        if is_typedef && init.is_some() { return Err(Diagnostic::new(name.span, "typedef cannot have an initializer")); }
+        let init = if self.peek()?.is_some_and(|t| t.text == "=") {
+            self.take()?;
+            Some(self.parse_expr()?)
+        } else {
+            None
+        };
+        if is_typedef && init.is_some() {
+            return Err(Diagnostic::new(Span { lo: start, hi: start }, "typedef cannot have an initializer"));
+        }
         let end = self.expect(";")?.span.hi;
-        let decl = Decl { storage, name: name.text.to_owned(), ty, init, span: Span { lo: start, hi: end } };
+        let decl = Decl { storage, name, ty, init, span: Span { lo: start, hi: end } };
         Ok(Some(if is_typedef { ExternalItem::Typedef(decl) } else { ExternalItem::Declaration(decl) }))
     }
 }
@@ -730,6 +773,82 @@ mod tests {
         }
         assert!(matches!(parser.next_item().unwrap(), Some(ExternalItem::Declaration(_))));
         assert!(parser.next_item().unwrap().is_none());
+    }
+
+
+    #[test]
+    fn declarator_binding_order_and_function_pointer_typedefs() {
+        let mut p = Parser::new(
+            "int *a[3]; int (*b)[3]; typedef int (*Fn)(int); Fn callback; \
+             int (*get(int n))(long); int *f(int n) { return 0; }"
+        );
+        let a = match p.next_item().unwrap().unwrap() {
+            ExternalItem::Declaration(d) => d,
+            other => panic!("unexpected item: {other:?}"),
+        };
+        assert_eq!(a.name, "a");
+        assert_eq!(a.ty, Type::Array(Box::new(Type::Pointer(Box::new(Type::Int))),
+            Some(Box::new(Expr::Int(3)))));
+        let b = match p.next_item().unwrap().unwrap() {
+            ExternalItem::Declaration(d) => d,
+            other => panic!("unexpected item: {other:?}"),
+        };
+        assert_eq!(b.name, "b");
+        assert_eq!(b.ty, Type::Pointer(Box::new(Type::Array(Box::new(Type::Int),
+            Some(Box::new(Expr::Int(3)))))));
+        let fptr = Type::Pointer(Box::new(Type::Function {
+            result: Box::new(Type::Int), params: vec![Type::Int],
+        }));
+        match p.next_item().unwrap().unwrap() {
+            ExternalItem::Typedef(d) => { assert_eq!(d.name, "Fn"); assert_eq!(d.ty, fptr); },
+            other => panic!("unexpected item: {other:?}"),
+        }
+        match p.next_item().unwrap().unwrap() {
+            ExternalItem::Declaration(d) => assert_eq!(d.ty, Type::Alias("Fn".into())),
+            other => panic!("unexpected item: {other:?}"),
+        }
+        match p.next_item().unwrap().unwrap() {
+            ExternalItem::Declaration(d) => {
+                assert_eq!(d.name, "get");
+                assert_eq!(d.ty, Type::Function {
+                    result: Box::new(Type::Pointer(Box::new(Type::Function {
+                        result: Box::new(Type::Int), params: vec![Type::Long],
+                    }))),
+                    params: vec![Type::Int],
+                });
+            }
+            other => panic!("unexpected item: {other:?}"),
+        }
+        match p.next_item().unwrap().unwrap() {
+            ExternalItem::Function(f) => {
+                assert_eq!(f.result, Type::Pointer(Box::new(Type::Int)));
+                assert_eq!(f.params[0].name, "n");
+            },
+            other => panic!("unexpected item: {other:?}"),
+        }
+        assert!(p.next_item().unwrap().is_none());
+    }
+
+    #[test]
+    fn abstract_parameter_declarators_and_malformed_grouping() {
+        let mut p = Parser::new("int h(int (*)(long), int [], char **);");
+        let decl = match p.next_item().unwrap().unwrap() {
+            ExternalItem::Declaration(d) => d,
+            other => panic!("unexpected item: {other:?}"),
+        };
+        assert_eq!(decl.ty, Type::Function {
+            result: Box::new(Type::Int),
+            params: vec![
+                Type::Pointer(Box::new(Type::Function {
+                    result: Box::new(Type::Int), params: vec![Type::Long],
+                })),
+                Type::Array(Box::new(Type::Int), None),
+                Type::Pointer(Box::new(Type::Pointer(Box::new(Type::Char)))),
+            ],
+        });
+        for source in ["int (*bad)(int;", "int a[1;", "int *;", "int f(int,);"] {
+            assert!(Parser::new(source).next_item().is_err(), "accepted {source:?}");
+        }
     }
 
     #[test]
