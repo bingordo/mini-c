@@ -82,7 +82,7 @@ pub fn evaluate(expr: &CheckedExpr, target: Target) -> Result<i128, &'static str
             bounded_arithmetic(result, &expr.ty, target)
         }
         CheckedExprKind::Name(_) | CheckedExprKind::Load(_) |
-        CheckedExprKind::Assign(..) | CheckedExprKind::Call(..) =>
+        CheckedExprKind::ArrayDecay(_) | CheckedExprKind::Assign(..) | CheckedExprKind::Call(..) =>
             Err("not an integer constant expression"),
     }
 }

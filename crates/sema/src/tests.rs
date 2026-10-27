@@ -17,6 +17,40 @@ fn reject(src: &str, message: &str) {
     }
 }
 
+
+#[test]
+fn array_types_and_parameter_adjustments() {
+    let items = check("int a[3]; typedef int Matrix[2][4]; Matrix m; int use(int v[3]) { int *p = v; return *p; }").unwrap();
+    let CheckedItem::Declaration(a) = &items[0] else { panic!("array declaration expected"); };
+    assert_eq!(a.ty, CType::Array(Box::new(CType::int()), Some(3)));
+    let CheckedItem::Typedef { ty: matrix, .. } = &items[1] else { panic!("typedef expected"); };
+    let matrix_ty = CType::Array(Box::new(
+        CType::Array(Box::new(CType::int()), Some(4)),
+    ), Some(2));
+    assert_eq!(*matrix, matrix_ty);
+    let CheckedItem::Declaration(m) = &items[2] else { panic!("object expected"); };
+    assert_eq!(m.ty, matrix_ty);
+    let CheckedItem::Function(f) = &items[3] else { panic!("function expected"); };
+    assert_eq!(f.signature, CType::Function {
+        result: Box::new(CType::int()),
+        params: vec![CType::Pointer(Box::new(CType::int()))],
+    });
+    assert_eq!(f.params[0].ty, CType::Pointer(Box::new(CType::int())));
+    check("int from_ptr(int *a); int from_ptr(int a[9]) { return *a; }").unwrap();
+    check("int copy(void) { int a[3]; int *p = a; int (*whole)[3] = &a; return 0; }").unwrap();
+}
+
+#[test]
+fn invalid_array_types_and_assignments() {
+    reject("int a[0];", "positive");
+    reject("int a[-1];", "positive");
+    reject("int a[1 / 0];", "array bound requires");
+    reject("int n; int a[n];", "integer constant expression");
+    reject("void a[2];", "array element requires");
+    reject("int f(void) { int a[2]; a = a; return 0; }", "modifiable lvalue");
+    reject("int f(void) { int a[2]; int b[2] = a; return 0; }", "incompatible assignment");
+}
+
 #[test]
 fn typed_parameters_arithmetic_and_returns() {
     let result = check("int twice(int x) { int y = x * 2; return y; }").unwrap();

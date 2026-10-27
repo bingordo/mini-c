@@ -270,6 +270,7 @@ impl Lower<'_> {
             CheckedExprKind::Literal(n) => Ok(b.ins().iconst(scalar_type(&expr.ty)?, *n as i64)),
             CheckedExprKind::Name(name) => Ok(b.use_var(self.variable(name)?)),
             CheckedExprKind::Load(inner) => self.expression(b, inner),
+            CheckedExprKind::ArrayDecay(_) => Err("M2.5 backend cannot lower array addresses yet".into()),
             CheckedExprKind::Convert(inner) => {
                 let v = self.expression(b, inner)?;
                 Self::convert(b, v, &inner.ty, &expr.ty)

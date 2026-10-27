@@ -28,6 +28,9 @@ pub enum CheckedExprKind {
     Call(Box<CheckedExpr>, Vec<CheckedExpr>),
     Convert(Box<CheckedExpr>),
     Load(Box<CheckedExpr>),
+    /// Array lvalue conversion yields a pointer to the first element,
+    /// without loading the entire aggregate into a scalar.
+    ArrayDecay(Box<CheckedExpr>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -43,8 +46,16 @@ impl CheckedExpr {
     }
     fn rvalue(self) -> Self {
         if self.category == Category::LValue {
-            let ty = self.ty.clone();
-            Self::value(ty, CheckedExprKind::Load(Box::new(self)))
+            match &self.ty {
+                CType::Array(element, _) => Self::value(
+                    CType::Pointer(element.clone()),
+                    CheckedExprKind::ArrayDecay(Box::new(self)),
+                ),
+                _ => {
+                    let ty = self.ty.clone();
+                    Self::value(ty, CheckedExprKind::Load(Box::new(self)))
+                }
+            }
         } else {
             self
         }
@@ -162,7 +173,7 @@ impl Checker {
                 }
                 let mut converted = Vec::with_capacity(params.len());
                 for param in params {
-                    let ty = self.resolve(param, span)?;
+                    let ty = self.adjust_parameter(self.resolve(param, span)?);
                     if !ty.is_object() {
                         return Err(type_error(span, "parameter requires a complete non-void object type"));
                     }
@@ -170,8 +181,36 @@ impl Checker {
                 }
                 CType::Function { result: Box::new(result), params: converted }
             }
-            Type::Array(..) => return Err(type_error(span, "array semantics are not implemented")),
+            Type::Array(element, bound) => {
+                let element = self.resolve(element, span)?;
+                if !element.is_object() || matches!(element, CType::Array(_, None)) {
+                    return Err(type_error(span, "array element requires a complete object type"));
+                }
+                let bound = bound.as_deref().map(|expr| -> Result<u64, Diagnostic> {
+                    let typed = self.check_expr(expr, span)?.rvalue();
+                    if !typed.ty.is_integer() {
+                        return Err(type_error(span, "array bound requires an integer constant expression"));
+                    }
+                    let value = const_eval::evaluate(&typed, self.target)
+                        .map_err(|reason| type_error(span, format!("array bound requires an integer constant expression: {reason}")))?;
+                    if value <= 0 {
+                        return Err(type_error(span, "array bound must be positive"));
+                    }
+                    u64::try_from(value).map_err(|_| type_error(span, "array bound exceeds the supported range"))
+                }).transpose()?;
+                CType::Array(Box::new(element), bound)
+            },
         })
+    }
+
+    /// C adjusts array and function parameter declarations to pointers.
+    /// Do this at both prototype resolution and definition checking.
+    fn adjust_parameter(&self, ty: CType) -> CType {
+        match ty {
+            CType::Array(element, _) => CType::Pointer(element),
+            CType::Function { .. } => CType::Pointer(Box::new(ty)),
+            other => other,
+        }
     }
 
     fn define_local(&mut self, name: &str, ty: CType, kind: SymbolKind, linkage: Linkage, span: Span) -> Result<(), Diagnostic> {
@@ -327,7 +366,7 @@ impl Checker {
         }
         let mut params = Vec::new();
         for param in &func.params {
-            let ty = self.resolve(&param.ty, param.span)?;
+            let ty = self.adjust_parameter(self.resolve(&param.ty, param.span)?);
             if !ty.is_object() {
                 return Err(type_error(param.span, "function parameter cannot have void or function type"));
             }
@@ -515,6 +554,9 @@ impl Checker {
     }
 
     fn convert_for_assignment(&self, expr: CheckedExpr, ty: &CType, _original: &Expr, span: Span) -> Result<CheckedExpr, Diagnostic> {
+        // The source array undergoes the standard array-to-pointer conversion
+        // before checking scalar assignment compatibility.
+        let expr = expr.rvalue();
         let compatible = match (ty, &expr.ty) {
             (CType::Integer { .. }, CType::Integer { .. }) => true,
             (CType::Pointer(lhs), CType::Pointer(rhs)) =>
@@ -601,7 +643,7 @@ impl Checker {
             }
             Expr::Assign(lhs, rhs) => {
                 let lhs = self.check_expr(lhs, span)?;
-                if lhs.category != Category::LValue {
+                if lhs.category != Category::LValue || matches!(lhs.ty, CType::Array(..)) {
                     return Err(Diagnostic::coded(span, DiagnosticCode::SemanticInvalidAssignmentTarget, "left side of assignment must be a modifiable lvalue"));
                 }
                 let rhs_typed = self.check_expr(rhs, span)?;
