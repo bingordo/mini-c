@@ -383,10 +383,15 @@ impl<'a> Parser<'a> {
             let (base, lo) = self.parse_type()?
                 .ok_or_else(|| Diagnostic::new(self.eof_span(), "expected parameter type"))?;
             // The entire parameter list (void) denotes no parameters.
-            if base == Type::Void && params.is_empty()
-                && self.peek()?.is_some_and(|token| token.text == ")")
-            {
-                return Ok(params);
+            if base == Type::Void && params.is_empty() {
+                if self.peek()?.is_some_and(|token| token.text == ")") {
+                    return Ok(params);
+                }
+                // An incomplete (void at EOF is a missing ')', not an
+                // invalid void parameter with an absent declarator.
+                if self.peek()?.is_none() {
+                    return Err(Diagnostic::new(self.eof_span(), "expected ')'"));
+                }
             }
             let (name, ty, _) = self.parse_declarator_shape(true)?.finish(base);
             if ty == Type::Void {
