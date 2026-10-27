@@ -11,6 +11,8 @@ pub enum CType {
     Void,
     Integer { rank: IntRank, unsigned: bool },
     Pointer(Box<CType>),
+    /// Incomplete arrays use None; bound and full object layout are target-dependent.
+    Array(Box<CType>, Option<u64>),
     Function { result: Box<CType>, params: Vec<CType> },
 }
 
