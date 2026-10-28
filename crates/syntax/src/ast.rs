@@ -81,6 +81,8 @@ pub enum Expr {
     Unary(UnOp, Box<Expr>),
     Binary(BinOp, Box<Expr>, Box<Expr>),
     Call(Box<Expr>, Vec<Expr>),
+    /// Postfix subscript: `base[index]`, equivalent to `*(base + index)`.
+    Index(Box<Expr>, Box<Expr>),
     Assign(Box<Expr>, Box<Expr>),
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -5,7 +5,7 @@
 //! control flow, and direct calls. Unsupported features fail explicitly.
 use cranelift_codegen::ir::{self, condcodes::IntCC, types, AbiParam, InstBuilder, Value};
 use cranelift_codegen::settings::{self, Configurable};
-use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
+use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{default_libcall_names, FuncId, Linkage as ClLinkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use mini_c_sema::{
@@ -19,8 +19,9 @@ type Result<T> = std::result::Result<T, String>;
 
 fn scalar_type(ty: &CType) -> Result<ir::Type> {
     match ty {
+        CType::Integer { rank: IntRank::Char, .. } => Ok(types::I8),
         CType::Integer { rank: IntRank::Int, .. } => Ok(types::I32),
-        CType::Integer { rank: IntRank::Long, .. } => Ok(types::I64),
+        CType::Integer { rank: IntRank::Long, .. } | CType::Pointer(_) => Ok(types::I64),
         _ => Err(format!("M2.5 only supports int/long scalar values, got {ty:?}")),
     }
 }
@@ -179,7 +180,7 @@ pub fn compile_source(source: &str) -> Result<Vec<u8>> {
 
 #[derive(Clone, Copy)]
 struct Local {
-    variable: Variable,
+    address: Value,
 }
 
 struct Lower<'a> {
@@ -191,33 +192,65 @@ struct Lower<'a> {
 }
 
 impl Lower<'_> {
+    /// Current x86-64 LP64 object model: use explicit storage for all local
+    /// objects so that aliases through &x, p[i], and *p stay coherent.
+    fn alignment(ty: &CType) -> u8 {
+        match ty {
+            CType::Array(element, _) => Self::alignment(element),
+            CType::Integer { rank: IntRank::Char, .. } => 0,
+            CType::Integer { rank: IntRank::Int, .. } => 2,
+            _ => 3,
+        }
+    }
+
     fn bind(&mut self, b: &mut FunctionBuilder<'_>, name: &str, ty: &CType, value: Option<Value>) -> Result<()> {
-        let clty = scalar_type(ty)?;
-        let var = b.declare_var(clty);
-        // A read before initialization is undefined C; zero is a deterministic
-        // backend default, not a language guarantee.
-        let init = match value { Some(v) => v, None => b.ins().iconst(clty, 0) };
-        b.def_var(var, init);
-        self.scopes.last_mut().expect("scope exists").insert(name.to_string(), Local { variable: var });
+        let size = ty.size_bytes(Target::default())
+            .ok_or_else(|| format!("M2.5 cannot allocate incomplete or non-object type {ty:?}"))?;
+        let size = u32::try_from(size).map_err(|_| "M2.5 stack object exceeds 4GiB")?;
+        let slot = b.create_sized_stack_slot(ir::StackSlotData::new(
+            ir::StackSlotKind::ExplicitSlot, size, Self::alignment(ty),
+        ));
+        let address = b.ins().stack_addr(types::I64, slot, 0);
+        // Bind before evaluating a local initializer: the declarator's scope
+        // starts before its initializer, and its address may escape.
+        self.scopes.last_mut().expect("scope exists").insert(name.to_owned(), Local { address });
+        if let Some(value) = value {
+            b.ins().store(ir::MemFlagsData::new(), value, address, 0);
+        } else if !matches!(ty, CType::Array(..)) {
+            // Deterministic choice for otherwise-indeterminate scalar locals,
+            // not a promise about C uninitialized reads.
+            let zero = b.ins().iconst(scalar_type(ty)?, 0);
+            b.ins().store(ir::MemFlagsData::new(), zero, address, 0);
+        }
         Ok(())
     }
 
-    fn variable(&self, name: &str) -> Result<Variable> {
-        self.scopes.iter().rev().find_map(|s| s.get(name))
-            .map(|local| local.variable)
+    fn local_address(&self, name: &str) -> Result<Value> {
+        self.scopes.iter().rev().find_map(|scope| scope.get(name))
+            .map(|local| local.address)
             .ok_or_else(|| format!("M2.5 does not support global objects or unresolved variable '{name}'"))
     }
 
+    fn place(&mut self, b: &mut FunctionBuilder<'_>, expr: &CheckedExpr) -> Result<Value> {
+        match &expr.kind {
+            CheckedExprKind::Name(name) => self.local_address(name),
+            CheckedExprKind::Unary(UnOp::Deref, pointer) => self.expression(b, pointer),
+            _ => Err("M2.5 expected an addressable local or dereference".into()),
+        }
+    }
+
     fn integer_value(&mut self, b: &mut FunctionBuilder<'_>, expr: &CheckedExpr) -> Result<Value> {
-        let result = self.expression(b, expr)?;
         if !expr.ty.is_integer() {
             return Err(format!("M2.5 integer expression expected, got {:?}", expr.ty));
         }
-        Ok(result)
+        self.expression(b, expr)
     }
 
     fn condition(&mut self, b: &mut FunctionBuilder<'_>, expr: &CheckedExpr) -> Result<Value> {
-        let value = self.integer_value(b, expr)?;
+        if !expr.ty.is_scalar() {
+            return Err(format!("M2.5 scalar condition expected, got {:?}", expr.ty));
+        }
+        let value = self.expression(b, expr)?;
         let ty = b.func.dfg.value_type(value);
         let zero = b.ins().iconst(ty, 0);
         Ok(b.ins().icmp(IntCC::NotEqual, value, zero))
@@ -239,6 +272,35 @@ impl Lower<'_> {
         } else {
             Ok(b.ins().ireduce(dst_ty, value))
         }
+    }
+
+    fn pointer_offset(
+        &mut self, b: &mut FunctionBuilder<'_>, op: BinOp,
+        pointer: &CheckedExpr, offset: &CheckedExpr,
+    ) -> Result<Value> {
+        let CType::Pointer(element) = &pointer.ty else {
+            return Err("M2.5 malformed checked pointer arithmetic".into());
+        };
+        let width = element.size_bytes(Target::default())
+            .ok_or("M2.5 pointer arithmetic requires sized element")?;
+        let width = i64::try_from(width).map_err(|_| "M2.5 pointer element too large")?;
+        let base = self.expression(b, pointer)?;
+        let raw_index = self.integer_value(b, offset)?;
+        let raw_type = b.func.dfg.value_type(raw_index);
+        let index = if raw_type == types::I64 { raw_index } else if matches!(
+            offset.ty, CType::Integer { unsigned: true, .. }
+        ) {
+            b.ins().uextend(types::I64, raw_index)
+        } else {
+            b.ins().sextend(types::I64, raw_index)
+        };
+        let scale = b.ins().iconst(types::I64, width);
+        let displacement = b.ins().imul(index, scale);
+        Ok(match op {
+            BinOp::Add => b.ins().iadd(base, displacement),
+            BinOp::Sub => b.ins().isub(base, displacement),
+            _ => return Err("M2.5 invalid checked pointer operator".into()),
+        })
     }
 
     fn short_circuit(&mut self, b: &mut FunctionBuilder<'_>, op: BinOp, left: &CheckedExpr, right: &CheckedExpr) -> Result<Value> {
@@ -268,16 +330,22 @@ impl Lower<'_> {
     fn expression(&mut self, b: &mut FunctionBuilder<'_>, expr: &CheckedExpr) -> Result<Value> {
         match &expr.kind {
             CheckedExprKind::Literal(n) => Ok(b.ins().iconst(scalar_type(&expr.ty)?, *n as i64)),
-            CheckedExprKind::Name(name) => Ok(b.use_var(self.variable(name)?)),
-            CheckedExprKind::Load(inner) => self.expression(b, inner),
-            CheckedExprKind::ArrayDecay(_) => Err("M2.5 backend cannot lower array addresses yet".into()),
+            CheckedExprKind::Name(name) => self.local_address(name),
+            CheckedExprKind::Load(inner) => {
+                let address = self.place(b, inner)?;
+                Ok(b.ins().load(scalar_type(&expr.ty)?, ir::MemFlagsData::new(), address, 0))
+            }
+            CheckedExprKind::ArrayDecay(inner) => self.place(b, inner),
             CheckedExprKind::Convert(inner) => {
                 let v = self.expression(b, inner)?;
                 Self::convert(b, v, &inner.ty, &expr.ty)
             }
             CheckedExprKind::Unary(op, inner) => {
-                if matches!(op, UnOp::Address | UnOp::Deref) {
-                    return Err("M2.5 pointer operations are unsupported".into());
+                if *op == UnOp::Address {
+                    return self.place(b, inner);
+                }
+                if *op == UnOp::Deref {
+                    return self.expression(b, inner);
                 }
                 let val = self.integer_value(b, inner)?;
                 match op {
@@ -293,16 +361,19 @@ impl Lower<'_> {
                 }
             }
             CheckedExprKind::Assign(lhs, rhs) => {
-                let CheckedExprKind::Name(name) = &lhs.kind else {
-                    return Err("M2.5 assignment supports local variables only".into());
-                };
-                let rhs_value = self.integer_value(b, rhs)?;
-                b.def_var(self.variable(name)?, rhs_value);
+                let address = self.place(b, lhs)?;
+                let rhs_value = self.expression(b, rhs)?;
+                b.ins().store(ir::MemFlagsData::new(), rhs_value, address, 0);
                 Ok(rhs_value)
             }
             CheckedExprKind::Binary(op, lhs, rhs) => {
                 if matches!(op, BinOp::And | BinOp::Or) {
                     return self.short_circuit(b, *op, lhs, rhs);
+                }
+                if matches!(op, BinOp::Add | BinOp::Sub)
+                    && matches!(&expr.ty, CType::Pointer(_))
+                {
+                    return self.pointer_offset(b, *op, lhs, rhs);
                 }
                 let left = self.integer_value(b, lhs)?;
                 let right = self.integer_value(b, rhs)?;
@@ -342,7 +413,7 @@ impl Lower<'_> {
                     .map(|known| known.id)
                     .ok_or_else(|| format!("M2.5 missing function declaration for '{name}'"))?;
                 let mut values = Vec::with_capacity(args.len());
-                for arg in args { values.push(self.integer_value(b, arg)?); }
+                for arg in args { values.push(self.expression(b, arg)?); }
                 let refid = self.module.declare_func_in_func(id, b.func);
                 let inst = b.ins().call(refid, &values);
                 let values = b.inst_results(inst);
@@ -374,8 +445,12 @@ impl Lower<'_> {
                 if *storage != StorageClass::Default {
                     return Err(format!("M2.5 does not emit storage-class local '{name}'"));
                 }
-                let value = initializer.as_ref().map(|e| self.integer_value(b, e)).transpose()?;
-                self.bind(b, name, ty, value)?;
+                self.bind(b, name, ty, None)?;
+                if let Some(initializer) = initializer {
+                    let value = self.expression(b, initializer)?;
+                    let address = self.local_address(name)?;
+                    b.ins().store(ir::MemFlagsData::new(), value, address, 0);
+                }
                 Ok(true)
             }
             CheckedStmt::Expr(expr) => {
@@ -485,11 +560,21 @@ mod tests {
     }
 
     #[test]
-    fn backend_rejects_unsupported_global_objects_and_pointers() {
+    fn backend_rejects_unsupported_global_objects_and_incomplete_arrays() {
         let error = compile_source("int global = 3; int main(void) { return global; }").unwrap_err();
         assert!(error.contains("global object"), "{error}");
-        let error = compile_source("int main(void) { int x = 2; int *p = &x; return *p; }").unwrap_err();
-        assert!(error.contains("pointer"), "{error}");
+        let error = compile_source("int main(void) { int a[]; return 0; }").unwrap_err();
+        assert!(error.contains("incomplete"), "{error}");
+    }
+
+    #[test]
+    fn compile_array_and_pointer_memory_operations() {
+        let src = "int f(int *p, int n) { p[n] = 13; return *(p+n); } \
+                   int main(void) { int a[3]; a[0]=2; a[1]=3; return f(a,2); }";
+        let obj = compile_source(src).unwrap();
+        assert_eq!(&obj[..4], b"\x7fELF");
+        let src = "int main(void) { int a[2][3]; a[1][2]=25; return a[1][2]; }";
+        assert!(!compile_source(src).unwrap().is_empty());
     }
 
     #[test]

@@ -570,6 +570,27 @@ impl Checker {
         Ok(self.convert(expr, ty))
     }
 
+    /// Form a checked pointer + integer or pointer - integer expression.
+    /// Address scaling is postponed to lowering, where the pointee size is known.
+    fn pointer_offset(
+        &self, op: BinOp, pointer: CheckedExpr, integer: CheckedExpr, span: Span
+    ) -> Result<CheckedExpr, Diagnostic> {
+        let CType::Pointer(element) = &pointer.ty else {
+            return Err(type_error(span, "pointer arithmetic requires a pointer"));
+        };
+        if element.size_bytes(self.target).is_none() {
+            return Err(type_error(span, "pointer arithmetic requires a complete object type"));
+        }
+        if !integer.ty.is_integer() {
+            return Err(type_error(span, "pointer arithmetic requires an integer offset"));
+        }
+        let integer_ty = self.target.promote(&integer.ty);
+        let integer = self.convert(integer, &integer_ty);
+        Ok(CheckedExpr::value(pointer.ty.clone(), CheckedExprKind::Binary(
+            op, Box::new(pointer), Box::new(integer),
+        )))
+    }
+
     fn check_expr(&self, expr: &Expr, span: Span) -> Result<CheckedExpr, Diagnostic> {
         match expr {
             Expr::Int(number) => {
@@ -584,6 +605,26 @@ impl Checker {
                     SymbolKind::Object => Category::LValue,
                 };
                 Ok(CheckedExpr { ty: symbol.ty.clone(), category, kind: CheckedExprKind::Name(name.clone()) })
+            }
+            Expr::Index(base, offset) => {
+                // C defines E1[E2] as *((E1) + (E2)); either operand may
+                // provide the pointer, including multidimensional array decay.
+                let base = self.check_expr(base, span)?.rvalue();
+                let offset = self.check_expr(offset, span)?.rvalue();
+                let (ptr, idx) = if matches!(base.ty, CType::Pointer(_)) {
+                    (base, offset)
+                } else if matches!(offset.ty, CType::Pointer(_)) {
+                    (offset, base)
+                } else {
+                    return Err(type_error(span, "subscript requires pointer and integer operands"));
+                };
+                let added = self.pointer_offset(BinOp::Add, ptr, idx, span)?;
+                let CType::Pointer(element) = &added.ty else { unreachable!() };
+                Ok(CheckedExpr {
+                    ty: element.as_ref().clone(),
+                    category: Category::LValue,
+                    kind: CheckedExprKind::Unary(UnOp::Deref, Box::new(added)),
+                })
             }
             Expr::Unary(op, inner) => {
                 let typed = self.check_expr(inner, span)?;
@@ -633,6 +674,19 @@ impl Checker {
                         && ((matches!(left.ty, CType::Pointer(_)) && const_eval::evaluate(&right, self.target) == Ok(0))
                             || (matches!(right.ty, CType::Pointer(_)) && const_eval::evaluate(&left, self.target) == Ok(0))))) {
                     return Ok(CheckedExpr::value(CType::int(), CheckedExprKind::Binary(*op, Box::new(left), Box::new(right))));
+                }
+                // C pointer arithmetic allows p + n, n + p, and p - n.
+                // Pointer difference p - q and relational pointer semantics are
+                // separate follow-ups; never treat addresses as ordinary ints.
+                if matches!(op, BinOp::Add | BinOp::Sub) {
+                    if matches!(left.ty, CType::Pointer(_)) && right.ty.is_integer() {
+                        return self.pointer_offset(*op, left, right, span);
+                    }
+                    if *op == BinOp::Add && left.ty.is_integer()
+                        && matches!(right.ty, CType::Pointer(_))
+                    {
+                        return self.pointer_offset(*op, right, left, span);
+                    }
                 }
                 let common = self.target.common_integer(&left.ty, &right.ty)
                     .ok_or_else(|| type_error(span, "operator requires compatible integer operands"))?;

@@ -21,6 +21,18 @@ impl CType {
     pub fn is_integer(&self) -> bool { matches!(self, Self::Integer { .. }) }
     pub fn is_scalar(&self) -> bool { self.is_integer() || matches!(self, Self::Pointer(_)) }
     pub fn is_object(&self) -> bool { !matches!(self, Self::Void | Self::Function { .. }) }
+
+    /// Known object size in bytes for the currently supported LP64 model.
+    /// Incomplete arrays, void/function types and overflowing extents have no size.
+    pub fn size_bytes(&self, target: Target) -> Option<u64> {
+        match self {
+            Self::Void | Self::Function { .. } => None,
+            Self::Integer { rank, .. } => Some(u64::from(target.bits(*rank) / 8)),
+            Self::Pointer(_) => Some(8), // Current target model is LP64.
+            Self::Array(element, Some(count)) => element.size_bytes(target)?.checked_mul(*count),
+            Self::Array(_, None) => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

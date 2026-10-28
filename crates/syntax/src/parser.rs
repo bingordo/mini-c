@@ -302,20 +302,31 @@ impl<'a> Parser<'a> {
             Some(t) => return Err(Diagnostic::coded(t.span, DiagnosticCode::SyntaxExpectedExpression, "expected expression")),
             None => return Err(Diagnostic::coded(self.eof_span(), DiagnosticCode::SyntaxExpectedExpression, "expected expression")),
         };
-        while self.peek()?.is_some_and(|t| t.text == "(") {
-            self.take()?;
-            let mut args = Vec::new();
-            if !self.peek()?.is_some_and(|t| t.text == ")") {
-                loop {
-                    args.push(self.parse_expr()?);
-                    if !self.peek()?.is_some_and(|t| t.text == ",") {
-                        break;
-                    }
+        loop {
+            match self.peek()?.map(|t| t.text) {
+                Some("(") => {
                     self.take()?;
+                    let mut args = Vec::new();
+                    if !self.peek()?.is_some_and(|t| t.text == ")") {
+                        loop {
+                            args.push(self.parse_expr()?);
+                            if !self.peek()?.is_some_and(|t| t.text == ",") {
+                                break;
+                            }
+                            self.take()?;
+                        }
+                    }
+                    self.expect(")")?;
+                    expr = Expr::Call(Box::new(expr), args);
                 }
+                Some("[") => {
+                    self.take()?;
+                    let index = self.parse_expr()?;
+                    self.expect("]")?;
+                    expr = Expr::Index(Box::new(expr), Box::new(index));
+                }
+                _ => break,
             }
-            self.expect(")")?;
-            expr = Expr::Call(Box::new(expr), args);
         }
         Ok(expr)
     }
@@ -780,6 +791,30 @@ mod tests {
         assert!(parser.next_item().unwrap().is_none());
     }
 
+
+    #[test]
+    fn postfix_subscripts_bind_tighter_than_unary_and_arithmetic() {
+        let mut parser = Parser::new(
+            "int f(int *p, int i) { return *p + p[i + 1] * 2; }"
+        );
+        let ExternalItem::Function(f) = parser.next_item().unwrap().unwrap() else {
+            panic!("expected function");
+        };
+        let Stmt::Block(body) = f.body else { panic!("expected block") };
+        let Stmt::Return(Some(Expr::Binary(BinOp::Add, _, mul))) = &body[0] else {
+            panic!("expected addition");
+        };
+        let Expr::Binary(BinOp::Mul, indexed, _) = mul.as_ref() else {
+            panic!("expected multiplication");
+        };
+        assert!(matches!(indexed.as_ref(), Expr::Index(_, _)));
+        let mut parser = Parser::new("int g(int *p) { return (p + 1)[0]; }");
+        assert!(matches!(parser.next_item().unwrap(), Some(ExternalItem::Function(_))));
+        for invalid in ["int f(int *p) { return p[]; }",
+                        "int f(int *p) { return p[1; }"] {
+            assert!(Parser::new(invalid).next_item().is_err(), "{invalid}");
+        }
+    }
 
     #[test]
     fn declarator_binding_order_and_function_pointer_typedefs() {
