@@ -215,12 +215,12 @@ impl Lower<'_> {
         // starts before its initializer, and its address may escape.
         self.scopes.last_mut().expect("scope exists").insert(name.to_owned(), Local { address });
         if let Some(value) = value {
-            b.ins().store(ir::MemFlags::new(), value, address, 0);
+            b.ins().store(ir::MemFlagsData::new(), value, address, 0);
         } else if !matches!(ty, CType::Array(..)) {
             // Deterministic choice for otherwise-indeterminate scalar locals,
             // not a promise about C uninitialized reads.
             let zero = b.ins().iconst(scalar_type(ty)?, 0);
-            b.ins().store(ir::MemFlags::new(), zero, address, 0);
+            b.ins().store(ir::MemFlagsData::new(), zero, address, 0);
         }
         Ok(())
     }
@@ -333,7 +333,7 @@ impl Lower<'_> {
             CheckedExprKind::Name(name) => self.local_address(name),
             CheckedExprKind::Load(inner) => {
                 let address = self.place(b, inner)?;
-                Ok(b.ins().load(scalar_type(&expr.ty)?, ir::MemFlags::new(), address, 0))
+                Ok(b.ins().load(scalar_type(&expr.ty)?, ir::MemFlagsData::new(), address, 0))
             }
             CheckedExprKind::ArrayDecay(inner) => self.place(b, inner),
             CheckedExprKind::Convert(inner) => {
@@ -363,7 +363,7 @@ impl Lower<'_> {
             CheckedExprKind::Assign(lhs, rhs) => {
                 let address = self.place(b, lhs)?;
                 let rhs_value = self.expression(b, rhs)?;
-                b.ins().store(ir::MemFlags::new(), rhs_value, address, 0);
+                b.ins().store(ir::MemFlagsData::new(), rhs_value, address, 0);
                 Ok(rhs_value)
             }
             CheckedExprKind::Binary(op, lhs, rhs) => {
@@ -449,7 +449,7 @@ impl Lower<'_> {
                 if let Some(initializer) = initializer {
                     let value = self.expression(b, initializer)?;
                     let address = self.local_address(name)?;
-                    b.ins().store(ir::MemFlags::new(), value, address, 0);
+                    b.ins().store(ir::MemFlagsData::new(), value, address, 0);
                 }
                 Ok(true)
             }
