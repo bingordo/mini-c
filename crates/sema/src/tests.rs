@@ -19,6 +19,24 @@ fn reject(src: &str, message: &str) {
 
 
 #[test]
+fn indexing_checks_lvalue_and_pointee_arithmetic() {
+    let items = check(
+        "int use(int p[4], int i) { p[i] = 9; *(1 + p) = 7; return i[p]; }"
+    ).unwrap();
+    let CheckedItem::Function(f) = &items[0] else { panic!("function expected") };
+    let CheckedStmt::Block(stmts) = &f.body else { panic!("block expected") };
+    let CheckedStmt::Expr(Some(set)) = &stmts[0] else { panic!("assignment expected") };
+    assert!(matches!(set.kind, CheckedExprKind::Assign(_, _)));
+    check("int read(void) { int a[3]; int *p = a; return (p + 1)[1]; }").unwrap();
+    check("int multidim(void) { int a[2][3]; int *row = a[1]; return row[0]; }").unwrap();
+    reject("int x; int f(void) { return x[1]; }", "subscript requires pointer");
+    reject("int f(int *p) { return p[p]; }", "integer offset");
+    reject("int f(void *p) { return p[0]; }", "complete object type");
+    reject("int f(int *p) { p[0] = p; return 0; }", "incompatible assignment");
+    reject("int f(void) { int a[2][3]; a[0] = a[1]; return 0; }", "modifiable lvalue");
+}
+
+#[test]
 fn array_types_and_parameter_adjustments() {
     let items = check("int a[3]; typedef int Matrix[2][4]; Matrix m; int use(int v[3]) { int *p = v; return *p; }").unwrap();
     let CheckedItem::Declaration(a) = &items[0] else { panic!("array declaration expected"); };
