@@ -38,9 +38,15 @@ the end of `main` emits zero. A nonvoid function (other than `main`)
 that can syntactically fall through is rejected. Each checked function
 is lowered and discarded before the next is accepted.
 
+**Now supported in the reference backend:** sized local scalar and array
+stack objects, address-of, dereference, array-to-pointer decay, scaled
+pointer + integer offsets and indexed reads/writes, including multidimensional
+fixed arrays. Local scalar objects use explicit stack storage to preserve
+aliasing, even across pointers and calls.
+
 **Deliberately unsupported:** file-scope data objects and their reads,
-pointers/addressing, dereference, arrays, globals, `char` and narrower
-integer ABI handling, block-scope `extern` or `static`, aggregates,
+incomplete local arrays, global data, full `char`/narrow integer ABI
+coverage, block-scope `extern` or `static`, aggregates,
 functions invoked via function pointers, non-x86-64 platforms and
 the full C expression/declarator grammar. Unsupported checked
 constructs produce backend errors rather than silently generating code.

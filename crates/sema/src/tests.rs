@@ -129,7 +129,9 @@ fn lvalue_and_pointer_constraints() {
     reject("int f(void) { int x; (x + 1) = 2; return x; }", "modifiable lvalue");
     reject("int f(void) { int x; return *x; }", "requires a pointer");
     reject("int f(void) { int *p; p = 5; return 0; }", "incompatible assignment");
-    reject("int f(void) { int *p; return p + 1; }", "integer operands");
+    // Pointer addition is now valid. Returning a pointer from an int
+    // function still violates assignment compatibility.
+    reject("int f(void) { int *p; return p + 1; }", "incompatible assignment");
 }
 
 #[test]

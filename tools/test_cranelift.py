@@ -15,6 +15,23 @@ import sys
 
 PROGRAMS = {
     "arithmetic": "int main(void) { int x=7; x=x*3-2; return x/2+x%2; }",
+    "stack_array": """int main(void) {
+        int a[4]; a[0]=3; a[1]=7; a[2]=11; a[3]=19;
+        return a[1] + a[3];
+    }""",
+    "alias_scalar": """int main(void) {
+        int x=5; int *p=&x; *p=18; return x;
+    }""",
+    "indexed_pointer": """int update(int *p, int idx) {
+        p[idx] = 9; return *(idx+p);
+    }
+    int main(void) { int a[3]; a[0]=1; a[1]=2; a[2]=3;
+        return update(a, 1) + a[1];
+    }""",
+    "multi_array": """int main(void) {
+        int a[2][3]; a[0][2]=4; a[1][0]=6; a[1][2]=9;
+        int *row=a[1]; return row[0]+row[2]+a[0][2];
+    }""",
     "nested": """int count(int limit) {
         int i=0; int total=0;
         while (i<limit) {
