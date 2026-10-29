@@ -1,0 +1,37 @@
+name: Regenerate checked-in bitwise expression parser
+on:
+  push:
+    branches: ['feature/c-bitwise-integer-expressions']
+    paths:
+      - 'crates/syntax/src/grammar.lalrpop'
+      - '.github/workflows/regenerate-bitwise-parser.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: mini-c-regenerate-bitwise-parser
+  cancel-in-progress: true
+jobs:
+  regenerate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - name: Cache standalone generator dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tools/parser-codegen -> target
+      - name: Generate parser from editable grammar
+        run: cargo run --manifest-path tools/parser-codegen/Cargo.toml -- --write
+      - name: Commit only generated parser file
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add crates/syntax/src/grammar.rs
+          if ! git diff --cached --quiet; then
+            git commit -m 'gen: regenerate bitwise expression parser from LALRPOP grammar'
+            git push origin HEAD:feature/c-bitwise-integer-expressions
+          fi
