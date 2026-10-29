@@ -284,9 +284,18 @@ impl Lower<'_> {
             .ok_or_else(|| format!("unresolved variable '{name}'"))
     }
 
+    fn object_address(&mut self, b: &mut FunctionBuilder<'_>, name: &str) -> Result<Value> {
+        if let Some(local) = self.scopes.iter().rev().find_map(|scope| scope.get(name)) {
+            return Ok(local.address);
+        }
+        let data = self.data.get(name).ok_or_else(|| format!("unresolved variable '{name}'"))?;
+        let gv = self.module.declare_data_in_func(data.id, b.func);
+        Ok(b.ins().symbol_value(types::I64, gv))
+    }
+
     fn place(&mut self, b: &mut FunctionBuilder<'_>, expr: &CheckedExpr) -> Result<Value> {
         match &expr.kind {
-            CheckedExprKind::Name(name) => self.local_address(name),
+            CheckedExprKind::Name(name) => self.object_address(b, name),
             CheckedExprKind::Unary(UnOp::Deref, pointer) => self.expression(b, pointer),
             _ => Err("M2.5 expected an addressable local or dereference".into()),
         }
@@ -383,7 +392,7 @@ impl Lower<'_> {
     fn expression(&mut self, b: &mut FunctionBuilder<'_>, expr: &CheckedExpr) -> Result<Value> {
         match &expr.kind {
             CheckedExprKind::Literal(n) => Ok(b.ins().iconst(scalar_type(&expr.ty)?, *n as i64)),
-            CheckedExprKind::Name(name) => self.local_address(name),
+            CheckedExprKind::Name(name) => self.object_address(b, name),
             CheckedExprKind::Load(inner) => {
                 let address = self.place(b, inner)?;
                 Ok(b.ins().load(scalar_type(&expr.ty)?, ir::MemFlagsData::new(), address, 0))
