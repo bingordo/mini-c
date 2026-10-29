@@ -52,7 +52,7 @@ fn tentative_global_zero_initialization_compiles() {
 #[test]
 fn global_pointer_initializer_is_explicitly_rejected() {
     let err = compile_source("int g; int *p=&g; int main(void) { return *p; }").unwrap_err();
-    assert!(err.contains("integer scalar support"), "{err}");
+    assert!(err.contains("global initializer"), "{err}");
 }
 
 #[test]
@@ -73,4 +73,14 @@ fn repeated_tentative_definitions_compile() {
 #[test]
 fn local_variable_shadows_global_object() {
     emits_elf("int x=13; int main(void) { int x=7; return x-7; }");
+}
+
+#[test]
+fn null_pointer_global_initializer_compiles() {
+    emits_elf("int *p=0; int main(void) { return p==0; }");
+}
+
+#[test]
+fn pointer_global_tentative_definition_compiles() {
+    emits_elf("int *p; int main(void) { return p==0; }");
 }
