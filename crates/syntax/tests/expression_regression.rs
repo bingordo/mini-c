@@ -76,3 +76,13 @@ fn comments_do_not_change_expression_tokenization() {
         )
     );
 }
+
+#[test]
+fn ascii_character_literals_keep_expression_semantics() {
+    assert_eq!(parse_expression("'a' + 1").unwrap(),
+        Expr::Binary(BinOp::Add,Box::new(Expr::Int(97)),Box::new(Expr::Int(1))));
+    assert_eq!(parse_expression(r"'\t'").unwrap(),Expr::Int(9));
+    for source in ["''","'ab'",r"'\q'",r"'\x'"] {
+        assert!(parse_expression_diagnostic(source).is_err(),"{source}");
+    }
+}
