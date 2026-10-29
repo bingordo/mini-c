@@ -1,5 +1,5 @@
 //! Executable-object compilation smoke tests for the next C memory milestone.
-//! Global object tests are deliberately ignored until global emission lands.
+//! Global object tests exercise data emission and relocations.
 use mini_c_cranelift::compile_source;
 
 fn emits_elf(src: &str) {
@@ -30,13 +30,27 @@ fn rejects_incomplete_local_array() {
 }
 
 #[test]
-#[ignore = "M4/M5 global data object emission not yet implemented"]
 fn initialized_global_object_compiles() {
     emits_elf("int g=7; int main(void) { return g-7; }");
 }
 
 #[test]
-#[ignore = "M4/M5 global data object emission not yet implemented"]
 fn internal_global_and_extern_reference_compile() {
     emits_elf("static int g=9; extern int g; int main(void) { return g-9; }");
+}
+
+#[test]
+fn mutable_global_object_compiles() {
+    emits_elf("int counter=10; int increment(void) { counter=counter+1; return counter; } int main(void) { return increment()-11; }");
+}
+
+#[test]
+fn tentative_global_zero_initialization_compiles() {
+    emits_elf("int counter; int main(void) { return counter; }");
+}
+
+#[test]
+fn global_pointer_initializer_is_explicitly_rejected() {
+    let err = compile_source("int g; int *p=&g; int main(void) { return *p; }").unwrap_err();
+    assert!(err.contains("integer scalar support"), "{err}");
 }
