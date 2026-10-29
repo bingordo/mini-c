@@ -427,3 +427,13 @@ fn musl_isblank_with_original_c_character_literals_typechecks(){
         result:Box::new(CType::int()),params:vec![CType::int()]
     });
 }
+
+#[test]
+fn global_array_scalar_initializer_is_rejected_until_aggregate_support() {
+    reject("int a[3] = 1;", "array initializer requires aggregate");
+    reject("int a[3] = 0;", "array initializer requires aggregate");
+    // An uninitialized file-scope array remains a valid tentative definition.
+    check("int a[3]; extern int a[3];").unwrap();
+    // Scalar constant initializers continue to work.
+    check("int n = 3; unsigned long m = 7;").unwrap();
+}
