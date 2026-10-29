@@ -6,7 +6,8 @@
 use cranelift_codegen::ir::{self, condcodes::IntCC, types, AbiParam, InstBuilder, Value};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
-use cranelift_module::{default_libcall_names, DataDescription, DataId, FuncId, Linkage as ClLinkage, Module};
+use cranelift_module::{default_libcall_names, DataId, FuncId, Linkage as ClLinkage, Module};
+use cranelift_module::DataDescription;
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use mini_c_sema::{
     CType, CheckedDecl, CheckedExpr, CheckedExprKind, CheckedFunction,
@@ -290,7 +291,7 @@ impl Lower<'_> {
         }
         let data = self.data.get(name).ok_or_else(|| format!("unresolved variable '{name}'"))?;
         let gv = self.module.declare_data_in_func(data.id, b.func);
-        Ok(b.ins().symbol_value(types::I64, gv))
+        Ok(b.ins().global_value(types::I64, gv))
     }
 
     fn place(&mut self, b: &mut FunctionBuilder<'_>, expr: &CheckedExpr) -> Result<Value> {
