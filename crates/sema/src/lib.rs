@@ -528,6 +528,12 @@ impl Checker {
     fn validate_static_initializer(
         &self, expression: &CheckedExpr, original: &Expr, ty: &CType, span: Span
     ) -> Result<(), Diagnostic> {
+        if matches!(ty, CType::Array(..)) {
+            // Array initialization needs aggregate/string initializer syntax and
+            // element-wise checking. Never accept a scalar expression as a
+            // complete array initializer just because it is constant.
+            return Err(type_error(span, "array initializer requires aggregate initialization support"));
+        }
         if ty.is_integer() {
             const_eval::evaluate(expression, self.target).map_err(|why|
                 type_error(span, format!("initializer is not a valid integer constant expression: {why}")))?;
