@@ -645,6 +645,14 @@ mod tests {
     }
 
     #[test]
+    fn compiles_bitwise_integer_expressions() {
+        let src="int f(unsigned int x) { return (~x & 255) | (x ^ 23); }\
+                  int g(int a, int b) { return (a & b) ^ (a | b); }";
+        let obj=compile_source(src).unwrap();
+        assert_eq!(&obj[..4],b"\x7fELF");
+    }
+
+    #[test]
     fn rejects_fallthrough_in_non_main_nonvoid() {
         let error = compile_source("int f(int x) { if (x) return x; }").unwrap_err();
         assert!(error.contains("may reach its end"), "{error}");
