@@ -90,6 +90,7 @@ pub enum UnOp {
     Plus,
     Neg,
     Not,
+    BitNot,
     Address,
     Deref,
 }
@@ -108,4 +109,7 @@ pub enum BinOp {
     Ge,
     And,
     Or,
+    BitAnd,
+    BitOr,
+    BitXor,
 }
