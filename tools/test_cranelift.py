@@ -88,6 +88,11 @@ PROGRAMS = {
     "global_static": "static int g=9; extern int g; int main(void) { return g; }",
     "global_shadowing": "int g=13; int main(void) { int g=7; return g; }",
     "global_redeclaration": "extern int g; int g=42; int main(void) { return g; }",
+    "global_array": "int a[4]; int main(void) { a[1]=17; return a[1]+a[0]; }",
+    "global_multidim_array": "int a[2][3]; int main(void) { a[1][2]=29; return a[1][2]; }",
+    "global_address_taken": "int g=3; int main(void) { int *p=&g; *p=21; return g; }",
+    "global_narrow_char": "unsigned char g=255; int main(void) { return g; }",
+
 
 }
 
