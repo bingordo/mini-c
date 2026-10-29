@@ -100,3 +100,20 @@ fn musl_isblank_body_parses_without_character_literal_rewrites(){
     assert!(matches!(statements.as_slice(),[Stmt::Return(Some(_))]));
     assert!(parser.next_item().unwrap().is_none());
 }
+
+
+#[test]
+fn bitwise_c_precedence_and_unary_not() {
+    use mini_c_syntax::ast::UnOp;
+    let binary=|op,l,r| Expr::Binary(op,Box::new(l),Box::new(r));
+    assert_eq!(parse_expression("a | b ^ c & 7 == 3").unwrap(),
+        binary(BinOp::BitOr,name("a"),
+            binary(BinOp::BitXor,name("b"),
+                binary(BinOp::BitAnd,name("c"),
+                    binary(BinOp::Eq,Expr::Int(7),Expr::Int(3))))));
+    assert_eq!(parse_expression("~a & 255").unwrap(),
+        binary(BinOp::BitAnd,Expr::Unary(UnOp::BitNot,Box::new(name("a"))),Expr::Int(255)));
+    // C bitwise operators are eager and distinct from logical && and ||.
+    assert_eq!(parse_expression("a && b | c").unwrap(),
+        binary(BinOp::And,name("a"),binary(BinOp::BitOr,name("b"),name("c"))));
+}
