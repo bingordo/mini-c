@@ -667,6 +667,7 @@ impl Checker {
                 let left = self.check_expr(lhs, span)?.rvalue();
                 let right = self.check_expr(rhs, span)?.rvalue();
                 let logical = matches!(op, BinOp::And | BinOp::Or);
+                let bitwise = matches!(op, BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor);
                 let relation = matches!(op, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge);
                 if logical {
                     if !(left.ty.is_scalar() && right.ty.is_scalar()) {
@@ -693,6 +694,9 @@ impl Checker {
                     {
                         return self.pointer_offset(*op, right, left, span);
                     }
+                }
+                if bitwise && !(left.ty.is_integer() && right.ty.is_integer()) {
+                    return Err(type_error(span, "bitwise operator requires integer operands"));
                 }
                 let common = self.target.common_integer(&left.ty, &right.ty)
                     .ok_or_else(|| type_error(span, "operator requires compatible integer operands"))?;
