@@ -22,7 +22,7 @@ pub fn parse_ascii_character(text: &str) -> Result<u64, &'static str> {
     if inner.len()<2 {return Err("truncated character escape")}
     let value=match inner[1] {
         b'0'..=b'7' => {
-            if inner.len()>4 || inner[1..].iter().any(|b|!matches!(b,b'0'..=b'7')){
+            if inner.len()>4 || inner[1..].iter().any(|&b|!matches!(b,b'0'..=b'7')){
                 return Err("octal character escape requires one to three octal digits");
             }
             let mut result=0u32;
