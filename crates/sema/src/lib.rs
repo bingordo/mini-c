@@ -656,7 +656,7 @@ impl Checker {
                         if !typed.ty.is_scalar() { return Err(type_error(span, "logical not requires scalar operand")); }
                         Ok(CheckedExpr::value(CType::int(), CheckedExprKind::Unary(*op, Box::new(typed.rvalue()))))
                     }
-                    UnOp::Plus | UnOp::Neg => {
+                    UnOp::Plus | UnOp::Neg | UnOp::BitNot => {
                         if !typed.ty.is_integer() { return Err(type_error(span, "arithmetic unary operator requires integer")); }
                         let ty = self.target.promote(&typed.ty);
                         Ok(CheckedExpr::value(ty.clone(), CheckedExprKind::Unary(*op, Box::new(self.convert(typed, &ty)))))
