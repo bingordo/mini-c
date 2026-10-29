@@ -86,3 +86,17 @@ fn ascii_character_literals_keep_expression_semantics() {
         assert!(parse_expression_diagnostic(source).is_err(),"{source}");
     }
 }
+
+#[test]
+fn musl_isblank_body_parses_without_character_literal_rewrites(){
+    use mini_c_syntax::{parser::Parser,stream::{ItemSource,ExternalItem},ast::Stmt};
+    let original="int isblank(int c)\n{\n\treturn (c == ' ' || c == '\\t');\n}\n";
+    let mut parser=Parser::new(original);
+    let Some(ExternalItem::Function(f))=parser.next_item().unwrap() else {
+        panic!("musl isblank was not parsed as a function");
+    };
+    assert_eq!(f.name,"isblank");
+    let Stmt::Block(statements)=f.body else {panic!("expected function body")};
+    assert!(matches!(statements.as_slice(),[Stmt::Return(Some(_))]));
+    assert!(parser.next_item().unwrap().is_none());
+}
