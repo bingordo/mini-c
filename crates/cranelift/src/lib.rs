@@ -6,7 +6,7 @@
 use cranelift_codegen::ir::{self, condcodes::IntCC, types, AbiParam, InstBuilder, Value};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
-use cranelift_module::{default_libcall_names, FuncId, Linkage as ClLinkage, Module};
+use cranelift_module::{default_libcall_names, DataDescription, DataId, FuncId, Linkage as ClLinkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use mini_c_sema::{
     CType, CheckedDecl, CheckedExpr, CheckedExprKind, CheckedFunction,
@@ -47,11 +47,20 @@ struct KnownFunction {
     defined: bool,
 }
 
+struct KnownData {
+    id: DataId,
+    ty: CType,
+    linkage: Linkage,
+    initialized: Option<Vec<u8>>,
+    tentative: bool,
+}
+
 /// One object module is built incrementally. Completed checked functions are
 /// compiled and discarded immediately; only named signatures/FuncIds survive.
 pub struct Compiler {
     module: ObjectModule,
     functions: HashMap<String, KnownFunction>,
+    data: HashMap<String, KnownData>,
 }
 
 impl Compiler {
@@ -67,7 +76,7 @@ impl Compiler {
             .map_err(|e| e.to_string())?;
         let object = ObjectBuilder::new(isa, "mini-c", default_libcall_names())
             .map_err(|e| e.to_string())?;
-        Ok(Self { module: ObjectModule::new(object), functions: HashMap::new() })
+        Ok(Self { module: ObjectModule::new(object), functions: HashMap::new(), data: HashMap::new() })
     }
 
     fn declare(&mut self, name: &str, ty: &CType, linkage: Linkage, definition: bool) -> Result<FuncId> {
@@ -96,17 +105,47 @@ impl Compiler {
         Ok(id)
     }
 
-    /// Register an external declaration or compile one complete checked function.
-    /// File-scope object storage/pointers are an explicit later milestone.
+    fn declare_object(&mut self, decl: CheckedDecl) -> Result<()> {
+        let name = decl.name.clone();
+        let initialized = if let Some(init) = &decl.initializer {
+            if !decl.ty.is_integer() {
+                return Err(format!("global initializer for '{name}' requires integer scalar support"));
+            }
+            let value = mini_c_sema::const_eval::evaluate(init, Target::default())
+                .map_err(|e| format!("global initializer for '{name}': {e}"))?;
+            let size = decl.ty.size_bytes(Target::default())
+                .ok_or_else(|| format!("incomplete global object '{name}'"))?;
+            let bytes = value.to_le_bytes();
+            Some(bytes[..usize::try_from(size).map_err(|_| "oversized global object")?].to_vec())
+        } else { None };
+        let tentative = decl.storage != StorageClass::Extern && initialized.is_none();
+        if let Some(data) = self.data.get_mut(&name) {
+            if data.ty != decl.ty || data.linkage != decl.linkage {
+                return Err(format!("conflicting global object declaration '{name}'"));
+            }
+            if initialized.is_some() && data.initialized.is_some() {
+                return Err(format!("duplicate global object definition '{name}'"));
+            }
+            if initialized.is_some() { data.initialized = initialized; }
+            data.tentative |= tentative;
+            return Ok(());
+        }
+        let linkage = if decl.linkage == Linkage::Internal { ClLinkage::Local } else { ClLinkage::Export };
+        let id = self.module.declare_data(&name, linkage, true, false)
+            .map_err(|e| format!("declaring global '{name}': {e}"))?;
+        self.data.insert(name, KnownData { id, ty: decl.ty, linkage: decl.linkage, initialized, tentative });
+        Ok(())
+    }
+
+    /// Register declarations and compile one complete checked function.
     pub fn add(&mut self, item: CheckedItem) -> Result<()> {
         match item {
             CheckedItem::Typedef { .. } => Ok(()),
             CheckedItem::Declaration(decl) => {
-                if !matches!(decl.ty, CType::Function { .. }) {
-                    return Err(format!("M2.5 does not emit global object '{}'", decl.name));
-                }
-                self.declare(&decl.name, &decl.ty, decl.linkage, false)?;
-                Ok(())
+                if matches!(decl.ty, CType::Function { .. }) {
+                    self.declare(&decl.name, &decl.ty, decl.linkage, false)?;
+                    Ok(())
+                } else { self.declare_object(decl) }
             }
             CheckedItem::Function(function) => self.define(function),
         }
@@ -122,7 +161,7 @@ impl Compiler {
             let mut fb_ctx = FunctionBuilderContext::new();
             let mut builder = FunctionBuilder::new(&mut ctx.func, &mut fb_ctx);
             let mut lower = Lower {
-                module: &mut self.module, functions: &self.functions,
+                module: &mut self.module, functions: &self.functions, data: &self.data,
                 scopes: vec![HashMap::new()], loops: Vec::new(),
                 result_ty: match &function.signature {
                     CType::Function { result, .. } => result.as_ref().clone(),
@@ -160,7 +199,20 @@ impl Compiler {
         Ok(())
     }
 
-    pub fn finish(self) -> Result<Vec<u8>> {
+    pub fn finish(mut self) -> Result<Vec<u8>> {
+        for (name, data) in &self.data {
+            if data.initialized.is_none() && !data.tentative { continue; }
+            let mut desc = DataDescription::new();
+            if let Some(bytes) = &data.initialized {
+                desc.define(bytes.clone().into_boxed_slice());
+            } else {
+                let size = data.ty.size_bytes(Target::default())
+                    .ok_or_else(|| format!("incomplete global object '{name}'"))?;
+                desc.define_zeroinit(size);
+            }
+            self.module.define_data(data.id, &desc)
+                .map_err(|e| format!("defining global '{name}': {e}"))?;
+        }
         self.module.finish().emit().map_err(|e| e.to_string())
     }
 }
@@ -186,6 +238,7 @@ struct Local {
 struct Lower<'a> {
     module: &'a mut ObjectModule,
     functions: &'a HashMap<String, KnownFunction>,
+    data: &'a HashMap<String, KnownData>,
     scopes: Vec<HashMap<String, Local>>,
     loops: Vec<(ir::Block, ir::Block)>, // (break target, continue target)
     result_ty: CType,
@@ -228,7 +281,7 @@ impl Lower<'_> {
     fn local_address(&self, name: &str) -> Result<Value> {
         self.scopes.iter().rev().find_map(|scope| scope.get(name))
             .map(|local| local.address)
-            .ok_or_else(|| format!("M2.5 does not support global objects or unresolved variable '{name}'"))
+            .ok_or_else(|| format!("unresolved variable '{name}'"))
     }
 
     fn place(&mut self, b: &mut FunctionBuilder<'_>, expr: &CheckedExpr) -> Result<Value> {
