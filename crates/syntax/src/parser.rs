@@ -288,6 +288,14 @@ impl<'a> Parser<'a> {
             }
         }
         let mut expr = match self.take()? {
+            Some(t) if t.kind == TokenKind::Character => Expr::Int(
+                crate::char_literal::parse_ascii_character(t.text)
+                    .map_err(|reason| Diagnostic::coded(
+                        t.span,
+                        DiagnosticCode::LexicalInvalidCharacter,
+                        reason,
+                    ))?,
+            ),
             Some(t) if t.kind == TokenKind::Number => Expr::Int(
                 t.text
                     .parse()

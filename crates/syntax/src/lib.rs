@@ -1,5 +1,6 @@
 //! Parser entry points; downstream crates depend on the AST, not LALRPOP.
 pub mod ast;
+pub mod char_literal;
 pub mod diag;
 pub mod expr_lexer;
 pub mod lexer;

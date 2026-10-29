@@ -415,3 +415,15 @@ fn no_extra_diagnostics_from_successful_functions() {
     assert!(checker.global("f").is_some());
     assert!(checker.global("g").is_some());
 }
+
+#[test]
+fn musl_isblank_with_original_c_character_literals_typechecks(){
+    let source="int isblank(int c)\n{\n\treturn (c == ' ' || c == '\\t');\n}\n";
+    let checked=check(source).unwrap();
+    assert_eq!(checked.len(),1);
+    let CheckedItem::Function(function)=&checked[0] else {panic!("function expected")};
+    assert_eq!(function.name,"isblank");
+    assert_eq!(function.signature,CType::Function {
+        result:Box::new(CType::int()),params:vec![CType::int()]
+    });
+}
