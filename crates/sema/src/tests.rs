@@ -437,3 +437,14 @@ fn global_array_scalar_initializer_is_rejected_until_aggregate_support() {
     // Scalar constant initializers continue to work.
     check("int n = 3; unsigned long m = 7;").unwrap();
 }
+
+
+#[test]
+fn bitwise_integer_promotion_and_pointer_rejection() {
+    check("int f(int x) { return ~x & 255; }").unwrap();
+    check("unsigned int f(unsigned char c) { return c | 16; }").unwrap();
+    check("int f(int a, int b) { return (a ^ b) & 31; }").unwrap();
+    check("int f(int a) { return (a & 3) == 2 || (a | 4) != 0; }").unwrap();
+    reject("int f(int *p) { return p & 7; }", "bitwise operator requires integer");
+    reject("int f(int *p) { return ~p; }", "arithmetic unary operator requires integer");
+}
