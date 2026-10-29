@@ -12,7 +12,19 @@ LogicalOr: Expr = {
     LogicalAnd,
 };
 LogicalAnd: Expr = {
-    <l:LogicalAnd> "&&" <r:Equality> => Expr::Binary(BinOp::And, Box::new(l), Box::new(r)),
+    <l:LogicalAnd> "&&" <r:BitOr> => Expr::Binary(BinOp::And, Box::new(l), Box::new(r)),
+    BitOr,
+};
+BitOr: Expr = {
+    <l:BitOr> "|" <r:BitXor> => Expr::Binary(BinOp::BitOr, Box::new(l), Box::new(r)),
+    BitXor,
+};
+BitXor: Expr = {
+    <l:BitXor> "^" <r:BitAnd> => Expr::Binary(BinOp::BitXor, Box::new(l), Box::new(r)),
+    BitAnd,
+};
+BitAnd: Expr = {
+    <l:BitAnd> "&" <r:Equality> => Expr::Binary(BinOp::BitAnd, Box::new(l), Box::new(r)),
     Equality,
 };
 Equality: Expr = {
@@ -42,6 +54,7 @@ Unary: Expr = {
     "+" <e:Unary> => Expr::Unary(UnOp::Plus, Box::new(e)),
     "-" <e:Unary> => Expr::Unary(UnOp::Neg, Box::new(e)),
     "!" <e:Unary> => Expr::Unary(UnOp::Not, Box::new(e)),
+    "~" <e:Unary> => Expr::Unary(UnOp::BitNot, Box::new(e)),
     "&" <e:Unary> => Expr::Unary(UnOp::Address, Box::new(e)),
     "*" <e:Unary> => Expr::Unary(UnOp::Deref, Box::new(e)),
     Postfix,
@@ -89,6 +102,9 @@ extern {
         "%" => ExprToken::Percent,
         "!" => ExprToken::Bang,
         "&" => ExprToken::Amp,
+        "|" => ExprToken::Pipe,
+        "^" => ExprToken::Caret,
+        "~" => ExprToken::Tilde,
         "(" => ExprToken::LParen,
         ")" => ExprToken::RParen,
         "," => ExprToken::Comma,

@@ -415,6 +415,7 @@ impl Lower<'_> {
                 match op {
                     UnOp::Plus => Ok(val),
                     UnOp::Neg => Ok(b.ins().ineg(val)),
+                    UnOp::BitNot => Ok(b.ins().bnot(val)),
                     UnOp::Not => {
                         let ty = b.func.dfg.value_type(val);
                         let zero = b.ins().iconst(ty, 0);
@@ -446,6 +447,9 @@ impl Lower<'_> {
                     BinOp::Add => b.ins().iadd(left, right),
                     BinOp::Sub => b.ins().isub(left, right),
                     BinOp::Mul => b.ins().imul(left, right),
+                    BinOp::BitAnd => b.ins().band(left, right),
+                    BinOp::BitOr => b.ins().bor(left, right),
+                    BinOp::BitXor => b.ins().bxor(left, right),
                     BinOp::Div => if unsigned { b.ins().udiv(left, right) } else { b.ins().sdiv(left, right) },
                     BinOp::Mod => if unsigned { b.ins().urem(left, right) } else { b.ins().srem(left, right) },
                     BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
@@ -638,6 +642,14 @@ mod tests {
         assert_eq!(&obj[..4], b"\x7fELF");
         let src = "int main(void) { int a[2][3]; a[1][2]=25; return a[1][2]; }";
         assert!(!compile_source(src).unwrap().is_empty());
+    }
+
+    #[test]
+    fn compiles_bitwise_integer_expressions() {
+        let src="int f(unsigned int x) { return (~x & 255) | (x ^ 23); }\
+                  int g(int a, int b) { return (a & b) ^ (a | b); }";
+        let obj=compile_source(src).unwrap();
+        assert_eq!(&obj[..4],b"\x7fELF");
     }
 
     #[test]
