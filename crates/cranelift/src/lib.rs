@@ -109,8 +109,8 @@ impl Compiler {
     fn declare_object(&mut self, decl: CheckedDecl) -> Result<()> {
         let name = decl.name.clone();
         let initialized = if let Some(init) = &decl.initializer {
-            if !decl.ty.is_integer() {
-                return Err(format!("global initializer for '{name}' requires integer scalar support"));
+            if !decl.ty.is_integer() && !matches!(decl.ty, CType::Pointer(_)) {
+                return Err(format!("global initializer for '{name}' requires scalar support"));
             }
             let value = mini_c_sema::const_eval::evaluate(init, Target::default())
                 .map_err(|e| format!("global initializer for '{name}': {e}"))?;
