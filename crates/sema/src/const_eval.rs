@@ -51,6 +51,7 @@ pub fn evaluate(expr: &CheckedExpr, target: Target) -> Result<i128, &'static str
                     bounded_arithmetic(negated, &expr.ty, target)
                 }
                 UnOp::Not => Ok(i128::from(value == 0)),
+                UnOp::BitNot => normalize(!value, &expr.ty, target),
                 UnOp::Deref | UnOp::Address => Err("not an integer constant expression"),
             }
         }
@@ -75,6 +76,9 @@ pub fn evaluate(expr: &CheckedExpr, target: Target) -> Result<i128, &'static str
                 BinOp::Le => return Ok(i128::from(a <= b)),
                 BinOp::Gt => return Ok(i128::from(a > b)),
                 BinOp::Ge => return Ok(i128::from(a >= b)),
+                BinOp::BitAnd => return normalize(a & b, &expr.ty, target),
+                BinOp::BitOr => return normalize(a | b, &expr.ty, target),
+                BinOp::BitXor => return normalize(a ^ b, &expr.ty, target),
                 BinOp::And => return Ok(i128::from(a != 0 && b != 0)),
                 BinOp::Or => return Ok(i128::from(a != 0 || b != 0)),
             };
