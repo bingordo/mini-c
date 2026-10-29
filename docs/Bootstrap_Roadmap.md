@@ -1,33 +1,32 @@
-# Long-term compiler-stack bootstrap roadmap
+# Long-term Cilly + Mini-C end-to-end compiler-stack test
 
-Status: **strategic goal, not implemented**. This complements [Implementation_Plan.md](Implementation_Plan.md).
+**Purpose: integration testing, not toolchain independence or self-hosting.**
 
-## Goal
+The goal is to exercise as much of the real compiler stack as possible in one reproducible, meaningful end-to-end workload using Cilly and Mini-C. Host Rust, GCC/Clang, system assembler/linker and external preprocessing are explicitly allowed. Do not rewrite Rust components, eliminate trusted tools, or pursue stage-2/stage-3 self-hosting for this goal.
 
-Bootstrap the complete compiler stack using **Cilly and Mini-C**, with a reproducible path from a documented minimal trusted toolchain to rebuilding the frontend, shared optimizer, native backends, runtime, and build utilities. Cilly's exact role, source language, and current capabilities must be audited before selecting the bootstrap architecture. Do not assume Cilly can compile Rust or that Mini-C is self-hosting.
+## Intended test pipeline
 
-## Stages and acceptance gates
+1. Build Cilly, Mini-C, and the main compiler using their ordinary supported build tools.
+2. Select a substantial, deterministic C workload drawn from the actual compiler stack where feasible. Audit Cilly's repository and interfaces before deciding its exact role in the pipeline.
+3. Feed that workload through the Cilly/Mini-C frontend path, shared compiler IR, optimizer, instruction selector, register allocator, x86 backend, and object emission/linking. Record which components were actually exercised.
+4. Execute the resulting program against fixed inputs and compare with an independently built GCC/Clang reference. Compare exit status, stdout, output files and hashes where appropriate.
+5. Repeat under several optimization modes and with seeded generated inputs. Capture failure artifacts, logs, source revision pins, and minimized reproducers.
 
-1. **Inventory and dependency graph.** Locate the canonical Cilly implementation and its build/runtime dependencies. Inventory Mini-C, compiler, generators, runtime and CI tools; classify each component by implementation language, generated artifacts, required host tools and build order. Publish the initial trusted computing base.
-2. **Practical Mini-C.** Finish the native M3 validation and M4/M5 language, ABI, memory and object-file coverage needed to compile substantial real C projects. Expand defined-behavior differential testing, with clear unsupported-feature errors.
-3. **Cilly integration experiment.** Define an explicit intermediate representation or source-level handoff between Cilly, Mini-C and the shared compiler backend. Prototype a tiny deterministic program, compare results against GCC/Clang, and measure required C features. Prefer adapters and shared infrastructure to duplicate compilers.
-4. **Build the C subset of the stack.** Compile C runtime/support libraries and any C-based generators with Mini-C, initially using an external linker/preprocessor if necessary. Record hashes and run native and reference binaries.
-5. **Address Rust implementation dependency.** Mini-C and the main compiler currently contain Rust code. Choose and document one realistic route: a maintained C implementation of the minimal bootstrap compiler, a verified Rust-to-C translation pipeline if feasible, or a staged bootstrap that explicitly retains a seed Rust compiler. Merely compiling C inputs is not a self-hosted bootstrap.
-6. **Close the build loop.** Build a stage-1 toolchain with the declared seed, rebuild stage-2 from stage-1, then stage-3 from stage-2. Compare normalized artifacts or execute differential/reproducibility tests when byte identity is not yet possible. Document unavoidable external tools, ABI and target assumptions.
-7. **Reduce the seed.** Gradually eliminate dependencies on host GCC/Clang, Rust compiler, linker and external preprocessing only when verified replacements exist. Preserve a working recovery build and cross-compiler tests.
+## Acceptance criteria
 
-## Design principles
+- A documented command and CI workflow rebuild and execute the complete test reproducibly.
+- The test runs **real generated native code**, not only parsing or IR validation.
+- The expected result is checked independently, with no shared optimizer/backend between test and reference.
+- The report identifies each compiler-stack component reached and any bypasses; no unsupported claim of complete coverage.
+- A small deterministic PR smoke test is cheap; a larger scheduled/manual run expands coverage.
+- Existing targeted tests remain primary for diagnosis; this test is a high-value integration gate.
 
-- Maintain a **working compiler** at every stage; bootstrap experiments cannot block normal Mini-C milestones.
-- Prefer reusable compiler IR, instruction generation, ABI descriptions and optimizer passes over bespoke Cilly-only paths.
-- Keep generators' source, generated output and provenance clearly separated.
-- Pin source revisions, compiler versions and dependency hashes; use cached binaries and targeted CI tests.
-- Validate correctness before performance. Include cross-stage executable tests, miscompilation minimization and build reproducibility.
-- Track a precise distinction between **C compiler completeness**, **compiling the C portions of the stack**, **compiler self-hosting**, and **full toolchain bootstrapping**.
+## Immediate tasks
 
-## Immediate next steps
+1. Locate and inspect the canonical Cilly repository, its language, interfaces and build dependencies.
+2. Verify Mini-C native M3 adapter in the real compiler and extend its C coverage only as required by the selected workload.
+3. Implement the smallest meaningful cross-project end-to-end program, using existing toolchains and linker.
+4. Add independent reference comparison and reproducible failure capture.
+5. Grow the workload toward compiling and executing substantive compiler-stack code, without creating a self-hosting requirement.
 
-- Verify M3 native integration with an actual successful targeted CI run.
-- Add division/remainder, unsigned/wide integer, pointers and memory lowering in vertical slices, with explicit unsupported cases.
-- Identify Cilly's repository, intended architecture and dependencies; write a concrete integration proposal after inspection.
-- Create a machine-readable component/dependency inventory and minimal bootstrap smoke test.
+See [Implementation_Plan.md](Implementation_Plan.md) for normal Mini-C milestones. This goal is separate from ISO C completeness and should not block routine compiler development.
