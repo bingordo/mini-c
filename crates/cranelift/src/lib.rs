@@ -297,12 +297,6 @@ impl Lower<'_> {
         Ok(())
     }
 
-    fn local_address(&self, name: &str) -> Result<Value> {
-        self.scopes.iter().rev().find_map(|scope| scope.get(name))
-            .map(|local| local.address)
-            .ok_or_else(|| format!("unresolved variable '{name}'"))
-    }
-
     fn object_address(&mut self, b: &mut FunctionBuilder<'_>, name: &str) -> Result<Value> {
         if let Some(local) = self.scopes.iter().rev().find_map(|scope| scope.get(name)) {
             return Ok(local.address);
