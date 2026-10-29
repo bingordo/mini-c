@@ -11,6 +11,7 @@ use crate::{
 pub enum ExprToken<'a> {
     Ident(&'a str),
     Number(&'a str),
+    Character(&'a str),
     Invalid(&'a str),
     Assign,
     OrOr,
@@ -44,6 +45,7 @@ pub fn tokenize(source: &str) -> Result<Vec<(usize, ExprToken<'_>, usize)>, Diag
     while let Some(token) = scanner.next_token(None)? {
         let kind = match token.kind {
             TokenKind::Number => ExprToken::Number(token.text),
+            TokenKind::Character => ExprToken::Character(token.text),
             TokenKind::Identifier | TokenKind::TypedefName => ExprToken::Ident(token.text),
             TokenKind::Punctuation => match token.text {
                 "=" => ExprToken::Assign,
@@ -115,6 +117,12 @@ mod tests {
         );
     }
 
+    #[test]
+    fn char_literal_is_a_distinct_token() {
+        let tokens=tokenize(r"c == '\n'").unwrap();
+        assert_eq!(tokens[2].1,ExprToken::Character(r"'\n'"));
+        assert_eq!((tokens[2].0,tokens[2].2),(5,9));
+    }
     #[test]
     fn lexical_errors_retain_source_spans() {
         let err = tokenize("a + β").unwrap_err();
