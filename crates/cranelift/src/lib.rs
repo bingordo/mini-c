@@ -1,8 +1,8 @@
 //! Optional, backend-only Cranelift object emitter for typed Mini-C functions.
 //! No dependency from syntax or sema to Cranelift, and no TU-sized AST.
 //!
-//! Deliberately supports only integer scalar functions, local variables,
-//! control flow, and direct calls. Unsupported features fail explicitly.
+//! Supports native x86-64 ELF functions, stack objects, and integer-initialized
+//! or zero-initialized global objects. Unsupported features fail explicitly.
 use cranelift_codegen::ir::{self, condcodes::IntCC, types, AbiParam, InstBuilder, Value};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
@@ -229,6 +229,19 @@ impl Compiler {
                 let size = usize::try_from(size).map_err(|_| format!("oversized global object '{name}'"))?;
                 desc.define_zeroinit(size);
             }
+            // Keep global object alignment consistent with stack-object layout.
+            // Cranelift expects alignment in bytes, unlike stack-slot log2 alignment.
+            let alignment = match &data.ty {
+                CType::Array(element, _) => {
+                    let mut base = element.as_ref();
+                    while let CType::Array(inner, _) = base {
+                        base = inner.as_ref();
+                    }
+                    base.size_bytes(Target::default()).unwrap_or(1).min(8)
+                }
+                _ => data.ty.size_bytes(Target::default()).unwrap_or(1).min(8),
+            };
+            desc.set_align(alignment);
             self.module.define_data(data.id, &desc)
                 .map_err(|e| format!("defining global '{name}': {e}"))?;
         }
