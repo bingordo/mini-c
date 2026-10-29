@@ -54,3 +54,23 @@ fn global_pointer_initializer_is_explicitly_rejected() {
     let err = compile_source("int g; int *p=&g; int main(void) { return *p; }").unwrap_err();
     assert!(err.contains("integer scalar support"), "{err}");
 }
+
+#[test]
+fn unresolved_extern_global_emits_relocatable_object() {
+    emits_elf("extern int shared; int get(void) { return shared; }");
+}
+
+#[test]
+fn extern_declaration_then_definition_compiles() {
+    emits_elf("extern int shared; int shared=42; int main(void) { return shared-42; }");
+}
+
+#[test]
+fn repeated_tentative_definitions_compile() {
+    emits_elf("int shared; int shared; int main(void) { shared=5; return shared-5; }");
+}
+
+#[test]
+fn local_variable_shadows_global_object() {
+    emits_elf("int x=13; int main(void) { int x=7; return x-7; }");
+}
