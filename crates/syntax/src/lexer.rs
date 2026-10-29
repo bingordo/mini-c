@@ -9,6 +9,7 @@ pub enum TokenKind {
     Identifier,
     TypedefName,
     Number,
+    Character,
     Punctuation,
 }
 
@@ -99,6 +100,46 @@ impl<'a> Scanner<'a> {
                 } else {
                     TokenKind::Identifier
                 }
+            } else if ch == '\'' {
+                // Keep the original spelling and byte span. The shared
+                // decoder enforces one ASCII execution character (including
+                // C escapes), instead of a benchmark-specific rewrite.
+                offset += 1;
+                let mut closed=false;
+                while offset<source.len() {
+                    let b=source.as_bytes()[offset];
+                    if b==b'\n' || b==b'\r' {break}
+                    if b==b'\\' {
+                        offset+=1;
+                        if offset<source.len() && !matches!(source.as_bytes()[offset],b'\n'|b'\r'){
+                            offset+=1;
+                        }
+                    } else if b==b'\'' {
+                        offset+=1;
+                        closed=true;
+                        break;
+                    } else {
+                        offset+=1;
+                    }
+                }
+                let literal=&source[start..offset];
+                if !closed {
+                    self.offset=offset;
+                    return Err(Diagnostic::coded(
+                        Span {lo:start,hi:offset},
+                        crate::diag::DiagnosticCode::LexicalInvalidCharacter,
+                        "unterminated character constant",
+                    ));
+                }
+                if let Err(message)=crate::char_literal::parse_ascii_character(literal) {
+                    self.offset=offset;
+                    return Err(Diagnostic::coded(
+                        Span {lo:start,hi:offset},
+                        crate::diag::DiagnosticCode::LexicalInvalidCharacter,
+                        message,
+                    ));
+                }
+                TokenKind::Character
             } else if ch.is_ascii_digit() {
                 offset += 1;
                 while offset < source.len() && source.as_bytes()[offset].is_ascii_digit() {
@@ -233,6 +274,17 @@ mod tests {
             TokenKind::Identifier
         );
         assert!(scanner.next_token(Some(&scopes)).unwrap().is_none());
+    }
+    #[test]
+    fn c_character_tokens_have_original_spans() {
+        let tokens=scan("x='a'; y='\\n'; z='\\'';").unwrap();
+        let literals:Vec<_>=tokens.into_iter().filter(|t|t.kind==TokenKind::Character).collect();
+        assert_eq!(literals.iter().map(|t|t.text).collect::<Vec<_>>(),
+            ["'a'",r"'\n'",r"'\''"]);
+        assert_eq!(literals[0].span,Span {lo:2,hi:5});
+        for text in ["''","'ab'",r"'\x'",r"'\q'","'unterminated"]{
+            assert!(scan(text).is_err(),"{text}");
+        }
     }
     #[test]
     fn unsupported_suffix_rejected() {
