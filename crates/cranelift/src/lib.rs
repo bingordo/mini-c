@@ -112,8 +112,21 @@ impl Compiler {
             if !decl.ty.is_integer() && !matches!(decl.ty, CType::Pointer(_)) {
                 return Err(format!("global initializer for '{name}' requires scalar support"));
             }
-            let value = mini_c_sema::const_eval::evaluate(init, Target::default())
-                .map_err(|e| format!("global initializer for '{name}': {e}"))?;
+            let value = if matches!(decl.ty, CType::Pointer(_)) {
+                // The checker has already validated the null-pointer constant.
+                // Address-of-symbol initializers require data relocations.
+                let mut integer = init;
+                while let CheckedExprKind::Convert(inner) = &integer.kind {
+                    integer = inner;
+                }
+                match mini_c_sema::const_eval::evaluate(integer, Target::default()) {
+                    Ok(0) => 0,
+                    _ => return Err(format!("global initializer for '{name}' requires a null pointer or symbol relocation")),
+                }
+            } else {
+                mini_c_sema::const_eval::evaluate(init, Target::default())
+                    .map_err(|e| format!("global initializer for '{name}': {e}"))?
+            };
             let size = decl.ty.size_bytes(Target::default())
                 .ok_or_else(|| format!("incomplete global object '{name}'"))?;
             let bytes = value.to_le_bytes();
