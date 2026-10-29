@@ -209,6 +209,7 @@ impl Compiler {
             } else {
                 let size = data.ty.size_bytes(Target::default())
                     .ok_or_else(|| format!("incomplete global object '{name}'"))?;
+                let size = usize::try_from(size).map_err(|_| format!("oversized global object '{name}'"))?;
                 desc.define_zeroinit(size);
             }
             self.module.define_data(data.id, &desc)
@@ -623,9 +624,8 @@ mod tests {
     }
 
     #[test]
-    fn backend_rejects_unsupported_global_objects_and_incomplete_arrays() {
-        let error = compile_source("int global = 3; int main(void) { return global; }").unwrap_err();
-        assert!(error.contains("global object"), "{error}");
+    fn backend_supports_global_objects_and_rejects_incomplete_arrays() {
+        assert!(!compile_source("int global = 3; int main(void) { return global; }").unwrap().is_empty());
         let error = compile_source("int main(void) { int a[]; return 0; }").unwrap_err();
         assert!(error.contains("incomplete"), "{error}");
     }
