@@ -82,6 +82,13 @@ PROGRAMS = {
     }""",
     "external_libc": "int abs(int); int main(void) { return abs(-25); }",
     "static_function": "static int next(int x) { return x + 1; } int main(void) { return next(6); }",
+    "global_initialized": "int g=7; int main(void) { return g; }",
+    "global_mutation": "int g=10; int bump(void) { g=g+1; return g; } int main(void) { return bump(); }",
+    "global_tentative": "int g; int main(void) { g=19; return g; }",
+    "global_static": "static int g=9; extern int g; int main(void) { return g; }",
+    "global_shadowing": "int g=13; int main(void) { int g=7; return g; }",
+    "global_redeclaration": "extern int g; int g=42; int main(void) { return g; }",
+
 }
 
 
@@ -206,6 +213,21 @@ def main() -> int:
          "int kernel(int,int); int main(void) { return kernel(6,7); }"),
         ("mini_calls_gcc", "int supply(int); int main(void) { return supply(20); }",
          "int supply(int x) { return x + 3; }"),
+        ("mini_reads_gcc_global",
+         "extern int shared; int main(void) { return shared; }",
+         "int shared=27;"),
+        ("mini_writes_gcc_global",
+         "extern int shared; int main(void) { shared=31; return shared; }",
+         "int shared=5;"),
+        ("gcc_reads_mini_global",
+         "int shared=23;",
+         "extern int shared; int main(void) { return shared; }"),
+        ("gcc_writes_mini_global",
+         "int shared;",
+         "extern int shared; int main(void) { shared=37; return shared; }"),
+        ("mini_static_global_not_exported",
+         "static int hidden=11; int get_hidden(void) { return hidden; }",
+         "int get_hidden(void); int main(void) { return get_hidden(); }"),
     ]
     for name, mini_source, gcc_source in mixed:
         if not mixed_objects(name, mini_source, gcc_source, args):
