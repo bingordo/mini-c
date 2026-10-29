@@ -129,9 +129,26 @@ impl Compiler {
             }
             if initialized.is_some() { data.initialized = initialized; }
             data.tentative |= tentative;
+            if data.initialized.is_some() || data.tentative {
+                let linkage = if data.linkage == Linkage::Internal {
+                    ClLinkage::Local
+                } else {
+                    ClLinkage::Export
+                };
+                self.module.declare_data(&name, linkage, true, false)
+                    .map_err(|e| format!("upgrading global '{name}': {e}"))?;
+            }
             return Ok(());
         }
-        let linkage = if decl.linkage == Linkage::Internal { ClLinkage::Local } else { ClLinkage::Export };
+        // A declaration-only external object is undefined in this translation
+        // unit. It must remain an import unless a definition appears later.
+        let linkage = if decl.linkage == Linkage::Internal {
+            ClLinkage::Local
+        } else if initialized.is_some() || tentative {
+            ClLinkage::Export
+        } else {
+            ClLinkage::Import
+        };
         let id = self.module.declare_data(&name, linkage, true, false)
             .map_err(|e| format!("declaring global '{name}': {e}"))?;
         self.data.insert(name, KnownData { id, ty: decl.ty, linkage: decl.linkage, initialized, tentative });
