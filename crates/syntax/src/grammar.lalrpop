@@ -60,6 +60,7 @@ CallArgs: Vec<Expr> = {
 };
 Primary: Expr = {
     <n:"number"> =>? n.parse::<u64>().map(Expr::Int).map_err(|_| lalrpop_util::ParseError::User { error: "integer literal exceeds u64 range" }),
+    <literal:"character"> =>? crate::char_literal::parse_ascii_character(literal).map(Expr::Int).map_err(|reason| lalrpop_util::ParseError::User { error: reason }),
     <n:"ident"> => Expr::Name(n.to_owned()),
     "(" <e:Assign> ")" => e,
 };
@@ -69,6 +70,7 @@ extern {
     type Error = &'static str;
     enum ExprToken<'input> {
         "number" => ExprToken::Number(<&'input str>),
+        "character" => ExprToken::Character(<&'input str>),
         "ident" => ExprToken::Ident(<&'input str>),
         "invalid" => ExprToken::Invalid(<&'input str>),
         "=" => ExprToken::Assign,
