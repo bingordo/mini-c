@@ -476,9 +476,15 @@ impl Lower<'_> {
                 {
                     return self.pointer_offset(b, *op, lhs, rhs);
                 }
-                let left = self.integer_value(b, lhs)?;
-                let right = self.integer_value(b, rhs)?;
-                let unsigned = matches!(&lhs.ty, CType::Integer { unsigned: true, .. });
+                // Checked pointer comparisons are represented using integer-valued
+                // Cranelift addresses. The type checker has already validated the
+                // operands and converted null pointer constants to pointer type.
+                let pointer_comparison = matches!(op, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge)
+                    && matches!(&lhs.ty, CType::Pointer(_))
+                    && matches!(&rhs.ty, CType::Pointer(_));
+                let left = if pointer_comparison { self.expression(b, lhs)? } else { self.integer_value(b, lhs)? };
+                let right = if pointer_comparison { self.expression(b, rhs)? } else { self.integer_value(b, rhs)? };
+                let unsigned = pointer_comparison || matches!(&lhs.ty, CType::Integer { unsigned: true, .. });
                 let value = match op {
                     BinOp::Add => b.ins().iadd(left, right),
                     BinOp::Sub => b.ins().isub(left, right),
