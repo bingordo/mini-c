@@ -271,7 +271,8 @@ impl Compiler {
             if let Some(symbol) = &data.address_of {
                 let target = self.data.get(symbol)
                     .ok_or_else(|| format!("global initializer for '{name}' refers to unknown object '{symbol}'"))?;
-                desc.write_data_addr(0, target.id, 0);
+                let gv = self.module.declare_data_in_data(target.id, &mut desc);
+                desc.write_data_addr(0, gv, 0);
             }
             self.module.define_data(data.id, &desc)
                 .map_err(|e| format!("defining global '{name}': {e}"))?;
