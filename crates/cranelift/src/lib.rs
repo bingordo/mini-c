@@ -329,7 +329,7 @@ impl Lower<'_> {
         }
         let data = self.data.get(name).ok_or_else(|| format!("unresolved variable '{name}'"))?;
         let gv = self.module.declare_data_in_func(data.id, b.func);
-        Ok(b.ins().global_value(types::I64, gv))
+        Ok(b.ins().symbol_value(types::I64, gv))
     }
 
     fn place(&mut self, b: &mut FunctionBuilder<'_>, expr: &CheckedExpr) -> Result<Value> {
@@ -549,7 +549,7 @@ impl Lower<'_> {
                 self.bind(b, name, ty, None)?;
                 if let Some(initializer) = initializer {
                     let value = self.expression(b, initializer)?;
-                    let address = self.local_address(name)?;
+                    let address = self.object_address(b, name)?;
                     b.ins().store(ir::MemFlagsData::new(), value, address, 0);
                 }
                 Ok(true)
