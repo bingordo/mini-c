@@ -50,9 +50,8 @@ fn tentative_global_zero_initialization_compiles() {
 }
 
 #[test]
-fn global_pointer_initializer_is_explicitly_rejected() {
-    let err = compile_source("int g; int *p=&g; int main(void) { return *p; }").unwrap_err();
-    assert!(err.contains("global initializer"), "{err}");
+fn global_pointer_initializer_emits_relocation() {
+    emits_elf("int g; int *p=&g; int main(void) { return *p; }");
 }
 
 #[test]
