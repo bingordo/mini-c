@@ -499,10 +499,15 @@ impl Lower<'_> {
                 // Cranelift addresses. The type checker has already validated the
                 // operands and converted null pointer constants to pointer type.
                 let pointer_comparison = matches!(op, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge)
-                    && matches!(&lhs.ty, CType::Pointer(_))
-                    && matches!(&rhs.ty, CType::Pointer(_));
-                let left = if pointer_comparison { self.expression(b, lhs)? } else { self.integer_value(b, lhs)? };
-                let right = if pointer_comparison { self.expression(b, rhs)? } else { self.integer_value(b, rhs)? };
+                    && (matches!(&lhs.ty, CType::Pointer(_)) || matches!(&rhs.ty, CType::Pointer(_)));
+                let mut left = if pointer_comparison { self.expression(b, lhs)? } else { self.integer_value(b, lhs)? };
+                let mut right = if pointer_comparison { self.expression(b, rhs)? } else { self.integer_value(b, rhs)? };
+                if pointer_comparison {
+                    // Null pointer constants may retain integer type in the checked IR.
+                    // Compare pointer-sized addresses, never mismatched I32/I64 values.
+                    if b.func.dfg.value_type(left) != types::I64 { left = Self::convert(b, left, &lhs.ty, &CType::Pointer(Box::new(CType::Void)))?; }
+                    if b.func.dfg.value_type(right) != types::I64 { right = Self::convert(b, right, &rhs.ty, &CType::Pointer(Box::new(CType::Void)))?; }
+                }
                 let unsigned = pointer_comparison || matches!(&lhs.ty, CType::Integer { unsigned: true, .. });
                 let value = match op {
                     BinOp::Add => b.ins().iadd(left, right),
