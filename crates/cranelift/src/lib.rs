@@ -53,6 +53,7 @@ struct KnownData {
     ty: CType,
     linkage: Linkage,
     initialized: Option<Vec<u8>>,
+    address_of: Option<String>,
     tentative: bool,
 }
 
@@ -108,6 +109,7 @@ impl Compiler {
 
     fn declare_object(&mut self, decl: CheckedDecl) -> Result<()> {
         let name = decl.name.clone();
+        let mut address_of = None;
         let initialized = if let Some(init) = &decl.initializer {
             if !decl.ty.is_integer() && !matches!(decl.ty, CType::Pointer(_)) {
                 return Err(format!("global initializer for '{name}' requires scalar support"));
@@ -121,7 +123,18 @@ impl Compiler {
                 }
                 match mini_c_sema::const_eval::evaluate(integer, Target::default()) {
                     Ok(0) => 0,
-                    _ => return Err(format!("global initializer for '{name}' requires a null pointer or symbol relocation")),
+                    _ => {
+                        if let CheckedExprKind::Unary(UnOp::Address, target) = &integer.kind {
+                            if let CheckedExprKind::Name(symbol) = &target.kind {
+                                address_of = Some(symbol.clone());
+                                0
+                            } else {
+                                return Err(format!("global initializer for '{name}' requires an address of a named global"));
+                            }
+                        } else {
+                            return Err(format!("global initializer for '{name}' requires a null pointer or symbol relocation"));
+                        }
+                    }
                 }
             } else {
                 mini_c_sema::const_eval::evaluate(init, Target::default())
@@ -140,7 +153,7 @@ impl Compiler {
             if initialized.is_some() && data.initialized.is_some() {
                 return Err(format!("duplicate global object definition '{name}'"));
             }
-            if initialized.is_some() { data.initialized = initialized; }
+            if initialized.is_some() { data.initialized = initialized; data.address_of = address_of; }
             data.tentative |= tentative;
             if data.initialized.is_some() || data.tentative {
                 let linkage = if data.linkage == Linkage::Internal {
@@ -164,7 +177,7 @@ impl Compiler {
         };
         let id = self.module.declare_data(&name, linkage, true, false)
             .map_err(|e| format!("declaring global '{name}': {e}"))?;
-        self.data.insert(name, KnownData { id, ty: decl.ty, linkage: decl.linkage, initialized, tentative });
+        self.data.insert(name, KnownData { id, ty: decl.ty, linkage: decl.linkage, initialized, address_of, tentative });
         Ok(())
     }
 
@@ -255,6 +268,11 @@ impl Compiler {
                 _ => data.ty.size_bytes(Target::default()).unwrap_or(1).min(8),
             };
             desc.set_align(alignment);
+            if let Some(symbol) = &data.address_of {
+                let target = self.data.get(symbol)
+                    .ok_or_else(|| format!("global initializer for '{name}' refers to unknown object '{symbol}'"))?;
+                desc.write_data_addr(0, target.id, 0);
+            }
             self.module.define_data(data.id, &desc)
                 .map_err(|e| format!("defining global '{name}': {e}"))?;
         }
