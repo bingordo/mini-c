@@ -84,3 +84,13 @@ fn null_pointer_global_initializer_compiles() {
 fn pointer_global_tentative_definition_compiles() {
     emits_elf("int *p; int main(void) { return p==0; }");
 }
+
+#[test]
+fn global_pointer_to_named_global_emits_relocation() {
+    emits_elf("int value=37; int *ptr=&value; int main(void) { return *ptr-37; }");
+}
+
+#[test]
+fn global_pointer_to_extern_emits_relocation() {
+    emits_elf("extern int value; int *ptr=&value; int main(void) { return *ptr; }");
+}
