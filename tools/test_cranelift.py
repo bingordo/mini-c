@@ -92,6 +92,8 @@ PROGRAMS = {
     "global_multidim_array": "int a[2][3]; int main(void) { a[1][2]=29; return a[1][2]; }",
     "global_address_taken": "int g=3; int main(void) { int *p=&g; *p=21; return g; }",
     "global_narrow_char": "unsigned char g=255; int main(void) { return g; }",
+    "global_null_pointer": "int *p=0; int main(void) { return p==0; }",
+    "global_tentative_pointer": "int *p; int main(void) { return p==0; }",
 
 
 }
