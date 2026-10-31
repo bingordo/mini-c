@@ -124,15 +124,16 @@ impl Compiler {
                 match mini_c_sema::const_eval::evaluate(integer, Target::default()) {
                     Ok(0) => 0,
                     _ => {
-                        if let CheckedExprKind::Unary(UnOp::Address, target) = &integer.kind {
-                            if let CheckedExprKind::Name(symbol) = &target.kind {
-                                address_of = Some(symbol.clone());
-                                0
-                            } else {
-                                return Err(format!("global initializer for '{name}' requires an address of a named global"));
-                            }
+                        let target = match &integer.kind {
+                            CheckedExprKind::Unary(UnOp::Address, target)
+                            | CheckedExprKind::ArrayDecay(target) => Some(target.as_ref()),
+                            _ => None,
+                        };
+                        if let Some(CheckedExpr { kind: CheckedExprKind::Name(symbol), .. }) = target {
+                            address_of = Some(symbol.clone());
+                            0
                         } else {
-                            return Err(format!("global initializer for '{name}' requires a null pointer or symbol relocation"));
+                            return Err(format!("global initializer for '{name}' requires a null pointer or named global address"));
                         }
                     }
                 }
