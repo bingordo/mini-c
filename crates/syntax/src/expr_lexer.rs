@@ -46,6 +46,9 @@ pub fn tokenize(source: &str) -> Result<Vec<(usize, ExprToken<'_>, usize)>, Diag
         let kind = match token.kind {
             TokenKind::Number => ExprToken::Number(token.text),
             TokenKind::Character => ExprToken::Character(token.text),
+            // Until expression grammar and semantic storage support strings,
+            // preserve them as invalid tokens rather than silently accepting them.
+            TokenKind::String => ExprToken::Invalid(token.text),
             TokenKind::Identifier | TokenKind::TypedefName => ExprToken::Ident(token.text),
             TokenKind::Punctuation => match token.text {
                 "=" => ExprToken::Assign,
@@ -122,6 +125,11 @@ mod tests {
         let tokens=tokenize(r"c == '\n'").unwrap();
         assert_eq!(tokens[2].1,ExprToken::Character(r"'\n'"));
         assert_eq!((tokens[2].0,tokens[2].2),(5,9));
+    }
+    #[test]
+    fn string_literal_is_explicitly_unsupported_by_expression_parser() {
+        let tokens = tokenize(r#""hello""#).unwrap();
+        assert_eq!(tokens[0].1, ExprToken::Invalid(r#""hello""#));
     }
     #[test]
     fn lexical_errors_retain_source_spans() {
