@@ -10,6 +10,7 @@ pub enum TokenKind {
     TypedefName,
     Number,
     Character,
+    String,
     Punctuation,
 }
 
@@ -140,6 +141,39 @@ impl<'a> Scanner<'a> {
                     ));
                 }
                 TokenKind::Character
+            } else if ch == '"' {
+                // Preserve the spelling for the parser's later escape decoding.
+                // A backslash shields the following byte from ending the token.
+                offset += 1;
+                let mut closed = false;
+                while offset < source.len() {
+                    match source.as_bytes()[offset] {
+                        b'\n' | b'\r' => break,
+                        b'\\' => {
+                            offset += 1;
+                            if offset < source.len()
+                                && !matches!(source.as_bytes()[offset], b'\n' | b'\r')
+                            {
+                                offset += 1;
+                            }
+                        }
+                        b'"' => {
+                            offset += 1;
+                            closed = true;
+                            break;
+                        }
+                        _ => offset += 1,
+                    }
+                }
+                if !closed {
+                    self.offset = offset;
+                    return Err(Diagnostic::coded(
+                        Span { lo: start, hi: offset },
+                        crate::diag::DiagnosticCode::LexicalInvalidCharacter,
+                        "unterminated string literal",
+                    ));
+                }
+                TokenKind::String
             } else if ch.is_ascii_digit() {
                 offset += 1;
                 while offset < source.len() && source.as_bytes()[offset].is_ascii_digit() {
@@ -297,4 +331,15 @@ mod tests {
             .message
             .contains("unterminated"));
     }
+    #[test]
+    fn string_tokens_preserve_escapes_and_spans() {
+        let tokens = scan(r#"char *p="a\"b";"#).unwrap();
+        let literal = tokens.iter().find(|t| t.kind == TokenKind::String).unwrap();
+        assert_eq!(literal.text, r#""a\"b""#);
+        assert_eq!(literal.span, Span { lo: 8, hi: 14 });
+        for bad in ["\"unfinished", "\"line\nbreak\"", "\"trailing\\"] {
+            assert!(scan(bad).is_err(), "{bad:?}");
+        }
+    }
+
 }
