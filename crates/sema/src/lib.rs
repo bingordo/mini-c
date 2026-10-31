@@ -544,6 +544,8 @@ impl Checker {
                     Expr::Name(name) => self.globals.get(name).is_some_and(|s| s.kind != SymbolKind::Typedef),
                     _ => false,
                 },
+                Expr::Name(name) => self.globals.get(name).is_some_and(|s|
+                    matches!(&s.ty, CType::Array(..))),
                 _ => false,
             };
             if !null && !address_of_global {
