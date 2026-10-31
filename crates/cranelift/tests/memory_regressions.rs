@@ -93,3 +93,13 @@ fn global_pointer_to_named_global_emits_relocation() {
 fn global_pointer_to_extern_emits_relocation() {
     emits_elf("extern int value; int *ptr=&value; int main(void) { return *ptr; }");
 }
+
+#[test]
+fn global_array_decay_pointer_initializer_emits_relocation() {
+    emits_elf("int values[3]; int *p=values; int main(void) { p[1]=7; return values[1]-7; }");
+}
+
+#[test]
+fn extern_array_decay_pointer_initializer_emits_relocation() {
+    emits_elf("extern int values[3]; int *p=values; int main(void) { return p[1]; }");
+}
