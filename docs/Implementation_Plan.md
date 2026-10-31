@@ -123,6 +123,23 @@ Add arrays, pointers, address-of/dereference, pointer arithmetic, alignment, con
 
 Exit: pointer/array programs link and run correctly, including stack spills.
 
+## M5 implementation checkpoint (2026-10-30)
+
+The optional Cranelift reference backend now emits initialized and tentative
+scalar globals, external data imports, internal-linkage data, and x86-64 ELF
+symbol-address relocations for named global pointer initializers. Mixed GCC
+object tests cover reads/writes, null pointers, and local/external pointer
+relocations. The pointer comparison lowering and legacy regression expectations
+were repaired during this work. CI was reported green after those fixes;
+newly added relocation interoperability cases still require CI confirmation.
+
+Remaining M5 scope is substantial: string literal syntax and storage, tagged
+struct/union/enum parsing and semantic types, member access and aggregate
+layout, aggregate initialization/copy, and the supported SysV aggregate ABI.
+Implement in that order, keeping unsupported aggregate signatures rejected
+until ABI classification and differential tests are available. Do not mark M5
+complete on the strength of scalar linkage alone.
+
 ## M5 — Linkage and aggregates
 
 Add global variables, external calls, ELF symbol/relocation support, strings, structs/unions/enums and layout; implement supported SysV aggregate ABI cases or reject unsupported ones. Test multi-file linkage with cc and mixed compiler/GCC objects.
