@@ -7,6 +7,7 @@ pub mod lexer;
 pub mod parser;
 pub mod scopes;
 pub mod source;
+pub mod string_literal;
 pub mod stream;
 #[path = "grammar.rs"]
 #[allow(clippy::all)]
