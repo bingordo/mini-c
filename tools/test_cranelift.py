@@ -147,6 +147,13 @@ PROGRAMS = {
     }""",
     "struct_global_zero": """struct { char first; long last; } g;
         int main(void) { g.last=29; return g.first+g.last; }""",
+    "struct_assignment": """int main(void) {
+        struct { char c; int count; long total; } entries[2];
+        entries[0].c=3; entries[0].count=17; entries[0].total=37;
+        entries[1]=entries[0]; entries[0].count=0;
+        return entries[1].c+entries[1].count+entries[1].total;
+    }""",
+
 
 
 
