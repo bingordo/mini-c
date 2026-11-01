@@ -72,61 +72,91 @@ fn check_recovering(
 }
 
 fn usage() {
-    eprintln!("usage: mini-c check [--cpp=none|--cpp=cc|--cpp=clang|--cpp=<path>] [--cpp-arg=<arg>] [--max-errors=<positive integer>] <file.c> [file.c ...]");
+    eprintln!(
+        "usage: mini-c check [--cpp=none|--cpp=cc|--cpp=clang|--cpp=<path>] \
+         [-I<dir>|-I <dir>] [-D<name>[=<value>]|-D <name>[=<value>]] \
+         [-U<name>|-U <name>] [--cpp-arg=<arg>] \
+         [--max-errors=<positive integer>] [--] <file.c> [file.c ...]"
+    );
 }
 
-fn main() -> ExitCode {
-    let mut args = env::args().skip(1);
+/// Parsed driver options. Argument collection is deliberately separate from
+/// spawning a preprocessor so unit tests can check the exact argument vector.
+#[derive(Debug)]
+struct Options {
+    cpp: Option<preprocess::Config>,
+    max_errors: Option<usize>,
+    paths: Vec<String>,
+}
+
+fn parse_options(args: impl IntoIterator<Item = String>) -> Result<Options, String> {
+    let mut args = args.into_iter();
     if args.next().as_deref() != Some("check") {
-        usage();
-        return ExitCode::FAILURE;
+        return Err("expected 'check' subcommand".into());
     }
-    let mut cpp: Option<preprocess::Config> = None;
+    let mut executable = Some(OsString::from("cc"));
+    let mut cpp_args = vec![OsString::from("-E")];
     let mut paths = Vec::new();
     let mut max_errors = None;
-    for arg in args {
-        if let Some(executable) = arg.strip_prefix("--cpp=") {
-            cpp = if executable == "none" {
-                None
-            } else {
-                Some(preprocess::Config {
-                    executable: OsString::from(executable),
-                    args: vec![OsString::from("-E")],
-                })
-            };
-        } else if let Some(value) = arg.strip_prefix("--cpp-arg=") {
-            match cpp.as_mut() {
-                Some(config) => config.args.push(OsString::from(value)),
-                None => {
-                    eprintln!("--cpp-arg requires --cpp=<executable> first");
-                    return ExitCode::FAILURE;
-                }
+    let mut end_options = false;
+
+    while let Some(arg) = args.next() {
+        if end_options {
+            paths.push(arg);
+            continue;
+        }
+        if arg == "--" {
+            end_options = true;
+        } else if let Some(value) = arg.strip_prefix("--cpp=") {
+            if value.is_empty() {
+                return Err("--cpp requires an executable name or 'none'".into());
             }
+            executable = if value == "none" { None } else { Some(value.into()) };
+        } else if let Some(value) = arg.strip_prefix("--cpp-arg=") {
+            if value.is_empty() { return Err("--cpp-arg requires a value".into()); }
+            cpp_args.push(value.into());
         } else if let Some(value) = arg.strip_prefix("--max-errors=") {
             match value.parse::<usize>() {
                 Ok(n) if n > 0 => max_errors = Some(n),
-                _ => {
-                    eprintln!("--max-errors requires a positive integer");
-                    return ExitCode::FAILURE;
-                }
+                _ => return Err("--max-errors requires a positive integer".into()),
             }
+        } else if matches!(arg.as_str(), "-I" | "-D" | "-U") {
+            let value = args.next().ok_or_else(|| format!("{arg} requires a value"))?;
+            if value.is_empty() { return Err(format!("{arg} requires a nonempty value")); }
+            cpp_args.push(format!("{arg}{value}").into());
+        } else if arg.starts_with("-I") || arg.starts_with("-D") || arg.starts_with("-U") {
+            // Preserve values verbatim, including spaces, equals signs and
+            // punctuation: Command::args does not invoke a shell.
+            if arg.len() == 2 { return Err(format!("{arg} requires a value")); }
+            cpp_args.push(arg.into());
         } else if arg.starts_with('-') {
-            eprintln!("unknown option: {arg}");
-            usage();
-            return ExitCode::FAILURE;
+            return Err(format!("unknown option: {arg}"));
         } else {
             paths.push(arg);
         }
     }
-    if paths.is_empty() {
-        usage();
-        return ExitCode::FAILURE;
+    if paths.is_empty() { return Err("no input files provided".into()); }
+    if executable.is_none() && cpp_args.len() != 1 {
+        return Err("preprocessor options -I/-D/-U/--cpp-arg cannot be used with --cpp=none".into());
     }
+    let cpp = executable.map(|executable| preprocess::Config { executable, args: cpp_args });
+    Ok(Options { cpp, max_errors, paths })
+}
+
+fn main() -> ExitCode {
+    let options = match parse_options(env::args().skip(1)) {
+        Ok(options) => options,
+        Err(error) => {
+            eprintln!("{error}");
+            usage();
+            return ExitCode::FAILURE;
+        }
+    };
     let mut failed = false;
-    for path in paths {
-        let result = match max_errors {
-            Some(limit) => check_recovering(&path, cpp.as_ref(), limit),
-            None => check(&path, cpp.as_ref()),
+    for path in options.paths {
+        let result = match options.max_errors {
+            Some(limit) => check_recovering(&path, options.cpp.as_ref(), limit),
+            None => check(&path, options.cpp.as_ref()),
         };
         if let Err(error) = result {
             eprintln!("{error}");
