@@ -11,3 +11,7 @@ cranelift-frontend = "0.136.3"
 cranelift-module = "0.136.3"
 cranelift-object = "0.136.3"
 cranelift-native = "0.136.3"
+
+[dev-dependencies]
+# Already used by cranelift-object; inspect emitted ELF relocation records.
+object = { version = "0.40", default-features = false, features = ["read", "elf", "std"] }
