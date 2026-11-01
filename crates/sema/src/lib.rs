@@ -138,6 +138,8 @@ pub struct Checker {
     next_tag_identity: Cell<u64>,
     /// Independent tag namespace, parallel to ordinary identifier scopes.
     tags: RefCell<Vec<HashMap<String, TagEntry>>>,
+    /// Completed definitions indexed by stable identity, independent of shadowing.
+    tag_definitions: RefCell<HashMap<u64, CType>>,
     globals: HashMap<String, Symbol>,
     locals: Vec<HashMap<String, Symbol>>,
     result_ty: Option<CType>,
@@ -153,7 +155,7 @@ pub struct Checker {
 
 impl Checker {
     pub fn new(target: Target) -> Result<Self, Diagnostic> {
-        Ok(Self { target: target.validate()?, next_tag_identity: Cell::new(1), tags: RefCell::new(vec![HashMap::new()]), globals: HashMap::new(), locals: Vec::new(), result_ty: None, loop_depth: 0, rollback_log: None, statement_undo: None,
+        Ok(Self { target: target.validate()?, next_tag_identity: Cell::new(1), tags: RefCell::new(vec![HashMap::new()]), tag_definitions: RefCell::new(HashMap::new()), globals: HashMap::new(), locals: Vec::new(), result_ty: None, loop_depth: 0, rollback_log: None, statement_undo: None,
             recovery_errors: None, recovery_limit: 0, recovery_depth: 0 })
     }
 
@@ -230,15 +232,9 @@ impl Checker {
 
     fn complete_tag_type(&self, ty: CType, span: Span) -> Result<CType, Diagnostic> {
         match ty {
-            CType::TagRef { kind, name, identity } => {
-                let entry = self.lookup_tag(kind, &name, span)?
-                    .ok_or_else(|| type_error(span, "unknown aggregate tag"))?;
-                if entry.identity != identity {
-                    return Err(type_error(span, "aggregate tag has gone out of scope"));
-                }
-                entry.complete.ok_or_else(|| type_error(span,
-                    format!("incomplete struct or union tag '{name}'")))
-            }
+            CType::TagRef { name, identity, .. } => self.tag_definitions.borrow()
+                .get(&identity).cloned().ok_or_else(|| type_error(span,
+                    format!("incomplete struct or union tag '{name}'"))),
             CType::Array(element, count) => Ok(CType::Array(
                 Box::new(self.complete_tag_type(*element, span)?), count)),
             other => Ok(other),
@@ -247,17 +243,12 @@ impl Checker {
 
     fn try_complete_tag_type(&self, ty: CType, span: Span) -> Result<CType, Diagnostic> {
         match ty {
-            CType::TagRef { kind, name, identity } => {
-                let entry = self.lookup_tag(kind, &name, span)?
-                    .ok_or_else(|| type_error(span, "unknown aggregate tag"))?;
-                if entry.identity != identity {
-                    return Err(type_error(span, "aggregate tag has gone out of scope"));
-                }
-                Ok(entry.complete.unwrap_or(CType::TagRef { kind, name, identity }))
-            }
+            CType::TagRef { kind, name, identity } => Ok(self.tag_definitions.borrow()
+                .get(&identity).cloned()
+                .unwrap_or(CType::TagRef { kind, name, identity })),
             CType::Array(element, count) => Ok(CType::Array(
                 Box::new(self.try_complete_tag_type(*element, span)?), count)),
-            other => Ok(other),
+            other => { let _ = span; Ok(other) },
         }
     }
 
@@ -328,6 +319,7 @@ impl Checker {
                             kind, identity, complete: Some(complete.clone()),
                         });
                 }
+                self.tag_definitions.borrow_mut().insert(identity, complete.clone());
                 complete
             }
             Type::Pointer(inner) => CType::Pointer(Box::new(self.resolve(inner, span)?)),
