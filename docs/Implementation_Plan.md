@@ -160,6 +160,25 @@ incrementally and reject unsupported aggregate signatures until ABI
 classification and differential tests are available. Do not mark M5 complete
 on the strength of scalar linkage or narrow strings alone.
 
+### M5 structures: initial inline-definition subset (2026-11-01)
+
+The parser now accepts complete inline structure definitions in object,
+parameter, or local declarations, and postfix dot/arrow member selectors.
+Semantic analysis calculates LP64 field alignment, padding, size, and typed
+member byte offsets; Cranelift uses those offsets to lower scalar field
+loads and stores, including nested structs, array elements, and pointer
+dereferences. Tentative global structs are zero-initialized with proper
+alignment. Syntax, semantic, ELF, and GCC differential tests were added.
+**CI verification is required before considering this subset validated.**
+
+Limitations intentionally deferred: standalone/tag-only struct declarations,
+tag reuse and scope identity, recursive/self-referential tagged structs,
+unions and enums, bitfields, struct/union compound initialization or copying,
+by-value aggregates in the SysV ABI, flexible arrays and packing. Unsupported
+constructs must remain errors, not silently reinterpreted. Generalization
+should use a dedicated tag scope and common aggregate layout model instead
+of special-casing code generation.
+
 ## M5 — Linkage and aggregates
 
 Add global variables, external calls, ELF symbol/relocation support, strings, structs/unions/enums and layout; implement supported SysV aggregate ABI cases or reject unsupported ones. Test multi-file linkage with cc and mixed compiler/GCC objects.
