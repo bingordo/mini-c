@@ -151,6 +151,68 @@ mod tests {
     }
 
     #[test]
+    fn gcc_and_clang_expand_same_supported_macro_fixture() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!("mini-c-cpp-compare-{}-{nonce}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let header = dir.join("config.h");
+        let input = dir.join("unit.c");
+        std::fs::write(&header, "#define HEADER_VALUE 23\n").unwrap();
+        std::fs::write(&input, "#include \"config.h\"\n#if defined(EXTRA) && LOCAL == 17 && !defined(OLD)\nint result = HEADER_VALUE+LOCAL;\n#else\n#error wrong_macro_state\n#endif\n").unwrap();
+        let args = vec![
+            OsString::from("-E"),
+            OsString::from(format!("-I{}", dir.display())),
+            OsString::from("-DEXTRA=1"),
+            OsString::from("-DLOCAL=17"),
+            OsString::from("-DOLD=1"),
+            OsString::from("-UOLD"),
+        ];
+        let gcc = file(&input, &Config {
+            executable: OsString::from("cc"), args: args.clone(),
+        });
+        let clang = file(&input, &Config {
+            executable: OsString::from("clang"), args,
+        });
+        let _ = std::fs::remove_dir_all(dir);
+        let gcc = match gcc {
+            Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => return,
+            other => other.unwrap(),
+        };
+        let clang = match clang {
+            Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => return,
+            other => other.unwrap(),
+        };
+        use mini_c_syntax::lexer::scan;
+        let gcc_tokens: Vec<_> = scan(&gcc).unwrap().iter().map(|t| t.text).collect();
+        let clang_tokens: Vec<_> = scan(&clang).unwrap().iter().map(|t| t.text).collect();
+        assert_eq!(gcc_tokens, clang_tokens);
+        assert_eq!(gcc_tokens, ["int", "result", "=", "23", "+", "17", ";"]);
+    }
+
+    #[test]
+    fn macro_value_metacharacters_are_not_executed_by_a_shell() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!("mini-c-cpp-no-shell-{}-{nonce}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("test.c");
+        let marker = dir.join("unexpected-shell-execution");
+        std::fs::write(&src, "int value = VALUE;\n").unwrap();
+        let macro_arg = format!("-DVALUE=17;touch {}", marker.display());
+        let output = file(&src, &Config {
+            executable: OsString::from("cc"),
+            args: vec![OsString::from("-E"), OsString::from(macro_arg)],
+        });
+        let unexpected = marker.exists();
+        let _ = std::fs::remove_dir_all(dir);
+        assert!(!unexpected, "preprocessor arguments must never be shell-evaluated");
+        // GCC may reject the malformed macro or expand its literal text,
+        // but cannot run a shell command from that option.
+        assert!(output.is_ok() || matches!(output, Err(Error::Failed { .. })));
+    }
+
+    #[test]
     fn missing_executable_is_an_error() {
         let config = Config {
             executable: OsString::from("mini-c-preprocessor-does-not-exist-982734"),
