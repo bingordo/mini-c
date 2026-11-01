@@ -494,3 +494,17 @@ fn character_array_string_bounds_and_initializers() {
     reject(r#"int wrong_type[3]="ab";"#, "array initializer requires");
     reject(r#"int f(void) { char too_short[1]="abc"; return 0; }"#, "string literal is too long");
 }
+
+#[test]
+fn global_array_redeclarations_preserve_completed_bounds() {
+    let items = check(r#"extern char a[]; char a[]="abc"; extern char a[];"#).unwrap();
+    for item in &items[1..] {
+        let CheckedItem::Declaration(decl) = item else { panic!("expected declaration") };
+        assert!(matches!(decl.ty, CType::Array(_, Some(4))));
+    }
+    check(r#"char a[]="abc"; extern char a[];"#).unwrap();
+    check(r#"extern char a[]; char a[8]="abc";"#).unwrap();
+    check(r#"char a[4]; char a[]="abc";"#).unwrap();
+    reject(r#"extern char a[5]; char a[]="abc";"#, "conflicting declaration");
+    reject(r#"extern int a[]; char a[]="abc";"#, "conflicting declaration");
+}
