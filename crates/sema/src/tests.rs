@@ -437,3 +437,26 @@ fn global_array_scalar_initializer_is_rejected_until_aggregate_support() {
     // Scalar constant initializers continue to work.
     check("int n = 3; unsigned long m = 7;").unwrap();
 }
+
+
+#[test]
+fn narrow_string_is_char_array_and_decays_to_pointer() {
+    let items = check(r#"char *global="ab"; int main(void) {
+        char *local="xy"; return local[1]-'y'+global[0]-'a';
+    }"#).unwrap();
+    let CheckedItem::Declaration(global) = &items[0] else { panic!("global expected") };
+    let Some(init) = &global.initializer else { panic!("initializer expected") };
+    assert_eq!(init.ty, CType::Pointer(Box::new(CType::Integer {
+        rank: IntRank::Char, unsigned: false,
+    })));
+    let CheckedExprKind::ArrayDecay(string) = &init.kind else {
+        panic!("string initializer must be array decay: {:?}", init.kind);
+    };
+    assert_eq!(string.ty, CType::Array(Box::new(CType::Integer {
+        rank: IntRank::Char, unsigned: false,
+    }), Some(3)));
+    assert_eq!(string.category, Category::LValue);
+    assert!(matches!(&string.kind, CheckedExprKind::StringLiteral(bytes) if bytes == b"ab\0"));
+    reject(r#"int *p="invalid";"#, "incompatible assignment");
+    reject(r#"char a[4]="abc";"#, "array initializer requires");
+}
