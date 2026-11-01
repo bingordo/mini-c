@@ -91,6 +91,9 @@ fn char_array_initializer_bytes(
         return Err("string initializer requires an array of character type".into());
     }
     let count = usize::try_from(*bound).map_err(|_| "character array exceeds host size")?;
+    if count > 1_048_576 {
+        return Err("character-array initializer exceeds 1 MiB codegen limit".into());
+    }
     if count < source.len().saturating_sub(1) {
         return Err("string initializer exceeds character array bound".into());
     }
