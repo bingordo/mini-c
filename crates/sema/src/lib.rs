@@ -254,7 +254,29 @@ impl Checker {
                 }
                 symbol.ty.clone()
             }
+            Type::TagRef(kind, name) => self.reference_tag(*kind, name, span)?,
             Type::Struct { tag, members } | Type::Union { tag, members } => {
+                let kind = if matches!(ty, Type::Union { .. }) {
+                    TagKind::Union
+                } else { TagKind::Struct };
+                let identity = if let Some(name) = tag {
+                    let current = self.tags.borrow().last().expect("tag scope")
+                        .get(name).cloned();
+                    if let Some(entry) = current {
+                        if entry.kind != kind {
+                            return Err(type_error(span, format!("conflicting tag kind for '{name}'")));
+                        }
+                        if entry.complete.is_some() {
+                            return Err(type_error(span, format!("redefinition of aggregate tag '{name}'")));
+                        }
+                        entry.identity
+                    } else {
+                        let identity = self.new_tag_identity();
+                        self.tags.borrow_mut().last_mut().expect("tag scope")
+                            .insert(name.clone(), TagEntry { kind, identity, complete: None });
+                        identity
+                    }
+                } else { self.new_tag_identity() };
                 let mut fields = Vec::with_capacity(members.len());
                 for member in members {
                     if member.init.is_some() || member.storage != StorageClass::Default {
@@ -262,18 +284,23 @@ impl Checker {
                     }
                     fields.push((member.name.clone(), self.resolve(&member.ty, member.span)?));
                 }
-                let mut ty = if matches!(ty, Type::Union { .. }) {
+                let mut complete = if kind == TagKind::Union {
                     types::layout_union(tag.clone(), fields, self.target)
                 } else {
                     types::layout_struct(tag.clone(), fields, self.target)
                 }.map_err(|reason| type_error(span, reason))?;
-                let identity = match &mut ty {
-                    CType::Struct { identity, .. } | CType::Union { identity, .. } => identity,
+                match &mut complete {
+                    CType::Struct { identity: id, .. } |
+                    CType::Union { identity: id, .. } => *id = identity,
                     _ => unreachable!(),
-                };
-                *identity = self.next_tag_identity.get();
-                self.next_tag_identity.set(identity.saturating_add(1));
-                ty
+                }
+                if let Some(name) = tag {
+                    self.tags.borrow_mut().last_mut().expect("tag scope")
+                        .insert(name.clone(), TagEntry {
+                            kind, identity, complete: Some(complete.clone()),
+                        });
+                }
+                complete
             }
             Type::Pointer(inner) => CType::Pointer(Box::new(self.resolve(inner, span)?)),
             Type::Function { result, params } => {
