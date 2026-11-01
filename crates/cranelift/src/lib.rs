@@ -103,9 +103,11 @@ fn char_array_initializer_bytes(
 /// Flatten a checked aggregate constant initializer into ELF bytes.
 /// Dynamic nonconstant expressions and objects exceeding the codegen guard
 /// are rejected explicitly. Relocations remain separate from raw bytes.
+type StaticAggregate = (Vec<u8>, Vec<(u32, RelocationSource)>);
+
 fn static_initializer_bytes(
     ty: &CType, init: &CheckedExpr,
-) -> Result<Option<(Vec<u8>, Vec<(u32, RelocationSource)>)>> {
+) -> Result<Option<StaticAggregate>> {
     if !matches!(&init.kind, CheckedExprKind::Initializer(_)) { return Ok(None); }
     let size = ty.size_bytes(Target::default()).ok_or("incomplete aggregate initializer")?;
     let size = usize::try_from(size).map_err(|_| "oversized aggregate initializer")?;
