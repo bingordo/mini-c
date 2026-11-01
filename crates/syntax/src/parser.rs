@@ -448,6 +448,28 @@ impl<'a> Parser<'a> {
         Ok(params)
     }
 
+    /// Parse C braced initializers recursively without enabling comma
+    /// expressions in the ordinary expression grammar.
+    fn parse_initializer(&mut self) -> Result<Expr, Diagnostic> {
+        if !self.peek()?.is_some_and(|t| t.text == "{") {
+            return self.parse_assign();
+        }
+        self.take()?;
+        let mut values = Vec::new();
+        if self.peek()?.is_some_and(|t| t.text == "}") {
+            return Err(Diagnostic::new(self.peek()?.expect("peeked").span,
+                "empty aggregate initializers are unsupported"));
+        }
+        loop {
+            values.push(self.parse_initializer()?);
+            if !self.peek()?.is_some_and(|t| t.text == ",") { break; }
+            self.take()?;
+            if self.peek()?.is_some_and(|t| t.text == "}") { break; }
+        }
+        self.expect("}")?;
+        Ok(Expr::Initializer(values))
+    }
+
     fn parse_decl(&mut self, is_typedef: bool) -> Result<Decl, Diagnostic> {
         let storage = match self.peek()?.map(|t| t.text) {
             Some("static") => { self.take()?; StorageClass::Static },
@@ -463,7 +485,7 @@ impl<'a> Parser<'a> {
         self.scopes.declare(&name, if is_typedef { Binding::Typedef } else { Binding::Ordinary });
         let init = if self.peek()?.is_some_and(|t| t.text == "=") {
             self.take()?;
-            Some(self.parse_expr()?)
+            Some(self.parse_initializer()?)
         } else {
             None
         };
@@ -660,7 +682,7 @@ impl ItemSource for Parser<'_> {
         }
         let init = if self.peek()?.is_some_and(|t| t.text == "=") {
             self.take()?;
-            Some(self.parse_expr()?)
+            Some(self.parse_initializer()?)
         } else {
             None
         };
@@ -983,6 +1005,17 @@ mod tests {
         let mut p = Parser::new("int read(struct { long a; } *p) { return p->a; }");
         assert!(matches!(p.next_item(), Ok(Some(ExternalItem::Function(_)))));
         assert!(Parser::new("struct Unknown value;").next_item().is_err());
+    }
+
+    #[test]
+    fn nested_aggregate_initializers_parse() {
+        let mut parser = Parser::new("int a[3] = {1, 2, 3,}; int f(void) { int b[2][2] = {{1,2},{3,4}}; return b[1][0]; }");
+        let ExternalItem::Declaration(decl) = parser.next_item().unwrap().unwrap() else { panic!("declaration expected") };
+        assert_eq!(decl.init, Some(Expr::Initializer(vec![Expr::Int(1), Expr::Int(2), Expr::Int(3)])));
+        let ExternalItem::Function(fun) = parser.next_item().unwrap().unwrap() else { panic!("function expected") };
+        let Stmt::Block(stmts) = fun.body else { panic!("block expected") };
+        assert!(matches!(&stmts[0], Stmt::Decl(Decl { init: Some(Expr::Initializer(items)), .. }) if items.len() == 2));
+        assert!(Parser::new("int a[2]={};").next_item().is_err());
     }
 
 }
