@@ -126,8 +126,24 @@ fn string_literal_escape_bytes_and_embedded_nul_compile() {
 }
 
 #[test]
-fn rejects_char_array_initializer_until_aggregate_initialization_is_supported() {
-    let err=compile_source(r#"char text[4]="abc"; int main(void) { return text[0]; }"#)
+fn global_character_array_from_string_emits_elf() {
+    emits_elf(r#"char text[4]="abc"; int main(void) { return text[2]-'c'; }"#);
+    emits_elf(r#"char inferred[]="abc"; int main(void) { return inferred[3]; }"#);
+    emits_elf(r#"unsigned char padded[8]="hi"; int main(void) { return padded[7]; }"#);
+    emits_elf(r#"char exact[3]="abc"; int main(void) { return exact[2]-'c'; }"#);
+}
+
+#[test]
+fn local_character_array_from_string_emits_elf() {
+    emits_elf(r#"int main(void) { char text[]="abc"; return text[3]; }"#);
+    emits_elf(r#"int main(void) { char short_string[3]="abc"; return short_string[2]-'c'; }"#);
+    emits_elf(r#"int main(void) { char padded[13]="ok"; return padded[12]; }"#);
+    emits_elf(r#"int main(void) { unsigned char bytes[4]="\\377"; return bytes[0]-255; }"#);
+}
+
+#[test]
+fn rejects_oversized_character_array_initializer() {
+    let err=compile_source(r#"char text[2]="abc"; int main(void) { return text[0]; }"#)
         .unwrap_err();
-    assert!(err.contains("array initializer"), "{err}");
+    assert!(err.contains("string literal is too long"), "{err}");
 }
