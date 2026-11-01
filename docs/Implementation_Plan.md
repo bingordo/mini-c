@@ -133,12 +133,22 @@ relocations. The pointer comparison lowering and legacy regression expectations
 were repaired during this work. CI was reported green after those fixes;
 newly added relocation interoperability cases still require CI confirmation.
 
-Remaining M5 scope is substantial: string literal syntax and storage, tagged
-struct/union/enum parsing and semantic types, member access and aggregate
-layout, aggregate initialization/copy, and the supported SysV aggregate ABI.
-Implement in that order, keeping unsupported aggregate signatures rejected
-until ABI classification and differential tests are available. Do not mark M5
-complete on the strength of scalar linkage alone.
+M5 narrow-string update (2026-10-31): The incremental parser decodes narrow
+string literals into an AST byte array (including the trailing NUL). The checker
+types them as char[N] lvalues, with ordinary array-to-pointer decay. The
+Cranelift backend interns identical byte sequences into local, read-only ELF
+data objects; function expressions use data addresses and file-scope char*
+initializers emit relocations. Unit, ELF-smoke and GCC differential/mixed-object
+tests were added. These changes still require successful post-change CI
+verification.
+
+Remaining M5 scope is substantial: adjacent string literal concatenation and
+other full C string semantics, char-array initializers, tagged struct/union/enum
+parsing and semantic types, member access and aggregate layout, aggregate
+initialization/copy, and the supported SysV aggregate ABI. Implement aggregates
+incrementally and reject unsupported aggregate signatures until ABI
+classification and differential tests are available. Do not mark M5 complete
+on the strength of scalar linkage or narrow strings alone.
 
 ## M5 — Linkage and aggregates
 
