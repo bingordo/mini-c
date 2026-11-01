@@ -2,13 +2,14 @@
 //!
 //! This interface deliberately does not retain a translation-unit AST. A parser
 //! can hand off a completed function and immediately reclaim its syntax tree.
-use crate::ast::{Decl, Function};
+use crate::ast::{Decl, Function, Type};
 
 /// One completed external declaration or function definition.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExternalItem {
     Declaration(Decl),
     Typedef(Decl),
+    Tag(Type),
     Function(Function),
 }
 
@@ -22,6 +23,8 @@ pub trait ItemSink {
     fn typedef(&mut self, declaration: Decl) -> Result<(), Self::Error> {
         self.declaration(declaration)
     }
+    /// Tag-only declarations do not create ordinary object symbols.
+    fn tag(&mut self, _: Type) -> Result<(), Self::Error> { Ok(()) }
 }
 
 /// A source of one parsed item at a time. The parser owns any lookahead and
@@ -42,6 +45,7 @@ where
         match item {
             ExternalItem::Declaration(decl) => sink.declaration(decl).map_err(StreamError::Sink)?,
             ExternalItem::Typedef(decl) => sink.typedef(decl).map_err(StreamError::Sink)?,
+            ExternalItem::Tag(ty) => sink.tag(ty).map_err(StreamError::Sink)?,
             ExternalItem::Function(function) => {
                 sink.function(function).map_err(StreamError::Sink)?
             }
