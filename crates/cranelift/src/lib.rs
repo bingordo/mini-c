@@ -204,9 +204,13 @@ impl Compiler {
         } else { None };
         let tentative = decl.storage != StorageClass::Extern && initialized.is_none();
         if let Some(data) = self.data.get_mut(&name) {
-            if data.ty != decl.ty || data.linkage != decl.linkage {
+            let Some(composite) = data.ty.composite(&decl.ty) else {
                 return Err(format!("conflicting global object declaration '{name}'"));
+            };
+            if data.linkage != decl.linkage {
+                return Err(format!("conflicting global object linkage '{name}'"));
             }
+            data.ty = composite;
             if initialized.is_some() && data.initialized.is_some() {
                 return Err(format!("duplicate global object definition '{name}'"));
             }
