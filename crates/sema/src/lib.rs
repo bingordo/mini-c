@@ -5,6 +5,7 @@ pub mod types;
 pub mod const_eval;
 
 use std::collections::HashMap;
+use std::cell::Cell;
 use mini_c_syntax::ast::{BinOp, Decl, Expr, Function, Span, Stmt, StorageClass, Type, UnOp};
 use mini_c_syntax::diag::{Diagnostic, DiagnosticCode};
 use mini_c_syntax::stream::{ExternalItem, ItemSource};
@@ -121,6 +122,7 @@ pub struct Symbol {
 /// Scopes and persistent file symbols are local to this Checker instance.
 pub struct Checker {
     target: Target,
+    next_tag_identity: Cell<u64>,
     globals: HashMap<String, Symbol>,
     locals: Vec<HashMap<String, Symbol>>,
     result_ty: Option<CType>,
@@ -136,7 +138,7 @@ pub struct Checker {
 
 impl Checker {
     pub fn new(target: Target) -> Result<Self, Diagnostic> {
-        Ok(Self { target: target.validate()?, globals: HashMap::new(), locals: Vec::new(), result_ty: None, loop_depth: 0, rollback_log: None, statement_undo: None,
+        Ok(Self { target: target.validate()?, next_tag_identity: Cell::new(1), globals: HashMap::new(), locals: Vec::new(), result_ty: None, loop_depth: 0, rollback_log: None, statement_undo: None,
             recovery_errors: None, recovery_limit: 0, recovery_depth: 0 })
     }
 
@@ -177,8 +179,13 @@ impl Checker {
                     }
                     fields.push((member.name.clone(), self.resolve(&member.ty, member.span)?));
                 }
-                types::layout_struct(tag.clone(), fields, self.target)
-                    .map_err(|reason| type_error(span, reason))?
+                let mut ty = types::layout_struct(tag.clone(), fields, self.target)
+                    .map_err(|reason| type_error(span, reason))?;
+                if let CType::Struct { identity, .. } = &mut ty {
+                    *identity = self.next_tag_identity.get();
+                    self.next_tag_identity.set(identity.saturating_add(1));
+                }
+                ty
             }
             Type::Pointer(inner) => CType::Pointer(Box::new(self.resolve(inner, span)?)),
             Type::Function { result, params } => {
