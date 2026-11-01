@@ -123,67 +123,30 @@ Add arrays, pointers, address-of/dereference, pointer arithmetic, alignment, con
 
 Exit: pointer/array programs link and run correctly, including stack spills.
 
-## M5 implementation checkpoint (2026-10-30)
+## M5 implementation status — complete for the supported reference subset
 
-The optional Cranelift reference backend now emits initialized and tentative
-scalar globals, external data imports, internal-linkage data, and x86-64 ELF
-symbol-address relocations for named global pointer initializers. Mixed GCC
-object tests cover reads/writes, null pointers, and local/external pointer
-relocations. The pointer comparison lowering and legacy regression expectations
-were repaired during this work. CI was reported green after those fixes;
-newly added relocation interoperability cases still require CI confirmation.
+M5's tested scope is implemented: scalar/aggregate global objects and ELF
+relocations, narrow strings, character-array and recursive braced
+initializers, struct/union tags and LP64 layout, member access, representation
+copies, enum integer constants, and interoperable scalar/pointer SysV calls.
+By-value struct/union signatures are **explicitly rejected**, not silently
+lowered under an incorrect ABI. Mixed Mini-C/GCC object tests exercise layout,
+links and relocations in both directions.
 
-M5 narrow-string update (2026-10-31): The incremental parser decodes narrow
-string literals into an AST byte array (including the trailing NUL). The checker
-types them as char[N] lvalues, with ordinary array-to-pointer decay. The
-Cranelift backend interns identical byte sequences into local, read-only ELF
-data objects; function expressions use data addresses and file-scope char*
-initializers emit relocations. Unit, ELF-smoke and GCC differential/mixed-object
-tests were added. These changes still require successful post-change CI
-verification.
-
-M5 character-array initialization checkpoint (2026-11-01): File-scope and
-automatic char/signed-char/unsigned-char arrays can now be initialized directly
-from narrow strings. The checker infers missing bounds, permits omission of the
-terminating NUL only when the explicit bound exactly fits, diagnoses
-undersized arrays, and preserves the literal bytes without pointer decay.
-The backend emits initialized ELF data or stack stores, with zero padding
-where needed. Compatible incomplete/complete array redeclarations now produce
-a composite type. GCC differential and smoke tests cover these features;
-the later redeclaration additions still require fresh CI verification.
-
-Remaining M5 scope is substantial: adjacent string literal concatenation and
-other full C string semantics, general aggregate initializers, tagged struct/union/enum
-parsing and semantic types, member access and aggregate layout, aggregate
-initialization/copy, and the supported SysV aggregate ABI. Implement aggregates
-incrementally and reject unsupported aggregate signatures until ABI
-classification and differential tests are available. Do not mark M5 complete
-on the strength of scalar linkage or narrow strings alone.
-
-### M5 structures: initial inline-definition subset (2026-11-01)
-
-The parser now accepts complete inline structure definitions in object,
-parameter, or local declarations, and postfix dot/arrow member selectors.
-Semantic analysis calculates LP64 field alignment, padding, size, and typed
-member byte offsets; Cranelift uses those offsets to lower scalar field
-loads and stores, including nested structs, array elements, and pointer
-dereferences. Tentative global structs are zero-initialized with proper
-alignment. Syntax, semantic, ELF, and GCC differential tests were added.
-**CI verification is required before considering this subset validated.**
-
-Limitations intentionally deferred: standalone/tag-only struct declarations,
-tag reuse and scope identity, recursive/self-referential tagged structs,
-unions and enums, bitfields, struct/union compound initialization or copying,
-by-value aggregates in the SysV ABI, flexible arrays and packing. Unsupported
-constructs must remain errors, not silently reinterpreted. Generalization
-should use a dedicated tag scope and common aggregate layout model instead
-of special-casing code generation.
+The exact support contract, regression coverage and deliberately unsupported
+full-C features are recorded in
+[**M5 aggregate and ABI validation**](M5_Aggregates_ABI.md).
+M5 completion is *not* full ISO C completeness or full aggregate-by-value
+SysV coverage; those are separate, explicitly deferred goals. The closure
+suite passed in compiler-ci run 41309708850; regular targeted CI stays
+change-aware and efficient.
 
 ## M5 — Linkage and aggregates
 
 Add global variables, external calls, ELF symbol/relocation support, strings, structs/unions/enums and layout; implement supported SysV aggregate ABI cases or reject unsupported ones. Test multi-file linkage with cc and mixed compiler/GCC objects.
 
-Exit: cross-translation-unit tests and ABI probes pass.
+Exit: met for the supported subset — cross-TU GCC interoperability and ABI
+rejection probes pass. See M5_Aggregates_ABI.md for unimplemented C features.
 
 ## M6 — Preprocessor maturity
 
