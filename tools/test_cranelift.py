@@ -158,6 +158,9 @@ PROGRAMS = {
         int main(void) { return messages[0][0]+messages[1][0]; }""",
     "aggregate_self_reference": """struct Node; struct Node { int value; struct Node *next; };
         struct Node head={17,&head}; int main(void) { return head.next->value; }""",
+    "enum_scalar_abi": """enum Status { A=3, B=7 };
+        enum Status inc(enum Status x) { return x+1; }
+        int main(void) { return inc(A); }""",
     "enum_explicit": """enum Status { FIRST, SECOND=7, THIRD=SECOND+2 };
         enum Status value=THIRD; int main(void) { return value; }""",
     "enum_negative": """int main(void) { enum Mode { NEG=-1, ZERO, THREE=ZERO+3 };
@@ -373,6 +376,9 @@ def main() -> int:
         ("gcc_reads_mini_aggregate_pointer_relocations",
          'int target=29; struct Holder { int *ptr; char *text; } value={&target,"abc"};',
          'extern struct Holder { int *ptr; char *text; } value; int main(void) { return *value.ptr+value.text[2]; }'),
+        ("gcc_calls_mini_enum_scalar",
+         'enum Status { A=3 }; enum Status inc(enum Status x) { return x+1; }',
+         'enum Status { A=3 }; enum Status inc(enum Status); int main(void) { return inc(A); }'),
         ("mini_static_global_not_exported",
          "static int hidden=11; int get_hidden(void) { return hidden; }",
          "int get_hidden(void); int main(void) { return get_hidden(); }"),
