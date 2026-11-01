@@ -95,6 +95,17 @@ PROGRAMS = {
     "global_address_initializer": "int value=37; int *ptr=&value; int main(void) { return *ptr; }",
     "global_null_pointer": "int *p=0; int main(void) { return p==0; }",
     "global_tentative_pointer": "int *p; int main(void) { return p==0; }",
+    "local_string_literal": """int main(void) {
+        char *p="hello"; return p[0]+p[4]-215;
+    }""",
+    "string_literal_escapes": r"""int main(void) {
+        char *p="A\n\x42\0Z"; return p[0]+p[1]+p[2]+p[3]-143;
+    }""",
+    "global_string_pointer": """char *message="abc";
+        int main(void) { return message[0]+message[2]-196; }""",
+    "string_function_argument": """int second(char *p) { return p[1]; }
+        int main(void) { return second("abc")-'b'; }""",
+
 
 
 }
@@ -257,6 +268,12 @@ def main() -> int:
         ("mini_static_relocated_pointer",
          "static int value=17; static int *shared=&value; int get(void) { return *shared; }",
          "int get(void); int main(void) { return get(); }"),
+        ("gcc_reads_mini_string_pointer",
+         'char *shared="AZ";',
+         "extern char *shared; int main(void) { return shared[1]-'Z'; }"),
+        ("mini_passes_string_to_gcc",
+         'extern int second(char *); int main(void) { return second("abc")-98; }',
+         "int second(char *p) { return p[1]; }"),
         ("mini_static_global_not_exported",
          "static int hidden=11; int get_hidden(void) { return hidden; }",
          "int get_hidden(void); int main(void) { return get_hidden(); }"),
