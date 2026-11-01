@@ -148,11 +148,25 @@ Add global variables, external calls, ELF symbol/relocation support, strings, st
 Exit: met for the supported subset — cross-TU GCC interoperability and ABI
 rejection probes pass. See M5_Aggregates_ABI.md for unimplemented C features.
 
-## M6 — Preprocessor maturity
+## M6 — Preprocessor maturity (external path complete)
 
-Integrate external preprocessing with -I/-D/-U and source-line remapping; support --cpp=none. Optionally implement an internal restricted preprocessor behind explicit selection; differential-test against GCC/Clang. Do not block M1-M3 on internal macros.
+The checker and optional Cranelift ELF object driver now default to external
+`cc -E` preprocessing and share a dependency-free option parser for `-I`,
+`-D`, `-U`, `--cpp=clang`, `--cpp=<path>`, `--cpp-arg`, and `--cpp=none`.
+Subprocess arguments are passed directly without a shell. The source mapper
+handles GCC/Clang line directives and escaped filenames, and both drivers
+retain source spans for syntax/semantic diagnostics in included headers.
+GCC/Clang macro-token differential tests, error-handling/shell-injection
+regressions, and real preprocessed native-object tests are in CI.
 
-Exit: reproducible include/macro fixtures, correct diagnostics, no shell injection.
+**Exit met for the external preprocessing scope:** full Rust workspace,
+Clippy, GCC/Clang fixture and native GCC differential checks passed in
+[compiler-ci run #41348660474](https://github.com/bingordo/compiler-ci/actions/runs/41348660474).
+Implementation and limits are in [M6_Preprocessing.md](M6_Preprocessing.md).
+
+A self-contained full C preprocessor is explicitly optional and *not*
+implemented. External compiler headers may contain C constructs beyond
+Mini-C's supported language; that does not change M6's external-tool scope.
 
 ## M7 — Differential hardening
 
