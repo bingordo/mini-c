@@ -564,3 +564,16 @@ fn aggregate_initializer_bounds_and_types() {
     reject("int a[2]={bad,1};", "undeclared");
     reject("int main(void) { int x={1,2}; return x; }", "scalar initializer");
 }
+
+#[test]
+fn union_members_layout_and_first_field_init() {
+    let checked = check("union Word { char c; long l; } value;").unwrap();
+    let CheckedItem::Declaration(decl) = &checked[0] else { panic!("global expected") };
+    let CType::Union { members, size, align, .. } = &decl.ty else { panic!("union expected") };
+    assert_eq!((*size,*align), (8,8));
+    assert!(members.iter().all(|m| m.offset == 0));
+    check("int main(void) { union { int i; long l; } u={7}; u.i=13; return u.i; }").unwrap();
+    check("int main(void) { union { int i; long l; } a[2]; a[0].i=17; a[1]=a[0]; return a[1].i; }").unwrap();
+    reject("union { int i; long l; } u={1,2};", "union initializer selects only its first member");
+    reject("union { int i; int i; } u;", "duplicate union member");
+}
