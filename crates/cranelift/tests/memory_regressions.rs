@@ -103,3 +103,31 @@ fn global_array_decay_pointer_initializer_emits_relocation() {
 fn extern_array_decay_pointer_initializer_emits_relocation() {
     emits_elf("extern int values[3]; int *p=values; int main(void) { return p[1]; }");
 }
+
+
+#[test]
+fn local_string_pointer_and_character_index_compile() {
+    emits_elf(r#"int main(void) { char *p="hello"; return p[1]-'e'; }"#);
+}
+
+#[test]
+fn string_literal_as_function_argument_compiles() {
+    emits_elf(r#"int second(char *p) { return p[1]; } int main(void) { return second("abc")-'b'; }"#);
+}
+
+#[test]
+fn global_string_pointer_initializer_emits_relocation() {
+    emits_elf(r#"char *p="hello"; int main(void) { return p[4]-'o'; }"#);
+}
+
+#[test]
+fn string_literal_escape_bytes_and_embedded_nul_compile() {
+    emits_elf(r#"int main(void) { char *p="a\n\x42\0z"; return p[1]+p[2]+p[3]-76; }"#);
+}
+
+#[test]
+fn rejects_char_array_initializer_until_aggregate_initialization_is_supported() {
+    let err=compile_source(r#"char text[4]="abc"; int main(void) { return text[0]; }"#)
+        .unwrap_err();
+    assert!(err.contains("array initializer"), "{err}");
+}
