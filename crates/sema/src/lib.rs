@@ -33,6 +33,8 @@ pub enum CheckedExprKind {
     /// Array lvalue conversion yields a pointer to the first element,
     /// without loading the entire aggregate into a scalar.
     ArrayDecay(Box<CheckedExpr>),
+    /// Addressable member of a structure, with its checked byte offset.
+    Member(Box<CheckedExpr>, u64),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -166,6 +168,17 @@ impl Checker {
                     return Err(type_error(span, format!("'{name}' does not name a type")));
                 }
                 symbol.ty.clone()
+            }
+            Type::Struct { tag, members } => {
+                let mut fields = Vec::with_capacity(members.len());
+                for member in members {
+                    if member.init.is_some() || member.storage != StorageClass::Default {
+                        return Err(type_error(member.span, "struct members cannot have initializers or storage classes"));
+                    }
+                    fields.push((member.name.clone(), self.resolve(&member.ty, member.span)?));
+                }
+                types::layout_struct(tag.clone(), fields, self.target)
+                    .map_err(|reason| type_error(span, reason))?
             }
             Type::Pointer(inner) => CType::Pointer(Box::new(self.resolve(inner, span)?)),
             Type::Function { result, params } => {
@@ -670,6 +683,38 @@ impl Checker {
                     SymbolKind::Object => Category::LValue,
                 };
                 Ok(CheckedExpr { ty: symbol.ty.clone(), category, kind: CheckedExprKind::Name(name.clone()) })
+            }
+            Expr::Member(base, name, arrow) => {
+                let base = self.check_expr(base, span)?;
+                let object = if *arrow {
+                    let base = base.rvalue();
+                    let CType::Pointer(inner) = &base.ty else {
+                        return Err(type_error(span, "arrow operator requires a pointer to struct"));
+                    };
+                    if !matches!(inner.as_ref(), CType::Struct { .. }) {
+                        return Err(type_error(span, "arrow operator requires a pointer to struct"));
+                    }
+                    CheckedExpr {
+                        ty: inner.as_ref().clone(),
+                        category: Category::LValue,
+                        kind: CheckedExprKind::Unary(UnOp::Deref, Box::new(base)),
+                    }
+                } else {
+                    if base.category != Category::LValue {
+                        return Err(type_error(span, "dot operator requires an addressable struct"));
+                    }
+                    base
+                };
+                let CType::Struct { members, .. } = &object.ty else {
+                    return Err(type_error(span, "member access requires a struct"));
+                };
+                let field = members.iter().find(|m| m.name == *name).ok_or_else(||
+                    type_error(span, format!("unknown struct member '{name}'")))?;
+                Ok(CheckedExpr {
+                    ty: field.ty.clone(),
+                    category: Category::LValue,
+                    kind: CheckedExprKind::Member(Box::new(object), field.offset),
+                })
             }
             Expr::Index(base, offset) => {
                 // C defines E1[E2] as *((E1) + (E2)); either operand may
