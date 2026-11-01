@@ -142,8 +142,18 @@ initializers emit relocations. Unit, ELF-smoke and GCC differential/mixed-object
 tests were added. These changes still require successful post-change CI
 verification.
 
+M5 character-array initialization checkpoint (2026-11-01): File-scope and
+automatic char/signed-char/unsigned-char arrays can now be initialized directly
+from narrow strings. The checker infers missing bounds, permits omission of the
+terminating NUL only when the explicit bound exactly fits, diagnoses
+undersized arrays, and preserves the literal bytes without pointer decay.
+The backend emits initialized ELF data or stack stores, with zero padding
+where needed. Compatible incomplete/complete array redeclarations now produce
+a composite type. GCC differential and smoke tests cover these features;
+the later redeclaration additions still require fresh CI verification.
+
 Remaining M5 scope is substantial: adjacent string literal concatenation and
-other full C string semantics, char-array initializers, tagged struct/union/enum
+other full C string semantics, general aggregate initializers, tagged struct/union/enum
 parsing and semantic types, member access and aggregate layout, aggregate
 initialization/copy, and the supported SysV aggregate ABI. Implement aggregates
 incrementally and reject unsupported aggregate signatures until ABI
