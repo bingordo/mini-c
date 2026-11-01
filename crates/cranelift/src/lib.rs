@@ -82,6 +82,65 @@ fn char_array_initializer_bytes(
     Ok(Some(bytes))
 }
 
+/// Flatten a checked aggregate constant initializer into ELF bytes.
+/// Dynamic values, symbol relocations nested within aggregates, and objects
+/// exceeding the codegen guard are rejected explicitly.
+fn static_initializer_bytes(ty: &CType, init: &CheckedExpr) -> Result<Option<Vec<u8>>> {
+    if !matches!(&init.kind, CheckedExprKind::Initializer(_)) { return Ok(None); }
+    let size = ty.size_bytes(Target::default()).ok_or("incomplete aggregate initializer")?;
+    let size = usize::try_from(size).map_err(|_| "oversized aggregate initializer")?;
+    if size > 1_048_576 { return Err("aggregate initializer exceeds 1 MiB codegen limit".into()); }
+    let mut bytes = vec![0u8; size];
+    fn fill(out: &mut [u8], ty: &CType, init: &CheckedExpr, offset: usize) -> Result<()> {
+        let size = usize::try_from(ty.size_bytes(Target::default())
+            .ok_or("incomplete initialized object")?)
+            .map_err(|_| "oversized initialized object")?;
+        let end = offset.checked_add(size).ok_or("initializer byte offset overflow")?;
+        if end > out.len() { return Err("initializer extends beyond object bounds".into()); }
+        match (&init.kind, ty) {
+            (CheckedExprKind::Initializer(values), CType::Struct { members, .. }) => {
+                for (value, member) in values.iter().zip(members) {
+                    let displacement = usize::try_from(member.offset)
+                        .map_err(|_| "oversized struct member offset")?;
+                    fill(out, &member.ty, value,
+                        offset.checked_add(displacement).ok_or("struct member offset overflow")?)?;
+                }
+            }
+            (CheckedExprKind::Initializer(values), CType::Array(element, Some(_))) => {
+                let stride = usize::try_from(element.size_bytes(Target::default())
+                    .ok_or("incomplete array element")?).map_err(|_| "oversized array element")?;
+                for (index, value) in values.iter().enumerate() {
+                    let displacement = index.checked_mul(stride).ok_or("array offset overflow")?;
+                    fill(out, element, value,
+                        offset.checked_add(displacement).ok_or("array offset overflow")?)?;
+                }
+            }
+            _ => {
+                if let Some(string) = char_array_initializer_bytes(ty, init)? {
+                    out[offset..end].copy_from_slice(&string);
+                } else if ty.is_integer() {
+                    let value = mini_c_sema::const_eval::evaluate(init, Target::default())
+                        .map_err(|e| format!("nonconstant aggregate initializer: {e}"))?;
+                    out[offset..end].copy_from_slice(&value.to_le_bytes()[..size]);
+                } else if matches!(ty, CType::Pointer(_)) {
+                    let mut source = init;
+                    while let CheckedExprKind::Convert(inner) = &source.kind { source = inner; }
+                    if mini_c_sema::const_eval::evaluate(source, Target::default()) == Ok(0) {
+                        out[offset..end].fill(0);
+                    } else {
+                        return Err("non-null pointer relocation in aggregate initializer is not yet supported".into());
+                    }
+                } else {
+                    return Err("unsupported aggregate constant initializer".into());
+                }
+            }
+        }
+        Ok(())
+    }
+    fill(&mut bytes, ty, init, 0)?;
+    Ok(Some(bytes))
+}
+
 fn intern_string(
     module: &mut ObjectModule,
     strings: &mut HashMap<Vec<u8>, DataId>,
@@ -158,7 +217,8 @@ impl Compiler {
         let mut address_of = None;
         let mut string_address = None;
         let initialized = if let Some(init) = &decl.initializer {
-            if let Some(bytes) = char_array_initializer_bytes(&decl.ty, init)? {
+            if let Some(bytes) = char_array_initializer_bytes(&decl.ty, init)?
+                .or(static_initializer_bytes(&decl.ty, init)?) {
                 Some(bytes)
             } else {
             if !decl.ty.is_integer() && !matches!(decl.ty, CType::Pointer(_)) {
@@ -430,6 +490,58 @@ impl Lower<'_> {
         Ok(())
     }
 
+    /// Recursively initialize a stack aggregate, including zero-filling all
+    /// omitted fields and padding before writing explicit elements.
+    fn initialize_object(
+        &mut self, b: &mut FunctionBuilder<'_>, address: Value,
+        ty: &CType, initializer: &CheckedExpr,
+    ) -> Result<()> {
+        if let Some(bytes) = char_array_initializer_bytes(ty, initializer)? {
+            return Self::store_array_bytes(b, address, &bytes);
+        }
+        if let CheckedExprKind::Initializer(values) = &initializer.kind {
+            let size = usize::try_from(ty.size_bytes(Target::default())
+                .ok_or("incomplete aggregate initializer")?)
+                .map_err(|_| "oversized aggregate initializer")?;
+            if size > 1_048_576 {
+                return Err("aggregate initializer exceeds 1 MiB codegen limit".into());
+            }
+            Self::store_array_bytes(b, address, &vec![0u8; size])?;
+            match ty {
+                CType::Struct { members, .. } => {
+                    for (value, member) in values.iter().zip(members) {
+                        let offset = i64::try_from(member.offset)
+                            .map_err(|_| "oversized structure offset")?;
+                        let addr = b.ins().iadd_imm_s(address, offset);
+                        self.initialize_object(b, addr, &member.ty, value)?;
+                    }
+                }
+                CType::Array(element, Some(_)) => {
+                    let stride = element.size_bytes(Target::default())
+                        .ok_or("incomplete array element")?;
+                    for (index, value) in values.iter().enumerate() {
+                        let offset = i64::try_from(index).ok()
+                            .and_then(|i| i.checked_mul(i64::try_from(stride).ok()?))
+                            .ok_or("oversized array offset")?;
+                        let addr = b.ins().iadd_imm_s(address, offset);
+                        self.initialize_object(b, addr, element, value)?;
+                    }
+                }
+                _ => return Err("unexpected braced initializer for scalar".into()),
+            }
+            return Ok(());
+        }
+        let value = self.expression(b, initializer)?;
+        if matches!(ty, CType::Struct { .. }) {
+            let size = ty.size_bytes(Target::default())
+                .ok_or("incomplete struct initializer")?;
+            Self::copy_bytes(b, address, value, size)
+        } else {
+            b.ins().store(ir::MemFlagsData::new(), value, address, 0);
+            Ok(())
+        }
+    }
+
     fn store_array_bytes(
         b: &mut FunctionBuilder<'_>, address: Value, bytes: &[u8]
     ) -> Result<()> {
@@ -569,6 +681,8 @@ impl Lower<'_> {
 
     fn expression(&mut self, b: &mut FunctionBuilder<'_>, expr: &CheckedExpr) -> Result<Value> {
         match &expr.kind {
+            CheckedExprKind::Initializer(_) =>
+                Err("braced initializer cannot be evaluated as an expression".into()),
             CheckedExprKind::Literal(n) => Ok(b.ins().iconst(scalar_type(&expr.ty)?, *n as i64)),
             CheckedExprKind::StringLiteral(_) | CheckedExprKind::Member(..) => self.place(b, expr),
             CheckedExprKind::Name(name) => self.object_address(b, name),
@@ -713,18 +827,7 @@ impl Lower<'_> {
                 self.bind(b, name, ty, None)?;
                 if let Some(initializer) = initializer {
                     let address = self.object_address(b, name)?;
-                    if let Some(bytes) = char_array_initializer_bytes(ty, initializer)? {
-                        Self::store_array_bytes(b, address, &bytes)?;
-                    } else {
-                        let value = self.expression(b, initializer)?;
-                        if matches!(ty, CType::Struct { .. }) {
-                            let size = ty.size_bytes(Target::default())
-                                .ok_or("incomplete struct initializer")?;
-                            Self::copy_bytes(b, address, value, size)?;
-                        } else {
-                            b.ins().store(ir::MemFlagsData::new(), value, address, 0);
-                        }
-                    }
+                    self.initialize_object(b, address, ty, initializer)?;
                 }
                 Ok(true)
             }
