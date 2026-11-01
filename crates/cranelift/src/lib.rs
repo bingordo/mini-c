@@ -407,6 +407,29 @@ impl Lower<'_> {
 
     /// Initialize an automatic character array in native chunks rather than
     /// issuing one instruction for every byte of a string literal.
+    /// Explicit byte-accurate struct copy. Copying the full representation,
+    /// including padding, keeps nested aggregates and pointer fields intact.
+    /// Source and destination are evaluated once and are independently
+    /// addressable. No aggregate ABI lowering is implied.
+    fn copy_bytes(
+        b: &mut FunctionBuilder<'_>, dst: Value, src: Value, size: u64,
+    ) -> Result<()> {
+        let size = usize::try_from(size).map_err(|_| "struct copy too large")?;
+        let mut offset = 0usize;
+        while offset < size {
+            let remaining = size - offset;
+            let (width, ty) = if remaining >= 8 { (8, types::I64) }
+                else if remaining >= 4 { (4, types::I32) }
+                else if remaining >= 2 { (2, types::I16) }
+                else { (1, types::I8) };
+            let disp = i32::try_from(offset).map_err(|_| "struct copy offset too large")?;
+            let value = b.ins().load(ty, ir::MemFlagsData::new(), src, disp);
+            b.ins().store(ir::MemFlagsData::new(), value, dst, disp);
+            offset += width;
+        }
+        Ok(())
+    }
+
     fn store_array_bytes(
         b: &mut FunctionBuilder<'_>, address: Value, bytes: &[u8]
     ) -> Result<()> {
@@ -551,7 +574,13 @@ impl Lower<'_> {
             CheckedExprKind::Name(name) => self.object_address(b, name),
             CheckedExprKind::Load(inner) => {
                 let address = self.place(b, inner)?;
-                Ok(b.ins().load(scalar_type(&expr.ty)?, ir::MemFlagsData::new(), address, 0))
+                if matches!(&expr.ty, CType::Struct { .. }) {
+                    // Aggregate values are represented by their source address
+                    // until the explicit copy in assignment/initialization.
+                    Ok(address)
+                } else {
+                    Ok(b.ins().load(scalar_type(&expr.ty)?, ir::MemFlagsData::new(), address, 0))
+                }
             }
             CheckedExprKind::ArrayDecay(inner) => self.place(b, inner),
             CheckedExprKind::Convert(inner) => {
@@ -581,8 +610,15 @@ impl Lower<'_> {
             CheckedExprKind::Assign(lhs, rhs) => {
                 let address = self.place(b, lhs)?;
                 let rhs_value = self.expression(b, rhs)?;
-                b.ins().store(ir::MemFlagsData::new(), rhs_value, address, 0);
-                Ok(rhs_value)
+                if matches!(&lhs.ty, CType::Struct { .. }) {
+                    let size = lhs.ty.size_bytes(Target::default())
+                        .ok_or("incomplete struct assignment")?;
+                    Self::copy_bytes(b, address, rhs_value, size)?;
+                    Ok(address)
+                } else {
+                    b.ins().store(ir::MemFlagsData::new(), rhs_value, address, 0);
+                    Ok(rhs_value)
+                }
             }
             CheckedExprKind::Binary(op, lhs, rhs) => {
                 if matches!(op, BinOp::And | BinOp::Or) {
@@ -681,7 +717,13 @@ impl Lower<'_> {
                         Self::store_array_bytes(b, address, &bytes)?;
                     } else {
                         let value = self.expression(b, initializer)?;
-                        b.ins().store(ir::MemFlagsData::new(), value, address, 0);
+                        if matches!(ty, CType::Struct { .. }) {
+                            let size = ty.size_bytes(Target::default())
+                                .ok_or("incomplete struct initializer")?;
+                            Self::copy_bytes(b, address, value, size)?;
+                        } else {
+                            b.ins().store(ir::MemFlagsData::new(), value, address, 0);
+                        }
                     }
                 }
                 Ok(true)
