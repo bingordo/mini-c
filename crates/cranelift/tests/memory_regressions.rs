@@ -138,7 +138,7 @@ fn local_character_array_from_string_emits_elf() {
     emits_elf(r#"int main(void) { char text[]="abc"; return text[3]; }"#);
     emits_elf(r#"int main(void) { char short_string[3]="abc"; return short_string[2]-'c'; }"#);
     emits_elf(r#"int main(void) { char padded[13]="ok"; return padded[12]; }"#);
-    emits_elf(r#"int main(void) { unsigned char bytes[4]="\\377"; return bytes[0]-255; }"#);
+    emits_elf(r#"int main(void) { unsigned char bytes[4]="\377"; return bytes[0]-255; }"#);
 }
 
 #[test]
