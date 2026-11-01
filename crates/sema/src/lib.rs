@@ -200,6 +200,32 @@ impl Checker {
         Ok(CType::TagRef { kind, name: name.to_owned(), identity: entry.identity })
     }
 
+    fn declare_tag_only(&self, ty: &Type, span: Span) -> Result<(), Diagnostic> {
+        match ty {
+            Type::TagRef(kind, name) => {
+                let current = self.tags.borrow().last().expect("tag scope")
+                    .get(name).cloned();
+                if let Some(entry) = current {
+                    if entry.kind != *kind {
+                        return Err(type_error(span, format!("conflicting tag kind for '{name}'")));
+                    }
+                } else {
+                    let identity = self.new_tag_identity();
+                    self.tags.borrow_mut().last_mut().expect("tag scope")
+                        .insert(name.clone(), TagEntry {
+                            kind: *kind, identity, complete: None,
+                        });
+                }
+                Ok(())
+            }
+            Type::Struct { .. } | Type::Union { .. } => {
+                self.resolve(ty, span)?;
+                Ok(())
+            }
+            _ => Err(type_error(span, "tag declaration requires struct or union")),
+        }
+    }
+
     fn complete_tag_type(&self, ty: CType, span: Span) -> Result<CType, Diagnostic> {
         match ty {
             CType::TagRef { kind, name, identity } => {
@@ -465,6 +491,10 @@ impl Checker {
 
     pub fn check_item(&mut self, item: ExternalItem) -> Result<CheckedItem, Diagnostic> {
         match item {
+            ExternalItem::Tag(ty) => {
+                self.declare_tag_only(&ty, Span::default())?;
+                Ok(CheckedItem::Tag)
+            }
             ExternalItem::Typedef(decl) => {
                 let ty = self.resolve(&decl.ty, decl.span)?;
                 self.declare_global(&decl.name, ty.clone(), SymbolKind::Typedef, false, decl.storage, decl.span)?;
@@ -558,7 +588,9 @@ impl Checker {
     }
 
     fn check_global(&mut self, decl: Decl) -> Result<CheckedDecl, Diagnostic> {
-        let ty = self.complete_string_array(self.resolve(&decl.ty, decl.span)?, decl.init.as_ref(), decl.span)?;
+        let raw = self.resolve(&decl.ty, decl.span)?;
+        let raw = self.try_complete_tag_type(raw, decl.span)?;
+        let ty = self.complete_string_array(raw, decl.init.as_ref(), decl.span)?;
         let kind = if matches!(ty, CType::Function { .. }) { SymbolKind::Function } else { SymbolKind::Object };
         if kind == SymbolKind::Object && !ty.is_object() {
             return Err(type_error(decl.span, "object cannot have void or function type"));
@@ -601,9 +633,11 @@ impl Checker {
         // Register before checking the body: recursive calls are legal.
         self.declare_global(&func.name, signature.clone(), SymbolKind::Function, true, func.storage, func.span)?;
         self.locals.push(HashMap::new());
+        self.tags.borrow_mut().push(HashMap::new());
         self.result_ty = Some(result);
         for param in &params {
             if let Err(err) = self.define_local(&param.name, param.ty.clone(), SymbolKind::Object, Linkage::None, param.span) {
+                self.tags.borrow_mut().pop();
                 self.locals.pop();
                 self.result_ty = None;
                 return Err(err);
@@ -614,6 +648,7 @@ impl Checker {
             Stmt::Block(stmts) => self.check_statements(stmts, func.span).map(CheckedStmt::Block),
             other => self.check_stmt(other, func.span),
         };
+        self.tags.borrow_mut().pop();
         self.locals.pop();
         self.result_ty = None;
         let body = checked?;
@@ -659,12 +694,23 @@ impl Checker {
         Ok(match stmt {
             Stmt::Block(stmts) => {
                 self.locals.push(HashMap::new());
+                self.tags.borrow_mut().push(HashMap::new());
                 let inner = self.check_statements(stmts, span);
+                self.tags.borrow_mut().pop();
                 self.locals.pop();
                 CheckedStmt::Block(inner?)
             }
+            Stmt::Tag(ty) => {
+                self.declare_tag_only(ty, span)?;
+                CheckedStmt::Tag
+            }
             Stmt::Decl(decl) => {
-                let ty = self.complete_string_array(self.resolve(&decl.ty, decl.span)?, decl.init.as_ref(), decl.span)?;
+                let ty = self.complete_string_array(
+                    self.try_complete_tag_type(self.resolve(&decl.ty, decl.span)?, decl.span)?,
+                    decl.init.as_ref(), decl.span)?;
+                if decl.storage != StorageClass::Extern && ty.size_bytes(self.target).is_none() {
+                    return Err(type_error(decl.span, "local object requires a complete type"));
+                }
                 if !ty.is_object() {
                     return Err(type_error(decl.span, "local variable cannot have void or function type"));
                 }
