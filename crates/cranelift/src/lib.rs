@@ -188,27 +188,29 @@ impl Compiler {
     }
 
     fn declare(&mut self, name: &str, ty: &CType, linkage: Linkage, definition: bool) -> Result<FuncId> {
-        if let Some(known) = self.functions.get(name) {
-            if &known.ty != ty {
-                return Err(format!("conflicting backend signature for '{name}'"));
-            }
+        let composite = if let Some(known) = self.functions.get(name) {
+            let composite = known.ty.composite(ty)
+                .ok_or_else(|| format!("conflicting backend signature for '{name}'"))?;
             if definition && known.defined {
                 return Err(format!("duplicate backend definition for '{name}'"));
             }
             if !definition {
                 return Ok(known.id);
             }
-        }
+            composite
+        } else {
+            ty.clone()
+        };
         let linkage = match (linkage, definition) {
             (Linkage::Internal, _) => ClLinkage::Local,
             (_, true) => ClLinkage::Export,
             (_, false) => ClLinkage::Import,
         };
-        let sig = signature(&self.module, ty)?;
+        let sig = signature(&self.module, &composite)?;
         let id = self.module.declare_function(name, linkage, &sig)
             .map_err(|e| format!("declaring '{name}': {e}"))?;
         self.functions.insert(name.to_owned(), KnownFunction {
-            id, ty: ty.clone(), defined: definition,
+            id, ty: composite, defined: definition,
         });
         Ok(id)
     }
