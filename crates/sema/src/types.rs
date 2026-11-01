@@ -79,21 +79,32 @@ impl CType {
     /// Different fixed bounds and different element types remain incompatible.
     pub fn composite(&self, other: &Self) -> Option<Self> {
         if self == other { return Some(self.clone()); }
-        if self.same_type(other) {
-            // A complete tagged definition supersedes an earlier incomplete
-            // reference, without changing the nominal type's identity.
-            return Some(if self.size_bytes(Target::default()).is_some() {
-                self.clone()
-            } else { other.clone() });
-        }
         match (self, other) {
-            (Self::Array(a, None), Self::Array(b, Some(n))) |
-            (Self::Array(a, Some(n)), Self::Array(b, None)) if a == b =>
-                Some(Self::Array(a.clone(), Some(*n))),
+            (Self::Pointer(a), Self::Pointer(b)) =>
+                Some(Self::Pointer(Box::new(a.composite(b)?))),
+            (Self::Array(a, na), Self::Array(b, nb)) => {
+                let count = match (na, nb) {
+                    (Some(x), Some(y)) if x != y => return None,
+                    (Some(x), _) | (_, Some(x)) => Some(*x),
+                    (None, None) => None,
+                };
+                Some(Self::Array(Box::new(a.composite(b)?), count))
+            }
+            (Self::Function { result: ar, params: ap },
+             Self::Function { result: br, params: bp }) if ap.len() == bp.len() => {
+                let result = Box::new(ar.composite(br)?);
+                let params = ap.iter().zip(bp).map(|(a,b)| a.composite(b))
+                    .collect::<Option<Vec<_>>>()?;
+                Some(Self::Function { result, params })
+            }
+            _ if self.same_type(other) => {
+                Some(if self.size_bytes(Target::default()).is_some() {
+                    self.clone()
+                } else { other.clone() })
+            }
             _ => None,
         }
     }
-
 
     pub fn is_integer(&self) -> bool { matches!(self, Self::Integer { .. }) }
     pub fn is_scalar(&self) -> bool { self.is_integer() || matches!(self, Self::Pointer(_)) }
