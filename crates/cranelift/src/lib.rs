@@ -54,7 +54,30 @@ struct KnownData {
     linkage: Linkage,
     initialized: Option<Vec<u8>>,
     address_of: Option<String>,
+    string_address: Option<DataId>,
     tentative: bool,
+}
+
+/// Intern narrow string data in this object. Sharing identical literals is permitted
+/// by C, and a separate local ELF symbol avoids collisions with C identifiers.
+fn intern_string(
+    module: &mut ObjectModule,
+    strings: &mut HashMap<Vec<u8>, DataId>,
+    bytes: &[u8],
+) -> Result<DataId> {
+    if let Some(&id) = strings.get(bytes) {
+        return Ok(id);
+    }
+    let name = format!(".Lmini_c_string_{}", strings.len());
+    let id = module.declare_data(&name, ClLinkage::Local, false, false)
+        .map_err(|e| format!("declaring string literal: {e}"))?;
+    let mut desc = DataDescription::new();
+    desc.define(bytes.to_vec().into_boxed_slice());
+    desc.set_align(1);
+    module.define_data(id, &desc)
+        .map_err(|e| format!("defining string literal: {e}"))?;
+    strings.insert(bytes.to_vec(), id);
+    Ok(id)
 }
 
 /// One object module is built incrementally. Completed checked functions are
@@ -63,6 +86,7 @@ pub struct Compiler {
     module: ObjectModule,
     functions: HashMap<String, KnownFunction>,
     data: HashMap<String, KnownData>,
+    strings: HashMap<Vec<u8>, DataId>,
 }
 
 impl Compiler {
@@ -78,7 +102,7 @@ impl Compiler {
             .map_err(|e| e.to_string())?;
         let object = ObjectBuilder::new(isa, "mini-c", default_libcall_names())
             .map_err(|e| e.to_string())?;
-        Ok(Self { module: ObjectModule::new(object), functions: HashMap::new(), data: HashMap::new() })
+        Ok(Self { module: ObjectModule::new(object), functions: HashMap::new(), data: HashMap::new(), strings: HashMap::new() })
     }
 
     fn declare(&mut self, name: &str, ty: &CType, linkage: Linkage, definition: bool) -> Result<FuncId> {
@@ -110,6 +134,7 @@ impl Compiler {
     fn declare_object(&mut self, decl: CheckedDecl) -> Result<()> {
         let name = decl.name.clone();
         let mut address_of = None;
+        let mut string_address = None;
         let initialized = if let Some(init) = &decl.initializer {
             if !decl.ty.is_integer() && !matches!(decl.ty, CType::Pointer(_)) {
                 return Err(format!("global initializer for '{name}' requires scalar support"));
@@ -129,11 +154,16 @@ impl Compiler {
                             | CheckedExprKind::ArrayDecay(target) => Some(target.as_ref()),
                             _ => None,
                         };
-                        if let Some(CheckedExpr { kind: CheckedExprKind::Name(symbol), .. }) = target {
-                            address_of = Some(symbol.clone());
-                            0
-                        } else {
-                            return Err(format!("global initializer for '{name}' requires a null pointer or named global address"));
+                        match target.map(|expr| &expr.kind) {
+                            Some(CheckedExprKind::Name(symbol)) => {
+                                address_of = Some(symbol.clone());
+                                0
+                            }
+                            Some(CheckedExprKind::StringLiteral(bytes)) => {
+                                string_address = Some(intern_string(&mut self.module, &mut self.strings, bytes)?);
+                                0
+                            }
+                            _ => return Err(format!("global initializer for '{name}' requires a null pointer or constant object address")),
                         }
                     }
                 }
@@ -154,7 +184,11 @@ impl Compiler {
             if initialized.is_some() && data.initialized.is_some() {
                 return Err(format!("duplicate global object definition '{name}'"));
             }
-            if initialized.is_some() { data.initialized = initialized; data.address_of = address_of; }
+            if initialized.is_some() {
+                data.initialized = initialized;
+                data.address_of = address_of;
+                data.string_address = string_address;
+            }
             data.tentative |= tentative;
             if data.initialized.is_some() || data.tentative {
                 let linkage = if data.linkage == Linkage::Internal {
@@ -178,7 +212,7 @@ impl Compiler {
         };
         let id = self.module.declare_data(&name, linkage, true, false)
             .map_err(|e| format!("declaring global '{name}': {e}"))?;
-        self.data.insert(name, KnownData { id, ty: decl.ty, linkage: decl.linkage, initialized, address_of, tentative });
+        self.data.insert(name, KnownData { id, ty: decl.ty, linkage: decl.linkage, initialized, address_of, string_address, tentative });
         Ok(())
     }
 
@@ -207,6 +241,7 @@ impl Compiler {
             let mut builder = FunctionBuilder::new(&mut ctx.func, &mut fb_ctx);
             let mut lower = Lower {
                 module: &mut self.module, functions: &self.functions, data: &self.data,
+                strings: &mut self.strings,
                 scopes: vec![HashMap::new()], loops: Vec::new(),
                 result_ty: match &function.signature {
                     CType::Function { result, .. } => result.as_ref().clone(),
@@ -274,6 +309,9 @@ impl Compiler {
                     .ok_or_else(|| format!("global initializer for '{name}' refers to unknown object '{symbol}'"))?;
                 let gv = self.module.declare_data_in_data(target.id, &mut desc);
                 desc.write_data_addr(0, gv, 0);
+            } else if let Some(string) = data.string_address {
+                let gv = self.module.declare_data_in_data(string, &mut desc);
+                desc.write_data_addr(0, gv, 0);
             }
             self.module.define_data(data.id, &desc)
                 .map_err(|e| format!("defining global '{name}': {e}"))?;
@@ -304,6 +342,7 @@ struct Lower<'a> {
     module: &'a mut ObjectModule,
     functions: &'a HashMap<String, KnownFunction>,
     data: &'a HashMap<String, KnownData>,
+    strings: &'a mut HashMap<Vec<u8>, DataId>,
     scopes: Vec<HashMap<String, Local>>,
     loops: Vec<(ir::Block, ir::Block)>, // (break target, continue target)
     result_ty: CType,
@@ -355,6 +394,11 @@ impl Lower<'_> {
     fn place(&mut self, b: &mut FunctionBuilder<'_>, expr: &CheckedExpr) -> Result<Value> {
         match &expr.kind {
             CheckedExprKind::Name(name) => self.object_address(b, name),
+            CheckedExprKind::StringLiteral(bytes) => {
+                let id = intern_string(self.module, self.strings, bytes)?;
+                let gv = self.module.declare_data_in_func(id, b.func);
+                Ok(b.ins().symbol_value(types::I64, gv))
+            }
             CheckedExprKind::Unary(UnOp::Deref, pointer) => self.expression(b, pointer),
             _ => Err("M2.5 expected an addressable local or dereference".into()),
         }
@@ -451,6 +495,7 @@ impl Lower<'_> {
     fn expression(&mut self, b: &mut FunctionBuilder<'_>, expr: &CheckedExpr) -> Result<Value> {
         match &expr.kind {
             CheckedExprKind::Literal(n) => Ok(b.ins().iconst(scalar_type(&expr.ty)?, *n as i64)),
+            CheckedExprKind::StringLiteral(_) => self.place(b, expr),
             CheckedExprKind::Name(name) => self.object_address(b, name),
             CheckedExprKind::Load(inner) => {
                 let address = self.place(b, inner)?;
