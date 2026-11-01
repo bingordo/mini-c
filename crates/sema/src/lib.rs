@@ -173,20 +173,25 @@ impl Checker {
                 }
                 symbol.ty.clone()
             }
-            Type::Struct { tag, members } => {
+            Type::Struct { tag, members } | Type::Union { tag, members } => {
                 let mut fields = Vec::with_capacity(members.len());
                 for member in members {
                     if member.init.is_some() || member.storage != StorageClass::Default {
-                        return Err(type_error(member.span, "struct members cannot have initializers or storage classes"));
+                        return Err(type_error(member.span, "aggregate members cannot have initializers or storage classes"));
                     }
                     fields.push((member.name.clone(), self.resolve(&member.ty, member.span)?));
                 }
-                let mut ty = types::layout_struct(tag.clone(), fields, self.target)
-                    .map_err(|reason| type_error(span, reason))?;
-                if let CType::Struct { identity, .. } = &mut ty {
-                    *identity = self.next_tag_identity.get();
-                    self.next_tag_identity.set(identity.saturating_add(1));
-                }
+                let mut ty = if matches!(ty, Type::Union { .. }) {
+                    types::layout_union(tag.clone(), fields, self.target)
+                } else {
+                    types::layout_struct(tag.clone(), fields, self.target)
+                }.map_err(|reason| type_error(span, reason))?;
+                let identity = match &mut ty {
+                    CType::Struct { identity, .. } | CType::Union { identity, .. } => identity,
+                    _ => unreachable!(),
+                };
+                *identity = self.next_tag_identity.get();
+                self.next_tag_identity.set(identity.saturating_add(1));
                 ty
             }
             Type::Pointer(inner) => CType::Pointer(Box::new(self.resolve(inner, span)?)),
@@ -398,6 +403,12 @@ impl Checker {
                         return Err(type_error(span, "too many struct initializers"));
                     }
                     members.iter().map(|m| &m.ty).collect()
+                }
+                CType::Union { members, .. } => {
+                    if values.len() > 1 {
+                        return Err(type_error(span, "union initializer selects only its first member"));
+                    }
+                    members.iter().take(1).map(|m| &m.ty).collect()
                 }
                 CType::Array(element, Some(count)) => {
                     let count = usize::try_from(*count)
@@ -670,7 +681,8 @@ impl Checker {
         // before checking scalar assignment compatibility.
         let expr = expr.rvalue();
         let compatible = match (ty, &expr.ty) {
-            (CType::Struct { .. }, CType::Struct { .. }) => ty == &expr.ty,
+            (CType::Struct { .. }, CType::Struct { .. }) |
+            (CType::Union { .. }, CType::Union { .. }) => ty == &expr.ty,
             (CType::Integer { .. }, CType::Integer { .. }) => true,
             (CType::Pointer(lhs), CType::Pointer(rhs)) =>
                 lhs == rhs || **lhs == CType::Void || **rhs == CType::Void,
@@ -739,8 +751,8 @@ impl Checker {
                     let CType::Pointer(inner) = &base.ty else {
                         return Err(type_error(span, "arrow operator requires a pointer to struct"));
                     };
-                    if !matches!(inner.as_ref(), CType::Struct { .. }) {
-                        return Err(type_error(span, "arrow operator requires a pointer to struct"));
+                    if !matches!(inner.as_ref(), CType::Struct { .. } | CType::Union { .. }) {
+                        return Err(type_error(span, "arrow operator requires a pointer to struct or union"));
                     }
                     CheckedExpr {
                         ty: inner.as_ref().clone(),
@@ -753,8 +765,9 @@ impl Checker {
                     }
                     base
                 };
-                let CType::Struct { members, .. } = &object.ty else {
-                    return Err(type_error(span, "member access requires a struct"));
+                let members = match &object.ty {
+                    CType::Struct { members, .. } | CType::Union { members, .. } => members,
+                    _ => return Err(type_error(span, "member access requires a struct or union")),
                 };
                 let field = members.iter().find(|m| m.name == *name).ok_or_else(||
                     type_error(span, format!("unknown struct member '{name}'")))?;
