@@ -261,6 +261,22 @@ impl Checker {
         }
     }
 
+    fn define_enumerator(
+        &mut self, name: &str, value: i64, span: Span,
+    ) -> Result<(), Diagnostic> {
+        if self.locals.is_empty() {
+            self.declare_global(name, CType::int(), SymbolKind::Enumerator,
+                true, StorageClass::Default, span)?;
+            self.globals.get_mut(name).expect("registered enumerator").enum_value = Some(value);
+        } else {
+            self.define_local(name, CType::int(), SymbolKind::Enumerator,
+                Linkage::None, span)?;
+            self.locals.last_mut().expect("local scope")
+                .get_mut(name).expect("registered enumerator").enum_value = Some(value);
+        }
+        Ok(())
+    }
+
     fn resolve(&mut self, ty: &Type, span: Span) -> Result<CType, Diagnostic> {
         Ok(match ty {
             Type::Void => CType::Void,
@@ -281,6 +297,54 @@ impl Checker {
                     return Err(type_error(span, format!("'{name}' does not name a type")));
                 }
                 symbol.ty.clone()
+            }
+            Type::Enum { tag, enumerators } => {
+                let kind = TagKind::Enum;
+                let identity = if let Some(name) = tag {
+                    let current = self.tags.borrow().last().expect("tag scope")
+                        .get(name).cloned();
+                    if let Some(entry) = current {
+                        if entry.kind != kind {
+                            return Err(type_error(span, format!("conflicting tag kind for '{name}'")));
+                        }
+                        if entry.complete.is_some() {
+                            return Err(type_error(span, format!("redefinition of aggregate tag '{name}'")));
+                        }
+                        entry.identity
+                    } else {
+                        let identity = self.new_tag_identity();
+                        self.tags.borrow_mut().last_mut().expect("tag scope")
+                            .insert(name.clone(), TagEntry { kind, identity, complete: None });
+                        identity
+                    }
+                } else { self.new_tag_identity() };
+                let bits = self.target.bits(IntRank::Int);
+                let bound = 1i128 << (bits - 1);
+                let mut next = 0i128;
+                for (name, expr) in enumerators {
+                    let value = if let Some(expr) = expr {
+                        let typed = self.check_expr(expr, span)?.rvalue();
+                        if !typed.ty.is_integer() {
+                            return Err(type_error(span, "enumerator requires an integer constant expression"));
+                        }
+                        const_eval::evaluate(&typed, self.target)
+                            .map_err(|e| type_error(span, format!("enumerator requires an integer constant expression: {e}")))?
+                    } else { next };
+                    if value < -bound || value >= bound {
+                        return Err(type_error(span, "enumerator value exceeds supported signed int range"));
+                    }
+                    let value = i64::try_from(value)
+                        .map_err(|_| type_error(span, "enumerator value out of range"))?;
+                    self.define_enumerator(name, value, span)?;
+                    next = i128::from(value) + 1;
+                }
+                if let Some(name) = tag {
+                    self.tags.borrow_mut().last_mut().expect("tag scope")
+                        .insert(name.clone(), TagEntry {
+                            kind, identity, complete: Some(CType::int()),
+                        });
+                }
+                CType::int()
             }
             Type::TagRef(kind, name) => self.reference_tag(*kind, name, span)?,
             Type::Struct { tag, members } | Type::Union { tag, members } => {
