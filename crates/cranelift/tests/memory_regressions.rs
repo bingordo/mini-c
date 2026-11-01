@@ -190,3 +190,11 @@ fn aggregate_brace_initializers_emit_elf() {
     emits_elf("int main(void) { struct { int a; long b; } v={17,29}; return v.a+v.b-46; }");
     emits_elf("int main(void) { int v[2][3]={{1,2,3},{4,5,6}}; return v[1][2]-6; }");
 }
+
+#[test]
+fn union_objects_and_first_member_init_compile() {
+    emits_elf("union { int i; long l; } v={7}; int main(void) { return v.i-7; }");
+    emits_elf("int main(void) { union { char c; long l; } v; v.l=27; return v.l-27; }");
+    emits_elf("int main(void) { union { int i; long l; } a[2]; a[0].i=17; a[1]=a[0]; return a[1].i-17; }");
+    emits_elf("int main(void) { struct { char flag; union { long x; int y; } u; } v; v.flag=3; v.u.x=19; return v.flag+v.u.x-22; }");
+}
