@@ -598,3 +598,9 @@ fn named_tags_have_separate_block_scopes() {
     reject("struct T; int f(void) { struct T value; return 0; }",
         "incomplete");
 }
+
+#[test]
+fn tagged_type_references_survive_inner_shadowing() {
+    check("struct Node { int value; }; int f(void) { struct Node *p; { struct Node { long other; }; return p->value; } }").unwrap();
+    check("struct Node { int value; }; int f(void) { struct Node *p; { union Node { long other; }; return p->value; } }").unwrap();
+}
