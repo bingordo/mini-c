@@ -88,7 +88,7 @@ impl<'a> Parser<'a> {
             && error.message.starts_with("expected ';'")
             && self.peek().ok().flatten().is_some_and(|t| matches!(
                 t.text, "int" | "char" | "long" | "void" | "signed" |
-                    "unsigned" | "static" | "extern" | "typedef" | "struct" | "union"
+                    "unsigned" | "static" | "extern" | "typedef" | "struct" | "union" | "enum"
             ) || t.kind == TokenKind::TypedefName)
         {
             return true;
@@ -374,7 +374,7 @@ impl<'a> Parser<'a> {
             matches!(token.kind, TokenKind::Identifier | TokenKind::TypedefName)
                 && !matches!(token.text, "int" | "char" | "long" | "void"
                     | "unsigned" | "signed" | "typedef" | "static" | "extern"
-                    | "struct" | "union" | "if" | "else" | "while" | "return" | "break" | "continue")
+                    | "struct" | "union" | "enum" | "if" | "else" | "while" | "return" | "break" | "continue")
         }) {
             self.take()?;
             Declarator::Name(token.text.to_owned())
@@ -548,7 +548,7 @@ impl<'a> Parser<'a> {
             "continue" => { self.take()?; self.expect(";")?; Ok(Stmt::Continue) }
             "typedef" => { self.take()?; Ok(Stmt::Typedef(self.parse_decl(true)?)) },
             "static" | "extern" => Ok(Stmt::Decl(self.parse_decl(false)?)),
-            "struct" | "union" => self.parse_tag_or_decl(),
+            "struct" | "union" | "enum" => self.parse_tag_or_decl(),
             "int" | "char" | "long" | "void" | "unsigned" | "signed" => Ok(Stmt::Decl(self.parse_decl(false)?)),
             _ if token.kind == TokenKind::TypedefName => Ok(Stmt::Decl(self.parse_decl(false)?)),
             _ => { let expr = self.parse_expr()?; self.expect(";")?; Ok(Stmt::Expr(Some(expr))) }
@@ -585,6 +585,40 @@ impl<'a> Parser<'a> {
             return Ok(None);
         };
         let ty = match token.text {
+            "enum" => {
+                self.take()?;
+                let tag = self.peek()?.filter(|t| matches!(t.kind,
+                    TokenKind::Identifier | TokenKind::TypedefName))
+                    .map(|t| t.text.to_owned());
+                if tag.is_some() { self.take()?; }
+                if !self.peek()?.is_some_and(|t| t.text == "{") {
+                    let tag = tag.ok_or_else(|| Diagnostic::new(token.span,
+                        "anonymous enum requires enumerators"))?;
+                    return Ok(Some((Type::TagRef(TagKind::Enum, tag), token.span.lo)));
+                }
+                self.take()?;
+                if self.peek()?.is_some_and(|t| t.text == "}") {
+                    return Err(Diagnostic::new(token.span, "empty enums are unsupported"));
+                }
+                let mut enumerators = Vec::new();
+                loop {
+                    let name = self.take()?.ok_or_else(||
+                        Diagnostic::new(self.eof_span(), "unterminated enum definition"))?;
+                    if !matches!(name.kind, TokenKind::Identifier | TokenKind::TypedefName) {
+                        return Err(Diagnostic::new(name.span, "expected enumerator name"));
+                    }
+                    let value = if self.peek()?.is_some_and(|t| t.text == "=") {
+                        self.take()?;
+                        Some(self.parse_assign()?)
+                    } else { None };
+                    enumerators.push((name.text.to_owned(), value));
+                    if !self.peek()?.is_some_and(|t| t.text == ",") { break; }
+                    self.take()?;
+                    if self.peek()?.is_some_and(|t| t.text == "}") { break; }
+                }
+                self.expect("}")?;
+                Type::Enum { tag, enumerators }
+            }
             "struct" | "union" => {
                 let is_union = token.text == "union";
                 self.take()?;
@@ -677,7 +711,7 @@ impl ItemSource for Parser<'_> {
             return Ok(None);
         };
         if self.peek()?.is_some_and(|t| t.text == ";") {
-            if !matches!(&base, Type::Struct { .. } | Type::Union { .. } | Type::TagRef(..)) {
+            if !matches!(&base, Type::Struct { .. } | Type::Union { .. } | Type::Enum { .. } | Type::TagRef(..)) {
                 return Err(Diagnostic::new(self.peek()?.expect("peeked").span,
                     "declaration requires an identifier"));
             }
@@ -1056,6 +1090,17 @@ mod tests {
         assert!(Parser::new("int a[2]={};").next_item().is_err());
     }
 
+    #[test]
+    fn tagged_enums_and_constant_expressions_parse() {
+        let mut p = Parser::new("enum Color { RED, GREEN=7, BLUE=GREEN+2, }; enum Color shade=BLUE; int f(void) { enum Color value=RED; return BLUE; }");
+        let ExternalItem::Tag(Type::Enum { tag, enumerators }) = p.next_item().unwrap().unwrap() else { panic!("enum expected") };
+        assert_eq!(tag.as_deref(), Some("Color"));
+        assert_eq!(enumerators.len(), 3);
+        assert_eq!(enumerators[1].1, Some(Expr::Int(7)));
+        let ExternalItem::Declaration(shade) = p.next_item().unwrap().unwrap() else { panic!("enum object expected") };
+        assert!(matches!(shade.ty, Type::TagRef(TagKind::Enum, _)));
+        assert!(matches!(p.next_item(), Ok(Some(ExternalItem::Function(_)))));
+    }
     #[test]
     fn tag_declarations_and_recursive_pointer_syntax() {
         let mut p = Parser::new("struct Node; struct Node { int value; struct Node *next; }; struct Node *root; int f(void) { struct Node *local; return 0; }");
