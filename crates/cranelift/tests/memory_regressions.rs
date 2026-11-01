@@ -175,3 +175,9 @@ fn nested_structs_and_arrays_compile() {
 fn tentative_global_structure_compiles() {
     emits_elf("struct Record { char a; int b; long c; } global; int main(void) { global.b=17; global.c=19; return global.a+global.b+global.c-36; }");
 }
+
+#[test]
+fn structure_assignment_and_initialization_copies_every_field() {
+    emits_elf("int main(void) { struct { char c; int i; long n; } a[2]; a[0].c=7; a[0].i=19; a[0].n=31; a[1]=a[0]; return a[1].c+a[1].i+a[1].n-57; }");
+    emits_elf("int main(void) { struct { int a; long b; } x[2]; x[0].a=17; x[0].b=29; { struct { int a; long b; } *unused=0; } x[1]=x[0]; return x[1].a+x[1].b-46; }");
+}
