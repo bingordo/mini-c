@@ -147,3 +147,13 @@ fn rejects_oversized_character_array_initializer() {
         .unwrap_err();
     assert!(err.contains("string literal is too long"), "{err}");
 }
+
+#[test]
+fn incomplete_char_array_redeclarations_compile() {
+    emits_elf(r#"extern char text[]; char text[]="abc";
+        int main(void) { return text[3]; }"#);
+    emits_elf(r#"char text[]="abc"; extern char text[];
+        int main(void) { return text[0]-'a'; }"#);
+    emits_elf(r#"char text[4]; char text[]="abc";
+        int main(void) { return text[2]-'c'; }"#);
+}
