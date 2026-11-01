@@ -449,6 +449,7 @@ impl Checker {
         if max_errors == 0 { return Vec::new(); }
         assert!(self.rollback_log.is_none() && self.recovery_errors.is_none(),
             "nested semantic diagnostic recovery is unsupported");
+        let saved_tags = self.tags.borrow().clone();
         self.rollback_log = Some(HashMap::new());
         self.recovery_errors = Some(Vec::new());
         self.recovery_limit = max_errors;
@@ -461,6 +462,7 @@ impl Checker {
         let changed = self.rollback_log.take().expect("symbol transaction");
         if !errors.is_empty() {
             self.restore_symbols(changed);
+            *self.tags.borrow_mut() = saved_tags;
         }
         self.statement_undo = None;
         self.recovery_limit = 0;
@@ -475,10 +477,12 @@ impl Checker {
         &mut self, item: ExternalItem
     ) -> Result<CheckedItem, Diagnostic> {
         assert!(self.rollback_log.is_none(), "nested semantic transactions are unsupported");
+        let saved_tags = self.tags.borrow().clone();
         self.rollback_log = Some(HashMap::new());
         let result = self.check_item(item);
         let changed = self.rollback_log.take().expect("transaction log");
         if result.is_err() {
+            *self.tags.borrow_mut() = saved_tags;
             for (name, previous) in changed {
                 match previous {
                     Some(symbol) => { self.globals.insert(name, symbol); }
@@ -671,6 +675,7 @@ impl Checker {
             // Recovery-only local snapshot. Global changes use undo logs,
             // avoiding O(total globals) clones on every statement.
             let local_snapshot = self.locals.clone();
+            let tag_snapshot = self.tags.borrow().clone();
             let loop_depth = self.loop_depth;
             self.statement_undo = Some(HashMap::new());
             self.recovery_depth += 1;
@@ -681,6 +686,7 @@ impl Checker {
                 Ok(stmt) => checked.push(stmt),
                 Err(error) => {
                     self.locals = local_snapshot;
+                    *self.tags.borrow_mut() = tag_snapshot;
                     self.loop_depth = loop_depth;
                     self.restore_symbols(changed);
                     self.recovery_errors.as_mut().expect("diagnostic collection").push(error);
