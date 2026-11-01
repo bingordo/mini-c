@@ -621,3 +621,32 @@ fn enum_tag_reference_uses_scalar_int_type() {
         result: Box::new(CType::int()), params: vec![CType::int()],
     });
 }
+
+#[test]
+fn outer_aggregate_reference_remains_valid_under_tag_shadowing() {
+    check("struct Node { int value; }; int f(void) { struct Node *p; { struct Node { long other; }; return p->value; } }").unwrap();
+    check("struct Node { int value; }; int f(void) { struct Node *p; { union Node { long other; }; return p->value; } }").unwrap();
+}
+
+#[test]
+fn tag_completion_rolls_back_after_failed_function() {
+    let mut parser = Parser::new(
+        "int bad(void) { struct Temp { int x; }; return missing; }");
+    let mut checker = Checker::new(Target::default()).unwrap();
+    let item = parser.next_item().unwrap().unwrap();
+    assert!(checker.check_item_recovering(item).is_err());
+    assert!(checker.tag_definitions.borrow().is_empty());
+    assert_eq!(checker.tags.borrow().len(), 1);
+}
+
+#[test]
+fn streaming_drops_local_tag_layouts() {
+    let mut checker = Checker::new(Target::default()).unwrap();
+    check_stream(&mut Parser::new("struct Global { int x; };"), &mut checker, |_| Ok(())).unwrap();
+    assert_eq!(checker.tag_definitions.borrow().len(), 1);
+    for i in 0..100 {
+        let src = format!("int f{i}(void) {{ struct Local {{ int x; }} a; return 0; }}");
+        check_stream(&mut Parser::new(&src), &mut checker, |_| Ok(())).unwrap();
+        assert_eq!(checker.tag_definitions.borrow().len(), 1);
+    }
+}

@@ -229,27 +229,30 @@ impl Compiler {
     }
 
     fn declare(&mut self, name: &str, ty: &CType, linkage: Linkage, definition: bool) -> Result<FuncId> {
-        if let Some(known) = self.functions.get(name) {
-            if &known.ty != ty {
-                return Err(format!("conflicting backend signature for '{name}'"));
-            }
+        let composite = if let Some(known) = self.functions.get_mut(name) {
+            let composite = known.ty.composite(ty)
+                .ok_or_else(|| format!("conflicting backend signature for '{name}'"))?;
             if definition && known.defined {
                 return Err(format!("duplicate backend definition for '{name}'"));
             }
+            known.ty = composite.clone();
             if !definition {
                 return Ok(known.id);
             }
-        }
+            composite
+        } else {
+            ty.clone()
+        };
         let linkage = match (linkage, definition) {
             (Linkage::Internal, _) => ClLinkage::Local,
             (_, true) => ClLinkage::Export,
             (_, false) => ClLinkage::Import,
         };
-        let sig = signature(&self.module, ty)?;
+        let sig = signature(&self.module, &composite)?;
         let id = self.module.declare_function(name, linkage, &sig)
             .map_err(|e| format!("declaring '{name}': {e}"))?;
         self.functions.insert(name.to_owned(), KnownFunction {
-            id, ty: ty.clone(), defined: definition,
+            id, ty: composite, defined: definition,
         });
         Ok(id)
     }
@@ -434,7 +437,14 @@ impl Compiler {
             if let Some(bytes) = &data.initialized {
                 desc.define(bytes.clone().into_boxed_slice());
             } else {
-                let size = data.ty.size_bytes(Target::default())
+                // File-scope tentative arrays with no bound become one-element
+                // arrays if no later declaration provided a complete bound.
+                let completed = match &data.ty {
+                    CType::Array(element, None) if element.size_bytes(Target::default()).is_some() =>
+                        CType::Array(element.clone(), Some(1)),
+                    other => other.clone(),
+                };
+                let size = completed.size_bytes(Target::default())
                     .ok_or_else(|| format!("incomplete global object '{name}'"))?;
                 let size = usize::try_from(size).map_err(|_| format!("oversized global object '{name}'"))?;
                 desc.define_zeroinit(size);
@@ -1061,4 +1071,20 @@ mod tests {
                    int add(int x, int y) { return x + y; }";
         assert!(!compile_source(src).unwrap().is_empty());
     }
+    #[test]
+    fn accepts_completed_tag_in_redeclared_function_signature() {
+        let src = "struct Node; int read(struct Node *p); \
+                   struct Node { int value; }; \
+                   int read(struct Node *p) { return p->value; }";
+        assert!(!compile_source(src).unwrap().is_empty());
+    }
+
+    #[test]
+    fn tentative_unknown_bound_global_array_defaults_to_one_element() {
+        let src = "int a[]; int main(void) { a[0] = 7; return a[0] - 7; }";
+        let obj = compile_source(src).unwrap();
+        assert_eq!(&obj[..4], b"\x7fELF");
+        assert!(!compile_source("extern int a[];").unwrap().is_empty());
+    }
+
 }

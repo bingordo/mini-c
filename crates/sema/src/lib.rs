@@ -138,6 +138,8 @@ pub struct Checker {
     next_tag_identity: Cell<u64>,
     /// Independent tag namespace, parallel to ordinary identifier scopes.
     tags: RefCell<Vec<HashMap<String, TagEntry>>>,
+    /// Stable definition lookup independent of currently visible shadowing tags.
+    tag_definitions: RefCell<HashMap<u64, CType>>,
     globals: HashMap<String, Symbol>,
     locals: Vec<HashMap<String, Symbol>>,
     result_ty: Option<CType>,
@@ -153,7 +155,7 @@ pub struct Checker {
 
 impl Checker {
     pub fn new(target: Target) -> Result<Self, Diagnostic> {
-        Ok(Self { target: target.validate()?, next_tag_identity: Cell::new(1), tags: RefCell::new(vec![HashMap::new()]), globals: HashMap::new(), locals: Vec::new(), result_ty: None, loop_depth: 0, rollback_log: None, statement_undo: None,
+        Ok(Self { target: target.validate()?, next_tag_identity: Cell::new(1), tags: RefCell::new(vec![HashMap::new()]), tag_definitions: RefCell::new(HashMap::new()), globals: HashMap::new(), locals: Vec::new(), result_ty: None, loop_depth: 0, rollback_log: None, statement_undo: None,
             recovery_errors: None, recovery_limit: 0, recovery_depth: 0 })
     }
 
@@ -163,6 +165,14 @@ impl Checker {
     fn lookup(&self, name: &str) -> Option<&Symbol> {
         self.locals.iter().rev().find_map(|scope| scope.get(name))
             .or_else(|| self.globals.get(name))
+    }
+
+    fn pop_tag_scope(&self) {
+        let scope = self.tags.borrow_mut().pop().expect("tag scope");
+        let mut definitions = self.tag_definitions.borrow_mut();
+        for entry in scope.values() {
+            definitions.remove(&entry.identity);
+        }
     }
 
     fn new_tag_identity(&self) -> u64 {
@@ -230,33 +240,22 @@ impl Checker {
 
     fn complete_tag_type(&self, ty: CType, span: Span) -> Result<CType, Diagnostic> {
         match ty {
-            CType::TagRef { kind, name, identity } => {
-                let entry = self.lookup_tag(kind, &name, span)?
-                    .ok_or_else(|| type_error(span, "unknown aggregate tag"))?;
-                if entry.identity != identity {
-                    return Err(type_error(span, "aggregate tag has gone out of scope"));
-                }
-                entry.complete.ok_or_else(|| type_error(span,
-                    format!("incomplete struct or union tag '{name}'")))
-            }
+            CType::TagRef { name, identity, .. } => self.tag_definitions.borrow()
+                .get(&identity).cloned().ok_or_else(|| type_error(span,
+                    format!("incomplete struct, union or enum tag '{name}'"))),
             CType::Array(element, count) => Ok(CType::Array(
                 Box::new(self.complete_tag_type(*element, span)?), count)),
             other => Ok(other),
         }
     }
 
-    fn try_complete_tag_type(&self, ty: CType, span: Span) -> Result<CType, Diagnostic> {
+    fn try_complete_tag_type(&self, ty: CType) -> Result<CType, Diagnostic> {
         match ty {
-            CType::TagRef { kind, name, identity } => {
-                let entry = self.lookup_tag(kind, &name, span)?
-                    .ok_or_else(|| type_error(span, "unknown aggregate tag"))?;
-                if entry.identity != identity {
-                    return Err(type_error(span, "aggregate tag has gone out of scope"));
-                }
-                Ok(entry.complete.unwrap_or(CType::TagRef { kind, name, identity }))
-            }
+            CType::TagRef { kind, name, identity } => Ok(self.tag_definitions.borrow()
+                .get(&identity).cloned()
+                .unwrap_or(CType::TagRef { kind, name, identity })),
             CType::Array(element, count) => Ok(CType::Array(
-                Box::new(self.try_complete_tag_type(*element, span)?), count)),
+                Box::new(self.try_complete_tag_type(*element)?), count)),
             other => Ok(other),
         }
     }
@@ -344,12 +343,15 @@ impl Checker {
                             kind, identity, complete: Some(CType::int()),
                         });
                 }
+                if tag.is_some() {
+                    self.tag_definitions.borrow_mut().insert(identity, CType::int());
+                }
                 CType::int()
             }
             Type::TagRef(kind, name) => {
                 let reference = self.reference_tag(*kind, name, span)?;
                 if *kind == TagKind::Enum {
-                    self.try_complete_tag_type(reference, span)?
+                    self.try_complete_tag_type(reference)?
                 } else { reference }
             },
             Type::Struct { tag, members } | Type::Union { tag, members } => {
@@ -396,6 +398,9 @@ impl Checker {
                         .insert(name.clone(), TagEntry {
                             kind, identity, complete: Some(complete.clone()),
                         });
+                }
+                if tag.is_some() {
+                    self.tag_definitions.borrow_mut().insert(identity, complete.clone());
                 }
                 complete
             }
@@ -524,6 +529,7 @@ impl Checker {
         assert!(self.rollback_log.is_none() && self.recovery_errors.is_none(),
             "nested semantic diagnostic recovery is unsupported");
         let saved_tags = self.tags.borrow().clone();
+        let saved_definitions = self.tag_definitions.borrow().clone();
         self.rollback_log = Some(HashMap::new());
         self.recovery_errors = Some(Vec::new());
         self.recovery_limit = max_errors;
@@ -537,6 +543,7 @@ impl Checker {
         if !errors.is_empty() {
             self.restore_symbols(changed);
             *self.tags.borrow_mut() = saved_tags;
+            *self.tag_definitions.borrow_mut() = saved_definitions;
         }
         self.statement_undo = None;
         self.recovery_limit = 0;
@@ -552,11 +559,13 @@ impl Checker {
     ) -> Result<CheckedItem, Diagnostic> {
         assert!(self.rollback_log.is_none(), "nested semantic transactions are unsupported");
         let saved_tags = self.tags.borrow().clone();
+        let saved_definitions = self.tag_definitions.borrow().clone();
         self.rollback_log = Some(HashMap::new());
         let result = self.check_item(item);
         let changed = self.rollback_log.take().expect("transaction log");
         if result.is_err() {
             *self.tags.borrow_mut() = saved_tags;
+            *self.tag_definitions.borrow_mut() = saved_definitions;
             for (name, previous) in changed {
                 match previous {
                     Some(symbol) => { self.globals.insert(name, symbol); }
@@ -667,7 +676,7 @@ impl Checker {
 
     fn check_global(&mut self, decl: Decl) -> Result<CheckedDecl, Diagnostic> {
         let raw = self.resolve(&decl.ty, decl.span)?;
-        let raw = self.try_complete_tag_type(raw, decl.span)?;
+        let raw = self.try_complete_tag_type(raw)?;
         let ty = self.complete_string_array(raw, decl.init.as_ref(), decl.span)?;
         let kind = if matches!(ty, CType::Function { .. }) { SymbolKind::Function } else { SymbolKind::Object };
         if kind == SymbolKind::Object && !ty.is_object() {
@@ -716,7 +725,7 @@ impl Checker {
         self.result_ty = Some(result);
         for param in &params {
             if let Err(err) = self.define_local(&param.name, param.ty.clone(), SymbolKind::Object, Linkage::None, param.span) {
-                self.tags.borrow_mut().pop();
+                self.pop_tag_scope();
                 self.locals.pop();
                 self.result_ty = None;
                 return Err(err);
@@ -727,7 +736,7 @@ impl Checker {
             Stmt::Block(stmts) => self.check_statements(stmts, func.span).map(CheckedStmt::Block),
             other => self.check_stmt(other, func.span),
         };
-        self.tags.borrow_mut().pop();
+        self.pop_tag_scope();
         self.locals.pop();
         self.result_ty = None;
         let body = checked?;
@@ -751,6 +760,7 @@ impl Checker {
             // avoiding O(total globals) clones on every statement.
             let local_snapshot = self.locals.clone();
             let tag_snapshot = self.tags.borrow().clone();
+            let definitions_snapshot = self.tag_definitions.borrow().clone();
             let loop_depth = self.loop_depth;
             self.statement_undo = Some(HashMap::new());
             self.recovery_depth += 1;
@@ -762,6 +772,7 @@ impl Checker {
                 Err(error) => {
                     self.locals = local_snapshot;
                     *self.tags.borrow_mut() = tag_snapshot;
+                    *self.tag_definitions.borrow_mut() = definitions_snapshot;
                     self.loop_depth = loop_depth;
                     self.restore_symbols(changed);
                     self.recovery_errors.as_mut().expect("diagnostic collection").push(error);
@@ -777,7 +788,7 @@ impl Checker {
                 self.locals.push(HashMap::new());
                 self.tags.borrow_mut().push(HashMap::new());
                 let inner = self.check_statements(stmts, span);
-                self.tags.borrow_mut().pop();
+                self.pop_tag_scope();
                 self.locals.pop();
                 CheckedStmt::Block(inner?)
             }
@@ -788,7 +799,7 @@ impl Checker {
             Stmt::Decl(decl) => {
                 let resolved = self.resolve(&decl.ty, decl.span)?;
                 let ty = self.complete_string_array(
-                    self.try_complete_tag_type(resolved, decl.span)?,
+                    self.try_complete_tag_type(resolved)?,
                     decl.init.as_ref(), decl.span)?;
                 if decl.storage != StorageClass::Extern && ty.size_bytes(self.target).is_none() {
                     return Err(type_error(decl.span, "incomplete local object type"));
