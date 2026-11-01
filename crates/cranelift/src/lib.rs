@@ -60,6 +60,28 @@ struct KnownData {
 
 /// Intern narrow string data in this object. Sharing identical literals is permitted
 /// by C, and a separate local ELF symbol avoids collisions with C identifiers.
+/// The checked IR keeps a narrow string as a byte array, rather than
+/// decaying it to a pointer. C permits omitting the final NUL only when the
+/// declared array bound exactly fits the nonterminating characters.
+fn char_array_initializer_bytes(
+    ty: &CType, initializer: &CheckedExpr,
+) -> Result<Option<Vec<u8>>> {
+    let (CType::Array(element, Some(bound)), CheckedExprKind::StringLiteral(source)) =
+        (ty, &initializer.kind)
+    else { return Ok(None); };
+    if !matches!(element.as_ref(), CType::Integer { rank: IntRank::Char, .. }) {
+        return Err("string initializer requires an array of character type".into());
+    }
+    let count = usize::try_from(*bound).map_err(|_| "character array exceeds host size")?;
+    if count < source.len().saturating_sub(1) {
+        return Err("string initializer exceeds character array bound".into());
+    }
+    let mut bytes = vec![0u8; count];
+    let copy = count.min(source.len());
+    bytes[..copy].copy_from_slice(&source[..copy]);
+    Ok(Some(bytes))
+}
+
 fn intern_string(
     module: &mut ObjectModule,
     strings: &mut HashMap<Vec<u8>, DataId>,
@@ -136,6 +158,9 @@ impl Compiler {
         let mut address_of = None;
         let mut string_address = None;
         let initialized = if let Some(init) = &decl.initializer {
+            if let Some(bytes) = char_array_initializer_bytes(&decl.ty, init)? {
+                Some(bytes)
+            } else {
             if !decl.ty.is_integer() && !matches!(decl.ty, CType::Pointer(_)) {
                 return Err(format!("global initializer for '{name}' requires scalar support"));
             }
@@ -175,6 +200,7 @@ impl Compiler {
                 .ok_or_else(|| format!("incomplete global object '{name}'"))?;
             let bytes = value.to_le_bytes();
             Some(bytes[..usize::try_from(size).map_err(|_| "oversized global object")?].to_vec())
+            }
         } else { None };
         let tentative = decl.storage != StorageClass::Extern && initialized.is_none();
         if let Some(data) = self.data.get_mut(&name) {
@@ -378,6 +404,29 @@ impl Lower<'_> {
             // not a promise about C uninitialized reads.
             let zero = b.ins().iconst(scalar_type(ty)?, 0);
             b.ins().store(ir::MemFlagsData::new(), zero, address, 0);
+        }
+        Ok(())
+    }
+
+    /// Initialize an automatic character array in native chunks rather than
+    /// issuing one instruction for every byte of a string literal.
+    fn store_array_bytes(
+        b: &mut FunctionBuilder<'_>, address: Value, bytes: &[u8]
+    ) -> Result<()> {
+        let mut offset = 0usize;
+        while offset < bytes.len() {
+            let remaining = bytes.len() - offset;
+            let (width, ty) = if remaining >= 8 { (8, types::I64) }
+                else if remaining >= 4 { (4, types::I32) }
+                else if remaining >= 2 { (2, types::I16) }
+                else { (1, types::I8) };
+            let mut packed = [0u8; 8];
+            packed[..width].copy_from_slice(&bytes[offset..offset + width]);
+            let value = b.ins().iconst(ty, i64::from_le_bytes(packed));
+            let displacement = i32::try_from(offset)
+                .map_err(|_| "local character-array initializer exceeds addressable offset")?;
+            b.ins().store(ir::MemFlagsData::new(), value, address, displacement);
+            offset += width;
         }
         Ok(())
     }
@@ -624,9 +673,13 @@ impl Lower<'_> {
                 }
                 self.bind(b, name, ty, None)?;
                 if let Some(initializer) = initializer {
-                    let value = self.expression(b, initializer)?;
                     let address = self.object_address(b, name)?;
-                    b.ins().store(ir::MemFlagsData::new(), value, address, 0);
+                    if let Some(bytes) = char_array_initializer_bytes(ty, initializer)? {
+                        Self::store_array_bytes(b, address, &bytes)?;
+                    } else {
+                        let value = self.expression(b, initializer)?;
+                        b.ins().store(ir::MemFlagsData::new(), value, address, 0);
+                    }
                 }
                 Ok(true)
             }
