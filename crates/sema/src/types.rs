@@ -16,6 +16,8 @@ pub struct StructMember {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CType {
     Struct {
+        /// Nominal identity; distinct inline definitions are distinct C types.
+        identity: u64,
         tag: Option<String>,
         members: Vec<StructMember>,
         size: u64,
@@ -104,7 +106,7 @@ pub fn layout_struct(
         members.push(StructMember { name, ty, offset });
     }
     size = align_up(size, align).ok_or("structure size overflow")?;
-    Ok(CType::Struct { tag, members, size, align })
+    Ok(CType::Struct { identity: 0, tag, members, size, align })
 }
 
 #[derive(Debug, Clone, Copy)]
