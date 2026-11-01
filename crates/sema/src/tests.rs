@@ -545,3 +545,22 @@ fn structure_assignment_respects_type_identity() {
     reject("int main(void) { struct { int x; } a; struct { int x; } b; a=b; return 0; }",
         "incompatible assignment");
 }
+
+#[test]
+fn aggregate_initializer_bounds_and_types() {
+    let items = check("int a[]={1,2,3}; struct { char a; long b; } g={4,5};").unwrap();
+    let CheckedItem::Declaration(array) = &items[0] else { panic!("array expected") };
+    assert_eq!(array.ty, CType::Array(Box::new(CType::int()), Some(3)));
+    assert!(matches!(&array.initializer, Some(CheckedExpr {
+        kind: CheckedExprKind::Initializer(values), ..
+    }) if values.len() == 3));
+    let CheckedItem::Declaration(aggregate) = &items[1] else { panic!("struct expected") };
+    assert!(matches!(&aggregate.initializer, Some(CheckedExpr {
+        kind: CheckedExprKind::Initializer(values), ..
+    }) if values.len() == 2));
+    check("int main(void) { int grid[2][3]={{1,2,3},{4,5,6}}; return grid[1][2]; }").unwrap();
+    reject("int a[2]={1,2,3};", "too many array initializers");
+    reject("struct {int x;} v={1,2};", "too many struct initializers");
+    reject("int a[2]={bad,1};", "undeclared");
+    reject("int main(void) { int x={1,2}; return x; }", "scalar initializer");
+}
