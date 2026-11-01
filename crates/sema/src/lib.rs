@@ -202,7 +202,7 @@ impl Checker {
         Ok(CType::TagRef { kind, name: name.to_owned(), identity: entry.identity })
     }
 
-    fn declare_tag_only(&self, ty: &Type, span: Span) -> Result<(), Diagnostic> {
+    fn declare_tag_only(&mut self, ty: &Type, span: Span) -> Result<(), Diagnostic> {
         match ty {
             Type::TagRef(kind, name) => {
                 let current = self.tags.borrow().last().expect("tag scope")
@@ -220,7 +220,7 @@ impl Checker {
                 }
                 Ok(())
             }
-            Type::Struct { .. } | Type::Union { .. } => {
+            Type::Struct { .. } | Type::Union { .. } | Type::Enum { .. } => {
                 self.resolve(ty, span)?;
                 Ok(())
             }
@@ -261,7 +261,7 @@ impl Checker {
         }
     }
 
-    fn resolve(&self, ty: &Type, span: Span) -> Result<CType, Diagnostic> {
+    fn resolve(&mut self, ty: &Type, span: Span) -> Result<CType, Diagnostic> {
         Ok(match ty {
             Type::Void => CType::Void,
             Type::Char => CType::Integer { rank: IntRank::Char, unsigned: !self.target.char_is_signed },
@@ -338,7 +338,8 @@ impl Checker {
                 }
                 let mut converted = Vec::with_capacity(params.len());
                 for param in params {
-                    let ty = self.adjust_parameter(self.resolve(param, span)?);
+                    let resolved = self.resolve(param, span)?;
+                    let ty = self.adjust_parameter(resolved);
                     if !ty.is_object() {
                         return Err(type_error(span, "parameter requires a complete non-void object type"));
                     }
@@ -625,7 +626,8 @@ impl Checker {
         }
         let mut params = Vec::new();
         for param in &func.params {
-            let ty = self.adjust_parameter(self.resolve(&param.ty, param.span)?);
+            let resolved = self.resolve(&param.ty, param.span)?;
+            let ty = self.adjust_parameter(resolved);
             if !ty.is_object() {
                 return Err(type_error(param.span, "function parameter cannot have void or function type"));
             }
@@ -715,8 +717,9 @@ impl Checker {
                 CheckedStmt::Tag
             }
             Stmt::Decl(decl) => {
+                let resolved = self.resolve(&decl.ty, decl.span)?;
                 let ty = self.complete_string_array(
-                    self.try_complete_tag_type(self.resolve(&decl.ty, decl.span)?, decl.span)?,
+                    self.try_complete_tag_type(resolved, decl.span)?,
                     decl.init.as_ref(), decl.span)?;
                 if decl.storage != StorageClass::Extern && ty.size_bytes(self.target).is_none() {
                     return Err(type_error(decl.span, "incomplete local object type"));
