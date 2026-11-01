@@ -50,6 +50,9 @@ pub enum Type {
     Unsigned(Box<Type>),
     Pointer(Box<Type>),
     Array(Box<Type>, Option<Box<Expr>>),
+    /// Complete structure definition, initially inlined into its declarator.
+    /// Separate tag-only declarations and references are a follow-up.
+    Struct { tag: Option<Ident>, members: Vec<Decl> },
     Function {
         result: Box<Type>,
         params: Vec<Type>,
@@ -85,6 +88,8 @@ pub enum Expr {
     Call(Box<Expr>, Vec<Expr>),
     /// Postfix subscript: `base[index]`, equivalent to `*(base + index)`.
     Index(Box<Expr>, Box<Expr>),
+    /// Postfix member selection: true for `->`, false for `.`.
+    Member(Box<Expr>, Ident, bool),
     Assign(Box<Expr>, Box<Expr>),
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
