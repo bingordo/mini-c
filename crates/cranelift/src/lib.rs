@@ -933,6 +933,15 @@ impl Lower<'_> {
 mod tests {
     use super::*;
 
+    /// Count relocation entries on ELF data sections (not function calls).
+    fn count_data_relocations(bytes: &[u8]) -> usize {
+        use object::{Object, ObjectSection};
+        let file = object::File::parse(bytes).expect("valid ELF object");
+        file.sections().filter(|section|
+            section.kind() == object::SectionKind::Data
+        ).map(|section| section.relocations().count()).sum()
+    }
+
     #[test]
     fn compiles_simple_arithmetic_to_native_object() {
         let obj = compile_source("int main(void) { int x = 2; x = x * 3 + 1; return x; }").unwrap();
@@ -1003,6 +1012,7 @@ mod tests {
                       struct Callback callbacks[1] = {{&identity}};";
         let obj = compile_source(source).unwrap();
         assert_eq!(&obj[..4], b"\x7fELF");
+        assert!(count_data_relocations(&obj) >= 2, "expected two function-address relocations");
     }
 
     #[test]
@@ -1016,6 +1026,7 @@ mod tests {
                    int main(void) { return *entry.ptr; }";
         let obj = compile_source(src).unwrap();
         assert_eq!(&obj[..4], b"\x7fELF");
+        assert!(count_data_relocations(&obj) >= 5, "expected nested data relocations");
     }
 
     #[test]
