@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 mini-c-syntax = { path = "../syntax" }
 mini-c-sema = { path = "../sema" }
+mini-c-preprocess = { path = "../preprocess" }
 cranelift-codegen = "0.136.3"
 cranelift-frontend = "0.136.3"
 cranelift-module = "0.136.3"
