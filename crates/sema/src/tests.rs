@@ -508,3 +508,33 @@ fn global_array_redeclarations_preserve_completed_bounds() {
     reject(r#"extern char a[5]; char a[]="abc";"#, "conflicting declaration");
     reject(r#"extern int a[]; char a[]="abc";"#, "conflicting declaration");
 }
+
+
+#[test]
+fn inline_struct_member_types_and_layout() {
+    let items = check("struct Pair { char first; int middle; long last; } value;").unwrap();
+    let CheckedItem::Declaration(value) = &items[0] else { panic!("struct global expected") };
+    let CType::Struct { tag, members, size, align } = &value.ty else { panic!("struct expected") };
+    assert_eq!(tag.as_deref(), Some("Pair"));
+    assert_eq!((*size, *align), (16, 8));
+    assert_eq!(members.iter().map(|m| m.offset).collect::<Vec<_>>(), [0, 4, 8]);
+    let checked = check("int main(void) { struct { char c; long x; } a; a.c=3; (&a)->x=19; return a.c + a.x; }").unwrap();
+    let CheckedItem::Function(f) = &checked[0] else { panic!("function expected") };
+    let CheckedStmt::Block(stmts) = &f.body else { panic!("block expected") };
+    let CheckedStmt::Expr(Some(set)) = &stmts[2] else { panic!("assignment expected") };
+    assert!(matches!(set.kind, CheckedExprKind::Assign(..)));
+}
+
+#[test]
+fn inline_struct_member_errors() {
+    reject("struct X { int a; int a; } x;", "duplicate structure member");
+    reject("struct X { void a; } x;", "complete object");
+    reject("struct X { int a[]; } x;", "incomplete");
+    reject("int main(void) { int n; return n.foo; }", "requires a struct");
+    reject("int main(void) { struct { int a; } s; return s.missing; }",
+        "unknown struct member");
+    reject("int main(void) { struct { int a; } s; return s->a; }",
+        "pointer to struct");
+    reject("int main(void) { struct { int a; } s; return s.a[0]; }",
+        "subscript requires pointer");
+}
