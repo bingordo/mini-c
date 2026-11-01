@@ -200,8 +200,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("mini-c cpp with spaces {} {nonce}", std::process::id()));
         std::fs::create_dir_all(dir.join("include folder")).unwrap();
         let header = dir.join("include folder").join("config.h");
+        let nested = dir.join("include folder").join("nested.h");
         let source = dir.join("source file.c");
-        std::fs::write(&header, "#define HEADER_VALUE 17\n").unwrap();
+        std::fs::write(&nested, "#define HEADER_VALUE 17\n").unwrap();
+        std::fs::write(&header, "#include \"nested.h\"\n").unwrap();
         std::fs::write(&source,
             "#include <config.h>\n#if FEATURE != 19\n#error wrong_feature\n#endif\n#ifdef OLD\n#error old_macro\n#endif\nint result = HEADER_VALUE+FEATURE;\n"
         ).unwrap();
@@ -216,9 +218,9 @@ mod tests {
         let outcome = check(source.to_str().unwrap(), options.cpp.as_ref());
         assert!(outcome.is_ok(), "{outcome:?}");
 
-        std::fs::write(&header, "int invalid = ;\n").unwrap();
+        std::fs::write(&nested, "int invalid = ;\n").unwrap();
         let failure = check(source.to_str().unwrap(), options.cpp.as_ref()).unwrap_err();
-        assert!(failure.contains("config.h:1"), "{failure}");
+        assert!(failure.contains("nested.h:1"), "{failure}");
         assert!(failure.contains("error"), "{failure}");
         let _ = std::fs::remove_dir_all(&dir);
     }
