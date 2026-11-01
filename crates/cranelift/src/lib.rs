@@ -242,52 +242,30 @@ impl Compiler {
 
     fn declare_object(&mut self, decl: CheckedDecl) -> Result<()> {
         let name = decl.name.clone();
-        let mut address_of = None;
-        let mut string_address = None;
+        let mut relocations = Vec::new();
         let initialized = if let Some(init) = &decl.initializer {
-            if let Some(bytes) = char_array_initializer_bytes(&decl.ty, init)?
-                .or(static_initializer_bytes(&decl.ty, init)?) {
+            if let Some(bytes) = char_array_initializer_bytes(&decl.ty, init)? {
                 Some(bytes)
+            } else if let Some(data) = static_initializer_bytes(&decl.ty, init)? {
+                relocations = data.relocations;
+                Some(data.bytes)
             } else {
-            if !decl.ty.is_integer() && !matches!(decl.ty, CType::Pointer(_)) {
-                return Err(format!("global initializer for '{name}' requires scalar support"));
-            }
-            let value = if matches!(decl.ty, CType::Pointer(_)) {
-                // The checker has already validated the null-pointer constant.
-                // Address-of-symbol initializers require data relocations.
-                let mut integer = init;
-                while let CheckedExprKind::Convert(inner) = &integer.kind {
-                    integer = inner;
+                if !decl.ty.is_integer() && !matches!(decl.ty, CType::Pointer(_)) {
+                    return Err(format!("global initializer for '{name}' requires scalar support"));
                 }
-                match mini_c_sema::const_eval::evaluate(integer, Target::default()) {
-                    Ok(0) => 0,
-                    _ => {
-                        let target = match &integer.kind {
-                            CheckedExprKind::Unary(UnOp::Address, target)
-                            | CheckedExprKind::ArrayDecay(target) => Some(target.as_ref()),
-                            _ => None,
-                        };
-                        match target.map(|expr| &expr.kind) {
-                            Some(CheckedExprKind::Name(symbol)) => {
-                                address_of = Some(symbol.clone());
-                                0
-                            }
-                            Some(CheckedExprKind::StringLiteral(bytes)) => {
-                                string_address = Some(intern_string(&mut self.module, &mut self.strings, bytes)?);
-                                0
-                            }
-                            _ => return Err(format!("global initializer for '{name}' requires a null pointer or constant object address")),
-                        }
+                let value = if matches!(decl.ty, CType::Pointer(_)) {
+                    if let Some(relocation) = pointer_relocation(init)? {
+                        relocations.push((0, relocation));
                     }
-                }
-            } else {
-                mini_c_sema::const_eval::evaluate(init, Target::default())
-                    .map_err(|e| format!("global initializer for '{name}': {e}"))?
-            };
-            let size = decl.ty.size_bytes(Target::default())
-                .ok_or_else(|| format!("incomplete global object '{name}'"))?;
-            let bytes = value.to_le_bytes();
-            Some(bytes[..usize::try_from(size).map_err(|_| "oversized global object")?].to_vec())
+                    0
+                } else {
+                    mini_c_sema::const_eval::evaluate(init, Target::default())
+                        .map_err(|e| format!("global initializer for '{name}': {e}"))?
+                };
+                let size = decl.ty.size_bytes(Target::default())
+                    .ok_or_else(|| format!("incomplete global object '{name}'"))?;
+                let bytes = value.to_le_bytes();
+                Some(bytes[..usize::try_from(size).map_err(|_| "oversized global object")?].to_vec())
             }
         } else { None };
         let tentative = decl.storage != StorageClass::Extern && initialized.is_none();
@@ -304,8 +282,7 @@ impl Compiler {
             }
             if initialized.is_some() {
                 data.initialized = initialized;
-                data.address_of = address_of;
-                data.string_address = string_address;
+                data.relocations = relocations;
             }
             data.tentative |= tentative;
             if data.initialized.is_some() || data.tentative {
@@ -319,8 +296,7 @@ impl Compiler {
             }
             return Ok(());
         }
-        // A declaration-only external object is undefined in this translation
-        // unit. It must remain an import unless a definition appears later.
+        // Declaration-only external objects stay imports until defined.
         let linkage = if decl.linkage == Linkage::Internal {
             ClLinkage::Local
         } else if initialized.is_some() || tentative {
@@ -330,7 +306,9 @@ impl Compiler {
         };
         let id = self.module.declare_data(&name, linkage, true, false)
             .map_err(|e| format!("declaring global '{name}': {e}"))?;
-        self.data.insert(name, KnownData { id, ty: decl.ty, linkage: decl.linkage, initialized, address_of, string_address, tentative });
+        self.data.insert(name, KnownData {
+            id, ty: decl.ty, linkage: decl.linkage, initialized, relocations, tentative,
+        });
         Ok(())
     }
 
@@ -420,14 +398,17 @@ impl Compiler {
             // Cranelift expects alignment in bytes, unlike stack-slot log2 alignment.
             let alignment = data.ty.align_bytes(Target::default()).unwrap_or(1);
             desc.set_align(alignment);
-            if let Some(symbol) = &data.address_of {
-                let target = self.data.get(symbol)
-                    .ok_or_else(|| format!("global initializer for '{name}' refers to unknown object '{symbol}'"))?;
-                let gv = self.module.declare_data_in_data(target.id, &mut desc);
-                desc.write_data_addr(0, gv, 0);
-            } else if let Some(string) = data.string_address {
-                let gv = self.module.declare_data_in_data(string, &mut desc);
-                desc.write_data_addr(0, gv, 0);
+            for (offset, relocation) in &data.relocations {
+                let offset = u32::try_from(*offset)
+                    .map_err(|_| format!("relocation offset exceeds supported range in '{name}'"))?;
+                let target_id = match relocation {
+                    StaticRelocation::Global(symbol) => self.data.get(symbol)
+                        .ok_or_else(|| format!("global initializer for '{name}' refers to unknown object '{symbol}'"))?.id,
+                    StaticRelocation::String(bytes) =>
+                        intern_string(&mut self.module, &mut self.strings, bytes)?,
+                };
+                let gv = self.module.declare_data_in_data(target_id, &mut desc);
+                desc.write_data_addr(offset, gv, 0);
             }
             self.module.define_data(data.id, &desc)
                 .map_err(|e| format!("defining global '{name}': {e}"))?;
@@ -1002,6 +983,19 @@ mod tests {
         let error = compile_source("int f(int x) { if (x) return x; }").unwrap_err();
         assert!(error.contains("may reach its end"), "{error}");
         assert!(!compile_source("int main(void) { int x = 1; }").unwrap().is_empty());
+    }
+
+    #[test]
+    fn emits_relocations_for_nested_static_pointers() {
+        let src = "int target; struct Entry { int pad; int *ptr; }; \
+                   struct Entry entry={7,&target}; \
+                   int *table[2]={&target,0}; \
+                   char *strings[2]={\"abc\",\"def\"}; \
+                   union Handle { int *ptr; long bits; }; \
+                   union Handle handle={&target}; \
+                   int main(void) { return *entry.ptr; }";
+        let obj = compile_source(src).unwrap();
+        assert_eq!(&obj[..4], b"\\x7fELF");
     }
 
     #[test]
