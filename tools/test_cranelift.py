@@ -147,6 +147,11 @@ PROGRAMS = {
     }""",
     "struct_global_zero": """struct { char first; long last; } g;
         int main(void) { g.last=29; return g.first+g.last; }""",
+    "aggregate_global_int_array": """int data[4]={3,7}; int main(void) { return data[0]+data[1]+data[2]+data[3]; }""",
+    "aggregate_inferred_array": """int data[]={1,2,3,4}; int main(void) { return data[2]; }""",
+    "aggregate_global_struct": """struct { char a; int b; long c; } g={5,17,29}; int main(void) { return g.a+g.b+g.c; }""",
+    "aggregate_local_struct": """int main(void) { struct { char a; long b; int c; } v={7,31}; return v.a+v.b+v.c; }""",
+    "aggregate_nested_array": """int main(void) { int a[2][3]={{1,2,3},{4,5,6}}; return a[0][0]+a[1][2]; }""",
     "struct_assignment": """int main(void) {
         struct { char c; int count; long total; } entries[2];
         entries[0].c=3; entries[0].count=17; entries[0].total=37;
