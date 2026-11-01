@@ -1,6 +1,8 @@
 //! Standalone native ELF object emitter. The external C preprocessor is
 //! explicitly configured by the driver, not invoked from the parser.
-use mini_c_cranelift::compile_source;
+use mini_c_cranelift::{compile_source_diagnostic, CompileError};
+use mini_c_preprocess::source_map::SourceMap;
+use mini_c_syntax::source::SourceFile;
 use mini_c_preprocess::{self as preprocess, driver_options::CppOptions};
 use std::{env, fs, path::Path, process::ExitCode};
 
@@ -45,6 +47,26 @@ fn parse_options(args: impl IntoIterator<Item = String>) -> Result<Options, Stri
     })
 }
 
+fn format_compiler_error(
+    filename: &str, source: &str, preprocessed: bool, error: CompileError,
+) -> String {
+    match error {
+        CompileError::Diagnostic(d) => {
+            let location = if preprocessed {
+                let map = SourceMap::from_preprocessed(source, filename);
+                let origin = map.origin(d.span.lo);
+                format!("{}:{}", origin.file, origin.line)
+            } else {
+                let file = SourceFile::new(filename, source);
+                let (line, col) = file.location(d.span.lo);
+                format!("{filename}:{line}:{col}")
+            };
+            format!("{location}: error[{}]: {}", d.code.as_str(), d.message)
+        }
+        CompileError::Backend(message) => format!("{filename}: error: {message}"),
+    }
+}
+
 fn main() -> ExitCode {
     let opts = match parse_options(env::args().skip(1)) {
         Ok(opts) => opts,
@@ -70,17 +92,37 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match compile_source(&source).and_then(|bytes| {
-        fs::write(&opts.output, bytes).map_err(|e| e.to_string())
-    }) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) => { eprintln!("{}: {e}", opts.source); ExitCode::FAILURE }
+    match compile_source_diagnostic(&source) {
+        Ok(bytes) => match fs::write(&opts.output, bytes) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => { eprintln!("{}: {e}", opts.output); ExitCode::FAILURE }
+        },
+        Err(error) => {
+            eprintln!("{}", format_compiler_error(
+                &opts.source, &source, opts.cpp.is_some(), error,
+            ));
+            ExitCode::FAILURE
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_diagnostics_restore_header_origins_and_raw_columns() {
+        let source = "# 1 \"source.c\"\n# 8 \"headers with spaces.h\" 1\nint wrong = ;\n";
+        let diagnostic = compile_source_diagnostic(source).unwrap_err();
+        let rendered = format_compiler_error("input.c", source, true, diagnostic);
+        assert!(rendered.contains("headers with spaces.h:8"), "{rendered}");
+        assert!(rendered.contains("error[S"), "{rendered}");
+
+        let source = "int wrong = ;\n";
+        let diagnostic = compile_source_diagnostic(source).unwrap_err();
+        let rendered = format_compiler_error("raw.c", source, false, diagnostic);
+        assert!(rendered.contains("raw.c:1:"), "{rendered}");
+    }
 
     #[test]
     fn common_cpp_flags_parse_for_object_emitter() {
@@ -140,7 +182,7 @@ mod tests {
         match bytes {
             Err(preprocess::Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {}
             other => {
-                let compiled = compile_source(&other.unwrap()).unwrap();
+                let compiled = compile_source_diagnostic(&other.unwrap()).unwrap();
                 assert!(compiled.starts_with(b"\x7fELF"));
             }
         }
