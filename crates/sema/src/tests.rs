@@ -626,3 +626,22 @@ fn diagnostic_recovery_rolls_back_completed_local_tags() {
     assert!(!diagnose_stream_recovering(&mut parser, &mut checker, 10).is_empty());
     assert!(checker.tag_definitions.borrow().is_empty());
 }
+
+#[test]
+fn streaming_does_not_retain_function_local_tag_definitions() {
+    let mut checker = Checker::new(Target::default()).unwrap();
+    check_stream(&mut Parser::new("struct Global { int x; };"), &mut checker,
+        |_| Ok(())).unwrap();
+    assert_eq!(checker.tag_definitions.borrow().len(), 1);
+    for i in 0..100 {
+        let source = format!(
+            "int f{i}(void) {{ struct Local {{ int x; }} value; return value.x; }}"
+        );
+        check_stream(&mut Parser::new(&source), &mut checker, |_| Ok(())).unwrap();
+        assert_eq!(checker.tag_definitions.borrow().len(), 1,
+            "local tag definition leaked after function {i}");
+    }
+    check_stream(&mut Parser::new(
+        "int final(void) { struct Global *p; return p->x; }"
+    ), &mut checker, |_| Ok(())).unwrap();
+}
