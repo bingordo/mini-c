@@ -401,14 +401,24 @@ impl Compiler {
             for (offset, relocation) in &data.relocations {
                 let offset = u32::try_from(*offset)
                     .map_err(|_| format!("relocation offset exceeds supported range in '{name}'"))?;
-                let target_id = match relocation {
-                    StaticRelocation::Global(symbol) => self.data.get(symbol)
-                        .ok_or_else(|| format!("global initializer for '{name}' refers to unknown object '{symbol}'"))?.id,
-                    StaticRelocation::String(bytes) =>
-                        intern_string(&mut self.module, &mut self.strings, bytes)?,
-                };
-                let gv = self.module.declare_data_in_data(target_id, &mut desc);
-                desc.write_data_addr(offset, gv, 0);
+                match relocation {
+                    StaticRelocation::Global(symbol) => {
+                        if let Some(target) = self.data.get(symbol) {
+                            let gv = self.module.declare_data_in_data(target.id, &mut desc);
+                            desc.write_data_addr(offset, gv, 0);
+                        } else if let Some(target) = self.functions.get(symbol) {
+                            let func = self.module.declare_func_in_data(target.id, &mut desc);
+                            desc.write_function_addr(offset, func);
+                        } else {
+                            return Err(format!("global initializer for '{name}' refers to unknown symbol '{symbol}'"));
+                        }
+                    }
+                    StaticRelocation::String(bytes) => {
+                        let id = intern_string(&mut self.module, &mut self.strings, bytes)?;
+                        let gv = self.module.declare_data_in_data(id, &mut desc);
+                        desc.write_data_addr(offset, gv, 0);
+                    }
+                }
             }
             self.module.define_data(data.id, &desc)
                 .map_err(|e| format!("defining global '{name}': {e}"))?;
@@ -983,6 +993,16 @@ mod tests {
         let error = compile_source("int f(int x) { if (x) return x; }").unwrap_err();
         assert!(error.contains("may reach its end"), "{error}");
         assert!(!compile_source("int main(void) { int x = 1; }").unwrap().is_empty());
+    }
+
+    #[test]
+    fn emits_static_function_pointer_relocations() {
+        let source = "int identity(int x) { return x; } \
+                      int (*callback)(int) = &identity; \
+                      struct Callback { int (*f)(int); }; \
+                      struct Callback callbacks[1] = {{&identity}};";
+        let obj = compile_source(source).unwrap();
+        assert_eq!(&obj[..4], b"\x7fELF");
     }
 
     #[test]
