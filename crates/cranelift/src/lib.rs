@@ -444,7 +444,7 @@ impl Lower<'_> {
                 let address = self.place(b, base)?;
                 let offset = i64::try_from(*offset)
                     .map_err(|_| "struct member offset exceeds supported address range")?;
-                Ok(b.ins().iadd_imm(address, offset))
+                Ok(b.ins().iadd_imm_s(address, offset))
             }
             CheckedExprKind::StringLiteral(bytes) => {
                 let id = intern_string(self.module, self.strings, bytes)?;
