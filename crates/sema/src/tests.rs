@@ -612,3 +612,12 @@ fn enumerators_constant_expressions_and_scope() {
     reject("int Same; enum Bad { Same };", "conflicting declaration");
     reject("struct Tag; enum Tag { E };", "conflicting tag kind");
 }
+
+#[test]
+fn enum_tag_reference_uses_scalar_int_type() {
+    let items = check("enum Status { A=3 }; enum Status inc(enum Status x) { return x+1; }").unwrap();
+    let CheckedItem::Function(f) = &items[1] else { panic!("function expected") };
+    assert_eq!(f.signature, CType::Function {
+        result: Box::new(CType::int()), params: vec![CType::int()],
+    });
+}
