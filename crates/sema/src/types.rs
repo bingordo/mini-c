@@ -23,6 +23,13 @@ pub enum CType {
         size: u64,
         align: u64,
     },
+    Union {
+        identity: u64,
+        tag: Option<String>,
+        members: Vec<StructMember>,
+        size: u64,
+        align: u64,
+    },
     Void,
     Integer { rank: IntRank, unsigned: bool },
     Pointer(Box<CType>),
@@ -36,7 +43,7 @@ impl CType {
     pub fn align_bytes(&self, target: Target) -> Option<u64> {
         match self {
             Self::Void | Self::Function { .. } => None,
-            Self::Struct { align, .. } => Some(*align),
+            Self::Struct { align, .. } | Self::Union { align, .. } => Some(*align),
             Self::Array(element, _) => element.align_bytes(target),
             Self::Pointer(_) => Some(8),
             Self::Integer { rank, .. } => Some(u64::from(target.bits(*rank) / 8)),
@@ -67,7 +74,7 @@ impl CType {
     pub fn size_bytes(&self, target: Target) -> Option<u64> {
         match self {
             Self::Void | Self::Function { .. } => None,
-            Self::Struct { size, .. } => Some(*size),
+            Self::Struct { size, .. } | Self::Union { size, .. } => Some(*size),
             Self::Integer { rank, .. } => Some(u64::from(target.bits(*rank) / 8)),
             Self::Pointer(_) => Some(8), // Current target model is LP64.
             Self::Array(element, Some(count)) => element.size_bytes(target)?.checked_mul(*count),
@@ -107,6 +114,31 @@ pub fn layout_struct(
     }
     size = align_up(size, align).ok_or("structure size overflow")?;
     Ok(CType::Struct { identity: 0, tag, members, size, align })
+}
+
+/// C union members all start at byte zero and share the maximum size
+/// rounded to the strictest member alignment.
+pub fn layout_union(
+    tag: Option<String>, fields: Vec<(String, CType)>, target: Target,
+) -> Result<CType, &'static str> {
+    if fields.is_empty() { return Err("empty unions are unsupported"); }
+    let mut size = 0u64;
+    let mut align = 1u64;
+    let mut members = Vec::with_capacity(fields.len());
+    let mut seen = std::collections::HashSet::new();
+    for (name, ty) in fields {
+        if !seen.insert(name.clone()) { return Err("duplicate union member"); }
+        let field_size = ty.size_bytes(target).ok_or("union member has incomplete type")?;
+        let field_align = ty.align_bytes(target).ok_or("union member has incomplete type")?;
+        if field_size == 0 || !ty.is_object() {
+            return Err("union member must have a complete object type");
+        }
+        align = align.max(field_align);
+        size = size.max(field_size);
+        members.push(StructMember { name, ty, offset: 0 });
+    }
+    size = align_up(size, align).ok_or("union size overflow")?;
+    Ok(CType::Union { identity: 0, tag, members, size, align })
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -180,6 +212,21 @@ pub fn type_error(span: Span, message: impl Into<String>) -> Diagnostic {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn union_overlay_layout_and_nested_alignment() {
+        let union = layout_union(Some("Word".into()), vec![
+            ("byte".into(), CType::Integer { rank: IntRank::Char, unsigned: false }),
+            ("wide".into(), CType::Integer { rank: IntRank::Long, unsigned: false }),
+        ], Target::default()).unwrap();
+        let CType::Union { members, size, align, .. } = &union else { panic!("union expected") };
+        assert_eq!((*size, *align), (8,8));
+        assert!(members.iter().all(|m| m.offset == 0));
+        let structure = layout_struct(None, vec![
+            ("first".into(), CType::int()),
+            ("part".into(), union),
+        ], Target::default()).unwrap();
+        assert_eq!(structure.size_bytes(Target::default()), Some(16));
+    }
     #[test]
     fn x86_64_structure_layout_and_tail_padding() {
         let ty = layout_struct(Some("Sample".into()), vec![
