@@ -149,6 +149,7 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
 
     #[test]
     fn preprocessor_flags_parse_without_shell_splitting() {
