@@ -3,6 +3,10 @@ name = "mini-c-cranelift"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = []
+internal-cpp = ["mini-c-preprocess/internal-rcc"]
+
 [dependencies]
 mini-c-syntax = { path = "../syntax" }
 mini-c-sema = { path = "../sema" }
