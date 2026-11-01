@@ -167,6 +167,16 @@ impl Checker {
             .or_else(|| self.globals.get(name))
     }
 
+    /// Discard completed local tag identities when their lexical scope ends.
+    /// Only file-scope definitions need survive across streaming functions.
+    fn pop_tag_scope(&self) {
+        let scope = self.tags.borrow_mut().pop().expect("tag scope");
+        let mut definitions = self.tag_definitions.borrow_mut();
+        for entry in scope.values() {
+            definitions.remove(&entry.identity);
+        }
+    }
+
     fn new_tag_identity(&self) -> u64 {
         let id = self.next_tag_identity.get();
         self.next_tag_identity.set(id.saturating_add(1));
@@ -319,7 +329,9 @@ impl Checker {
                             kind, identity, complete: Some(complete.clone()),
                         });
                 }
-                self.tag_definitions.borrow_mut().insert(identity, complete.clone());
+                if tag.is_some() {
+                    self.tag_definitions.borrow_mut().insert(identity, complete.clone());
+                }
                 complete
             }
             Type::Pointer(inner) => CType::Pointer(Box::new(self.resolve(inner, span)?)),
@@ -641,7 +653,7 @@ impl Checker {
         self.result_ty = Some(result);
         for param in &params {
             if let Err(err) = self.define_local(&param.name, param.ty.clone(), SymbolKind::Object, Linkage::None, param.span) {
-                self.tags.borrow_mut().pop();
+                self.pop_tag_scope();
                 self.locals.pop();
                 self.result_ty = None;
                 return Err(err);
@@ -652,7 +664,7 @@ impl Checker {
             Stmt::Block(stmts) => self.check_statements(stmts, func.span).map(CheckedStmt::Block),
             other => self.check_stmt(other, func.span),
         };
-        self.tags.borrow_mut().pop();
+        self.pop_tag_scope();
         self.locals.pop();
         self.result_ty = None;
         let body = checked?;
@@ -704,7 +716,7 @@ impl Checker {
                 self.locals.push(HashMap::new());
                 self.tags.borrow_mut().push(HashMap::new());
                 let inner = self.check_statements(stmts, span);
-                self.tags.borrow_mut().pop();
+                self.pop_tag_scope();
                 self.locals.pop();
                 CheckedStmt::Block(inner?)
             }
