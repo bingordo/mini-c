@@ -151,6 +151,11 @@ PROGRAMS = {
     "aggregate_inferred_array": """int data[]={1,2,3,4}; int main(void) { return data[2]; }""",
     "aggregate_global_struct": """struct { char a; int b; long c; } g={5,17,29}; int main(void) { return g.a+g.b+g.c; }""",
     "aggregate_local_struct": """int main(void) { struct { char a; long b; int c; } v={7,31}; return v.a+v.b+v.c; }""",
+    "tagged_recursive_struct": """struct Node; struct Node { int value; struct Node *next; };
+        struct Node root; int main(void) { root.value=37; root.next=&root;
+            return root.next->value; }""",
+    "tagged_typedef": """typedef struct Item Item; struct Item { long amount; };
+        Item value; int main(void) { value.amount=41; return value.amount; }""",
     "union_global": """union { char c; long l; } u={17};
         int main(void) { return u.c; }""",
     "union_local": """int main(void) {
