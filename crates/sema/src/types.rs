@@ -7,7 +7,20 @@ use mini_c_syntax::diag::Diagnostic;
 pub enum IntRank { Char, Int, Long }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructMember {
+    pub name: String,
+    pub ty: CType,
+    pub offset: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CType {
+    Struct {
+        tag: Option<String>,
+        members: Vec<StructMember>,
+        size: u64,
+        align: u64,
+    },
     Void,
     Integer { rank: IntRank, unsigned: bool },
     Pointer(Box<CType>),
@@ -17,6 +30,17 @@ pub enum CType {
 }
 
 impl CType {
+    /// Target-specific object alignment in bytes for x86-64 LP64.
+    pub fn align_bytes(&self, target: Target) -> Option<u64> {
+        match self {
+            Self::Void | Self::Function { .. } => None,
+            Self::Struct { align, .. } => Some(*align),
+            Self::Array(element, _) => element.align_bytes(target),
+            Self::Pointer(_) => Some(8),
+            Self::Integer { rank, .. } => Some(u64::from(target.bits(*rank) / 8)),
+        }
+    }
+
     pub fn int() -> Self { Self::Integer { rank: IntRank::Int, unsigned: false } }
     /// Composite type for compatible global declarations. An incomplete array
     /// declaration may be completed by another declaration in the same TU.
@@ -41,12 +65,46 @@ impl CType {
     pub fn size_bytes(&self, target: Target) -> Option<u64> {
         match self {
             Self::Void | Self::Function { .. } => None,
+            Self::Struct { size, .. } => Some(*size),
             Self::Integer { rank, .. } => Some(u64::from(target.bits(*rank) / 8)),
             Self::Pointer(_) => Some(8), // Current target model is LP64.
             Self::Array(element, Some(count)) => element.size_bytes(target)?.checked_mul(*count),
             Self::Array(_, None) => None,
         }
     }
+}
+
+/// Round up without overflowing the target's size representation.
+pub fn align_up(value: u64, alignment: u64) -> Option<u64> {
+    let mask = alignment.checked_sub(1)?;
+    if alignment == 0 || !alignment.is_power_of_two() { return None; }
+    value.checked_add(mask).map(|v| v & !mask)
+}
+
+/// Resolve ordered structure members using the selected target's alignment.
+/// No packing, bitfields, or flexible-array members are supported yet.
+pub fn layout_struct(
+    tag: Option<String>, fields: Vec<(String, CType)>, target: Target,
+) -> Result<CType, &'static str> {
+    if fields.is_empty() { return Err("empty structures are unsupported"); }
+    let mut size = 0u64;
+    let mut align = 1u64;
+    let mut members = Vec::with_capacity(fields.len());
+    let mut seen = std::collections::HashSet::new();
+    for (name, ty) in fields {
+        if !seen.insert(name.clone()) { return Err("duplicate structure member"); }
+        let field_size = ty.size_bytes(target).ok_or("structure member has incomplete type")?;
+        let field_align = ty.align_bytes(target).ok_or("structure member has incomplete type")?;
+        if field_size == 0 || !ty.is_object() {
+            return Err("structure member must have a complete object type");
+        }
+        align = align.max(field_align);
+        let offset = align_up(size, field_align).ok_or("structure member layout overflow")?;
+        size = offset.checked_add(field_size).ok_or("structure size overflow")?;
+        members.push(StructMember { name, ty, offset });
+    }
+    size = align_up(size, align).ok_or("structure size overflow")?;
+    Ok(CType::Struct { tag, members, size, align })
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -120,6 +178,25 @@ pub fn type_error(span: Span, message: impl Into<String>) -> Diagnostic {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn x86_64_structure_layout_and_tail_padding() {
+        let ty = layout_struct(Some("Sample".into()), vec![
+            ("a".into(), CType::Integer { rank: IntRank::Char, unsigned: false }),
+            ("b".into(), CType::int()),
+            ("c".into(), CType::Integer { rank: IntRank::Long, unsigned: false }),
+        ], Target::default()).unwrap();
+        let CType::Struct { members, size, align, .. } = &ty else { panic!("struct expected") };
+        assert_eq!((*size, *align), (16,8));
+        assert_eq!(members.iter().map(|m| m.offset).collect::<Vec<_>>(), [0,4,8]);
+        let nested = layout_struct(None, vec![
+            ("first".into(), ty),
+            ("tail".into(), CType::Integer { rank: IntRank::Char, unsigned: false }),
+        ], Target::default()).unwrap();
+        assert_eq!(nested.size_bytes(Target::default()), Some(24));
+        assert_eq!(nested.align_bytes(Target::default()), Some(8));
+        assert!(layout_struct(None, vec![("a".into(), CType::int()),
+            ("a".into(), CType::int())], Target::default()).is_err());
+    }
     #[test]
     fn usual_arithmetic_conversions() {
         let t = Target::default();
