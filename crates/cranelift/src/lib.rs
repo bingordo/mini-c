@@ -965,6 +965,14 @@ mod tests {
     }
 
     #[test]
+    fn accepts_completed_tag_in_redeclared_function_signature() {
+        let src = "struct Node; int read(struct Node *p); \
+                   struct Node { int value; }; \
+                   int read(struct Node *p) { return p->value; }";
+        assert!(!compile_source(src).unwrap().is_empty());
+    }
+
+    #[test]
     fn accepts_prototypes_before_definition_and_externals() {
         let src = "int add(int, int); int main(void) { return add(3,4); }\
                    int add(int x, int y) { return x + y; }";
