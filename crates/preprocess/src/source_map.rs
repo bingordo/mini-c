@@ -74,8 +74,26 @@ fn parse_marker(segment: &str) -> Option<(usize, String)> {
     let line: usize = s[..digit_count].parse().ok()?;
     s = s[digit_count..].trim_start();
     s = s.strip_prefix('"')?;
-    let end = s.find('"')?;
-    Some((line, s[..end].to_owned()))
+    let mut file = String::new();
+    let mut chars = s.chars();
+    loop {
+        match chars.next()? {
+            '"' => break,
+            '\\' => match chars.next()? {
+                '"' => file.push('"'),
+                '\\' => file.push('\\'),
+                // Unknown escapes are retained rather than silently
+                // deleting a character from a diagnostic file path.
+                other => {
+                    file.push('\\');
+                    file.push(other);
+                }
+            },
+            '\n' | '\r' => return None,
+            ch => file.push(ch),
+        }
+    }
+    Some((line, file))
 }
 
 #[cfg(test)]
@@ -107,6 +125,34 @@ mod tests {
             }
         );
     }
+    #[test]
+    fn escaped_marker_paths_and_line_directives() {
+        let src = "# 5 \"dir/with \\\"quotes\\\" and \\\\slash.h\" 1\nint from_header;\n#line 70 \"main file.c\"\nint from_source;\n";
+        let map = SourceMap::from_preprocessed(src, "fallback.c");
+        assert_eq!(
+            map.origin(src.find("int from_header").unwrap()),
+            &Origin { file: "dir/with \"quotes\" and \\slash.h".into(), line: 5 },
+        );
+        assert_eq!(
+            map.origin(src.find("int from_source").unwrap()),
+            &Origin { file: "main file.c".into(), line: 70 },
+        );
+        // The diagnostic for a token *at* the end of a physical line
+        // belongs to the next line, not the previous declaration.
+        assert_eq!(map.origin(src.len()), &Origin {
+            file: "main file.c".into(), line: 71,
+        });
+    }
+
+    #[test]
+    fn malformed_markers_do_not_redirect_diagnostics() {
+        let src = "#line1 \"fake.c\"\nint a;\n# 3 \"unterminated\nint b;\n";
+        let map = SourceMap::from_preprocessed(src, "original.c");
+        assert_eq!(map.origin(src.find("int a").unwrap()).file, "original.c");
+        assert_eq!(map.origin(src.find("int b").unwrap()).file, "original.c");
+        assert_eq!(map.origin(src.find("int b").unwrap()).line, 4);
+    }
+
     #[test]
     fn empty_source_and_no_markers() {
         let map = SourceMap::from_preprocessed("", "empty.c");
