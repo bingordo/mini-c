@@ -160,6 +160,22 @@ mod tests {
     }
 
     #[test]
+    fn rejects_invalid_directives_without_returning_partial_source() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let dir = std::env::temp_dir().join(format!(
+            "mini-c-rcc-negative-{}-{}", std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("invalid.c");
+        std::fs::write(&src, "#if 1\n#error deliberately-invalid\n#endif\nint x;\n").unwrap();
+        let result = file(&src, &[OsString::from("-E")]);
+        let _ = std::fs::remove_dir_all(&dir);
+        let error = result.unwrap_err();
+        assert!(error.contains("deliberately-invalid"), "{error}");
+    }
+
+    #[test]
     fn header_source_locations_and_command_line_flags() {
         let dir = std::env::temp_dir().join(format!(
             "mini-c-rcc-header-{}-{}", std::process::id(),
@@ -182,6 +198,12 @@ mod tests {
         let output = result.unwrap();
         assert!(output.contains("from_header"), "{output}");
         assert!(output.contains("\""), "{output}");
+        let map = crate::source_map::SourceMap::from_preprocessed(
+            &output, src.to_str().unwrap(),
+        );
+        let origin = map.origin(output.find("from_header").unwrap());
+        assert!(origin.file.ends_with("values.h"), "{origin:?}");
+        assert_eq!(origin.line, 4);
         let tokens = mini_c_syntax::lexer::scan(&output).unwrap();
         assert!(tokens.iter().any(|tok| tok.text == "17"));
     }
