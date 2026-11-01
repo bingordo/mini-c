@@ -211,3 +211,10 @@ fn enumerations_and_signed_values_compile() {
     emits_elf("enum Mode { OFF, ON=7, NEXT=ON+3, NEGATIVE=-1 }; enum Mode m=NEXT; int main(void) { return m-10; }");
     emits_elf("int main(void) { enum Local { FIRST=-1, SECOND, THIRD=SECOND+11 }; enum Local value=THIRD; return value-10; }");
 }
+
+#[test]
+fn aggregate_pointer_fields_emit_multiple_relocations() {
+    emits_elf("int target=19; struct Holder { int *ptr; char *text; } value={&target,\"hi\"}; int main(void) { return *value.ptr+value.text[1]-124; }");
+    emits_elf("char *messages[2]={\"red\",\"blue\"}; int main(void) { return messages[0][0]+messages[1][0]-212; }");
+    emits_elf("struct Node; struct Node { int value; struct Node *next; }; struct Node head={17,&head}; int main(void) { return head.next->value-17; }");
+}
