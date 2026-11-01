@@ -225,6 +225,24 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(feature = "internal-cpp")]
+    #[test]
+    fn internal_cpp_driver_checks_macro_expanded_translation_unit() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let dir = std::env::temp_dir().join(format!("mini-c-driver-internal-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("program.c");
+        std::fs::write(&source, "#define INC(x) ((x)+1)\nint f(void) { return INC(16); }\n").unwrap();
+        let opts = parse_options(["check", "--cpp=internal",
+            source.to_str().unwrap()].into_iter().map(str::to_owned)).unwrap();
+        let result = check(&opts.paths[0], opts.cpp.as_ref());
+        let _ = std::fs::remove_dir_all(dir);
+        assert!(result.is_ok(), "{result:?}");
+    }
+
     #[test]
     fn cli_checks_types_and_maps_semantic_locations() {
         let unique = format!("mini-c-sema-check-{}.c", std::process::id());
