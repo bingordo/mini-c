@@ -157,3 +157,21 @@ fn incomplete_char_array_redeclarations_compile() {
     emits_elf(r#"char text[4]; char text[]="abc";
         int main(void) { return text[2]-'c'; }"#);
 }
+
+
+#[test]
+fn inline_structure_members_and_padding_compile() {
+    emits_elf("int main(void) { struct Pair { char a; int b; long c; } v; v.a=2; v.b=17; v.c=19; return v.a+v.b+v.c-38; }");
+    emits_elf("int main(void) { struct { int x; long y; } item; (&item)->x=11; (&item)->y=37; return item.x+item.y-48; }");
+}
+
+#[test]
+fn nested_structs_and_arrays_compile() {
+    emits_elf("int main(void) { struct { char first; struct { int a; long b; } inner; } item; item.inner.a=23; item.inner.b=41; return item.inner.a+item.inner.b-64; }");
+    emits_elf("int main(void) { struct { char first; long value; } items[2]; items[1].value=27; items[0].first=5; return items[1].value+items[0].first-32; }");
+}
+
+#[test]
+fn tentative_global_structure_compiles() {
+    emits_elf("struct Record { char a; int b; long c; } global; int main(void) { global.b=17; global.c=19; return global.a+global.b+global.c-36; }");
+}
