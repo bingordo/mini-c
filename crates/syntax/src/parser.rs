@@ -1,6 +1,6 @@
 //! Incremental parser for the first supported subset of external declarations.
 //! Each complete function body is returned separately; earlier bodies are not retained.
-use crate::ast::{BinOp, Decl, Expr, Function, Span, Stmt, StorageClass, Type, UnOp};
+use crate::ast::{BinOp, Decl, Expr, Function, Span, Stmt, StorageClass, TagKind, Type, UnOp};
 use crate::diag::{Diagnostic, DiagnosticCode};
 use crate::lexer::{Scanner, Token, TokenKind};
 use crate::stream::{ExternalItem, ItemSource};
@@ -496,6 +496,26 @@ impl<'a> Parser<'a> {
         Ok(Decl { storage, name, ty, init, span: Span { lo: start, hi: end } })
     }
 
+    fn parse_tag_or_decl(&mut self) -> Result<Stmt, Diagnostic> {
+        let (base, start) = self.parse_type()?
+            .ok_or_else(|| Diagnostic::new(self.eof_span(), "expected tag type"))?;
+        if self.peek()?.is_some_and(|t| t.text == ";") {
+            self.take()?;
+            return Ok(Stmt::Tag(base));
+        }
+        let (name, ty, _) = self.parse_declarator_shape(false)?.finish(base);
+        self.scopes.declare(&name, Binding::Ordinary);
+        let init = if self.peek()?.is_some_and(|t| t.text == "=") {
+            self.take()?;
+            Some(self.parse_initializer()?)
+        } else { None };
+        let end = self.expect(";")?.span.hi;
+        Ok(Stmt::Decl(Decl {
+            storage: StorageClass::Default, name, ty, init,
+            span: Span { lo: start, hi: end },
+        }))
+    }
+
     fn parse_stmt(&mut self) -> Result<Stmt, Diagnostic> {
         let token = self.peek()?.ok_or_else(|| Diagnostic::new(self.eof_span(), "expected statement"))?;
         match token.text {
@@ -528,7 +548,8 @@ impl<'a> Parser<'a> {
             "continue" => { self.take()?; self.expect(";")?; Ok(Stmt::Continue) }
             "typedef" => { self.take()?; Ok(Stmt::Typedef(self.parse_decl(true)?)) },
             "static" | "extern" => Ok(Stmt::Decl(self.parse_decl(false)?)),
-            "int" | "char" | "long" | "void" | "unsigned" | "signed" | "struct" | "union" => Ok(Stmt::Decl(self.parse_decl(false)?)),
+            "struct" | "union" => self.parse_tag_or_decl(),
+            "int" | "char" | "long" | "void" | "unsigned" | "signed" => Ok(Stmt::Decl(self.parse_decl(false)?)),
             _ if token.kind == TokenKind::TypedefName => Ok(Stmt::Decl(self.parse_decl(false)?)),
             _ => { let expr = self.parse_expr()?; self.expect(";")?; Ok(Stmt::Expr(Some(expr))) }
         }
@@ -572,8 +593,10 @@ impl<'a> Parser<'a> {
                     .map(|t| t.text.to_owned());
                 if tag.is_some() { self.take()?; }
                 if !self.peek()?.is_some_and(|t| t.text == "{") {
-                    return Err(Diagnostic::new(token.span,
-                        "struct tag references require separate tag declaration support"));
+                    let tag = tag.ok_or_else(|| Diagnostic::new(token.span,
+                        "anonymous struct or union requires a member definition"))?;
+                    let kind = if is_union { TagKind::Union } else { TagKind::Struct };
+                    return Ok(Some((Type::TagRef(kind, tag), token.span.lo)));
                 }
                 self.take()?;
                 let mut members = Vec::new();
@@ -653,6 +676,18 @@ impl ItemSource for Parser<'_> {
             }
             return Ok(None);
         };
+        if self.peek()?.is_some_and(|t| t.text == ";") {
+            if !matches!(&base, Type::Struct { .. } | Type::Union { .. } | Type::TagRef(..)) {
+                return Err(Diagnostic::new(self.peek()?.expect("peeked").span,
+                    "declaration requires an identifier"));
+            }
+            if is_typedef {
+                return Err(Diagnostic::new(self.peek()?.expect("peeked").span,
+                    "typedef requires a declarator"));
+            }
+            self.take()?;
+            return Ok(Some(ExternalItem::Tag(base)));
+        }
         let (name, ty, definition_params) = self.parse_declarator_shape(false)?.finish(base);
         self.pending_file_binding = Some((name.clone(), self.scopes.lookup(&name)));
         self.scopes.declare(&name, if is_typedef { Binding::Typedef } else { Binding::Ordinary });
@@ -1020,6 +1055,17 @@ mod tests {
         assert!(Parser::new("int a[2]={};").next_item().is_err());
     }
 
+    #[test]
+    fn tag_declarations_and_recursive_pointer_syntax() {
+        let mut p = Parser::new("struct Node; struct Node { int value; struct Node *next; }; struct Node *root; int f(void) { struct Node *local; return 0; }");
+        assert!(matches!(p.next_item(), Ok(Some(ExternalItem::Tag(Type::TagRef(TagKind::Struct, _))))));
+        assert!(matches!(p.next_item(), Ok(Some(ExternalItem::Tag(Type::Struct { .. })))));
+        let ExternalItem::Declaration(root) = p.next_item().unwrap().unwrap() else { panic!("root expected") };
+        assert!(matches!(root.ty, Type::Pointer(inner) if matches!(*inner, Type::TagRef(TagKind::Struct, _))));
+        assert!(matches!(p.next_item(), Ok(Some(ExternalItem::Function(_)))));
+        let mut p = Parser::new("int f(void) { struct Inner { int a; }; struct Inner *p; return 0; }");
+        assert!(matches!(p.next_item(), Ok(Some(ExternalItem::Function(_)))));
+    }
     #[test]
     fn union_declaration_and_member_parse() {
         let mut p = Parser::new("union Word { int i; long l; } word; int f(void) { union { int i; long l; } u; u.i=3; return u.i; }");
