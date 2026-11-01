@@ -710,10 +710,12 @@ impl Checker {
                 };
                 let field = members.iter().find(|m| m.name == *name).ok_or_else(||
                     type_error(span, format!("unknown struct member '{name}'")))?;
+                let field_ty = field.ty.clone();
+                let offset = field.offset;
                 Ok(CheckedExpr {
-                    ty: field.ty.clone(),
+                    ty: field_ty,
                     category: Category::LValue,
-                    kind: CheckedExprKind::Member(Box::new(object), field.offset),
+                    kind: CheckedExprKind::Member(Box::new(object), offset),
                 })
             }
             Expr::Index(base, offset) => {
