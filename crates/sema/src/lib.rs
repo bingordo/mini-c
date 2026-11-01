@@ -715,7 +715,7 @@ impl Checker {
                     self.try_complete_tag_type(self.resolve(&decl.ty, decl.span)?, decl.span)?,
                     decl.init.as_ref(), decl.span)?;
                 if decl.storage != StorageClass::Extern && ty.size_bytes(self.target).is_none() {
-                    return Err(type_error(decl.span, "local object requires a complete type"));
+                    return Err(type_error(decl.span, "incomplete local object type"));
                 }
                 if !ty.is_object() {
                     return Err(type_error(decl.span, "local variable cannot have void or function type"));
