@@ -88,7 +88,7 @@ impl<'a> Parser<'a> {
             && error.message.starts_with("expected ';'")
             && self.peek().ok().flatten().is_some_and(|t| matches!(
                 t.text, "int" | "char" | "long" | "void" | "signed" |
-                    "unsigned" | "static" | "extern" | "typedef" | "struct"
+                    "unsigned" | "static" | "extern" | "typedef" | "struct" | "union"
             ) || t.kind == TokenKind::TypedefName)
         {
             return true;
@@ -374,7 +374,7 @@ impl<'a> Parser<'a> {
             matches!(token.kind, TokenKind::Identifier | TokenKind::TypedefName)
                 && !matches!(token.text, "int" | "char" | "long" | "void"
                     | "unsigned" | "signed" | "typedef" | "static" | "extern"
-                    | "struct" | "if" | "else" | "while" | "return" | "break" | "continue")
+                    | "struct" | "union" | "if" | "else" | "while" | "return" | "break" | "continue")
         }) {
             self.take()?;
             Declarator::Name(token.text.to_owned())
@@ -528,7 +528,7 @@ impl<'a> Parser<'a> {
             "continue" => { self.take()?; self.expect(";")?; Ok(Stmt::Continue) }
             "typedef" => { self.take()?; Ok(Stmt::Typedef(self.parse_decl(true)?)) },
             "static" | "extern" => Ok(Stmt::Decl(self.parse_decl(false)?)),
-            "int" | "char" | "long" | "void" | "unsigned" | "signed" | "struct" => Ok(Stmt::Decl(self.parse_decl(false)?)),
+            "int" | "char" | "long" | "void" | "unsigned" | "signed" | "struct" | "union" => Ok(Stmt::Decl(self.parse_decl(false)?)),
             _ if token.kind == TokenKind::TypedefName => Ok(Stmt::Decl(self.parse_decl(false)?)),
             _ => { let expr = self.parse_expr()?; self.expect(";")?; Ok(Stmt::Expr(Some(expr))) }
         }
@@ -564,7 +564,8 @@ impl<'a> Parser<'a> {
             return Ok(None);
         };
         let ty = match token.text {
-            "struct" => {
+            "struct" | "union" => {
+                let is_union = token.text == "union";
                 self.take()?;
                 let tag = self.peek()?.filter(|t| matches!(t.kind,
                     TokenKind::Identifier | TokenKind::TypedefName))
@@ -594,7 +595,8 @@ impl<'a> Parser<'a> {
                 if members.is_empty() {
                     return Err(Diagnostic::new(token.span, "empty structs are unsupported"));
                 }
-                Type::Struct { tag, members }
+                if is_union { Type::Union { tag, members } }
+                else { Type::Struct { tag, members } }
             }
             "void" => { self.take()?; Type::Void }
             "char" => { self.take()?; Type::Char }
@@ -1016,6 +1018,19 @@ mod tests {
         let Stmt::Block(stmts) = fun.body else { panic!("block expected") };
         assert!(matches!(&stmts[0], Stmt::Decl(Decl { init: Some(Expr::Initializer(items)), .. }) if items.len() == 2));
         assert!(Parser::new("int a[2]={};").next_item().is_err());
+    }
+
+    #[test]
+    fn union_declaration_and_member_parse() {
+        let mut p = Parser::new("union Word { int i; long l; } word; int f(void) { union { int i; long l; } u; u.i=3; return u.i; }");
+        let ExternalItem::Declaration(word) = p.next_item().unwrap().unwrap() else { panic!("union expected") };
+        let Type::Union { tag, members } = word.ty else { panic!("union expected") };
+        assert_eq!(tag.as_deref(), Some("Word"));
+        assert_eq!(members.len(), 2);
+        let ExternalItem::Function(fun) = p.next_item().unwrap().unwrap() else { panic!("function expected") };
+        let Stmt::Block(body) = fun.body else { panic!("block expected") };
+        assert!(matches!(&body[1], Stmt::Expr(Some(Expr::Assign(lhs, _)))
+            if matches!(lhs.as_ref(), Expr::Member(_, field, false) if field == "i")));
     }
 
 }
