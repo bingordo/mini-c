@@ -2,6 +2,8 @@
 //! Commands are invoked directly, never through a shell.
 pub mod driver_options;
 pub mod source_map;
+#[cfg(feature = "internal-rcc")]
+pub mod internal_rcc;
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -27,6 +29,7 @@ pub enum Error {
     Io(std::io::Error),
     Failed { code: Option<i32>, stderr: String },
     InvalidUtf8(std::string::FromUtf8Error),
+    Internal(String),
 }
 
 impl std::fmt::Display for Error {
@@ -37,6 +40,7 @@ impl std::fmt::Display for Error {
                 write!(f, "preprocessor failed (exit {code:?}): {stderr}")
             }
             Self::InvalidUtf8(e) => write!(f, "preprocessor output is not UTF-8: {e}"),
+            Self::Internal(e) => write!(f, "internal C preprocessor: {e}"),
         }
     }
 }
@@ -44,6 +48,15 @@ impl std::error::Error for Error {}
 
 /// Preprocess a file. This is an explicit driver operation, not a parser side effect.
 pub fn file(path: &Path, config: &Config) -> Result<String, Error> {
+    if config.executable == std::ffi::OsStr::new("internal") {
+        #[cfg(feature = "internal-rcc")]
+        return internal_rcc::file(path, &config.args).map_err(Error::Internal);
+        #[cfg(not(feature = "internal-rcc"))]
+        return Err(Error::Internal(
+            "internal mode requires building with --features mini-c-preprocess/internal-rcc"
+                .to_owned(),
+        ));
+    }
     // GCC's driver does not accept '--' as a file-option separator. Prefix
     // any relative path beginning with '-' so it cannot be interpreted as a
     // compiler option, without changing its directory for quoted includes.
