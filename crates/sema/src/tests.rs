@@ -538,3 +538,10 @@ fn inline_struct_member_errors() {
     reject("int main(void) { struct { int a; } s; return s.a[0]; }",
         "subscript requires pointer");
 }
+
+#[test]
+fn structure_assignment_respects_type_identity() {
+    check("int main(void) { struct { int x; long y; } a[2]; a[0].x=17; a[1]=a[0]; return a[1].x; }").unwrap();
+    reject("int main(void) { struct { int x; } a; struct { int x; } b; a=b; return 0; }",
+        "incompatible assignment");
+}
