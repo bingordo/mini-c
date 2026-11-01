@@ -168,24 +168,27 @@ A self-contained full C preprocessor is explicitly optional and *not*
 implemented. External compiler headers may contain C constructs beyond
 Mini-C's supported language; that does not change M6's external-tool scope.
 
-## Follow-up to M6 — Internal C preprocessing (candidate selection)
+## Follow-up to M6 — Internal C preprocessing (prototype in progress)
 
-Before writing an internal preprocessing engine from scratch, reuse an existing
-Rust implementation if it passes C macro, include and diagnostic-origin
-differential checks. The [internal CPP crate comparison](Internal_CPP_Crate_Review.md)
-examines `rcc_preprocess`, `cinrs-core`, `includium`, `ancpp` and `gpp`.
+[Candidate research](Internal_CPP_Crate_Review.md) identified several
+standalone Rust preprocessing engines. To keep Mini-C independent of other
+compiler frontends, we have introduced an optional `internal-cpp` Cargo
+feature using the pinned C99 `rcc_preprocess` engine **only** inside
+`crates/preprocess`. The checked Mini-C AST, semantic analyzer, backend
+interfaces and other compiler crates remain independent of rcc and cinrs.
 
-**First candidate:** evaluate `rcc_preprocess` behind an explicit,
-optional `--cpp=internal` mode. It already carries a C99 preprocessing-token
-lexer, source spans, hide sets and nested include machinery, but is coupled to
-several other rcc crates and lacks a stated complete C23 feature set. Keep
-external `cc -E` as the default until strict GCC/Clang differential tests
-prove macro expansion, rescanning, `#`/`##`, conditionals, header search and
-source-origin diagnostics. Consider `cinrs-core` as a stronger C23 alternative
-if the unstable, compiler-coupled API proves adaptable.
+The experimental `--cpp=internal` mode expands macros and headers without
+starting an external preprocessor. Both the checker CLI and Cranelift ELF
+driver can exercise it, with a GCC differential token fixture corpus in
+`compiler-ci`. External `cc -E` remains the default and full-C reference.
 
-This is research and a proposed integration gate, **not** an implementation
-or completed milestone. Build and test a candidate before selecting it.
+This is a **prototype, not complete full internal C preprocessing**.
+Remaining gates include broad C99 adversarial conformance, macro-origin
+diagnostics, target predefines and system-header search compatibility,
+resource/performance validation, and support for the requested C23 features.
+Do not silently substitute another frontend for Mini-C.
+See [Internal CPP Prototype](Internal_CPP_Prototype.md) for implementation
+details, feature flags and follow-up tests.
 
 ## M7 — Differential hardening
 
