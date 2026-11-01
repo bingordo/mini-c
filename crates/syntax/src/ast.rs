@@ -77,6 +77,8 @@ pub enum Stmt {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     Int(u64),
+    /// Decoded narrow string bytes, including the terminating NUL.
+    StringLiteral(Vec<u8>),
     Name(Ident),
     Unary(UnOp, Box<Expr>),
     Binary(BinOp, Box<Expr>, Box<Expr>),
