@@ -608,7 +608,7 @@ fn enumerators_constant_expressions_and_scope() {
     assert!(matches!(&value.initializer, Some(CheckedExpr { kind: CheckedExprKind::EnumConstant(9), .. })));
     check("int main(void) { enum Local { A=-1, B, C=B+4 }; enum Local x=C; return x-A-5; }").unwrap();
     reject("enum Bad { A=2147483648 };", "exceeds supported signed int range");
-    reject("enum Bad { A, A };", "conflicting declaration");
+    reject("enum Bad { A, A };", "multiple definitions");
     reject("int Same; enum Bad { Same };", "conflicting declaration");
     reject("struct Tag; enum Tag { E };", "conflicting tag kind");
 }
