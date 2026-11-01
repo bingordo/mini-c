@@ -23,7 +23,11 @@ fn scalar_type(ty: &CType) -> Result<ir::Type> {
         CType::Integer { rank: IntRank::Char, .. } => Ok(types::I8),
         CType::Integer { rank: IntRank::Int, .. } => Ok(types::I32),
         CType::Integer { rank: IntRank::Long, .. } | CType::Pointer(_) => Ok(types::I64),
-        _ => Err(format!("M2.5 only supports int/long scalar values, got {ty:?}")),
+        CType::Struct { .. } | CType::Union { .. } | CType::TagRef { .. } |
+        CType::Array(..) => Err(format!(
+            "unsupported SysV aggregate-by-value ABI for {ty:?}; use pointer parameters/returns"
+        )),
+        _ => Err(format!("unsupported scalar type {ty:?}")),
     }
 }
 
