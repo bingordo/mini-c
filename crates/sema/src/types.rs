@@ -18,6 +18,20 @@ pub enum CType {
 
 impl CType {
     pub fn int() -> Self { Self::Integer { rank: IntRank::Int, unsigned: false } }
+    /// Composite type for compatible global declarations. An incomplete array
+    /// declaration may be completed by another declaration in the same TU.
+    /// Different fixed bounds and different element types remain incompatible.
+    pub fn composite(&self, other: &Self) -> Option<Self> {
+        if self == other { return Some(self.clone()); }
+        match (self, other) {
+            (Self::Array(a, None), Self::Array(b, Some(n))) |
+            (Self::Array(a, Some(n)), Self::Array(b, None)) if a == b =>
+                Some(Self::Array(a.clone(), Some(*n))),
+            _ => None,
+        }
+    }
+
+
     pub fn is_integer(&self) -> bool { matches!(self, Self::Integer { .. }) }
     pub fn is_scalar(&self) -> bool { self.is_integer() || matches!(self, Self::Pointer(_)) }
     pub fn is_object(&self) -> bool { !matches!(self, Self::Void | Self::Function { .. }) }
@@ -132,6 +146,18 @@ mod tests {
         assert_eq!(small.decimal_literal(40000), Some(CType::Integer { rank: IntRank::Long, unsigned: false }));
     }
 
+    #[test]
+    fn compatible_incomplete_array_declarations_merge_bounds() {
+        let incomplete = CType::Array(Box::new(CType::int()), None);
+        let complete = CType::Array(Box::new(CType::int()), Some(4));
+        assert_eq!(incomplete.composite(&complete), Some(complete.clone()));
+        assert_eq!(complete.composite(&incomplete), Some(complete.clone()));
+        assert_eq!(complete.composite(&complete), Some(complete.clone()));
+        assert_eq!(complete.composite(&CType::Array(Box::new(CType::int()), Some(5))), None);
+        assert_eq!(incomplete.composite(&CType::Array(Box::new(
+            CType::Integer { rank: IntRank::Char, unsigned: false }
+        ), Some(4))), None);
+    }
     #[test]
     fn invalid_target_is_diagnostic() {
         assert!(Target { int_bits: 8, ..Target::default() }.validate().is_err());
