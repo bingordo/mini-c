@@ -181,3 +181,12 @@ fn structure_assignment_and_initialization_copies_every_field() {
     emits_elf("int main(void) { struct { char c; int i; long n; } a[2]; a[0].c=7; a[0].i=19; a[0].n=31; a[1]=a[0]; return a[1].c+a[1].i+a[1].n-57; }");
     emits_elf("int main(void) { struct { int a; long b; } x[2]; x[0].a=17; x[0].b=29; { struct { int a; long b; } *unused=0; } x[1]=x[0]; return x[1].a+x[1].b-46; }");
 }
+
+#[test]
+fn aggregate_brace_initializers_emit_elf() {
+    emits_elf("int a[4]={3,5}; int main(void) { return a[0]+a[1]+a[2]+a[3]-8; }");
+    emits_elf("int a[]={3,5,7}; int main(void) { return a[2]-7; }");
+    emits_elf("struct { char c; long n; int x; } g={3,19}; int main(void) { return g.c+g.n+g.x-22; }");
+    emits_elf("int main(void) { struct { int a; long b; } v={17,29}; return v.a+v.b-46; }");
+    emits_elf("int main(void) { int v[2][3]={{1,2,3},{4,5,6}}; return v[1][2]-6; }");
+}
