@@ -82,6 +82,8 @@ pub enum Expr {
     Int(u64),
     /// Decoded narrow string bytes, including the terminating NUL.
     StringLiteral(Vec<u8>),
+    /// Braced initializer, valid only in an object declaration.
+    Initializer(Vec<Expr>),
     Name(Ident),
     Unary(UnOp, Box<Expr>),
     Binary(BinOp, Box<Expr>, Box<Expr>),
