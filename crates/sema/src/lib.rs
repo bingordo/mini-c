@@ -24,6 +24,8 @@ pub enum CheckedExprKind {
     Literal(u64),
     /// Narrow C string including its trailing NUL; storage is emitted by the backend.
     StringLiteral(Vec<u8>),
+    /// Typed, positional aggregate initializer values, in member order.
+    Initializer(Vec<CheckedExpr>),
     Name(String),
     Unary(UnOp, Box<CheckedExpr>),
     Binary(BinOp, Box<CheckedExpr>, Box<CheckedExpr>),
@@ -378,12 +380,48 @@ impl Checker {
                 }
             }
         }
+        if let (CType::Array(element, None), Some(Expr::Initializer(values))) = (&ty, initializer) {
+            let count = u64::try_from(values.len())
+                .map_err(|_| type_error(span, "array initializer exceeds supported bounds"))?;
+            return Ok(CType::Array(element.clone(), Some(count)));
+        }
         Ok(ty)
     }
 
     fn check_object_initializer(
         &self, original: &Expr, ty: &CType, span: Span, is_static: bool
     ) -> Result<CheckedExpr, Diagnostic> {
+        if let Expr::Initializer(values) = original {
+            let elements: Vec<&CType> = match ty {
+                CType::Struct { members, .. } => {
+                    if values.len() > members.len() {
+                        return Err(type_error(span, "too many struct initializers"));
+                    }
+                    members.iter().map(|m| &m.ty).collect()
+                }
+                CType::Array(element, Some(count)) => {
+                    let count = usize::try_from(*count)
+                        .map_err(|_| type_error(span, "array initializer exceeds supported bounds"))?;
+                    if values.len() > count {
+                        return Err(type_error(span, "too many array initializers"));
+                    }
+                    vec![element.as_ref(); values.len()]
+                }
+                CType::Array(_, None) => {
+                    return Err(type_error(span, "incomplete array initializer"));
+                }
+                _ => {
+                    if values.len() != 1 {
+                        return Err(type_error(span, "scalar initializer requires one expression"));
+                    }
+                    return self.check_object_initializer(&values[0], ty, span, is_static);
+                }
+            };
+            let checked = values.iter().zip(elements).map(|(value, element)|
+                self.check_object_initializer(value, element, span, is_static))
+                .collect::<Result<Vec<_>, _>>()?;
+            return Ok(CheckedExpr::value(ty.clone(), CheckedExprKind::Initializer(checked)));
+        }
         let expression = self.check_expr(original, span)?;
         if is_static {
             self.validate_static_initializer(&expression, original, ty, span)?;
@@ -668,6 +706,8 @@ impl Checker {
 
     fn check_expr(&self, expr: &Expr, span: Span) -> Result<CheckedExpr, Diagnostic> {
         match expr {
+            Expr::Initializer(_) => Err(type_error(span,
+                "brace initializer is only valid in an object declaration")),
             Expr::StringLiteral(bytes) => {
                 let len = u64::try_from(bytes.len())
                     .map_err(|_| type_error(span, "string literal exceeds target object size"))?;
