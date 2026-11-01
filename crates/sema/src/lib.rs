@@ -248,9 +248,9 @@ impl Checker {
             }
         }
         if let Some(prior) = self.globals.get_mut(name) {
-            if prior.kind != kind || prior.ty != ty {
+            let Some(composite) = prior.ty.composite(&ty).filter(|_| prior.kind == kind) else {
                 return Err(Diagnostic::coded(span, DiagnosticCode::SemanticConflictingDeclaration, format!("conflicting declaration of '{name}'")));
-            }
+            };
             // An extern redeclaration inherits a previous internal linkage.
             // Explicit static cannot follow a prior external declaration.
             if prior.linkage != requested && storage != StorageClass::Extern {
@@ -259,6 +259,7 @@ impl Checker {
             if defining && prior.defined {
                 return Err(Diagnostic::coded(span, DiagnosticCode::SemanticMultipleDefinitions, format!("multiple definitions of '{name}'")));
             }
+            prior.ty = composite;
             prior.defined |= defining;
         } else {
             self.globals.insert(name.to_owned(), Symbol {
@@ -390,6 +391,9 @@ impl Checker {
         }
         let defining = decl.init.is_some();
         self.declare_global(&decl.name, ty.clone(), kind, defining, decl.storage, decl.span)?;
+        // A prior incomplete array declaration can be completed here; publish
+        // the composite type to both the checked item and later references.
+        let ty = self.global(&decl.name).expect("registered global").ty.clone();
         let initializer = decl.init.as_ref()
             .map(|value| self.check_object_initializer(value, &ty, decl.span, true))
             .transpose()?;
