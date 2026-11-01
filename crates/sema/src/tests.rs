@@ -596,5 +596,5 @@ fn named_tags_forward_declarations_and_recursive_fields() {
 fn named_tags_have_separate_block_scopes() {
     check("struct T { int a; }; int f(void) {         struct T *outer=0; { struct T; struct T { long b; };         struct T inner; inner.b=17; } return 0; }").unwrap();
     reject("struct T; int f(void) { struct T value; return 0; }",
-        "local object requires a complete type");
+        "incomplete");
 }
