@@ -168,6 +168,25 @@ A self-contained full C preprocessor is explicitly optional and *not*
 implemented. External compiler headers may contain C constructs beyond
 Mini-C's supported language; that does not change M6's external-tool scope.
 
+## Follow-up to M6 — Internal C preprocessing (candidate selection)
+
+Before writing an internal preprocessing engine from scratch, reuse an existing
+Rust implementation if it passes C macro, include and diagnostic-origin
+differential checks. The [internal CPP crate comparison](Internal_CPP_Crate_Review.md)
+examines `rcc_preprocess`, `cinrs-core`, `includium`, `ancpp` and `gpp`.
+
+**First candidate:** evaluate `rcc_preprocess` behind an explicit,
+optional `--cpp=internal` mode. It already carries a C99 preprocessing-token
+lexer, source spans, hide sets and nested include machinery, but is coupled to
+several other rcc crates and lacks a stated complete C23 feature set. Keep
+external `cc -E` as the default until strict GCC/Clang differential tests
+prove macro expansion, rescanning, `#`/`##`, conditionals, header search and
+source-origin diagnostics. Consider `cinrs-core` as a stronger C23 alternative
+if the unstable, compiler-coupled API proves adaptable.
+
+This is research and a proposed integration gate, **not** an implementation
+or completed milestone. Build and test a candidate before selecting it.
+
 ## M7 — Differential hardening
 
 Add seeded program generator with independently computed oracle where possible; compile against GCC and Clang; run optimization modes and debug/release compiler builds. Add negative tests, fuzz regressions, and ABI/ELF validation. Review code and docs at each milestone.
