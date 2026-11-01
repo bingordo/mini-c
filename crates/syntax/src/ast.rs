@@ -53,6 +53,7 @@ pub enum Type {
     /// Complete structure definition, initially inlined into its declarator.
     /// Separate tag-only declarations and references are a follow-up.
     Struct { tag: Option<Ident>, members: Vec<Decl> },
+    Union { tag: Option<Ident>, members: Vec<Decl> },
     Function {
         result: Box<Type>,
         params: Vec<Type>,
