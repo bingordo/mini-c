@@ -21,6 +21,8 @@ pub enum Category { Value, LValue, Function }
 #[derive(Debug, Clone, PartialEq)]
 pub enum CheckedExprKind {
     Literal(u64),
+    /// Narrow C string including its trailing NUL; storage is emitted by the backend.
+    StringLiteral(Vec<u8>),
     Name(String),
     Unary(UnOp, Box<CheckedExpr>),
     Binary(BinOp, Box<CheckedExpr>, Box<CheckedExpr>),
@@ -546,6 +548,8 @@ impl Checker {
                 },
                 Expr::Name(name) => self.globals.get(name).is_some_and(|s|
                     matches!(&s.ty, CType::Array(..))),
+                Expr::StringLiteral(_) => matches!(ty, CType::Pointer(element)
+                    if matches!(element.as_ref(), CType::Integer { rank: IntRank::Char, .. } | CType::Void)),
                 _ => false,
             };
             if !null && !address_of_global {
@@ -601,8 +605,17 @@ impl Checker {
 
     fn check_expr(&self, expr: &Expr, span: Span) -> Result<CheckedExpr, Diagnostic> {
         match expr {
-            Expr::StringLiteral(_) => Err(type_error(span,
-                "string literal code generation is not yet supported")),
+            Expr::StringLiteral(bytes) => {
+                let len = u64::try_from(bytes.len())
+                    .map_err(|_| type_error(span, "string literal exceeds target object size"))?;
+                Ok(CheckedExpr {
+                    ty: CType::Array(Box::new(CType::Integer {
+                        rank: IntRank::Char, unsigned: !self.target.char_is_signed,
+                    }), Some(len)),
+                    category: Category::LValue,
+                    kind: CheckedExprKind::StringLiteral(bytes.clone()),
+                })
+            },
             Expr::Int(number) => {
                 let ty = self.target.decimal_literal(*number).ok_or_else(|| type_error(span, "decimal literal exceeds supported signed integer types"))?;
                 Ok(CheckedExpr::value(ty, CheckedExprKind::Literal(*number)))
