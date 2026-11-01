@@ -98,7 +98,8 @@ fn static_initializer_bytes(ty: &CType, init: &CheckedExpr) -> Result<Option<Vec
         let end = offset.checked_add(size).ok_or("initializer byte offset overflow")?;
         if end > out.len() { return Err("initializer extends beyond object bounds".into()); }
         match (&init.kind, ty) {
-            (CheckedExprKind::Initializer(values), CType::Struct { members, .. }) => {
+            (CheckedExprKind::Initializer(values), CType::Struct { members, .. }) |
+            (CheckedExprKind::Initializer(values), CType::Union { members, .. }) => {
                 for (value, member) in values.iter().zip(members) {
                     let displacement = usize::try_from(member.offset)
                         .map_err(|_| "oversized struct member offset")?;
@@ -434,7 +435,7 @@ impl Lower<'_> {
     /// objects so that aliases through &x, p[i], and *p stay coherent.
     fn alignment(ty: &CType) -> u8 {
         match ty {
-            CType::Struct { align, .. } =>
+            CType::Struct { align, .. } | CType::Union { align, .. } =>
                 u8::try_from(align.trailing_zeros()).unwrap_or(3),
             CType::Array(element, _) => Self::alignment(element),
             CType::Integer { rank: IntRank::Char, .. } => 0,
@@ -456,7 +457,7 @@ impl Lower<'_> {
         self.scopes.last_mut().expect("scope exists").insert(name.to_owned(), Local { address });
         if let Some(value) = value {
             b.ins().store(ir::MemFlagsData::new(), value, address, 0);
-        } else if !matches!(ty, CType::Array(..) | CType::Struct { .. }) {
+        } else if !matches!(ty, CType::Array(..) | CType::Struct { .. } | CType::Union { .. }) {
             // Deterministic choice for otherwise-indeterminate scalar locals,
             // not a promise about C uninitialized reads.
             let zero = b.ins().iconst(scalar_type(ty)?, 0);
@@ -508,7 +509,7 @@ impl Lower<'_> {
             }
             Self::store_array_bytes(b, address, &vec![0u8; size])?;
             match ty {
-                CType::Struct { members, .. } => {
+                CType::Struct { members, .. } | CType::Union { members, .. } => {
                     for (value, member) in values.iter().zip(members) {
                         let offset = i64::try_from(member.offset)
                             .map_err(|_| "oversized structure offset")?;
@@ -532,7 +533,7 @@ impl Lower<'_> {
             return Ok(());
         }
         let value = self.expression(b, initializer)?;
-        if matches!(ty, CType::Struct { .. }) {
+        if matches!(ty, CType::Struct { .. } | CType::Union { .. }) {
             let size = ty.size_bytes(Target::default())
                 .ok_or("incomplete struct initializer")?;
             Self::copy_bytes(b, address, value, size)
@@ -688,7 +689,7 @@ impl Lower<'_> {
             CheckedExprKind::Name(name) => self.object_address(b, name),
             CheckedExprKind::Load(inner) => {
                 let address = self.place(b, inner)?;
-                if matches!(&expr.ty, CType::Struct { .. }) {
+                if matches!(&expr.ty, CType::Struct { .. } | CType::Union { .. }) {
                     // Aggregate values are represented by their source address
                     // until the explicit copy in assignment/initialization.
                     Ok(address)
@@ -724,7 +725,7 @@ impl Lower<'_> {
             CheckedExprKind::Assign(lhs, rhs) => {
                 let address = self.place(b, lhs)?;
                 let rhs_value = self.expression(b, rhs)?;
-                if matches!(&lhs.ty, CType::Struct { .. }) {
+                if matches!(&lhs.ty, CType::Struct { .. } | CType::Union { .. }) {
                     let size = lhs.ty.size_bytes(Target::default())
                         .ok_or("incomplete struct assignment")?;
                     Self::copy_bytes(b, address, rhs_value, size)?;
