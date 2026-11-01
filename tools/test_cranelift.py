@@ -128,6 +128,27 @@ PROGRAMS = {
         char text[]="abc"; extern char text[];
         int main(void) { return text[0]+text[1]+text[2]-294; }""",
 
+    "struct_members_layout": """int main(void) {
+        struct { char a; int b; long c; } v;
+        v.a=5; v.b=17; v.c=31; return v.a+v.b+v.c;
+    }""",
+    "struct_nested": """int main(void) {
+        struct { struct { char first; long last; } inner; int other; } v;
+        v.inner.first=7; v.inner.last=17; v.other=11;
+        return v.inner.first+v.inner.last+v.other;
+    }""",
+    "struct_pointer_member": """int main(void) {
+        struct { int x; long y; } v; (&v)->x=13; (&v)->y=22;
+        return v.x+v.y;
+    }""",
+    "struct_array_member": """int main(void) {
+        struct { char c; long value; } a[2];
+        a[1].value=23; a[0].c=7; return a[1].value+a[0].c;
+    }""",
+    "struct_global_zero": """struct { char first; long last; } g;
+        int main(void) { g.last=29; return g.first+g.last; }""",
+
+
 
 
 
@@ -304,6 +325,10 @@ def main() -> int:
         ("mini_reads_gcc_character_array",
          "extern char text[4]; int main(void) { return text[3]; }",
          'char text[4]="abc";'),
+
+        ("gcc_reads_mini_struct",
+         "struct Record { char a; int b; long c; } shared; int put(void) { shared.b=17; shared.c=23; return 0; }",
+         "extern struct Record { char a; int b; long c; } shared; int put(void); int main(void) { put(); return shared.b+shared.c; }"),
         ("mini_static_global_not_exported",
          "static int hidden=11; int get_hidden(void) { return hidden; }",
          "int get_hidden(void); int main(void) { return get_hidden(); }"),
