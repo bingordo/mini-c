@@ -346,7 +346,12 @@ impl Checker {
                 }
                 CType::int()
             }
-            Type::TagRef(kind, name) => self.reference_tag(*kind, name, span)?,
+            Type::TagRef(kind, name) => {
+                let reference = self.reference_tag(*kind, name, span)?;
+                if *kind == TagKind::Enum {
+                    self.try_complete_tag_type(reference, span)?
+                } else { reference }
+            },
             Type::Struct { tag, members } | Type::Union { tag, members } => {
                 let kind = if matches!(ty, Type::Union { .. }) {
                     TagKind::Union
