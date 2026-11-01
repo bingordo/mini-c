@@ -151,6 +151,19 @@ PROGRAMS = {
     "aggregate_inferred_array": """int data[]={1,2,3,4}; int main(void) { return data[2]; }""",
     "aggregate_global_struct": """struct { char a; int b; long c; } g={5,17,29}; int main(void) { return g.a+g.b+g.c; }""",
     "aggregate_local_struct": """int main(void) { struct { char a; long b; int c; } v={7,31}; return v.a+v.b+v.c; }""",
+    "union_global": """union { char c; long l; } u={17};
+        int main(void) { return u.c; }""",
+    "union_local": """int main(void) {
+        union { int i; long l; } u; u.i=43; return u.i;
+    }""",
+    "union_copy": """int main(void) {
+        union { int x; long y; } u[2]; u[0].x=17; u[1]=u[0];
+        return u[1].x;
+    }""",
+    "union_nested": """int main(void) {
+        struct { int a; union { int i; long l; } u; } x;
+        x.a=3; x.u.l=29; return x.a+x.u.l;
+    }""",
     "aggregate_nested_array": """int main(void) { int a[2][3]={{1,2,3},{4,5,6}}; return a[0][0]+a[1][2]; }""",
     "struct_assignment": """int main(void) {
         struct { char c; int count; long total; } entries[2];
