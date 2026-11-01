@@ -4,7 +4,6 @@ use mini_c_syntax::parser::Parser;
 use mini_c_syntax::source::SourceFile;
 use mini_c_syntax::stream::ItemSource;
 use std::env;
-use std::ffi::OsString;
 use std::fs;
 use std::path::Path;
 use std::process::ExitCode;
@@ -94,12 +93,10 @@ fn parse_options(args: impl IntoIterator<Item = String>) -> Result<Options, Stri
     if args.next().as_deref() != Some("check") {
         return Err("expected 'check' subcommand".into());
     }
-    let mut executable = Some(OsString::from("cc"));
-    let mut cpp_args = vec![OsString::from("-E")];
+    let mut cpp = preprocess::driver_options::CppOptions::default();
     let mut paths = Vec::new();
     let mut max_errors = None;
     let mut end_options = false;
-
     while let Some(arg) = args.next() {
         if end_options {
             paths.push(arg);
@@ -107,28 +104,13 @@ fn parse_options(args: impl IntoIterator<Item = String>) -> Result<Options, Stri
         }
         if arg == "--" {
             end_options = true;
-        } else if let Some(value) = arg.strip_prefix("--cpp=") {
-            if value.is_empty() {
-                return Err("--cpp requires an executable name or 'none'".into());
-            }
-            executable = if value == "none" { None } else { Some(value.into()) };
-        } else if let Some(value) = arg.strip_prefix("--cpp-arg=") {
-            if value.is_empty() { return Err("--cpp-arg requires a value".into()); }
-            cpp_args.push(value.into());
         } else if let Some(value) = arg.strip_prefix("--max-errors=") {
             match value.parse::<usize>() {
                 Ok(n) if n > 0 => max_errors = Some(n),
                 _ => return Err("--max-errors requires a positive integer".into()),
             }
-        } else if matches!(arg.as_str(), "-I" | "-D" | "-U") {
-            let value = args.next().ok_or_else(|| format!("{arg} requires a value"))?;
-            if value.is_empty() { return Err(format!("{arg} requires a nonempty value")); }
-            cpp_args.push(format!("{arg}{value}").into());
-        } else if arg.starts_with("-I") || arg.starts_with("-D") || arg.starts_with("-U") {
-            // Preserve values verbatim, including spaces, equals signs and
-            // punctuation: Command::args does not invoke a shell.
-            if arg.len() == 2 { return Err(format!("{arg} requires a value")); }
-            cpp_args.push(arg.into());
+        } else if cpp.consume(&arg, &mut args)? {
+            // Recognized preprocessor option, with any split argument consumed.
         } else if arg.starts_with('-') {
             return Err(format!("unknown option: {arg}"));
         } else {
@@ -136,10 +118,7 @@ fn parse_options(args: impl IntoIterator<Item = String>) -> Result<Options, Stri
         }
     }
     if paths.is_empty() { return Err("no input files provided".into()); }
-    if executable.is_none() && cpp_args.len() != 1 {
-        return Err("preprocessor options -I/-D/-U/--cpp-arg cannot be used with --cpp=none".into());
-    }
-    let cpp = executable.map(|executable| preprocess::Config { executable, args: cpp_args });
+    let cpp = cpp.finish()?;
     Ok(Options { cpp, max_errors, paths })
 }
 
