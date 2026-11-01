@@ -470,15 +470,41 @@ impl Compiler {
 
 /// Compile using the same incremental Parser + Checker as the normal driver.
 /// The source string is currently buffered; function ASTs are not retained.
-pub fn compile_source(source: &str) -> Result<Vec<u8>> {
-    let mut parser = Parser::new(source);
-    let mut checker = Checker::new(Target::default()).map_err(|e| e.message)?;
-    let mut compiler = Compiler::new()?;
-    while let Some(item) = parser.next_item().map_err(|e| e.message)? {
-        let checked = checker.check_item(item).map_err(|e| e.message)?;
-        compiler.add(checked)?;
+/// Preserves parser and type-checker source spans for drivers that map
+/// preprocessor line directives back to the original include file.
+#[derive(Debug, Clone)]
+pub enum CompileError {
+    Diagnostic(mini_c_syntax::diag::Diagnostic),
+    Backend(String),
+}
+
+impl std::fmt::Display for CompileError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Diagnostic(d) => f.write_str(&d.message),
+            Self::Backend(message) => f.write_str(message),
+        }
     }
-    compiler.finish()
+}
+
+impl std::error::Error for CompileError {}
+
+pub fn compile_source_diagnostic(source: &str) -> std::result::Result<Vec<u8>, CompileError> {
+    let mut parser = Parser::new(source);
+    let mut checker = Checker::new(Target::default())
+        .map_err(CompileError::Diagnostic)?;
+    let mut compiler = Compiler::new().map_err(CompileError::Backend)?;
+    while let Some(item) = parser.next_item().map_err(CompileError::Diagnostic)? {
+        let checked = checker.check_item(item).map_err(CompileError::Diagnostic)?;
+        compiler.add(checked).map_err(CompileError::Backend)?;
+    }
+    compiler.finish().map_err(CompileError::Backend)
+}
+
+/// Compatibility entry point for library callers that need a plain error
+/// string instead of structured source diagnostics.
+pub fn compile_source(source: &str) -> Result<Vec<u8>> {
+    compile_source_diagnostic(source).map_err(|e| e.to_string())
 }
 
 #[derive(Clone, Copy)]
