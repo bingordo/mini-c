@@ -110,6 +110,38 @@ fn main() -> ExitCode {
 mod tests {
     use super::*;
 
+    #[cfg(all(feature = "internal-cpp", target_arch = "x86_64", target_os = "linux"))]
+    #[test]
+    fn internal_cpp_emits_native_object_without_external_cpp() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let dir = std::env::temp_dir().join(format!("mini-c-rcc-obj-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("program.c");
+        std::fs::write(&source,
+            "#define VALUE 19\nint main(void) { return VALUE - 19; }\n").unwrap();
+        let output = dir.join("output.o");
+        let args = vec![
+            "--emit-obj".to_string(),
+            output.to_string_lossy().into_owned(),
+            "--cpp=internal".to_string(),
+            source.to_string_lossy().into_owned(),
+        ];
+        let options = parse_options(args).unwrap();
+        let preprocessed = preprocess::file(
+            Path::new(&options.source), options.cpp.as_ref().unwrap()
+        );
+        let result = preprocessed.and_then(|text|
+            compile_source_diagnostic(&text)
+                .map_err(|e| preprocess::Error::Internal(e.to_string()))
+        );
+        let _ = std::fs::remove_dir_all(dir);
+        let bytes = result.unwrap();
+        assert!(bytes.starts_with(b"\x7fELF"));
+    }
+
     #[test]
     fn native_diagnostics_restore_header_origins_and_raw_columns() {
         let source = "# 1 \"source.c\"\n# 8 \"headers with spaces.h\" 1\nint wrong = ;\n";
