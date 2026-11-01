@@ -326,6 +326,23 @@ mod tests {
         ), Some(4))), None);
     }
     #[test]
+    fn composite_preserves_completed_nested_tag_types() {
+        let incomplete = CType::TagRef {
+            kind: TagKind::Struct, name: "Node".into(), identity: 42,
+        };
+        let complete = CType::Struct {
+            identity: 42, tag: Some("Node".into()), members: vec![],
+            size: 8, align: 8,
+        };
+        let old = CType::Pointer(Box::new(incomplete.clone()));
+        let new = CType::Pointer(Box::new(complete.clone()));
+        assert_eq!(old.composite(&new), Some(new.clone()));
+        assert_eq!(new.composite(&old), Some(new.clone()));
+        let old_array = CType::Array(Box::new(incomplete), None);
+        let new_array = CType::Array(Box::new(complete), Some(3));
+        assert_eq!(old_array.composite(&new_array), Some(new_array));
+    }
+    #[test]
     fn invalid_target_is_diagnostic() {
         assert!(Target { int_bits: 8, ..Target::default() }.validate().is_err());
     }
