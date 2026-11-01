@@ -106,6 +106,26 @@ PROGRAMS = {
     "string_function_argument": """int second(char *p) { return p[1]; }
         int main(void) { return second("abc")-'b'; }""",
 
+    "global_char_array_inferred": """char text[]="abc";
+        int main(void) { return text[3]; }""",
+    "global_char_array_exact": """char text[3]="abc";
+        int main(void) { return text[2]-'c'; }""",
+    "global_char_array_padded": """unsigned char text[16]="hi";
+        int main(void) { return text[0]+text[1]+text[15]-209; }""",
+    "local_char_array_inferred": """int main(void) {
+        char text[]="abc"; text[0]='z'; return text[0]-'z'+text[3];
+    }""",
+    "local_char_array_exact": """int main(void) {
+        char text[3]="abc"; return text[0]+text[2]-196;
+    }""",
+    "local_char_array_padded": """int main(void) {
+        unsigned char text[11]="hi"; return text[10]+text[3];
+    }""",
+    "local_char_array_octal": r"""int main(void) {
+        unsigned char data[6]="\377"; return data[0]-255+data[5];
+    }""",
+
+
 
 
 }
@@ -274,6 +294,12 @@ def main() -> int:
         ("mini_passes_string_to_gcc",
          'extern int second(char *); int main(void) { return second("abc")-98; }',
          "int second(char *p) { return p[1]; }"),
+        ("gcc_reads_mini_character_array",
+         'char text[]="abc";',
+         "extern char text[]; int main(void) { return text[2]-'c'; }"),
+        ("mini_reads_gcc_character_array",
+         "extern char text[4]; int main(void) { return text[3]; }",
+         'char text[4]="abc";'),
         ("mini_static_global_not_exported",
          "static int hidden=11; int get_hidden(void) { return hidden; }",
          "int get_hidden(void); int main(void) { return get_hidden(); }"),
