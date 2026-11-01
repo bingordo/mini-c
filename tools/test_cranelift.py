@@ -151,6 +151,13 @@ PROGRAMS = {
     "aggregate_inferred_array": """int data[]={1,2,3,4}; int main(void) { return data[2]; }""",
     "aggregate_global_struct": """struct { char a; int b; long c; } g={5,17,29}; int main(void) { return g.a+g.b+g.c; }""",
     "aggregate_local_struct": """int main(void) { struct { char a; long b; int c; } v={7,31}; return v.a+v.b+v.c; }""",
+    "aggregate_pointer_fields": """int target=19;
+        struct Holder { int *ptr; char *text; } value={&target,"hi"};
+        int main(void) { return *value.ptr+value.text[1]-124; }""",
+    "aggregate_pointer_array": """char *messages[2]={"red","blue"};
+        int main(void) { return messages[0][0]+messages[1][0]; }""",
+    "aggregate_self_reference": """struct Node; struct Node { int value; struct Node *next; };
+        struct Node head={17,&head}; int main(void) { return head.next->value; }""",
     "enum_explicit": """enum Status { FIRST, SECOND=7, THIRD=SECOND+2 };
         enum Status value=THIRD; int main(void) { return value; }""",
     "enum_negative": """int main(void) { enum Mode { NEG=-1, ZERO, THREE=ZERO+3 };
@@ -363,6 +370,9 @@ def main() -> int:
         ("gcc_reads_mini_struct",
          "struct Record { char a; int b; long c; } shared; int put(void) { shared.b=17; shared.c=23; return 0; }",
          "extern struct Record { char a; int b; long c; } shared; int put(void); int main(void) { put(); return shared.b+shared.c; }"),
+        ("gcc_reads_mini_aggregate_pointer_relocations",
+         'int target=29; struct Holder { int *ptr; char *text; } value={&target,"abc"};',
+         'extern struct Holder { int *ptr; char *text; } value; int main(void) { return *value.ptr+value.text[2]; }'),
         ("mini_static_global_not_exported",
          "static int hidden=11; int get_hidden(void) { return hidden; }",
          "int get_hidden(void); int main(void) { return get_hidden(); }"),
