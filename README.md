@@ -45,6 +45,20 @@ arguments directly to subprocesses, not via a shell. Diagnostics restore the
 original filename and line using preprocessor markers (macro-expansion columns
 cannot be reconstructed). See [M6 preprocessing](docs/M6_Preprocessing.md).
 
+**Experimental internal CPP:** Mini-C also has a feature-gated C99
+preprocessing adapter that does not launch an external compiler or embed
+another C frontend. It reuses only a pinned Rust preprocessing engine;
+GCC/Clang remain the conformance references. Try:
+
+```sh
+cargo run -p mini-c --features internal-cpp -- check --cpp=internal -I include -DFEATURE=1 example.c
+cargo run -p mini-c-cranelift --features internal-cpp -- --emit-obj /tmp/example.o --cpp=internal example.c
+```
+
+The internal option is **not enabled by default** and is not yet C99/C23
+conformance-complete; see [Internal CPP Prototype](docs/Internal_CPP_Prototype.md)
+for limits, comparison tests and next steps.
+
 The parser API itself never invokes a preprocessor. The default checker CLI
 stops at the first error; passing `--max-errors=N` enables bounded syntax and
 semantic recovery across external declarations and prints stable error
