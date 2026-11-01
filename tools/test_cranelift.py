@@ -124,6 +124,10 @@ PROGRAMS = {
     "local_char_array_octal": r"""int main(void) {
         unsigned char data[6]="\377"; return data[0]-255+data[5];
     }""",
+    "global_char_array_completed": """extern char text[];
+        char text[]="abc"; extern char text[];
+        int main(void) { return text[0]+text[1]+text[2]-294; }""",
+
 
 
 
