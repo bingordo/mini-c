@@ -288,6 +288,14 @@ impl<'a> Parser<'a> {
             }
         }
         let mut expr = match self.take()? {
+            Some(t) if t.kind == TokenKind::String => Expr::StringLiteral(
+                crate::string_literal::decode_narrow_string(t.text)
+                    .map_err(|reason| Diagnostic::coded(
+                        t.span,
+                        DiagnosticCode::LexicalInvalidCharacter,
+                        reason,
+                    ))?,
+            ),
             Some(t) if t.kind == TokenKind::Character => Expr::Int(
                 crate::char_literal::parse_ascii_character(t.text)
                     .map_err(|reason| Diagnostic::coded(
@@ -904,4 +912,13 @@ mod tests {
         let mut parser = Parser::new("int f(int a,);");
         assert!(parser.next_item().is_err());
     }
+    #[test]
+    fn narrow_string_literal_parses_as_bytes() {
+        let mut parser = Parser::new(r#"int main(void) { "hi\\n"; return 0; }"#);
+        let item = parser.next_item().unwrap().unwrap();
+        let ExternalItem::Function(function) = item else { panic!("expected function"); };
+        let Stmt::Block(stmts) = function.body else { panic!("expected block"); };
+        assert_eq!(stmts[0], Stmt::Expr(Some(Expr::StringLiteral(b"hi\\n\\0".to_vec()))));
+    }
+
 }
