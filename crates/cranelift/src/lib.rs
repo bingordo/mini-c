@@ -310,7 +310,7 @@ impl Compiler {
     /// Register declarations and compile one complete checked function.
     pub fn add(&mut self, item: CheckedItem) -> Result<()> {
         match item {
-            CheckedItem::Typedef { .. } => Ok(()),
+            CheckedItem::Typedef { .. } | CheckedItem::Tag => Ok(()),
             CheckedItem::Declaration(decl) => {
                 if matches!(decl.ty, CType::Function { .. }) {
                     self.declare(&decl.name, &decl.ty, decl.linkage, false)?;
@@ -820,7 +820,7 @@ impl Lower<'_> {
                 self.scopes.pop();
                 Ok(live)
             }
-            CheckedStmt::Typedef { .. } => Ok(true),
+            CheckedStmt::Typedef { .. } | CheckedStmt::Tag => Ok(true),
             CheckedStmt::Decl(CheckedDecl { name, ty, storage, initializer, .. }) => {
                 if *storage != StorageClass::Default {
                     return Err(format!("M2.5 does not emit storage-class local '{name}'"));
