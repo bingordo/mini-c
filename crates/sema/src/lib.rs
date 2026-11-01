@@ -601,6 +601,8 @@ impl Checker {
 
     fn check_expr(&self, expr: &Expr, span: Span) -> Result<CheckedExpr, Diagnostic> {
         match expr {
+            Expr::StringLiteral(_) => Err(type_error(span,
+                "string literal code generation is not yet supported")),
             Expr::Int(number) => {
                 let ty = self.target.decimal_literal(*number).ok_or_else(|| type_error(span, "decimal literal exceeds supported signed integer types"))?;
                 Ok(CheckedExpr::value(ty, CheckedExprKind::Literal(*number)))
