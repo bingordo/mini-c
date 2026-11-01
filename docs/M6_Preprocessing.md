@@ -1,5 +1,11 @@
 # M6 external preprocessing contract
 
+**Milestone status:** complete for the external preprocessing path
+(November 1, 2026). Full-workspace, Clippy, GCC/Clang fixture and native
+differential verification passed in
+[compiler-ci run #41348660474](https://github.com/bingordo/compiler-ci/actions/runs/41348660474).
+The internal full-C preprocessor is deliberately out of scope.
+
 **Scope:** The Mini-C frontend delegates full macro expansion and header
 inclusion to an external C preprocessor. No internal full-C preprocessor is
 implemented. The scanner and semantic checker remain independent of subprocess
