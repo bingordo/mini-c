@@ -79,6 +79,13 @@ impl CType {
     /// Different fixed bounds and different element types remain incompatible.
     pub fn composite(&self, other: &Self) -> Option<Self> {
         if self == other { return Some(self.clone()); }
+        if self.same_type(other) {
+            // A complete tagged definition supersedes an earlier incomplete
+            // reference, without changing the nominal type's identity.
+            return Some(if self.size_bytes(Target::default()).is_some() {
+                self.clone()
+            } else { other.clone() });
+        }
         match (self, other) {
             (Self::Array(a, None), Self::Array(b, Some(n))) |
             (Self::Array(a, Some(n)), Self::Array(b, None)) if a == b =>
