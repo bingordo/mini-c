@@ -914,11 +914,11 @@ mod tests {
     }
     #[test]
     fn narrow_string_literal_parses_as_bytes() {
-        let mut parser = Parser::new(r#"int main(void) { "hi\\n"; return 0; }"#);
+        let mut parser = Parser::new(r#"int main(void) { "hi\n"; return 0; }"#);
         let item = parser.next_item().unwrap().unwrap();
         let ExternalItem::Function(function) = item else { panic!("expected function"); };
         let Stmt::Block(stmts) = function.body else { panic!("expected block"); };
-        assert_eq!(stmts[0], Stmt::Expr(Some(Expr::StringLiteral(b"hi\\n\\0".to_vec()))));
+        assert_eq!(stmts[0], Stmt::Expr(Some(Expr::StringLiteral(b"hi\n\0".to_vec()))));
     }
 
 }
