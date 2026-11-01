@@ -218,3 +218,18 @@ fn aggregate_pointer_fields_emit_multiple_relocations() {
     emits_elf("char *messages[2]={\"red\",\"blue\"}; int main(void) { return messages[0][0]+messages[1][0]-212; }");
     emits_elf("struct Node; struct Node { int value; struct Node *next; }; struct Node head={17,&head}; int main(void) { return head.next->value-17; }");
 }
+
+#[test]
+fn by_value_aggregate_abi_is_explicitly_rejected() {
+    let err=compile_source("struct T { int x; }; struct T copy(struct T x);")
+        .unwrap_err();
+    assert!(err.contains("unsupported SysV aggregate-by-value ABI"), "{err}");
+    let err=compile_source("union U { int x; long y; }; union U make(void);")
+        .unwrap_err();
+    assert!(err.contains("unsupported SysV aggregate-by-value ABI"), "{err}");
+}
+
+#[test]
+fn enum_tagged_parameter_and_return_uses_scalar_abi() {
+    emits_elf("enum Status { FIRST=3, SECOND=7 }; enum Status inc(enum Status x) { return x+1; } int main(void) { return inc(FIRST)-4; }");
+}
