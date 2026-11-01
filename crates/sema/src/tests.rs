@@ -528,7 +528,7 @@ fn inline_struct_member_types_and_layout() {
 #[test]
 fn inline_struct_member_errors() {
     reject("struct X { int a; int a; } x;", "duplicate structure member");
-    reject("struct X { void a; } x;", "complete object");
+    reject("struct X { void a; } x;", "incomplete");
     reject("struct X { int a[]; } x;", "incomplete");
     reject("int main(void) { int n; return n.foo; }", "requires a struct");
     reject("int main(void) { struct { int a; } s; return s.missing; }",
