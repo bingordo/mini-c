@@ -198,3 +198,10 @@ fn union_objects_and_first_member_init_compile() {
     emits_elf("int main(void) { union { int i; long l; } a[2]; a[0].i=17; a[1]=a[0]; return a[1].i-17; }");
     emits_elf("int main(void) { struct { char flag; union { long x; int y; } u; } v; v.flag=3; v.u.x=19; return v.flag+v.u.x-22; }");
 }
+
+#[test]
+fn named_struct_tags_recursive_fields_and_forward_declarations_compile() {
+    emits_elf("struct Node; struct Node { int value; struct Node *next; }; struct Node root; int main(void) { root.value=19; root.next=&root; return root.next->value-19; }");
+    emits_elf("typedef struct Item Item; struct Item { long amount; }; Item value; int main(void) { value.amount=31; return value.amount-31; }");
+    emits_elf("union U; union U { int x; long y; }; union U word; int main(void) { word.x=17; return word.x-17; }");
+}
