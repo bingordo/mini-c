@@ -8,9 +8,9 @@ A small, embeddable Rust frontend for a deliberately limited subset of C, modele
 - C subset including signed/unsigned integer types, pointers, function definitions/prototypes (including unnamed prototype parameters), block typedefs, static/extern declarations, arithmetic, comparisons, assignments, calls, blocks, if/else and while.
 - Recursive C declarator parsing handles pointer/array binding, grouped declarators, function-pointer typedefs, and abstract parameter declarators. Semantic analysis now represents fixed-size and incomplete array types, checks integer constant bounds, adjusts array/function parameters to pointers, and performs array-to-pointer decay. Array indexing, checked pointer+integer offsets and indexed assignments now have typed lvalue semantics. Native memory lowering, aggregate initialization and full ABI handling remain incomplete.
 - Independent `mini-c-sema` crate checks types, lexical scopes, linkage, integer conversions, lvalues, function calls, returns, constant initializers and loop-control legality. Typed expressions include explicit load/conversion nodes, suitable for later backends.
-- `mini-c check` now validates **syntax and semantics**, reports filename and source location, and supports external `cc -E`/`clang -E` or already-preprocessed input.
+- `mini-c check` validates **syntax and semantics** and normally runs external `cc -E`. It supports `-I`/`-D`/`-U`, `--cpp=clang` or a custom preprocessor, `--cpp=none` for already-preprocessed text, and diagnostics remapped through include-file line markers.
 - Deterministic defined-behavior C corpus generator (`mini-c-fuzz`) with an independent arithmetic oracle, reference validation against GCC/Clang, sanitizer smoke tests, failure-artifact capture, and an extended weekly GitHub Actions workflow.
-- An **optional Cranelift ELF object backend** (`mini-c-cranelift`, M2.5) compiles checked integer functions, locals, control flow and direct calls. The separate backend and GCC differential tests are isolated from normal syntax CI.
+- An **optional Cranelift ELF object backend** (`mini-c-cranelift`, M2.5/M5) compiles supported scalar/pointer functions, globals, strings, structures, unions, enums, aggregates and cross-object references; by-value SysV struct/union calls remain explicitly unsupported. It shares the same external preprocessing options as the checker.
 
 **This is not a conforming ISO C implementation.** Its parser recognizes only a subset; full C declarators, many types, complete language semantics, internal preprocessing, precise expression-level diagnostics, and the full native backend remain incomplete or future work. C23 provides the language design reference ([WG14 N3220](https://www.open-std.org/jtc1/sc22/wg14/www/docs/n3220.pdf)).
 
@@ -20,7 +20,9 @@ A small, embeddable Rust frontend for a deliberately limited subset of C, modele
 cargo test -p mini-c-syntax -p mini-c-preprocess -p mini-c-sema -p mini-c -p mini-c-fuzz
 cargo clippy -p mini-c-syntax -p mini-c-sema -p mini-c -p mini-c-fuzz --all-targets -- -D warnings
 cargo run -p mini-c -- check --cpp=none example.c
-cargo run -p mini-c -- check --cpp=cc example.c
+cargo run -p mini-c -- check example.c    # default: cc -E
+cargo run -p mini-c -- check -I include -DDEBUG=1 -UOLD example.c
+cargo run -p mini-c -- check --cpp=clang example.c
 cargo run -p mini-c -- check --max-errors=8 example.c
 cargo run -q -p mini-c-fuzz -- 42 120 > case.c
 cargo build -p mini-c-fuzz
@@ -29,15 +31,25 @@ python3 tools/fuzz_reference.py --seed-count 12 --steps 120
 # Optional Cranelift backend (separate, heavier dependency closure):
 cargo test -p mini-c-cranelift
 cargo build -p mini-c-cranelift -p mini-c-fuzz
-cargo run -p mini-c-cranelift -- --emit-obj /tmp/example.o example.c
+cargo run -p mini-c-cranelift -- --emit-obj /tmp/example.o -I include -DDEBUG=1 example.c
 cc /tmp/example.o -o /tmp/example
 python3 tools/test_cranelift.py --seed-count 4
 ```
 
-For a preprocessed file, `--cpp=none` skips external tools. For ordinary C sources, use `--cpp=cc`, `--cpp=clang`, or `--cpp=/path/to/preprocessor`; additional preprocessor options use `--cpp-arg=<argument>`. The parser API itself never invokes a preprocessor. The default CLI continues to stop at the first error; passing
-`--max-errors=N` enables bounded syntax and semantic recovery across
-external declarations and prints stable L0001/S0001/T0001 category codes.
-This does not yet recover multiple independent errors inside one function.
+Both drivers default to external `cc -E` preprocessing. `--cpp=none`
+bypasses all subprocesses for already-preprocessed sources; CPP flags cannot
+be combined with that mode. `--cpp=clang` and `--cpp=/path/to/tool` select
+other executables. `-I`, `-D`, `-U` accept attached or separate values, and
+`--cpp-arg=<argument>` passes an additional argument verbatim. Drivers pass
+arguments directly to subprocesses, not via a shell. Diagnostics restore the
+original filename and line using preprocessor markers (macro-expansion columns
+cannot be reconstructed). See [M6 preprocessing](docs/M6_Preprocessing.md).
+
+The parser API itself never invokes a preprocessor. The default checker CLI
+stops at the first error; passing `--max-errors=N` enables bounded syntax and
+semantic recovery across external declarations and prints stable error
+category codes. This does not yet recover multiple independent errors inside
+one function.
 
 ## Project documents
 
@@ -47,6 +59,8 @@ This does not yet recover multiple independent errors inside one function.
 - [Defined-behavior fuzzer and reproducibility](docs/Fuzzing.md)
 - [Typed frontend API, target model, and limitations](docs/Semantics.md)
 - [Cranelift ELF backend, constraints, and executable tests](docs/Cranelift.md)
+- [M5 aggregate layout and ABI closure](docs/M5_Aggregates_ABI.md)
+- [M6 external preprocessing interface and tests](docs/M6_Preprocessing.md)
 
 [Targeted CI](.github/workflows/syntax.yml) runs syntax, preprocessing, driver, Clippy, and compiler-reference fuzzer checks. [Extended fuzz CI](.github/workflows/fuzz.yml) runs weekly or by manual dispatch. [Cranelift CI](.github/workflows/cranelift.yml) independently builds and tests the optional executable backend. The Rust formatting gate is currently disabled by request.
 
