@@ -1041,7 +1041,8 @@ mod tests {
         ))));
         let mut p = Parser::new("int read(struct { long a; } *p) { return p->a; }");
         assert!(matches!(p.next_item(), Ok(Some(ExternalItem::Function(_)))));
-        assert!(Parser::new("struct Unknown value;").next_item().is_err());
+        assert!(matches!(Parser::new("struct Unknown value;").next_item(),
+            Ok(Some(ExternalItem::Declaration(Decl { ty: Type::TagRef(TagKind::Struct, _), .. })))));
     }
 
     #[test]
