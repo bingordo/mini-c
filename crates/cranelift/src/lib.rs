@@ -1090,6 +1090,15 @@ mod tests {
                       int identity(int x) { return x; }";
         let obj = compile_source(source).unwrap();
         assert_eq!(&obj[..4], b"\x7fELF");
+        use object::{Object, ObjectSection, ObjectSymbol};
+        let file = object::File::parse(obj.as_slice()).expect("valid ELF");
+        let identity_refs = file.sections().flat_map(|section| section.relocations())
+            .filter(|(_, relocation)| match relocation.target() {
+                object::RelocationTarget::Symbol(index) => file.symbol_by_index(index)
+                    .ok().and_then(|symbol| symbol.name().ok()) == Some("identity"),
+                _ => false,
+            }).count();
+        assert_eq!(identity_refs, 3, "expected scalar, struct and array function relocations");
     }
 
     #[test]
