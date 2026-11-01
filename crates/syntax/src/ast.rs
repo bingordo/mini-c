@@ -40,6 +40,9 @@ pub struct Decl {
     pub span: Span,
 }
 #[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TagKind { Struct, Union }
+
 pub enum Type {
     Void,
     Char,
@@ -54,6 +57,8 @@ pub enum Type {
     /// Separate tag-only declarations and references are a follow-up.
     Struct { tag: Option<Ident>, members: Vec<Decl> },
     Union { tag: Option<Ident>, members: Vec<Decl> },
+    /// Reference to a named (possibly incomplete) struct or union tag.
+    TagRef(TagKind, Ident),
     Function {
         result: Box<Type>,
         params: Vec<Type>,
@@ -64,6 +69,8 @@ pub enum Stmt {
     Block(Vec<Stmt>),
     Decl(Decl),
     Typedef(Decl),
+    /// A standalone tag declaration or definition without an object declarator.
+    Tag(Type),
     Expr(Option<Expr>),
     Return(Option<Expr>),
     If {
