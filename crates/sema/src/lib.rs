@@ -22,6 +22,7 @@ pub enum Category { Value, LValue, Function }
 #[derive(Debug, Clone, PartialEq)]
 pub enum CheckedExprKind {
     Literal(u64),
+    EnumConstant(i64),
     /// Narrow C string including its trailing NUL; storage is emitted by the backend.
     StringLiteral(Vec<u8>),
     /// Typed, positional aggregate initializer values, in member order.
@@ -112,7 +113,7 @@ pub enum CheckedItem {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SymbolKind { Object, Function, Typedef }
+pub enum SymbolKind { Object, Function, Typedef, Enumerator }
 
 #[derive(Debug, Clone)]
 pub struct Symbol {
@@ -120,6 +121,7 @@ pub struct Symbol {
     pub kind: SymbolKind,
     pub linkage: Linkage,
     pub defined: bool,
+    pub enum_value: Option<i64>,
 }
 
 #[derive(Clone)]
@@ -381,7 +383,9 @@ impl Checker {
         if scope.contains_key(name) {
             return Err(Diagnostic::coded(span, DiagnosticCode::SemanticDuplicateDeclaration, format!("duplicate declaration of '{name}'")));
         }
-        scope.insert(name.to_owned(), Symbol { ty, kind, linkage, defined: true });
+        scope.insert(name.to_owned(), Symbol {
+            ty, kind, linkage, defined: true, enum_value: None,
+        });
         Ok(())
     }
 
@@ -389,7 +393,7 @@ impl Checker {
         &mut self, name: &str, ty: CType, kind: SymbolKind,
         defining: bool, storage: StorageClass, span: Span
     ) -> Result<(), Diagnostic> {
-        let requested = if kind == SymbolKind::Typedef {
+        let requested = if matches!(kind, SymbolKind::Typedef | SymbolKind::Enumerator) {
             Linkage::None
         } else if storage == StorageClass::Static {
             Linkage::Internal
@@ -424,7 +428,7 @@ impl Checker {
             prior.defined |= defining;
         } else {
             self.globals.insert(name.to_owned(), Symbol {
-                ty, kind, linkage: requested, defined: defining,
+                ty, kind, linkage: requested, defined: defining, enum_value: None,
             });
         }
         Ok(())
@@ -909,6 +913,9 @@ impl Checker {
                 let symbol = self.lookup(name).ok_or_else(|| Diagnostic::coded(span, DiagnosticCode::SemanticUndeclaredIdentifier, format!("undeclared identifier '{name}'")))?;
                 let category = match symbol.kind {
                     SymbolKind::Typedef => return Err(type_error(span, format!("typedef name '{name}' used as expression"))),
+                    SymbolKind::Enumerator => return Ok(CheckedExpr::value(
+                        CType::int(), CheckedExprKind::EnumConstant(
+                            symbol.enum_value.expect("enumerator has a value")))),
                     SymbolKind::Function => Category::Function,
                     SymbolKind::Object => Category::LValue,
                 };
