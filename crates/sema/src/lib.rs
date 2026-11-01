@@ -339,8 +339,48 @@ impl Checker {
         }
     }
 
+    /// A narrow string initializes a character array, not a scalar pointer.
+    /// For an incomplete array the NUL is included in the inferred bound;
+    /// an explicitly sized array may omit the final NUL, as required by C.
+    fn complete_string_array(
+        &self, ty: CType, initializer: Option<&Expr>, span: Span
+    ) -> Result<CType, Diagnostic> {
+        if let (CType::Array(element, bound), Some(Expr::StringLiteral(bytes))) = (&ty, initializer) {
+            if matches!(element.as_ref(), CType::Integer { rank: IntRank::Char, .. }) {
+                let len = u64::try_from(bytes.len())
+                    .map_err(|_| type_error(span, "string literal exceeds supported array size"))?;
+                if bound.as_ref().is_some_and(|&count| count < len.saturating_sub(1)) {
+                    return Err(type_error(span, "string literal is too long for character array"));
+                }
+                if bound.is_none() {
+                    return Ok(CType::Array(element.clone(), Some(len)));
+                }
+            }
+        }
+        Ok(ty)
+    }
+
+    fn check_object_initializer(
+        &self, original: &Expr, ty: &CType, span: Span, is_static: bool
+    ) -> Result<CheckedExpr, Diagnostic> {
+        let expression = self.check_expr(original, span)?;
+        if is_static {
+            self.validate_static_initializer(&expression, original, ty, span)?;
+        }
+        if matches!((ty, original),
+            (CType::Array(element, Some(_)), Expr::StringLiteral(_))
+            if matches!(element.as_ref(), CType::Integer { rank: IntRank::Char, .. }))
+        {
+            // Retain literal bytes in checked IR; generic array-to-pointer
+            // decay would lose the value needed to initialize the array.
+            Ok(expression)
+        } else {
+            self.convert_for_assignment(expression, ty, original, span)
+        }
+    }
+
     fn check_global(&mut self, decl: Decl) -> Result<CheckedDecl, Diagnostic> {
-        let ty = self.resolve(&decl.ty, decl.span)?;
+        let ty = self.complete_string_array(self.resolve(&decl.ty, decl.span)?, decl.init.as_ref(), decl.span)?;
         let kind = if matches!(ty, CType::Function { .. }) { SymbolKind::Function } else { SymbolKind::Object };
         if kind == SymbolKind::Object && !ty.is_object() {
             return Err(type_error(decl.span, "object cannot have void or function type"));
@@ -350,13 +390,9 @@ impl Checker {
         }
         let defining = decl.init.is_some();
         self.declare_global(&decl.name, ty.clone(), kind, defining, decl.storage, decl.span)?;
-        let initializer = if let Some(initializer) = &decl.init {
-            let expression = self.check_expr(initializer, decl.span)?;
-            self.validate_static_initializer(&expression, initializer, &ty, decl.span)?;
-            Some(self.convert_for_assignment(expression, &ty, initializer, decl.span)?)
-        } else {
-            None
-        };
+        let initializer = decl.init.as_ref()
+            .map(|value| self.check_object_initializer(value, &ty, decl.span, true))
+            .transpose()?;
         let linkage = self.global(&decl.name).expect("registered global").linkage;
         Ok(CheckedDecl { storage: decl.storage, name: decl.name, ty, linkage, initializer, span: decl.span })
     }
@@ -447,7 +483,7 @@ impl Checker {
                 CheckedStmt::Block(inner?)
             }
             Stmt::Decl(decl) => {
-                let ty = self.resolve(&decl.ty, decl.span)?;
+                let ty = self.complete_string_array(self.resolve(&decl.ty, decl.span)?, decl.init.as_ref(), decl.span)?;
                 if !ty.is_object() {
                     return Err(type_error(decl.span, "local variable cannot have void or function type"));
                 }
@@ -461,13 +497,10 @@ impl Checker {
                     self.global(&decl.name).expect("registered extern").linkage
                 } else { Linkage::None };
                 self.define_local(&decl.name, ty.clone(), SymbolKind::Object, linkage, decl.span)?;
-                let initializer = decl.init.as_ref().map(|value| -> Result<_, Diagnostic> {
-                    let expression = self.check_expr(value, decl.span)?;
-                    if decl.storage == StorageClass::Static {
-                        self.validate_static_initializer(&expression, value, &ty, decl.span)?;
-                    }
-                    self.convert_for_assignment(expression, &ty, value, decl.span)
-                }).transpose()?;
+                let initializer = decl.init.as_ref()
+                    .map(|value| self.check_object_initializer(value, &ty, decl.span,
+                        decl.storage == StorageClass::Static))
+                    .transpose()?;
                 CheckedStmt::Decl(CheckedDecl {
                     storage: decl.storage, name: decl.name.clone(), ty,
                     linkage,
@@ -530,10 +563,15 @@ impl Checker {
     fn validate_static_initializer(
         &self, expression: &CheckedExpr, original: &Expr, ty: &CType, span: Span
     ) -> Result<(), Diagnostic> {
+        if let CType::Array(element, Some(_)) = ty {
+            if matches!(original, Expr::StringLiteral(_))
+                && matches!(element.as_ref(), CType::Integer { rank: IntRank::Char, .. })
+            {
+                return Ok(());
+            }
+        }
         if matches!(ty, CType::Array(..)) {
-            // Array initialization needs aggregate/string initializer syntax and
-            // element-wise checking. Never accept a scalar expression as a
-            // complete array initializer just because it is constant.
+            // Other aggregates still require dedicated initializer checking.
             return Err(type_error(span, "array initializer requires aggregate initialization support"));
         }
         if ty.is_integer() {
