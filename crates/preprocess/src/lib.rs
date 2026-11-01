@@ -3,7 +3,7 @@
 pub mod source_map;
 
 use std::ffi::OsString;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 #[derive(Debug, Clone)]
@@ -43,9 +43,19 @@ impl std::error::Error for Error {}
 
 /// Preprocess a file. This is an explicit driver operation, not a parser side effect.
 pub fn file(path: &Path, config: &Config) -> Result<String, Error> {
+    // GCC's driver does not accept '--' as a file-option separator. Prefix
+    // any relative path beginning with '-' so it cannot be interpreted as a
+    // compiler option, without changing its directory for quoted includes.
+    let safe_path: PathBuf = if path.is_relative()
+        && path.as_os_str().to_string_lossy().starts_with('-')
+    {
+        Path::new(".").join(path)
+    } else {
+        path.to_path_buf()
+    };
     let output = Command::new(&config.executable)
         .args(&config.args)
-        .arg(path)
+        .arg(&safe_path)
         .stdin(Stdio::null())
         .output()
         .map_err(Error::Io)?;
@@ -116,6 +126,27 @@ mod tests {
             Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {},
             other => panic!("expected failed preprocessing, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn dangerous_input_filename_is_not_a_driver_option() {
+        let nonce = format!("{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .unwrap().as_nanos());
+        let dir = std::env::temp_dir().join(format!("mini-c-hyphen-input-{nonce}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        // GCC treats a leading - as an option unless it is prefixed "./".
+        // Use a path relative to the current directory for the real call
+        // (no process-global chdir or test-thread interference).
+        let path = dir.join("-E.c");
+        std::fs::write(&path, "int value=17;\n").unwrap();
+        let output = file(&path, &Config::default());
+        let _ = std::fs::remove_dir_all(&dir);
+        let result = match output {
+            Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => return,
+            other => other.unwrap(),
+        };
+        assert!(result.contains("int value=17;"), "{result}");
     }
 
     #[test]
