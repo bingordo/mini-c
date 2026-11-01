@@ -39,10 +39,10 @@ pub struct Decl {
     pub init: Option<Expr>,
     pub span: Span,
 }
-#[derive(Debug, Clone, PartialEq)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TagKind { Struct, Union }
 
+#[derive(Debug, Clone, PartialEq)]
 pub enum Type {
     Void,
     Char,
