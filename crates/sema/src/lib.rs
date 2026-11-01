@@ -625,6 +625,7 @@ impl Checker {
         // before checking scalar assignment compatibility.
         let expr = expr.rvalue();
         let compatible = match (ty, &expr.ty) {
+            (CType::Struct { .. }, CType::Struct { .. }) => ty == &expr.ty,
             (CType::Integer { .. }, CType::Integer { .. }) => true,
             (CType::Pointer(lhs), CType::Pointer(rhs)) =>
                 lhs == rhs || **lhs == CType::Void || **rhs == CType::Void,
