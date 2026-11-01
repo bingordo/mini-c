@@ -379,7 +379,14 @@ impl Compiler {
             if let Some(bytes) = &data.initialized {
                 desc.define(bytes.clone().into_boxed_slice());
             } else {
-                let size = data.ty.size_bytes(Target::default())
+                // C completes a tentative file-scope array of unknown bound
+                // to one element when no later declaration supplies a bound.
+                let completed = match &data.ty {
+                    CType::Array(element, None) if element.size_bytes(Target::default()).is_some() =>
+                        CType::Array(element.clone(), Some(1)),
+                    other => other.clone(),
+                };
+                let size = completed.size_bytes(Target::default())
                     .ok_or_else(|| format!("incomplete global object '{name}'"))?;
                 let size = usize::try_from(size).map_err(|_| format!("oversized global object '{name}'"))?;
                 desc.define_zeroinit(size);
@@ -938,6 +945,14 @@ mod tests {
         let src = "unsigned long a(unsigned long x, unsigned int y) { \
                    return x + y * 2; } int main(void) { return a(50,3) == 56; }";
         assert!(!compile_source(src).unwrap().is_empty());
+    }
+
+    #[test]
+    fn tentative_unknown_bound_file_array_defaults_to_one_element() {
+        let source = "int a[]; int main(void) { a[0]=7; return a[0]-7; }";
+        let object = compile_source(source).unwrap();
+        assert_eq!(&object[..4], b"\\x7fELF");
+        assert!(!compile_source("extern int a[];").unwrap().is_empty());
     }
 
     #[test]
