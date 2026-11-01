@@ -475,7 +475,7 @@ fn character_array_string_bounds_and_initializers() {
     }), Some(4)));
     assert!(matches!(&inferred.initializer, Some(CheckedExpr {
         kind: CheckedExprKind::StringLiteral(bytes), ..
-    }) if bytes.as_slice() == b"abc\\0"));
+    }) if bytes.as_slice() == b"abc\0"));
     let CheckedItem::Declaration(padded) = &items[1] else { panic!("expected global"); };
     assert_eq!(padded.ty, CType::Array(Box::new(CType::Integer {
         rank: IntRank::Char, unsigned: true,
