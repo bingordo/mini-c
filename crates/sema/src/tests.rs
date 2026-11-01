@@ -577,3 +577,24 @@ fn union_members_layout_and_first_field_init() {
     reject("union { int i; long l; } u={1,2};", "union initializer selects only its first member");
     reject("union { int i; int i; } u;", "duplicate union member");
 }
+
+#[test]
+fn named_tags_forward_declarations_and_recursive_fields() {
+    let src = "struct Node; struct Node { int value; struct Node *next; };         struct Node root; int main(void) { struct Node *p=&root; root.value=17;         root.next=p; return root.next->value-17; }";
+    let items = check(src).unwrap();
+    let CheckedItem::Declaration(root) = &items[2] else { panic!("root declaration expected") };
+    let CType::Struct { members, size, .. } = &root.ty else { panic!("resolved struct expected") };
+    assert_eq!(*size, 16);
+    assert_eq!(members.iter().map(|m| m.offset).collect::<Vec<_>>(), [0,8]);
+    check("typedef struct Record Record; struct Record { long count; }; Record record;").unwrap();
+    check("union Data; union Data { int x; long y; }; union Data v;").unwrap();
+    reject("struct T; union T { int a; };", "conflicting tag kind");
+    reject("struct T { int a; }; struct T { long b; };", "redefinition");
+}
+
+#[test]
+fn named_tags_have_separate_block_scopes() {
+    check("struct T { int a; }; int f(void) {         struct T *outer=0; { struct T; struct T { long b; };         struct T inner; inner.b=17; } return 0; }").unwrap();
+    reject("struct T; int f(void) { struct T value; return 0; }",
+        "local object requires a complete type");
+}
