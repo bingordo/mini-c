@@ -957,7 +957,7 @@ mod tests {
     fn tentative_unknown_bound_file_array_defaults_to_one_element() {
         let source = "int a[]; int main(void) { a[0]=7; return a[0]-7; }";
         let object = compile_source(source).unwrap();
-        assert_eq!(&object[..4], b"\\x7fELF");
+        assert_eq!(&object[..4], b"\x7fELF");
         assert!(!compile_source("extern int a[];").unwrap().is_empty());
     }
 
@@ -995,7 +995,7 @@ mod tests {
                    union Handle handle={&target}; \
                    int main(void) { return *entry.ptr; }";
         let obj = compile_source(src).unwrap();
-        assert_eq!(&obj[..4], b"\\x7fELF");
+        assert_eq!(&obj[..4], b"\x7fELF");
     }
 
     #[test]
