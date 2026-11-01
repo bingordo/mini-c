@@ -151,6 +151,10 @@ PROGRAMS = {
     "aggregate_inferred_array": """int data[]={1,2,3,4}; int main(void) { return data[2]; }""",
     "aggregate_global_struct": """struct { char a; int b; long c; } g={5,17,29}; int main(void) { return g.a+g.b+g.c; }""",
     "aggregate_local_struct": """int main(void) { struct { char a; long b; int c; } v={7,31}; return v.a+v.b+v.c; }""",
+    "enum_explicit": """enum Status { FIRST, SECOND=7, THIRD=SECOND+2 };
+        enum Status value=THIRD; int main(void) { return value; }""",
+    "enum_negative": """int main(void) { enum Mode { NEG=-1, ZERO, THREE=ZERO+3 };
+        enum Mode value=THREE; return value-NEG; }""",
     "tagged_recursive_struct": """struct Node; struct Node { int value; struct Node *next; };
         struct Node root; int main(void) { root.value=37; root.next=&root;
             return root.next->value; }""",
