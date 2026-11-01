@@ -172,6 +172,78 @@ mod tests {
     use super::*;
 
     #[test]
+    fn preprocessor_flags_parse_without_shell_splitting() {
+        let options = parse_options([
+            "check", "-I", "include dir", "-DNAME=one two;$(touch never)",
+            "-D", "OTHER=42", "-UOLD", "-U", "OBSOLETE",
+            "--cpp=clang", "--cpp-arg=-undef", "source.c",
+        ].into_iter().map(str::to_owned)).unwrap();
+        let cpp = options.cpp.unwrap();
+        assert_eq!(cpp.executable, OsString::from("clang"));
+        assert_eq!(cpp.args, vec![
+            "-E", "-Iinclude dir", "-DNAME=one two;$(touch never)",
+            "-DOTHER=42", "-UOLD", "-UOBSOLETE", "-undef",
+        ].into_iter().map(OsString::from).collect::<Vec<_>>());
+        assert_eq!(options.paths, ["source.c"]);
+        assert_eq!(options.max_errors, None);
+
+        let default = parse_options(["check", "a.c"].into_iter().map(str::to_owned)).unwrap();
+        assert_eq!(default.cpp.unwrap().executable, OsString::from("cc"));
+        let raw = parse_options(["check", "--cpp=none", "a.c"]
+            .into_iter().map(str::to_owned)).unwrap();
+        assert!(raw.cpp.is_none());
+        let after_end = parse_options(["check", "--cpp=none", "--", "-file.c"]
+            .into_iter().map(str::to_owned)).unwrap();
+        assert_eq!(after_end.paths, ["-file.c"]);
+    }
+
+    #[test]
+    fn invalid_preprocessor_options_fail_before_execution() {
+        for values in [
+            vec!["check", "--cpp=none", "-DNAME=1", "file.c"],
+            vec!["check", "-I", "" , "file.c"],
+            vec!["check", "-D", "file.c"],
+            vec!["check", "--cpp=", "file.c"],
+            vec!["check", "--cpp-arg=", "file.c"],
+            vec!["check", "--max-errors=0", "file.c"],
+            vec!["check", "--unknown", "file.c"],
+            vec!["check", "--cpp=none"],
+        ] {
+            assert!(parse_options(values.into_iter().map(str::to_owned)).is_err());
+        }
+    }
+
+    #[test]
+    fn external_cc_preprocessing_includes_macros_and_maps_errors() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!("mini-c cpp with spaces {} {nonce}", std::process::id()));
+        std::fs::create_dir_all(dir.join("include folder")).unwrap();
+        let header = dir.join("include folder").join("config.h");
+        let source = dir.join("source file.c");
+        std::fs::write(&header, "#define HEADER_VALUE 17\n").unwrap();
+        std::fs::write(&source,
+            "#include <config.h>\n#if FEATURE != 19\n#error wrong_feature\n#endif\n#ifdef OLD\n#error old_macro\n#endif\nint result = HEADER_VALUE+FEATURE;\n"
+        ).unwrap();
+        let arguments = vec![
+            "check".to_owned(), "-I".to_owned(),
+            dir.join("include folder").to_string_lossy().into_owned(),
+            "-DFEATURE=19".to_owned(), "-DOLD=1".to_owned(),
+            "-U".to_owned(), "OLD".to_owned(),
+            source.to_string_lossy().into_owned(),
+        ];
+        let options = parse_options(arguments).unwrap();
+        let outcome = check(source.to_str().unwrap(), options.cpp.as_ref());
+        assert!(outcome.is_ok(), "{outcome:?}");
+
+        std::fs::write(&header, "int invalid = ;\n").unwrap();
+        let failure = check(source.to_str().unwrap(), options.cpp.as_ref()).unwrap_err();
+        assert!(failure.contains("config.h:1"), "{failure}");
+        assert!(failure.contains("error"), "{failure}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn cli_checks_types_and_maps_semantic_locations() {
         let unique = format!("mini-c-sema-check-{}.c", std::process::id());
         let path = std::env::temp_dir().join(unique);
