@@ -323,16 +323,7 @@ impl Compiler {
             }
             // Keep global object alignment consistent with stack-object layout.
             // Cranelift expects alignment in bytes, unlike stack-slot log2 alignment.
-            let alignment = match &data.ty {
-                CType::Array(element, _) => {
-                    let mut base = element.as_ref();
-                    while let CType::Array(inner, _) = base {
-                        base = inner.as_ref();
-                    }
-                    base.size_bytes(Target::default()).unwrap_or(1).min(8)
-                }
-                _ => data.ty.size_bytes(Target::default()).unwrap_or(1).min(8),
-            };
+            let alignment = data.ty.align_bytes(Target::default()).unwrap_or(1);
             desc.set_align(alignment);
             if let Some(symbol) = &data.address_of {
                 let target = self.data.get(symbol)
@@ -383,6 +374,8 @@ impl Lower<'_> {
     /// objects so that aliases through &x, p[i], and *p stay coherent.
     fn alignment(ty: &CType) -> u8 {
         match ty {
+            CType::Struct { align, .. } =>
+                u8::try_from(align.trailing_zeros()).unwrap_or(3),
             CType::Array(element, _) => Self::alignment(element),
             CType::Integer { rank: IntRank::Char, .. } => 0,
             CType::Integer { rank: IntRank::Int, .. } => 2,
@@ -403,7 +396,7 @@ impl Lower<'_> {
         self.scopes.last_mut().expect("scope exists").insert(name.to_owned(), Local { address });
         if let Some(value) = value {
             b.ins().store(ir::MemFlagsData::new(), value, address, 0);
-        } else if !matches!(ty, CType::Array(..)) {
+        } else if !matches!(ty, CType::Array(..) | CType::Struct { .. }) {
             // Deterministic choice for otherwise-indeterminate scalar locals,
             // not a promise about C uninitialized reads.
             let zero = b.ins().iconst(scalar_type(ty)?, 0);
@@ -447,6 +440,12 @@ impl Lower<'_> {
     fn place(&mut self, b: &mut FunctionBuilder<'_>, expr: &CheckedExpr) -> Result<Value> {
         match &expr.kind {
             CheckedExprKind::Name(name) => self.object_address(b, name),
+            CheckedExprKind::Member(base, offset) => {
+                let address = self.place(b, base)?;
+                let offset = i64::try_from(*offset)
+                    .map_err(|_| "struct member offset exceeds supported address range")?;
+                Ok(b.ins().iadd_imm(address, offset))
+            }
             CheckedExprKind::StringLiteral(bytes) => {
                 let id = intern_string(self.module, self.strings, bytes)?;
                 let gv = self.module.declare_data_in_func(id, b.func);
@@ -548,7 +547,7 @@ impl Lower<'_> {
     fn expression(&mut self, b: &mut FunctionBuilder<'_>, expr: &CheckedExpr) -> Result<Value> {
         match &expr.kind {
             CheckedExprKind::Literal(n) => Ok(b.ins().iconst(scalar_type(&expr.ty)?, *n as i64)),
-            CheckedExprKind::StringLiteral(_) => self.place(b, expr),
+            CheckedExprKind::StringLiteral(_) | CheckedExprKind::Member(..) => self.place(b, expr),
             CheckedExprKind::Name(name) => self.object_address(b, name),
             CheckedExprKind::Load(inner) => {
                 let address = self.place(b, inner)?;
