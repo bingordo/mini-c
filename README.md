@@ -62,7 +62,7 @@ one function.
 - [M5 aggregate layout and ABI closure](docs/M5_Aggregates_ABI.md)
 - [M6 external preprocessing interface and tests](docs/M6_Preprocessing.md)
 
-[Targeted CI](.github/workflows/syntax.yml) runs syntax, preprocessing, driver, Clippy, and compiler-reference fuzzer checks. [Extended fuzz CI](.github/workflows/fuzz.yml) runs weekly or by manual dispatch. [Cranelift CI](.github/workflows/cranelift.yml) independently builds and tests the optional executable backend. The Rust formatting gate is currently disabled by request.
+[Syntax CI](.github/workflows/syntax.yml) covers frontend and reference-fuzzer checks when native account minutes permit; [extended fuzz CI](.github/workflows/fuzz.yml) has deeper scheduled tests. Active scheduled native validation is offloaded to [bingordo/compiler-ci: Mini-C Cranelift](https://github.com/bingordo/compiler-ci/actions/workflows/mini-c-cranelift.yml) every 15 minutes, skipping unchanged revisions after successful validation. It tests the preprocessor, both drivers, Clippy, ELF emission and GCC differential execution. The full workspace suite remains available there by manual dispatch with the `full_workspace` option. The Rust formatting gate is currently disabled by request.
 
 ## Embedding in bingundu/compiler
 
