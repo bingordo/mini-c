@@ -454,22 +454,37 @@ impl Compiler {
             let alignment = data.ty.align_bytes(Target::default()).unwrap_or(1);
             desc.set_align(alignment);
             if let Some(symbol) = &data.address_of {
-                let target = self.data.get(symbol)
-                    .ok_or_else(|| format!("global initializer for '{name}' refers to unknown object '{symbol}'"))?;
-                let gv = self.module.declare_data_in_data(target.id, &mut desc);
-                desc.write_data_addr(0, gv, 0);
+                if let Some(target) = self.data.get(symbol) {
+                    let gv = self.module.declare_data_in_data(target.id, &mut desc);
+                    desc.write_data_addr(0, gv, 0);
+                } else if let Some(target) = self.functions.get(symbol) {
+                    let func = self.module.declare_func_in_data(target.id, &mut desc);
+                    desc.write_function_addr(0, func);
+                } else {
+                    return Err(format!("global initializer for '{name}' refers to unknown symbol '{symbol}'"));
+                }
             } else if let Some(string) = data.string_address {
                 let gv = self.module.declare_data_in_data(string, &mut desc);
                 desc.write_data_addr(0, gv, 0);
             }
             for (offset, target) in &data.aggregate_relocations {
-                let target_id = match target {
-                    RelocationTarget::Object(symbol) => self.data.get(symbol)
-                        .ok_or_else(|| format!("aggregate initializer for '{name}' refers to unknown object '{symbol}'"))?.id,
-                    RelocationTarget::Literal(id) => *id,
-                };
-                let gv = self.module.declare_data_in_data(target_id, &mut desc);
-                desc.write_data_addr(*offset, gv, 0);
+                match target {
+                    RelocationTarget::Object(symbol) => {
+                        if let Some(target) = self.data.get(symbol) {
+                            let gv = self.module.declare_data_in_data(target.id, &mut desc);
+                            desc.write_data_addr(*offset, gv, 0);
+                        } else if let Some(target) = self.functions.get(symbol) {
+                            let func = self.module.declare_func_in_data(target.id, &mut desc);
+                            desc.write_function_addr(*offset, func);
+                        } else {
+                            return Err(format!("aggregate initializer for '{name}' refers to unknown symbol '{symbol}'"));
+                        }
+                    }
+                    RelocationTarget::Literal(id) => {
+                        let gv = self.module.declare_data_in_data(*id, &mut desc);
+                        desc.write_data_addr(*offset, gv, 0);
+                    }
+                }
             }
             self.module.define_data(data.id, &desc)
                 .map_err(|e| format!("defining global '{name}': {e}"))?;
@@ -1063,6 +1078,27 @@ mod tests {
         let error = compile_source("int f(int x) { if (x) return x; }").unwrap_err();
         assert!(error.contains("may reach its end"), "{error}");
         assert!(!compile_source("int main(void) { int x = 1; }").unwrap().is_empty());
+    }
+
+    #[test]
+    fn emits_function_address_relocations_for_static_objects() {
+        let source = "int identity(int x); \
+                      int (*callback)(int) = &identity; \
+                      struct Callback { int pad; int (*fn)(int); }; \
+                      struct Callback holder = {7, &identity}; \
+                      int (*table[2])(int) = {&identity, 0}; \
+                      int identity(int x) { return x; }";
+        let obj = compile_source(source).unwrap();
+        assert_eq!(&obj[..4], b"\x7fELF");
+        use object::{Object, ObjectSection, ObjectSymbol};
+        let file = object::File::parse(obj.as_slice()).expect("valid ELF");
+        let identity_refs = file.sections().flat_map(|section| section.relocations())
+            .filter(|(_, relocation)| match relocation.target() {
+                object::RelocationTarget::Symbol(index) => file.symbol_by_index(index)
+                    .ok().and_then(|symbol| symbol.name().ok()) == Some("identity"),
+                _ => false,
+            }).count();
+        assert_eq!(identity_refs, 3, "expected scalar, struct and array function relocations");
     }
 
     #[test]
