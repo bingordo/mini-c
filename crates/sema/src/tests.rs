@@ -514,7 +514,7 @@ fn global_array_redeclarations_preserve_completed_bounds() {
 fn inline_struct_member_types_and_layout() {
     let items = check("struct Pair { char first; int middle; long last; } value;").unwrap();
     let CheckedItem::Declaration(value) = &items[0] else { panic!("struct global expected") };
-    let CType::Struct { tag, members, size, align } = &value.ty else { panic!("struct expected") };
+    let CType::Struct { tag, members, size, align, .. } = &value.ty else { panic!("struct expected") };
     assert_eq!(tag.as_deref(), Some("Pair"));
     assert_eq!((*size, *align), (16, 8));
     assert_eq!(members.iter().map(|m| m.offset).collect::<Vec<_>>(), [0, 4, 8]);
