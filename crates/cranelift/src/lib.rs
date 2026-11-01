@@ -53,9 +53,39 @@ struct KnownData {
     ty: CType,
     linkage: Linkage,
     initialized: Option<Vec<u8>>,
-    address_of: Option<String>,
-    string_address: Option<DataId>,
+    relocations: Vec<(usize, StaticRelocation)>,
     tentative: bool,
+}
+
+/// References in static data are recorded independently of storage bytes,
+/// allowing ELF relocations at arbitrary field/array-element offsets.
+#[derive(Clone)]
+enum StaticRelocation {
+    Global(String),
+    String(Vec<u8>),
+}
+
+struct StaticData {
+    bytes: Vec<u8>,
+    relocations: Vec<(usize, StaticRelocation)>,
+}
+
+fn pointer_relocation(init: &CheckedExpr) -> Result<Option<StaticRelocation>> {
+    let mut source = init;
+    while let CheckedExprKind::Convert(inner) = &source.kind { source = inner; }
+    if mini_c_sema::const_eval::evaluate(source, Target::default()) == Ok(0) {
+        return Ok(None);
+    }
+    let target = match &source.kind {
+        CheckedExprKind::Unary(UnOp::Address, target) |
+        CheckedExprKind::ArrayDecay(target) => target.as_ref(),
+        _ => return Err("unsupported static pointer initializer".into()),
+    };
+    match &target.kind {
+        CheckedExprKind::Name(name) => Ok(Some(StaticRelocation::Global(name.clone()))),
+        CheckedExprKind::StringLiteral(bytes) => Ok(Some(StaticRelocation::String(bytes.clone()))),
+        _ => Err("unsupported static pointer relocation target".into()),
+    }
 }
 
 /// Intern narrow string data in this object. Sharing identical literals is permitted
@@ -82,29 +112,28 @@ fn char_array_initializer_bytes(
     Ok(Some(bytes))
 }
 
-/// Flatten a checked aggregate constant initializer into ELF bytes.
-/// Dynamic values, symbol relocations nested within aggregates, and objects
-/// exceeding the codegen guard are rejected explicitly.
-fn static_initializer_bytes(ty: &CType, init: &CheckedExpr) -> Result<Option<Vec<u8>>> {
+/// Flatten checked aggregate constants and collect symbolic ELF relocations.
+/// Dynamic values and objects exceeding the codegen guard remain unsupported.
+fn static_initializer_bytes(ty: &CType, init: &CheckedExpr) -> Result<Option<StaticData>> {
     if !matches!(&init.kind, CheckedExprKind::Initializer(_)) { return Ok(None); }
     let size = ty.size_bytes(Target::default()).ok_or("incomplete aggregate initializer")?;
     let size = usize::try_from(size).map_err(|_| "oversized aggregate initializer")?;
     if size > 1_048_576 { return Err("aggregate initializer exceeds 1 MiB codegen limit".into()); }
-    let mut bytes = vec![0u8; size];
-    fn fill(out: &mut [u8], ty: &CType, init: &CheckedExpr, offset: usize) -> Result<()> {
+    let mut data = StaticData { bytes: vec![0u8; size], relocations: Vec::new() };
+    fn fill(data: &mut StaticData, ty: &CType, init: &CheckedExpr, offset: usize) -> Result<()> {
         let size = usize::try_from(ty.size_bytes(Target::default())
             .ok_or("incomplete initialized object")?)
             .map_err(|_| "oversized initialized object")?;
         let end = offset.checked_add(size).ok_or("initializer byte offset overflow")?;
-        if end > out.len() { return Err("initializer extends beyond object bounds".into()); }
+        if end > data.bytes.len() { return Err("initializer extends beyond object bounds".into()); }
         match (&init.kind, ty) {
             (CheckedExprKind::Initializer(values), CType::Struct { members, .. }) |
             (CheckedExprKind::Initializer(values), CType::Union { members, .. }) => {
                 for (value, member) in values.iter().zip(members) {
                     let displacement = usize::try_from(member.offset)
-                        .map_err(|_| "oversized struct member offset")?;
-                    fill(out, &member.ty, value,
-                        offset.checked_add(displacement).ok_or("struct member offset overflow")?)?;
+                        .map_err(|_| "oversized aggregate member offset")?;
+                    fill(data, &member.ty, value,
+                        offset.checked_add(displacement).ok_or("aggregate member offset overflow")?)?;
                 }
             }
             (CheckedExprKind::Initializer(values), CType::Array(element, Some(_))) => {
@@ -112,24 +141,20 @@ fn static_initializer_bytes(ty: &CType, init: &CheckedExpr) -> Result<Option<Vec
                     .ok_or("incomplete array element")?).map_err(|_| "oversized array element")?;
                 for (index, value) in values.iter().enumerate() {
                     let displacement = index.checked_mul(stride).ok_or("array offset overflow")?;
-                    fill(out, element, value,
+                    fill(data, element, value,
                         offset.checked_add(displacement).ok_or("array offset overflow")?)?;
                 }
             }
             _ => {
                 if let Some(string) = char_array_initializer_bytes(ty, init)? {
-                    out[offset..end].copy_from_slice(&string);
+                    data.bytes[offset..end].copy_from_slice(&string);
                 } else if ty.is_integer() {
                     let value = mini_c_sema::const_eval::evaluate(init, Target::default())
                         .map_err(|e| format!("nonconstant aggregate initializer: {e}"))?;
-                    out[offset..end].copy_from_slice(&value.to_le_bytes()[..size]);
+                    data.bytes[offset..end].copy_from_slice(&value.to_le_bytes()[..size]);
                 } else if matches!(ty, CType::Pointer(_)) {
-                    let mut source = init;
-                    while let CheckedExprKind::Convert(inner) = &source.kind { source = inner; }
-                    if mini_c_sema::const_eval::evaluate(source, Target::default()) == Ok(0) {
-                        out[offset..end].fill(0);
-                    } else {
-                        return Err("non-null pointer relocation in aggregate initializer is not yet supported".into());
+                    if let Some(relocation) = pointer_relocation(init)? {
+                        data.relocations.push((offset, relocation));
                     }
                 } else {
                     return Err("unsupported aggregate constant initializer".into());
@@ -138,8 +163,8 @@ fn static_initializer_bytes(ty: &CType, init: &CheckedExpr) -> Result<Option<Vec
         }
         Ok(())
     }
-    fill(&mut bytes, ty, init, 0)?;
-    Ok(Some(bytes))
+    fill(&mut data, ty, init, 0)?;
+    Ok(Some(data))
 }
 
 fn intern_string(
