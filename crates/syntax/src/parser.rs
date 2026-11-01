@@ -88,7 +88,7 @@ impl<'a> Parser<'a> {
             && error.message.starts_with("expected ';'")
             && self.peek().ok().flatten().is_some_and(|t| matches!(
                 t.text, "int" | "char" | "long" | "void" | "signed" |
-                    "unsigned" | "static" | "extern" | "typedef"
+                    "unsigned" | "static" | "extern" | "typedef" | "struct"
             ) || t.kind == TokenKind::TypedefName)
         {
             return true;
@@ -341,6 +341,15 @@ impl<'a> Parser<'a> {
                     self.expect("]")?;
                     expr = Expr::Index(Box::new(expr), Box::new(index));
                 }
+                Some(".") | Some("->") => {
+                    let arrow = self.take()?.expect("peeked operator").text == "->";
+                    let token = self.take()?.ok_or_else(||
+                        Diagnostic::new(self.eof_span(), "expected structure member name"))?;
+                    if !matches!(token.kind, TokenKind::Identifier | TokenKind::TypedefName) {
+                        return Err(Diagnostic::new(token.span, "expected structure member name"));
+                    }
+                    expr = Expr::Member(Box::new(expr), token.text.to_owned(), arrow);
+                }
                 _ => break,
             }
         }
@@ -365,7 +374,7 @@ impl<'a> Parser<'a> {
             matches!(token.kind, TokenKind::Identifier | TokenKind::TypedefName)
                 && !matches!(token.text, "int" | "char" | "long" | "void"
                     | "unsigned" | "signed" | "typedef" | "static" | "extern"
-                    | "if" | "else" | "while" | "return" | "break" | "continue")
+                    | "struct" | "if" | "else" | "while" | "return" | "break" | "continue")
         }) {
             self.take()?;
             Declarator::Name(token.text.to_owned())
@@ -497,7 +506,7 @@ impl<'a> Parser<'a> {
             "continue" => { self.take()?; self.expect(";")?; Ok(Stmt::Continue) }
             "typedef" => { self.take()?; Ok(Stmt::Typedef(self.parse_decl(true)?)) },
             "static" | "extern" => Ok(Stmt::Decl(self.parse_decl(false)?)),
-            "int" | "char" | "long" | "void" | "unsigned" | "signed" => Ok(Stmt::Decl(self.parse_decl(false)?)),
+            "int" | "char" | "long" | "void" | "unsigned" | "signed" | "struct" => Ok(Stmt::Decl(self.parse_decl(false)?)),
             _ if token.kind == TokenKind::TypedefName => Ok(Stmt::Decl(self.parse_decl(false)?)),
             _ => { let expr = self.parse_expr()?; self.expect(";")?; Ok(Stmt::Expr(Some(expr))) }
         }
@@ -533,6 +542,38 @@ impl<'a> Parser<'a> {
             return Ok(None);
         };
         let ty = match token.text {
+            "struct" => {
+                self.take()?;
+                let tag = self.peek()?.filter(|t| matches!(t.kind,
+                    TokenKind::Identifier | TokenKind::TypedefName))
+                    .map(|t| t.text.to_owned());
+                if tag.is_some() { self.take()?; }
+                if !self.peek()?.is_some_and(|t| t.text == "{") {
+                    return Err(Diagnostic::new(token.span,
+                        "struct tag references require separate tag declaration support"));
+                }
+                self.take()?;
+                let mut members = Vec::new();
+                while !self.peek()?.is_some_and(|t| t.text == "}") {
+                    let (base, start) = self.parse_type()?.ok_or_else(||
+                        Diagnostic::new(self.eof_span(), "unterminated struct definition"))?;
+                    let (name, ty, params) = self.parse_declarator_shape(false)?.finish(base);
+                    if params.is_some() || matches!(ty, Type::Function { .. }) {
+                        return Err(Diagnostic::new(Span { lo: start, hi: start },
+                            "struct member cannot have function type"));
+                    }
+                    let end = self.expect(";")?.span.hi;
+                    members.push(Decl {
+                        storage: StorageClass::Default, name, ty, init: None,
+                        span: Span { lo: start, hi: end },
+                    });
+                }
+                self.expect("}")?;
+                if members.is_empty() {
+                    return Err(Diagnostic::new(token.span, "empty structs are unsupported"));
+                }
+                Type::Struct { tag, members }
+            }
             "void" => { self.take()?; Type::Void }
             "char" => { self.take()?; Type::Char }
             "int" => { self.take()?; Type::Int }
@@ -919,6 +960,29 @@ mod tests {
         let ExternalItem::Function(function) = item else { panic!("expected function"); };
         let Stmt::Block(stmts) = function.body else { panic!("expected block"); };
         assert_eq!(stmts[0], Stmt::Expr(Some(Expr::StringLiteral(b"hi\n\0".to_vec()))));
+    }
+    #[test]
+    fn inline_structs_and_members_parse() {
+        let mut p = Parser::new("struct Pair { char a; int b; long c; } item; int f(void) { struct { int x; char y; } obj; obj.x=7; return obj.x; }");
+        let item = match p.next_item().unwrap().unwrap() {
+            ExternalItem::Declaration(d) => d,
+            other => panic!("expected structure: {other:?}"),
+        };
+        let Type::Struct { tag, members } = item.ty else { panic!("struct expected") };
+        assert_eq!(tag.as_deref(), Some("Pair"));
+        assert_eq!(members.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["a","b","c"]);
+        let fun = match p.next_item().unwrap().unwrap() {
+            ExternalItem::Function(f) => f,
+            other => panic!("expected function: {other:?}"),
+        };
+        let Stmt::Block(body) = fun.body else { panic!("block expected") };
+        assert_eq!(body[1], Stmt::Expr(Some(Expr::Assign(
+            Box::new(Expr::Member(Box::new(Expr::Name("obj".into())), "x".into(), false)),
+            Box::new(Expr::Int(7))
+        ))));
+        let mut p = Parser::new("int read(struct { long a; } *p) { return p->a; }");
+        assert!(matches!(p.next_item(), Ok(Some(ExternalItem::Function(_)))));
+        assert!(Parser::new("struct Unknown value;").next_item().is_err());
     }
 
 }
