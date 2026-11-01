@@ -81,7 +81,7 @@ pub fn evaluate(expr: &CheckedExpr, target: Target) -> Result<i128, &'static str
             let result = result.ok_or("integer constant expression divides by zero or overflows")?;
             bounded_arithmetic(result, &expr.ty, target)
         }
-        CheckedExprKind::StringLiteral(_) | CheckedExprKind::Name(_) | CheckedExprKind::Load(_) |
+        CheckedExprKind::Member(..) | CheckedExprKind::StringLiteral(_) | CheckedExprKind::Name(_) | CheckedExprKind::Load(_) |
         CheckedExprKind::ArrayDecay(_) | CheckedExprKind::Assign(..) | CheckedExprKind::Call(..) =>
             Err("not an integer constant expression"),
     }
