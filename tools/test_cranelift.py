@@ -99,7 +99,7 @@ PROGRAMS = {
         char *p="hello"; return p[0]+p[4]-215;
     }""",
     "string_literal_escapes": r"""int main(void) {
-        char *p="A\n\x42\0Z"; return p[0]+p[1]+p[2]+p[3]-143;
+        char *p="A\n\x42\0Z"; return p[0]+p[1]+p[2]+p[3]-141;
     }""",
     "global_string_pointer": """char *message="abc";
         int main(void) { return message[0]+message[2]-196; }""",
