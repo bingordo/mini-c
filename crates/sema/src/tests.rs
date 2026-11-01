@@ -604,3 +604,25 @@ fn tagged_type_references_survive_inner_shadowing() {
     check("struct Node { int value; }; int f(void) { struct Node *p; { struct Node { long other; }; return p->value; } }").unwrap();
     check("struct Node { int value; }; int f(void) { struct Node *p; { union Node { long other; }; return p->value; } }").unwrap();
 }
+
+#[test]
+fn failed_function_does_not_leave_completed_tag_definitions() {
+    let mut parser = Parser::new(
+        "int bad(void) { struct Temp { int x; }; return missing; }"
+    );
+    let mut checker = Checker::new(Target::default()).unwrap();
+    let item = parser.next_item().unwrap().unwrap();
+    assert!(checker.check_item_recovering(item).is_err());
+    assert!(checker.tag_definitions.borrow().is_empty());
+    assert_eq!(checker.tags.borrow().len(), 1);
+}
+
+#[test]
+fn diagnostic_recovery_rolls_back_completed_local_tags() {
+    let mut parser = Parser::new(
+        "int bad(void) { struct Temp { int x; }; return missing; }"
+    );
+    let mut checker = Checker::new(Target::default()).unwrap();
+    assert!(!diagnose_stream_recovering(&mut parser, &mut checker, 10).is_empty());
+    assert!(checker.tag_definitions.borrow().is_empty());
+}
