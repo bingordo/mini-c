@@ -48,6 +48,18 @@ struct KnownFunction {
     defined: bool,
 }
 
+#[derive(Clone)]
+enum RelocationSource {
+    Object(String),
+    Literal(Vec<u8>),
+}
+
+#[derive(Clone)]
+enum RelocationTarget {
+    Object(String),
+    Literal(DataId),
+}
+
 struct KnownData {
     id: DataId,
     ty: CType,
@@ -55,6 +67,8 @@ struct KnownData {
     initialized: Option<Vec<u8>>,
     address_of: Option<String>,
     string_address: Option<DataId>,
+    /// Multiple pointer fields can carry independent ELF data relocations.
+    aggregate_relocations: Vec<(u32, RelocationTarget)>,
     tentative: bool,
 }
 
@@ -83,15 +97,21 @@ fn char_array_initializer_bytes(
 }
 
 /// Flatten a checked aggregate constant initializer into ELF bytes.
-/// Dynamic values, symbol relocations nested within aggregates, and objects
-/// exceeding the codegen guard are rejected explicitly.
-fn static_initializer_bytes(ty: &CType, init: &CheckedExpr) -> Result<Option<Vec<u8>>> {
+/// Dynamic nonconstant expressions and objects exceeding the codegen guard
+/// are rejected explicitly. Relocations remain separate from raw bytes.
+fn static_initializer_bytes(
+    ty: &CType, init: &CheckedExpr,
+) -> Result<Option<(Vec<u8>, Vec<(u32, RelocationSource)>)>> {
     if !matches!(&init.kind, CheckedExprKind::Initializer(_)) { return Ok(None); }
     let size = ty.size_bytes(Target::default()).ok_or("incomplete aggregate initializer")?;
     let size = usize::try_from(size).map_err(|_| "oversized aggregate initializer")?;
     if size > 1_048_576 { return Err("aggregate initializer exceeds 1 MiB codegen limit".into()); }
     let mut bytes = vec![0u8; size];
-    fn fill(out: &mut [u8], ty: &CType, init: &CheckedExpr, offset: usize) -> Result<()> {
+    let mut relocations = Vec::new();
+    fn fill(
+        out: &mut [u8], relocations: &mut Vec<(u32, RelocationSource)>,
+        ty: &CType, init: &CheckedExpr, offset: usize,
+    ) -> Result<()> {
         let size = usize::try_from(ty.size_bytes(Target::default())
             .ok_or("incomplete initialized object")?)
             .map_err(|_| "oversized initialized object")?;
@@ -103,7 +123,7 @@ fn static_initializer_bytes(ty: &CType, init: &CheckedExpr) -> Result<Option<Vec
                 for (value, member) in values.iter().zip(members) {
                     let displacement = usize::try_from(member.offset)
                         .map_err(|_| "oversized struct member offset")?;
-                    fill(out, &member.ty, value,
+                    fill(out, relocations, &member.ty, value,
                         offset.checked_add(displacement).ok_or("struct member offset overflow")?)?;
                 }
             }
@@ -112,7 +132,7 @@ fn static_initializer_bytes(ty: &CType, init: &CheckedExpr) -> Result<Option<Vec
                     .ok_or("incomplete array element")?).map_err(|_| "oversized array element")?;
                 for (index, value) in values.iter().enumerate() {
                     let displacement = index.checked_mul(stride).ok_or("array offset overflow")?;
-                    fill(out, element, value,
+                    fill(out, relocations, element, value,
                         offset.checked_add(displacement).ok_or("array offset overflow")?)?;
                 }
             }
@@ -129,7 +149,19 @@ fn static_initializer_bytes(ty: &CType, init: &CheckedExpr) -> Result<Option<Vec
                     if mini_c_sema::const_eval::evaluate(source, Target::default()) == Ok(0) {
                         out[offset..end].fill(0);
                     } else {
-                        return Err("non-null pointer relocation in aggregate initializer is not yet supported".into());
+                        let target = match &source.kind {
+                            CheckedExprKind::Unary(UnOp::Address, inner) |
+                            CheckedExprKind::ArrayDecay(inner) => inner.as_ref(),
+                            _ => return Err("aggregate pointer initializer requires constant address".into()),
+                        };
+                        let target = match &target.kind {
+                            CheckedExprKind::Name(name) => RelocationSource::Object(name.clone()),
+                            CheckedExprKind::StringLiteral(bytes) => RelocationSource::Literal(bytes.clone()),
+                            _ => return Err("aggregate pointer initializer requires named object or string".into()),
+                        };
+                        let offset = u32::try_from(offset)
+                            .map_err(|_| "aggregate relocation offset overflow")?;
+                        relocations.push((offset, target));
                     }
                 } else {
                     return Err("unsupported aggregate constant initializer".into());
@@ -138,8 +170,8 @@ fn static_initializer_bytes(ty: &CType, init: &CheckedExpr) -> Result<Option<Vec
         }
         Ok(())
     }
-    fill(&mut bytes, ty, init, 0)?;
-    Ok(Some(bytes))
+    fill(&mut bytes, &mut relocations, ty, init, 0)?;
+    Ok(Some((bytes, relocations)))
 }
 
 fn intern_string(
@@ -217,9 +249,21 @@ impl Compiler {
         let name = decl.name.clone();
         let mut address_of = None;
         let mut string_address = None;
+        let mut aggregate_relocations = Vec::new();
         let initialized = if let Some(init) = &decl.initializer {
-            if let Some(bytes) = char_array_initializer_bytes(&decl.ty, init)?
-                .or(static_initializer_bytes(&decl.ty, init)?) {
+            if let Some(bytes) = char_array_initializer_bytes(&decl.ty, init)? {
+                Some(bytes)
+            } else if let Some((bytes, relocations)) =
+                static_initializer_bytes(&decl.ty, init)?
+            {
+                for (offset, source) in relocations {
+                    let target = match source {
+                        RelocationSource::Object(name) => RelocationTarget::Object(name),
+                        RelocationSource::Literal(bytes) => RelocationTarget::Literal(
+                            intern_string(&mut self.module, &mut self.strings, &bytes)?),
+                    };
+                    aggregate_relocations.push((offset, target));
+                }
                 Some(bytes)
             } else {
             if !decl.ty.is_integer() && !matches!(decl.ty, CType::Pointer(_)) {
@@ -279,6 +323,7 @@ impl Compiler {
                 data.initialized = initialized;
                 data.address_of = address_of;
                 data.string_address = string_address;
+                data.aggregate_relocations = aggregate_relocations;
             }
             data.tentative |= tentative;
             if data.initialized.is_some() || data.tentative {
@@ -303,7 +348,10 @@ impl Compiler {
         };
         let id = self.module.declare_data(&name, linkage, true, false)
             .map_err(|e| format!("declaring global '{name}': {e}"))?;
-        self.data.insert(name, KnownData { id, ty: decl.ty, linkage: decl.linkage, initialized, address_of, string_address, tentative });
+        self.data.insert(name, KnownData {
+            id, ty: decl.ty, linkage: decl.linkage, initialized,
+            address_of, string_address, aggregate_relocations, tentative,
+        });
         Ok(())
     }
 
@@ -394,6 +442,15 @@ impl Compiler {
             } else if let Some(string) = data.string_address {
                 let gv = self.module.declare_data_in_data(string, &mut desc);
                 desc.write_data_addr(0, gv, 0);
+            }
+            for (offset, target) in &data.aggregate_relocations {
+                let target_id = match target {
+                    RelocationTarget::Object(symbol) => self.data.get(symbol)
+                        .ok_or_else(|| format!("aggregate initializer for '{name}' refers to unknown object '{symbol}'"))?.id,
+                    RelocationTarget::Literal(id) => *id,
+                };
+                let gv = self.module.declare_data_in_data(target_id, &mut desc);
+                desc.write_data_addr(*offset, gv, 0);
             }
             self.module.define_data(data.id, &desc)
                 .map_err(|e| format!("defining global '{name}': {e}"))?;
