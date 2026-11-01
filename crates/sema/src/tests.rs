@@ -458,5 +458,39 @@ fn narrow_string_is_char_array_and_decays_to_pointer() {
     assert_eq!(string.category, Category::LValue);
     assert!(matches!(&string.kind, CheckedExprKind::StringLiteral(bytes) if bytes.as_slice() == &b"ab\0"[..]));
     reject(r#"int *p="invalid";"#, "pointer initializer requires");
-    reject(r#"char a[4]="abc";"#, "array initializer requires");
+    check(r#"char a[4]="abc";"#).unwrap();
+    reject(r#"char a[2]="abc";"#, "string literal is too long");
+    reject(r#"int a[4]="abc";"#, "array initializer requires");
+}
+
+#[test]
+fn character_array_string_bounds_and_initializers() {
+    let items = check(r#"char inferred[]="abc"; unsigned char padded[7]="hi";
+        char no_nul[3]="abc"; int main(void) {
+            char local[]="xy"; char exact[2]="xy"; return local[2]+exact[1]-'y';
+        }"#).unwrap();
+    let CheckedItem::Declaration(inferred) = &items[0] else { panic!("expected global"); };
+    assert_eq!(inferred.ty, CType::Array(Box::new(CType::Integer {
+        rank: IntRank::Char, unsigned: false,
+    }), Some(4)));
+    assert!(matches!(&inferred.initializer, Some(CheckedExpr {
+        kind: CheckedExprKind::StringLiteral(bytes), ..
+    }) if bytes.as_slice() == b"abc\\0"));
+    let CheckedItem::Declaration(padded) = &items[1] else { panic!("expected global"); };
+    assert_eq!(padded.ty, CType::Array(Box::new(CType::Integer {
+        rank: IntRank::Char, unsigned: true,
+    }), Some(7)));
+    let CheckedItem::Declaration(no_nul) = &items[2] else { panic!("expected global"); };
+    assert!(matches!(no_nul.ty, CType::Array(_, Some(3))));
+    let CheckedItem::Function(main) = &items[3] else { panic!("expected function"); };
+    let CheckedStmt::Block(statements) = &main.body else { panic!("expected block"); };
+    let CheckedStmt::Decl(local) = &statements[0] else { panic!("expected local"); };
+    assert_eq!(local.ty, CType::Array(Box::new(CType::Integer {
+        rank: IntRank::Char, unsigned: false,
+    }), Some(3)));
+    let CheckedStmt::Decl(exact) = &statements[1] else { panic!("expected local"); };
+    assert!(matches!(exact.ty, CType::Array(_, Some(2))));
+    reject(r#"char too_short[2]="abc";"#, "string literal is too long");
+    reject(r#"int wrong_type[3]="ab";"#, "array initializer requires");
+    reject(r#"int f(void) { char too_short[1]="abc"; return 0; }"#, "string literal is too long");
 }
