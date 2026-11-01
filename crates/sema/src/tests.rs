@@ -456,7 +456,7 @@ fn narrow_string_is_char_array_and_decays_to_pointer() {
         rank: IntRank::Char, unsigned: false,
     }), Some(3)));
     assert_eq!(string.category, Category::LValue);
-    assert!(matches!(&string.kind, CheckedExprKind::StringLiteral(bytes) if bytes == b"ab\0"));
+    assert!(matches!(&string.kind, CheckedExprKind::StringLiteral(bytes) if bytes.as_slice() == &b"ab\0"[..]));
     reject(r#"int *p="invalid";"#, "pointer initializer requires");
     reject(r#"char a[4]="abc";"#, "array initializer requires");
 }
