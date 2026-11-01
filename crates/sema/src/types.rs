@@ -1,6 +1,6 @@
 //! Target-dependent C integer types and the conversions used by the supported subset.
 //! No host sizeof() assumptions: a caller selects the integer model.
-use mini_c_syntax::ast::Span;
+use mini_c_syntax::ast::{Span, TagKind};
 use mini_c_syntax::diag::Diagnostic;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -30,6 +30,9 @@ pub enum CType {
         size: u64,
         align: u64,
     },
+    /// Nominal reference to a named, possibly incomplete struct/union.
+    /// Pointers retain identity while the tag's definition can arrive later.
+    TagRef { kind: TagKind, name: String, identity: u64 },
     Void,
     Integer { rank: IntRank, unsigned: bool },
     Pointer(Box<CType>),
@@ -42,11 +45,31 @@ impl CType {
     /// Target-specific object alignment in bytes for x86-64 LP64.
     pub fn align_bytes(&self, target: Target) -> Option<u64> {
         match self {
-            Self::Void | Self::Function { .. } => None,
+            Self::Void | Self::Function { .. } | Self::TagRef { .. } => None,
             Self::Struct { align, .. } | Self::Union { align, .. } => Some(*align),
             Self::Array(element, _) => element.align_bytes(target),
             Self::Pointer(_) => Some(8),
             Self::Integer { rank, .. } => Some(u64::from(target.bits(*rank) / 8)),
+        }
+    }
+
+    /// A named aggregate and its recursive/incomplete reference share
+    /// identity even though one representation does not embed the members.
+    pub fn same_type(&self, other: &Self) -> bool {
+        use CType::{Struct, Union, TagRef};
+        match (self, other) {
+            (Struct { identity: a, .. }, Struct { identity: b, .. }) |
+            (Union { identity: a, .. }, Union { identity: b, .. }) =>
+                a == b,
+            (Struct { identity: a, .. }, TagRef { kind: TagKind::Struct, identity: b, .. }) |
+            (TagRef { kind: TagKind::Struct, identity: a, .. }, Struct { identity: b, .. }) |
+            (Union { identity: a, .. }, TagRef { kind: TagKind::Union, identity: b, .. }) |
+            (TagRef { kind: TagKind::Union, identity: a, .. }, Union { identity: b, .. }) =>
+                a == b,
+            (CType::Pointer(a), CType::Pointer(b)) => a.same_type(b),
+            (CType::Array(a, na), CType::Array(b, nb)) =>
+                na == nb && a.same_type(b),
+            _ => self == other,
         }
     }
 
@@ -73,7 +96,7 @@ impl CType {
     /// Incomplete arrays, void/function types and overflowing extents have no size.
     pub fn size_bytes(&self, target: Target) -> Option<u64> {
         match self {
-            Self::Void | Self::Function { .. } => None,
+            Self::Void | Self::Function { .. } | Self::TagRef { .. } => None,
             Self::Struct { size, .. } | Self::Union { size, .. } => Some(*size),
             Self::Integer { rank, .. } => Some(u64::from(target.bits(*rank) / 8)),
             Self::Pointer(_) => Some(8), // Current target model is LP64.
