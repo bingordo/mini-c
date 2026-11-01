@@ -826,7 +826,10 @@ impl Checker {
 
     fn convert(&self, expr: CheckedExpr, ty: &CType) -> CheckedExpr {
         let expr = expr.rvalue();
-        if &expr.ty == ty { return expr; }
+        if &expr.ty == ty || (expr.ty.same_type(ty) &&
+            matches!(ty, CType::Struct { .. } | CType::Union { .. })) {
+            return expr;
+        }
         CheckedExpr::value(ty.clone(), CheckedExprKind::Convert(Box::new(expr)))
     }
 
@@ -836,10 +839,10 @@ impl Checker {
         let expr = expr.rvalue();
         let compatible = match (ty, &expr.ty) {
             (CType::Struct { .. }, CType::Struct { .. }) |
-            (CType::Union { .. }, CType::Union { .. }) => ty == &expr.ty,
+            (CType::Union { .. }, CType::Union { .. }) => ty.same_type(&expr.ty),
             (CType::Integer { .. }, CType::Integer { .. }) => true,
             (CType::Pointer(lhs), CType::Pointer(rhs)) =>
-                lhs == rhs || **lhs == CType::Void || **rhs == CType::Void,
+                lhs.same_type(rhs) || **lhs == CType::Void || **rhs == CType::Void,
             (CType::Pointer(_), CType::Integer { .. }) => const_eval::evaluate(&expr, self.target) == Ok(0),
             _ => false,
         };
@@ -857,9 +860,16 @@ impl Checker {
         let CType::Pointer(element) = &pointer.ty else {
             return Err(type_error(span, "pointer arithmetic requires a pointer"));
         };
-        if element.size_bytes(self.target).is_none() {
+        let complete = self.complete_tag_type(element.as_ref().clone(), span)?;
+        if complete.size_bytes(self.target).is_none() {
             return Err(type_error(span, "pointer arithmetic requires a complete object type"));
         }
+        let converted_pointer = CType::Pointer(Box::new(complete));
+        let pointer = if pointer.ty == converted_pointer {
+            pointer
+        } else {
+            self.convert(pointer, &converted_pointer)
+        };
         if !integer.ty.is_integer() {
             return Err(type_error(span, "pointer arithmetic requires an integer offset"));
         }
@@ -905,11 +915,12 @@ impl Checker {
                     let CType::Pointer(inner) = &base.ty else {
                         return Err(type_error(span, "arrow operator requires a pointer to struct"));
                     };
-                    if !matches!(inner.as_ref(), CType::Struct { .. } | CType::Union { .. }) {
+                    let complete = self.complete_tag_type(inner.as_ref().clone(), span)?;
+                    if !matches!(complete, CType::Struct { .. } | CType::Union { .. }) {
                         return Err(type_error(span, "arrow operator requires a pointer to struct or union"));
                     }
                     CheckedExpr {
-                        ty: inner.as_ref().clone(),
+                        ty: complete,
                         category: Category::LValue,
                         kind: CheckedExprKind::Unary(UnOp::Deref, Box::new(base)),
                     }
@@ -919,6 +930,8 @@ impl Checker {
                     }
                     base
                 };
+                let mut object = object;
+                object.ty = self.complete_tag_type(object.ty.clone(), span)?;
                 let members = match &object.ty {
                     CType::Struct { members, .. } | CType::Union { members, .. } => members,
                     _ => return Err(type_error(span, "member access requires a struct or union")),
@@ -967,7 +980,7 @@ impl Checker {
                         let CType::Pointer(inner_ty) = &typed.ty else {
                             return Err(type_error(span, "dereference requires a pointer"));
                         };
-                        let ty = (**inner_ty).clone();
+                        let ty = self.complete_tag_type((**inner_ty).clone(), span)?;
                         let category = if matches!(ty, CType::Function { .. }) { Category::Function } else if ty == CType::Void {
                             return Err(type_error(span, "cannot dereference void pointer"));
                         } else { Category::LValue };
@@ -996,7 +1009,7 @@ impl Checker {
                     return Ok(CheckedExpr::value(CType::int(), CheckedExprKind::Binary(*op, Box::new(left), Box::new(right))));
                 }
                 if relation && (matches!((&left.ty, &right.ty), (CType::Pointer(a), CType::Pointer(b))
-                        if a == b || **a == CType::Void || **b == CType::Void)
+                        if a.same_type(b) || **a == CType::Void || **b == CType::Void)
                     || (matches!(op, BinOp::Eq | BinOp::Ne)
                         && ((matches!(left.ty, CType::Pointer(_)) && const_eval::evaluate(&right, self.target) == Ok(0))
                             || (matches!(right.ty, CType::Pointer(_)) && const_eval::evaluate(&left, self.target) == Ok(0))))) {
