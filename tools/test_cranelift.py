@@ -14,6 +14,21 @@ import subprocess
 import sys
 
 PROGRAMS = {
+    # These must agree with GCC at execution time, not merely type-check or
+    # emit valid ELF. Keep all results within the shell's 8-bit exit range.
+    "bitwise_precedence": """int main(void) {
+        int a=5; int b=2; int c=6;
+        return (a | b ^ c & 3 == 2) + (a && b | c);
+    }""",
+    "bitwise_promotions": """unsigned int transform(unsigned int x, unsigned char y) {
+        return (~x & 255) ^ (y | 3);
+    } int main(void) { return transform(23,240) & 255; }""",
+    "bitwise_constant_initializer": """int mask = (3 | 4) ^ (1 & 7);
+        int main(void) { return (mask & 15) ^ (~2 & 7); }""",
+    "bitwise_eager_evaluation": """int main(void) {
+        int x=1; int y=2;
+        return ((x | y) & 3) ^ (x && (y | 4));
+    }""",
     "arithmetic": "int main(void) { int x=7; x=x*3-2; return x/2+x%2; }",
     "stack_array": """int main(void) {
         int a[4]; a[0]=3; a[1]=7; a[2]=11; a[3]=19;
