@@ -14,6 +14,18 @@ import subprocess
 import sys
 
 PROGRAMS = {
+    "compound_single_eval": """int calls; int value=7;
+        int *next(void) { calls=calls+1; return &value; }
+        int main(void) { *next() &= 3; *next() |= 8; *next() ^= 2;
+            *next() <<= 1; *next() >>= 1; return calls*10+value; }""",
+    "compound_bitwise_chained": """int main(void) {
+        int a=15; int b=1; a &= b |= 6; a ^= 3; return a; }""",
+    "compound_shifts_narrow_unsigned": """int main(void) {
+        unsigned char value=255; value &= 15; value <<= 1;
+        value >>= 2; return value; }""",
+    "compound_signed_shift": """int main(void) {
+        int signed_value=-64; signed_value >>= 3;
+        return signed_value+100; }""",
     "shift_precedence": """int main(void) {
         return ((1+2 << 3) < 30) + (32 >> 2+1) + (1 << 2 << 1);
     }""",
