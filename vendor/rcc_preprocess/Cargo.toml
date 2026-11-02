@@ -1,0 +1,16 @@
+[package]
+name = "rcc_preprocess"
+version = "0.0.1"
+edition = "2021"
+rust-version = "1.82"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/noname0310/rcc"
+publish = false
+description = "Pinned rcc C99 preprocessing engine with Mini-C invocation-origin fix"
+
+[dependencies]
+rcc_span = { git = "https://github.com/noname0310/rcc.git", rev = "aa7ba4115a986cd533965ae297de6490315c35cb" }
+rcc_errors = { git = "https://github.com/noname0310/rcc.git", rev = "aa7ba4115a986cd533965ae297de6490315c35cb" }
+rcc_session = { git = "https://github.com/noname0310/rcc.git", rev = "aa7ba4115a986cd533965ae297de6490315c35cb" }
+rcc_lexer = { git = "https://github.com/noname0310/rcc.git", rev = "aa7ba4115a986cd533965ae297de6490315c35cb" }
+rcc_data_structures = { git = "https://github.com/noname0310/rcc.git", rev = "aa7ba4115a986cd533965ae297de6490315c35cb" }

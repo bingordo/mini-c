@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/*"]
+exclude = ["vendor/rcc_preprocess"]
 
 [workspace.dependencies]
 # The generated expression parser consumes tokens from the handwritten lexer.

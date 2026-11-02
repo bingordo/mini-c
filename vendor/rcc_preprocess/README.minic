@@ -1,0 +1,15 @@
+This directory contains a narrow source copy of the rcc_preprocess crate
+from https://github.com/noname0310/rcc at
+aa7ba4115a986cd533965ae297de6490315c35cb, originally
+licensed MIT OR Apache-2.0 according to its Cargo.toml.
+
+Only this preprocessing crate is copied; lexer, session, source maps and other
+rcc dependencies remain pinned at the original upstream commit.
+
+Mini-C patches src/expand.rs to track macro invocation location separately
+from the spelling span through token substitution, rescanning and builtins.
+The original spelling spans must remain untouched so #/## keep their C99
+semantics. See docs/Internal_CPP_Prototype.md and issue #12.
+
+Do not replace this copy with upstream blindly: run the direct/macro-wrapped
+__LINE__/__FILE__, #line and GCC/Clang differential suite first.

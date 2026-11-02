@@ -15,7 +15,7 @@ internal-rcc = [
 [dependencies]
 # An isolated C99 preprocessor candidate. The Mini-C parser, sema and backend
 # do not depend on rcc; this only builds when internal-rcc is explicitly enabled.
-rcc_preprocess = { git = "https://github.com/noname0310/rcc.git", rev = "aa7ba4115a986cd533965ae297de6490315c35cb", optional = true }
+rcc_preprocess = { path = "../../vendor/rcc_preprocess", optional = true }
 rcc_session = { git = "https://github.com/noname0310/rcc.git", rev = "aa7ba4115a986cd533965ae297de6490315c35cb", optional = true }
 rcc_lexer = { git = "https://github.com/noname0310/rcc.git", rev = "aa7ba4115a986cd533965ae297de6490315c35cb", optional = true }
 rcc_errors = { git = "https://github.com/noname0310/rcc.git", rev = "aa7ba4115a986cd533965ae297de6490315c35cb", optional = true }

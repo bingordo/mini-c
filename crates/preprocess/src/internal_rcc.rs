@@ -68,32 +68,9 @@ pub fn file(path: &Path, args: &[std::ffi::OsString]) -> Result<String, String> 
     let mut preprocessor = rcc_preprocess::Preprocessor::new(&mut session);
     let tokens = preprocessor.run(root);
 
-    // The pinned rcc expander currently treats dynamic predefined macros in
-    // replacement lists as if they occurred at the *definition* location.
-    // This silently changes __LINE__ / __FILE__ at invocation sites. Reject
-    // those expansions rather than return incorrect C tokens; removing this
-    // gate requires a tested upstream invocation-span fix.
-    let suspicious_definitions = {
-        let map = preprocessor.session.source_map.read()
-            .map_err(|e| format!("internal source map lock poisoned: {e}"))?;
-        preprocessor.macros.iter().any(|def| def.body.iter().any(|token| {
-            if token.kind != PpTokenKind::Ident { return false; }
-            let file = map.file(token.span.file);
-            let lo = token.span.lo.0 as usize;
-            let hi = token.span.hi.0 as usize;
-            matches!(file.src.get(lo..hi), Some("__LINE__" | "__FILE__"))
-        }))
-    };
-    if suspicious_definitions {
-        let map = preprocessor.session.source_map.read()
-            .map_err(|e| format!("internal source map lock poisoned: {e}"))?;
-        if tokens.iter().any(|token| {
-            let name = &map.file(token.span.file).name;
-            matches!(name.to_str(), Some("<builtin:__LINE__>" | "<builtin:__FILE__>"))
-        }) {
-            return Err("dynamic __LINE__/__FILE__ within a macro replacement                 list requires invocation-site source tracking not yet available                 in the pinned internal engine; use --cpp=cc".into());
-        }
-    }
+    // The narrow rcc_preprocess patch preserves the invocation site of
+    // replacement-list tokens separately from their spelling spans, so
+    // __LINE__ and __FILE__ inside nested macro calls use the caller.
     // Keep rcc's logical #line map alive while reconstructing the Mini-C
     // source stream. Physical token spans are not sufficient here: a source
     // file may have been renamed or renumbered by an active directive.

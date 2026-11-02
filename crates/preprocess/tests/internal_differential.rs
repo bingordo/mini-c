@@ -182,30 +182,24 @@ int second = __LINE__;
 }
 
 #[test]
-fn macro_wrapped_line_builtin_is_rejected_instead_of_miscompiled() {
-    use std::ffi::OsString;
-    let dir = std::env::temp_dir().join(format!(
-        "mini-c-line-macro-{}-{}",
-        std::process::id(),
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    let source = dir.join("line.c");
-    std::fs::write(&source,
-        "#line 100 \"virtual.c\"\n#define WHICH_LINE __LINE__\nint n = WHICH_LINE;\n",
-    ).unwrap();
-    let result = file(&source, &Config {
-        executable: OsString::from("internal"),
-        args: vec![OsString::from("-E")],
-    });
-    let _ = std::fs::remove_dir_all(&dir);
-    let error = result.unwrap_err().to_string();
-    assert!(error.contains("invocation-site"), "{error}");
+fn line_and_file_builtins_in_object_function_and_indirect_macros() {
+    compare(r#"
+#line 100 "virtual name.c"
+#define DIRECT_LINE __LINE__
+#define WRAPPED_LINE(x) x
+#define INDIRECT_LINE DIRECT_LINE
+#define DIRECT_FILE __FILE__
+#define WRAPPED_FILE(x) x
+int first = DIRECT_LINE;
+int second = WRAPPED_LINE(__LINE__);
+int third = INDIRECT_LINE;
+char *name1 = DIRECT_FILE;
+char *name2 = WRAPPED_FILE(__FILE__);
+"#, &[]);
 }
 
 #[test]
-#[ignore = "upstream rcc must preserve macro invocation spans for __LINE__; tracking exact GCC behavior"]
-fn line_builtin_inside_macro_matches_gcc_when_upstream_fixed() {
+fn line_builtin_inside_macro_matches_gcc_when_invocation_is_fixed() {
     compare(r#"
 #line 100 "virtual name.c"
 int first = __LINE__;
@@ -213,6 +207,39 @@ int second = __LINE__;
 #define WHICH_LINE __LINE__
 int third = WHICH_LINE;
 "#, &[]);
+}
+
+#[test]
+fn macro_builtin_in_nested_header_uses_invocation_not_definition_location() {
+    // Header macro definition has a different physical filename and line
+    // from the call site. Both __FILE__ and __LINE__ must use the caller.
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let dir = std::env::temp_dir().join(format!(
+        "mini-c-macro-origins-{}-{nonce}", std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let header = dir.join("macro.h");
+    let source = dir.join("source.c");
+    std::fs::write(&header, "#define SHOW_LINE __LINE__\n#define SHOW_FILE __FILE__\n").unwrap();
+    std::fs::write(&source,
+        "#include \"macro.h\"\n#line 41 \"virtual-caller.c\"\nint n=SHOW_LINE;\nchar *f=SHOW_FILE;\n"
+    ).unwrap();
+    let args = vec![OsString::from("-E")];
+    let reference = file(&source, &Config {
+        executable: OsString::from("cc"), args: args.clone(),
+    });
+    let internal = file(&source, &Config {
+        executable: OsString::from("internal"), args,
+    });
+    let _ = std::fs::remove_dir_all(dir);
+    let reference = match reference {
+        Err(mini_c_preprocess::Error::Io(e))
+            if e.kind() == std::io::ErrorKind::NotFound => return,
+        other => other.unwrap(),
+    };
+    let internal = internal.unwrap();
+    assert_eq!(tokens(&internal), tokens(&reference),
+        "header macro invocation mismatch\ninternal:\n{internal}\nGCC:\n{reference}");
 }
 
 #[test]
