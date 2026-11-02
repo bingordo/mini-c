@@ -108,8 +108,8 @@ fn bad_input_mutations_terminate_without_panicking() {
 fn broad_diagnostic_codes_remain_stable() {
     use mini_c_syntax::diag::DiagnosticCode;
     let syntax = syntax_error("int = 4;");
-    assert_eq!(syntax.code, DiagnosticCode::Syntax);
-    assert_eq!(syntax.code.as_str(), "S0001");
+    assert_eq!(syntax.code, DiagnosticCode::SyntaxExpectedDeclarator);
+    assert_eq!(syntax.code.as_str(), "S0104");
 
     let lexical = syntax_error("int x; @");
     assert_eq!(lexical.code, DiagnosticCode::LexicalInvalidCharacter);
@@ -206,5 +206,87 @@ fn fine_grained_syntax_codes_are_independent_of_messages() {
         let error = syntax_error(source);
         assert_eq!(error.code, kind, "{source:?}: {error:?}");
         assert_eq!(error.code.as_str(), code);
+    }
+}
+
+
+#[test]
+fn declarator_errors_have_stable_codes_and_precise_tokens() {
+    use mini_c_syntax::diag::DiagnosticCode;
+    let cases = [
+        ("int *;", ";", DiagnosticCode::SyntaxExpectedDeclarator, "S0104"),
+        ("int;", ";", DiagnosticCode::SyntaxExpectedDeclarator, "S0104"),
+        ("typedef int;", ";", DiagnosticCode::SyntaxExpectedDeclarator, "S0104"),
+        ("int f(,);", ",", DiagnosticCode::SyntaxExpectedParameter, "S0106"),
+        ("int f(int x,);", ")", DiagnosticCode::SyntaxExpectedParameter, "S0106"),
+        ("int f(void x);", "void", DiagnosticCode::SyntaxExpectedParameter, "S0106"),
+        ("typedef static int T;", "static", DiagnosticCode::SyntaxInvalidDeclaration, "S0105"),
+        ("typedef int T = 1;", "=", DiagnosticCode::SyntaxInvalidDeclaration, "S0105"),
+        ("int x { return 0; }", "{", DiagnosticCode::SyntaxInvalidDeclaration, "S0105"),
+        ("int f(void) { typedef extern int T; }", "extern", DiagnosticCode::SyntaxInvalidDeclaration, "S0105"),
+        ("int f(void) { typedef int T = 1; }", "=", DiagnosticCode::SyntaxInvalidDeclaration, "S0105"),
+    ];
+    for (source, needle, code, expected_code) in cases {
+        let error = syntax_error(source);
+        let lo = source.find(needle).unwrap();
+        assert_eq!(error.code, code, "{source:?}: {error:?}");
+        assert_eq!(error.code.as_str(), expected_code);
+        assert_eq!(error.span, Span { lo, hi: lo + needle.len() }, "{source:?}: {error:?}");
+    }
+}
+
+#[test]
+fn incomplete_parameter_lists_report_eof_with_specific_code() {
+    use mini_c_syntax::diag::DiagnosticCode;
+    for source in ["int f(", "int f(int x,", "int f(int x,   "] {
+        let error = syntax_error(source);
+        assert_eq!(error.code, DiagnosticCode::SyntaxExpectedParameter, "{source:?}: {error:?}");
+        assert_eq!(error.span, Span { lo: source.len(), hi: source.len() });
+    }
+}
+
+#[test]
+fn bounded_declarator_mutations_cannot_panic_or_loop() {
+    // Bounded, deterministic insertions, deletions, and truncation at every
+    // character boundary in nested declarators and typedef-scope fixtures.
+    let seeds = [
+        "typedef int Value; Value values[3];",
+        "int (*callback)(int);",
+        "int (*table[2])(int);",
+        "struct Pair { int left; long right; };",
+        "int run(int *p, int a[4]) { return p[0] + a[1]; }",
+        "int f(void) { typedef int T; T x=1; return x; }",
+    ];
+    for seed in seeds {
+        assert!(seed.is_ascii());
+        for at in 0..=seed.len() {
+            let mut inserted = seed.to_owned();
+            inserted.insert(at, '@');
+            for source in [inserted.as_str(), &seed[..at]] {
+                for located in [false, true] {
+                    let result = std::panic::catch_unwind(|| {
+                        let mut parser = if located {
+                            Parser::new_with_spans(source)
+                        } else {
+                            Parser::new(source)
+                        };
+                        let errors = parser.for_each_item_recovering(4, |_| ());
+                        assert!(errors.len() <= 4);
+                    });
+                    assert!(result.is_ok(),
+                        "parser panicked for located={located} mutated={source:?}");
+                }
+            }
+            if at < seed.len() {
+                let mut deleted = seed.to_owned();
+                deleted.remove(at);
+                let result = std::panic::catch_unwind(|| {
+                    let mut parser = Parser::new_with_spans(&deleted);
+                    let errors = parser.for_each_item_recovering(4, |_| ());
+                    assert!(errors.len() <= 4);
+                });
+                assert!(result.is_ok(), "parser panicked for deletion={deleted:?}");
+            }
+        }
     }
 }
