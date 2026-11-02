@@ -31,6 +31,9 @@ pub enum CheckedExprKind {
     Unary(UnOp, Box<CheckedExpr>),
     Binary(BinOp, Box<CheckedExpr>, Box<CheckedExpr>),
     Assign(Box<CheckedExpr>, Box<CheckedExpr>),
+    /// The compound operator is applied to the old lvalue and right operand
+    /// at computation_ty, then narrowed once to the lvalue type.
+    CompoundAssign(BinOp, Box<CheckedExpr>, Box<CheckedExpr>, CType),
     Call(Box<CheckedExpr>, Vec<CheckedExpr>),
     Convert(Box<CheckedExpr>),
     Load(Box<CheckedExpr>),
@@ -1225,6 +1228,40 @@ impl Checker {
                 let rhs_typed = self.check_expr(rhs, span)?;
                 let rhs_typed = self.convert_for_assignment(rhs_typed, &lhs.ty, rhs, rhs_span)?;
                 Ok(CheckedExpr::value(lhs.ty.clone(), CheckedExprKind::Assign(Box::new(lhs), Box::new(rhs_typed))))
+            }
+            Expr::CompoundAssign(op, lhs, rhs) => {
+                let lhs_span = lhs.location().unwrap_or(span);
+                let rhs_span = rhs.location().unwrap_or(span);
+                let lhs = self.check_expr(lhs, span)?;
+                if lhs.category != Category::LValue || !lhs.ty.is_integer() {
+                    return Err(Diagnostic::coded(lhs_span,
+                        DiagnosticCode::SemanticInvalidAssignmentTarget,
+                        "compound assignment requires a modifiable integer lvalue"));
+                }
+                let rhs_checked = self.check_expr(rhs, span)?.rvalue();
+                if !rhs_checked.ty.is_integer() {
+                    return Err(Diagnostic::coded(rhs_span,
+                        DiagnosticCode::SemanticInvalidOperatorOperands,
+                        "compound assignment requires integer operands"));
+                }
+                let computation_ty = match op {
+                    BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor =>
+                        self.target.common_integer(&lhs.ty, &rhs_checked.ty)
+                            .ok_or_else(|| type_error(span, "incompatible compound assignment operands"))?,
+                    BinOp::Shl | BinOp::Shr => self.target.promote(&lhs.ty),
+                    _ => return Err(type_error(span, "unsupported compound assignment operator")),
+                };
+                // A shift's right operand gets its own integer promotion;
+                // the computation/result type comes solely from the left.
+                let rhs_ty = if matches!(op, BinOp::Shl | BinOp::Shr) {
+                    self.target.promote(&rhs_checked.ty)
+                } else {
+                    computation_ty.clone()
+                };
+                let rhs_checked = self.convert(rhs_checked, &rhs_ty);
+                let result_ty = lhs.ty.clone();
+                Ok(CheckedExpr::value(result_ty, CheckedExprKind::CompoundAssign(
+                    *op, Box::new(lhs), Box::new(rhs_checked), computation_ty)))
             }
             Expr::Call(callee, args) => {
                 let callee_span = callee.location().unwrap_or(span);
