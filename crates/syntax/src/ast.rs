@@ -26,6 +26,8 @@ pub enum Item {
 pub struct Function {
     pub storage: StorageClass,
     pub name: Ident,
+    /// Name token range in opt-in location-aware parser mode.
+    pub name_span: Option<Span>,
     pub result: Type,
     pub params: Vec<Decl>,
     pub body: Stmt,
@@ -35,6 +37,8 @@ pub struct Function {
 pub struct Decl {
     pub storage: StorageClass,
     pub name: Ident,
+    /// Name token range; `span` continues to cover the full declaration.
+    pub name_span: Option<Span>,
     pub ty: Type,
     pub init: Option<Expr>,
     pub span: Span,
