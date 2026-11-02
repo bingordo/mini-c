@@ -210,6 +210,41 @@ int third = WHICH_LINE;
 }
 
 #[test]
+fn builtins_after_paste_and_stringize_preserve_invocation_and_spelling() {
+    compare(r#"
+#define JOIN(a,b) a##b
+#define STR(x) #x
+#define EXPAND_STR(x) STR(x)
+#define THROUGH(x) x
+#define CALL_LINE() __LINE__
+#line 320 "generated builtin caller.c"
+char *raw = STR(__LINE__);
+char *expanded = EXPAND_STR(__LINE__);
+int pasted = JOIN(__LI,NE__);
+int indirect = THROUGH(CALL_LINE());
+int argument = THROUGH(__LINE__);
+"#, &[]);
+}
+
+#[test]
+fn object_function_macro_invocations_after_line_directives() {
+    compare(r#"
+#define LINE_A __LINE__
+#define LINE_B LINE_A
+#define FUNC(x) x
+#define FILE_A __FILE__
+#define FILE_B FILE_A
+#line 61 "file first.c"
+int first = FUNC(LINE_A);
+int second = LINE_B;
+char *name = FUNC(FILE_A);
+#line 143 "file second.c"
+int third = FUNC(LINE_B);
+char *other = FILE_B;
+"#, &[]);
+}
+
+#[test]
 fn macro_builtin_in_nested_header_uses_invocation_not_definition_location() {
     // Header macro definition has a different physical filename and line
     // from the call site. Both __FILE__ and __LINE__ must use the caller.
