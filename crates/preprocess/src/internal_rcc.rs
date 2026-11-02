@@ -235,6 +235,52 @@ mod tests {
     }
 
     #[test]
+    fn line_directives_preserve_virtual_filenames_and_logical_lines() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let dir = std::env::temp_dir().join(format!(
+            "mini-c-rcc-line-{}-{}", std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("line.c");
+        std::fs::write(&src,
+            "#line 45 \"generated name.c\"\nint first;\n#line 100\nint second;\n",
+        ).unwrap();
+        let result = file(&src, &[OsString::from("-E")]);
+        let _ = std::fs::remove_dir_all(&dir);
+        let output = result.unwrap();
+        let mapping = crate::source_map::SourceMap::from_preprocessed(&output,
+            src.to_str().unwrap());
+        assert_eq!(mapping.origin(output.find("first").unwrap()),
+            &crate::source_map::Origin {
+                file: "generated name.c".into(), line: 45,
+            });
+        assert_eq!(mapping.origin(output.find("second").unwrap()),
+            &crate::source_map::Origin {
+                file: "generated name.c".into(), line: 100,
+            });
+    }
+
+    #[test]
+    fn preprocessor_errors_respect_line_directive_overrides() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let dir = std::env::temp_dir().join(format!(
+            "mini-c-rcc-error-line-{}-{}", std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("unit.c");
+        std::fs::write(&src,
+            "#line 123 \"generated.c\"\n#error expected_diagnostic\n",
+        ).unwrap();
+        let result = file(&src, &[OsString::from("-E")]);
+        let _ = std::fs::remove_dir_all(dir);
+        let error = result.unwrap_err();
+        assert!(error.contains("generated.c:123:"), "{error}");
+        assert!(error.contains("expected_diagnostic"), "{error}");
+    }
+
+    #[test]
     fn invalid_directive_in_nested_header_reports_original_file_and_line() {
         use std::time::{SystemTime, UNIX_EPOCH};
         let dir = std::env::temp_dir().join(format!(
