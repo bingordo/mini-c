@@ -248,7 +248,15 @@ impl<'a> Parser<'a> {
 
     fn parse_assign(&mut self) -> Result<Expr, Diagnostic> {
         let lhs = self.parse_binary(0)?;
-        if self.peek()?.is_some_and(|t| t.text == "=") {
+        if let Some(op) = self.peek()?.and_then(|t| match t.text {
+            "=" => Some(None),
+            "&=" => Some(Some(BinOp::BitAnd)),
+            "|=" => Some(Some(BinOp::BitOr)),
+            "^=" => Some(Some(BinOp::BitXor)),
+            "<<=" => Some(Some(BinOp::Shl)),
+            ">>=" => Some(Some(BinOp::Shr)),
+            _ => None,
+        }) {
             self.take()?;
             let rhs = self.parse_assign()?;
             let span = if self.expression_spans {
@@ -257,7 +265,11 @@ impl<'a> Parser<'a> {
                     hi: rhs.location().expect("located assignment rhs").hi,
                 }
             } else { Span::default() };
-            return Ok(self.located(Expr::Assign(Box::new(lhs), Box::new(rhs)), span));
+            let value = match op {
+                Some(op) => Expr::CompoundAssign(op, Box::new(lhs), Box::new(rhs)),
+                None => Expr::Assign(Box::new(lhs), Box::new(rhs)),
+            };
+            return Ok(self.located(value, span));
         }
         Ok(lhs)
     }

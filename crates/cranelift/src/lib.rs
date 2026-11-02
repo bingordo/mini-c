@@ -877,6 +877,35 @@ impl Lower<'_> {
                     Ok(rhs_value)
                 }
             }
+            CheckedExprKind::CompoundAssign(op, lhs, rhs, computation_ty) => {
+                // Never lower as lhs = lhs op rhs: a subscript, dereference,
+                // or member expression may compute an address with side effects.
+                let address = self.place(b, lhs)?;
+                let old = b.ins().load(scalar_type(&lhs.ty)?,
+                    ir::MemFlagsData::new(), address, 0);
+                let left = Self::convert(b, old, &lhs.ty, computation_ty)?;
+                let mut right = self.integer_value(b, rhs)?;
+                if matches!(op, BinOp::Shl | BinOp::Shr) &&
+                    b.func.dfg.value_type(right) != b.func.dfg.value_type(left)
+                {
+                    right = Self::convert(b, right, &rhs.ty, computation_ty)?;
+                }
+                let unsigned = matches!(computation_ty, CType::Integer { unsigned: true, .. });
+                let computed = match op {
+                    BinOp::BitAnd => b.ins().band(left, right),
+                    BinOp::BitOr => b.ins().bor(left, right),
+                    BinOp::BitXor => b.ins().bxor(left, right),
+                    BinOp::Shl => b.ins().ishl(left, right),
+                    BinOp::Shr if unsigned => b.ins().ushr(left, right),
+                    BinOp::Shr => b.ins().sshr(left, right),
+                    _ => return Err("unsupported compound assignment operator".into()),
+                };
+                let stored = Self::convert(b, computed, computation_ty, &lhs.ty)?;
+                b.ins().store(ir::MemFlagsData::new(), stored, address, 0);
+                // Assignment expressions yield the value actually stored,
+                // including narrowing back to char or another small type.
+                Ok(stored)
+            }
             CheckedExprKind::Binary(op, lhs, rhs) => {
                 if matches!(op, BinOp::And | BinOp::Or) {
                     return self.short_circuit(b, *op, lhs, rhs);
@@ -1240,6 +1269,25 @@ mod tests {
              int main(void) { return left(3,2)+logical(16,3)+arithmetic(-8,2); }";
         let obj = compile_source(source).unwrap();
         assert_eq!(&obj[..4], b"\x7fELF");
+    }
+
+    #[test]
+    fn compound_assignments_lower_to_single_lvalue_address() {
+        let source = "int calls; int value=7; \
+            int *next(void) { calls=calls+1; return &value; } \
+            int main(void) { *next() &= 3; *next() |= 8; \
+                *next() ^= 2; *next() <<= 1; *next() >>= 1; \
+                return (calls == 5) && (value == 9); }";
+        let obj = compile_source(source).unwrap();
+        assert_eq!(&obj[..4], b"\x7fELF");
+    }
+
+    #[test]
+    fn compound_assignments_handle_narrow_lvalues_and_chains() {
+        let source = "int main(void) { unsigned char byte=255; int x=7; \
+            byte &= 15; byte <<= 1; byte >>= 2; \
+            x ^= byte |= 1; return x; }";
+        assert!(!compile_source(source).unwrap().is_empty());
     }
 
 }

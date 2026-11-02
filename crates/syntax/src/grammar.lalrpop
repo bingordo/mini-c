@@ -5,6 +5,11 @@ use crate::ast::{Expr, BinOp, UnOp};
 pub Expression: Expr = <e:Assign> => e;
 Assign: Expr = {
     <l:LogicalOr> "=" <r:Assign> => Expr::Assign(Box::new(l), Box::new(r)),
+    <l:LogicalOr> "&=" <r:Assign> => Expr::CompoundAssign(BinOp::BitAnd, Box::new(l), Box::new(r)),
+    <l:LogicalOr> "|=" <r:Assign> => Expr::CompoundAssign(BinOp::BitOr, Box::new(l), Box::new(r)),
+    <l:LogicalOr> "^=" <r:Assign> => Expr::CompoundAssign(BinOp::BitXor, Box::new(l), Box::new(r)),
+    <l:LogicalOr> "<<=" <r:Assign> => Expr::CompoundAssign(BinOp::Shl, Box::new(l), Box::new(r)),
+    <l:LogicalOr> ">>=" <r:Assign> => Expr::CompoundAssign(BinOp::Shr, Box::new(l), Box::new(r)),
     LogicalOr,
 };
 LogicalOr: Expr = {
@@ -92,6 +97,11 @@ extern {
         "ident" => ExprToken::Ident(<&'input str>),
         "invalid" => ExprToken::Invalid(<&'input str>),
         "=" => ExprToken::Assign,
+        "&=" => ExprToken::AndAssign,
+        "|=" => ExprToken::OrAssign,
+        "^=" => ExprToken::XorAssign,
+        "<<=" => ExprToken::ShlAssign,
+        ">>=" => ExprToken::ShrAssign,
         "||" => ExprToken::OrOr,
         "&&" => ExprToken::AndAnd,
         "==" => ExprToken::EqEq,

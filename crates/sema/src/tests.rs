@@ -1085,3 +1085,15 @@ fn shift_operators_promote_independently_and_reject_pointer_operands() {
     reject("int a = 1 >> -1;", "shift count out of range");
     reject("int a = 1 << 31;", "signed integer overflow");
 }
+
+
+#[test]
+fn compound_bitwise_assignments_validate_lvalues_and_integer_promotions() {
+    check("int f(int x, int y) { x &= y; x |= 3; x ^= 1; x <<= 2; x >>= 1; return x; }").unwrap();
+    check("int f(unsigned char x, unsigned long shift) { x >>= shift; x <<= 1; x ^= 255; return x; }").unwrap();
+    check("int f(int *p) { *p |= 1; return (*p ^= 3); }").unwrap();
+    check("int f(int x, int y) { x &= y |= 4; return x; }").unwrap();
+    reject("int f(int *p) { p &= 3; return 0; }", "modifiable integer lvalue");
+    reject("int f(int x, int *p) { x ^= p; return x; }", "requires integer operands");
+    reject("int f(int x) { (x + 1) <<= 2; return x; }", "modifiable integer lvalue");
+}
