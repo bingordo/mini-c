@@ -78,8 +78,15 @@ entire call. Declarator diagnostics now distinguish missing declarators
 (S0104), invalid declarations (S0105), and malformed parameters (S0106);
 their primary spans highlight the offending token instead of the declaration
 start or an unrelated end of input. Deterministic insertion/deletion/truncation
-mutations cover nested declarators in both parser modes. Further precise
-semantic declarator spans and expression-internal recovery remain open.
+mutations cover nested declarators in both parser modes. With `Parser::new_with_spans`, declaration, function and parameter
+identifiers preserve their exact byte ranges through pointer, array and
+function declarators. Name-related semantic failures highlight the bad name
+for duplicate locals/parameters, conflicting global declarations, typedefs
+and multiple function definitions. Ordinary parsing retains `None` metadata.
+The expanded CI suite exercises mixed syntax/semantic recovery and bounded
+declaration mutations. Independent recovery within one expression is
+intentionally not attempted, to avoid cascading diagnostics; the statement
+boundary remains the recovery granularity.
 
 **Progress:** Diagnostics expose stable lexical/syntax/semantic
 category codes (L0001/S0001/T0001) and specific codes for common lexer errors,
