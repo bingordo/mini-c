@@ -14,6 +14,21 @@ import subprocess
 import sys
 
 PROGRAMS = {
+    "arithmetic_compound_scalar": """int main(void) {
+        int a=17; int b=3; a += b *= 2; a -= 1;
+        a *= 4; a /= 3; a %= 9; return a+b; }""",
+    "arithmetic_compound_unsigned_char": """int main(void) {
+        unsigned char c=250; c += 10; c *= 3; c /= 2;
+        c %= 7; return c; }""",
+    "pointer_compound_scaled_once": """int calls; int a[4]; int *p=a;
+        int **slot(void) { calls += 1; return &p; }
+        int main(void) { a[1]=17; a[2]=23;
+            *slot() += 2; *slot() -= 1;
+            return calls * 50 + *p; }""",
+    "pointer_compound_struct_size": """struct Pair { int x; int y; };
+        struct Pair a[3]; struct Pair *p=a;
+        int main(void) { a[2].x=29; p += 2;
+            p -= 1; return p[1].x; }""",
     "compound_single_eval": """int calls; int value=7;
         int *next(void) { calls=calls+1; return &value; }
         int main(void) { *next() &= 3; *next() |= 8; *next() ^= 2;
