@@ -877,6 +877,35 @@ impl Lower<'_> {
                     Ok(rhs_value)
                 }
             }
+            CheckedExprKind::CompoundAssign(op, lhs, rhs, computation_ty) => {
+                // Never lower as lhs = lhs op rhs: a subscript, dereference,
+                // or member expression may compute an address with side effects.
+                let address = self.place(b, lhs)?;
+                let old = b.ins().load(scalar_type(&lhs.ty)?,
+                    ir::MemFlagsData::new(), address, 0);
+                let left = Self::convert(b, old, &lhs.ty, computation_ty)?;
+                let mut right = self.integer_value(b, rhs)?;
+                if matches!(op, BinOp::Shl | BinOp::Shr) &&
+                    b.func.dfg.value_type(right) != b.func.dfg.value_type(left)
+                {
+                    right = Self::convert(b, right, &rhs.ty, computation_ty)?;
+                }
+                let unsigned = matches!(computation_ty, CType::Integer { unsigned: true, .. });
+                let computed = match op {
+                    BinOp::BitAnd => b.ins().band(left, right),
+                    BinOp::BitOr => b.ins().bor(left, right),
+                    BinOp::BitXor => b.ins().bxor(left, right),
+                    BinOp::Shl => b.ins().ishl(left, right),
+                    BinOp::Shr if unsigned => b.ins().ushr(left, right),
+                    BinOp::Shr => b.ins().sshr(left, right),
+                    _ => return Err("unsupported compound assignment operator".into()),
+                };
+                let stored = Self::convert(b, computed, computation_ty, &lhs.ty)?;
+                b.ins().store(ir::MemFlagsData::new(), stored, address, 0);
+                // Assignment expressions yield the value actually stored,
+                // including narrowing back to char or another small type.
+                Ok(stored)
+            }
             CheckedExprKind::Binary(op, lhs, rhs) => {
                 if matches!(op, BinOp::And | BinOp::Or) {
                     return self.short_circuit(b, *op, lhs, rhs);
