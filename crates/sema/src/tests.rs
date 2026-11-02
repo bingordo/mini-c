@@ -960,3 +960,115 @@ fn bitwise_integer_promotions_and_pointer_rejection() {
     reject("int f(int *p) { return p & 7; }", "bitwise operator requires integer");
     reject("int f(int *p) { return ~p; }", "arithmetic unary operator requires integer");
 }
+
+
+#[test]
+fn located_declaration_name_errors_use_precise_token_spans() {
+    use mini_c_syntax::{ast::Span, diag::DiagnosticCode};
+    let cases = [
+        ("int x; long x;", "x;", DiagnosticCode::SemanticConflictingDeclaration),
+        ("int x=1; int x=2;", "x=2", DiagnosticCode::SemanticMultipleDefinitions),
+        ("typedef int Alias; long Alias;", "Alias;", DiagnosticCode::SemanticConflictingDeclaration),
+        ("int f(void) { int x; int x; return 0; }", "x; return", DiagnosticCode::SemanticDuplicateDeclaration),
+        ("int f(void) { typedef int T; typedef long T; return 0; }", "T; return", DiagnosticCode::SemanticDuplicateDeclaration),
+        ("int f(int x, int x) { return 0; }", "x) {", DiagnosticCode::SemanticDuplicateDeclaration),
+        ("int f(void) { return 0; } int f(void) { return 1; }", "f(void) { return 1", DiagnosticCode::SemanticMultipleDefinitions),
+        ("/* β */ int (*callback)(int); long (*callback)(int);", "callback)(int);", DiagnosticCode::SemanticConflictingDeclaration),
+    ];
+    for (source, needle, expected) in cases {
+        let mut parser = Parser::new_with_spans(source);
+        let mut checker = Checker::new(Target::default()).unwrap();
+        let errors = diagnose_stream_recovering(&mut parser, &mut checker, 4);
+        assert_eq!(errors.len(), 1, "{source:?}: {errors:?}");
+        let error = &errors[0];
+        assert_eq!(error.code, expected, "{source:?}: {error:?}");
+        let lo = source.rfind(needle).unwrap();
+        let len = error.message.split('\'').nth(1).expect("quoted declaration name").len();
+        assert_eq!(error.span, Span { lo, hi: lo + len }, "{source:?}: {error:?}");
+    }
+}
+
+#[test]
+fn default_parser_keeps_name_spans_absent() {
+    use mini_c_syntax::{ast::Stmt, stream::ExternalItem};
+    let source = "int (*callback)(int); int f(int x) { int local; return x; }";
+    let mut parser = Parser::new(source);
+    let ExternalItem::Declaration(decl) = parser.next_item().unwrap().unwrap() else {
+        panic!("expected declaration");
+    };
+    assert_eq!(decl.name, "callback");
+    assert!(decl.name_span.is_none());
+    let ExternalItem::Function(f) = parser.next_item().unwrap().unwrap() else {
+        panic!("expected function");
+    };
+    assert!(f.name_span.is_none());
+    assert!(f.params[0].name_span.is_none());
+    let Stmt::Block(stmts) = f.body else { panic!("expected block") };
+    let Stmt::Decl(local) = &stmts[0] else { panic!("expected local declaration") };
+    assert!(local.name_span.is_none());
+}
+
+#[test]
+fn located_parser_handles_nested_pointer_declarators_and_parameters() {
+    use mini_c_syntax::{ast::{Span, Stmt}, stream::ExternalItem};
+    let source = "int (*callback)(int); int f(int x) { int local; return x; }";
+    let mut parser = Parser::new_with_spans(source);
+    let ExternalItem::Declaration(decl) = parser.next_item().unwrap().unwrap() else {
+        panic!("expected declaration");
+    };
+    let lo = source.find("callback").unwrap();
+    assert_eq!(decl.name_span, Some(Span { lo, hi: lo + 8 }));
+    let ExternalItem::Function(f) = parser.next_item().unwrap().unwrap() else {
+        panic!("expected function");
+    };
+    let lo = source.find("f(int x)").unwrap();
+    assert_eq!(f.name_span, Some(Span { lo, hi: lo + 1 }));
+    let lo = source.find("x) {").unwrap();
+    assert_eq!(f.params[0].name_span, Some(Span { lo, hi: lo + 1 }));
+    let Stmt::Block(stmts) = f.body else { panic!("expected block") };
+    let Stmt::Decl(local) = &stmts[0] else { panic!("expected local") };
+    let lo = source.find("local").unwrap();
+    assert_eq!(local.name_span, Some(Span { lo, hi: lo + 5 }));
+}
+
+#[test]
+fn error_recovery_preserves_valid_declarations_after_conflicting_names() {
+    use mini_c_syntax::diag::DiagnosticCode;
+    let source = "int a; long a; int f(int x, int x) { return 1; } int good(void) { return 3; }";
+    let mut parser = Parser::new_with_spans(source);
+    let mut checker = Checker::new(Target::default()).unwrap();
+    let errors = diagnose_stream_recovering(&mut parser, &mut checker, 5);
+    assert_eq!(errors.len(), 2, "{errors:?}");
+    assert_eq!(errors[0].code, DiagnosticCode::SemanticConflictingDeclaration);
+    assert_eq!(errors[1].code, DiagnosticCode::SemanticDuplicateDeclaration);
+    assert!(checker.global("a").is_some());
+    assert!(checker.global("f").is_none());
+    assert!(checker.global("good").is_some());
+}
+
+#[test]
+fn bounded_malformed_declaration_semantic_mutations_do_not_panic() {
+    // Unlike parser-only fuzzing, exercise syntax recovery plus symbol rollback
+    // on truncations and punctuation insertions through the semantic checker.
+    let seeds = [
+        "int x; int x; int f(int a, int b) { return a+b; }",
+        "typedef int Value; Value n=1; int f(void) { Value v=2; return v; }",
+        "int (*callback)(int); int f(void) { int a[2]={1,2}; return a[0]; }",
+    ];
+    for seed in seeds {
+        for at in 0..=seed.len() {
+            let truncated = &seed[..at];
+            let mut inserted = seed.to_owned();
+            inserted.insert(at, '@');
+            for input in [truncated, inserted.as_str()] {
+                let result = std::panic::catch_unwind(|| {
+                    let mut parser = Parser::new_with_spans(input);
+                    let mut checker = Checker::new(Target::default()).unwrap();
+                    let errors = diagnose_stream_recovering(&mut parser, &mut checker, 5);
+                    assert!(errors.len() <= 5);
+                });
+                assert!(result.is_ok(), "semantic recovery panic for {input:?}");
+            }
+        }
+    }
+}
