@@ -67,7 +67,10 @@ continues after independent erroneous statements in nested function
 blocks (including if/while bodies), using recovery-only local/tag snapshots
 and stacked global undo logs. Error budgets apply across nesting boundaries.
 Diagnostic-only recovery discards failed functions instead of emitting partial
-code. Expression-level semantic spans remain open.
+code. `Parser::new_with_spans` now optionally annotates expressions with
+byte-accurate source ranges; the CLI uses this for fail-fast and recovery
+diagnostics. `Parser::new` retains its original backend-facing AST.
+More specialized per-operator diagnostics remain to be implemented.
 
 **Progress:** Diagnostics expose stable lexical/syntax/semantic
 category codes (L0001/S0001/T0001) and specific codes for common lexer errors,
@@ -81,8 +84,8 @@ end-of-input byte spans, restores nested typedef scopes on parse errors, and
 has table-driven malformed syntax tests plus a bounded deletion-mutation
 regression. These are incremental correctness improvements, **not** completion
 of M2.25: not every diagnostic has a specific code yet; semantic
-expression spans and finer-grained recovery inside an individual expression
-remain open.
+expression-level span support has landed for opt-in parser consumers,
+while finer-grained recovery inside an individual expression remains open.
 Bounded cross-declaration syntax/semantic recovery is implemented and verified
 in [bingordo syntax CI 40312729615](https://github.com/bingordo/mini-c/actions/runs/40312729615).
 

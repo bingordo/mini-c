@@ -89,6 +89,9 @@ pub enum Stmt {
 }
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
+    /// Opt-in precise source span, only produced by Parser::new_with_spans.
+    /// The ordinary parser retains its historical expression variants.
+    Located(Box<Expr>, Span),
     Int(u64),
     /// Decoded narrow string bytes, including the terminating NUL.
     StringLiteral(Vec<u8>),
@@ -127,4 +130,22 @@ pub enum BinOp {
     Ge,
     And,
     Or,
+}
+
+impl Expr {
+    /// Byte range of a parser-annotated expression, if available.
+    pub fn location(&self) -> Option<Span> {
+        match self {
+            Self::Located(_, span) => Some(*span),
+            _ => None,
+        }
+    }
+
+    /// Strip only the outer annotation; nested expressions retain theirs.
+    pub fn without_location(&self) -> &Self {
+        match self {
+            Self::Located(inner, _) => inner.without_location(),
+            other => other,
+        }
+    }
 }

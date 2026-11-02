@@ -45,6 +45,7 @@ impl Declarator {
 pub struct Parser<'a> {
     scanner: Scanner<'a>,
     input_len: usize,
+    expression_spans: bool,
     lookahead: Option<Token<'a>>,
     scopes: Scopes,
     brace_depth: usize,
@@ -56,10 +57,27 @@ impl<'a> Parser<'a> {
         Self {
             scanner: Scanner::new(source),
             input_len: source.len(),
+            expression_spans: false,
             lookahead: None,
             scopes: Scopes::new(),
             brace_depth: 0,
             pending_file_binding: None,
+        }
+    }
+
+    /// Enables byte-accurate expression locations for semantic diagnostics.
+    /// Default Parser::new() preserves the original unannotated AST.
+    pub fn new_with_spans(source: &'a str) -> Self {
+        let mut parser = Self::new(source);
+        parser.expression_spans = true;
+        parser
+    }
+
+    fn located(&self, expr: Expr, span: Span) -> Expr {
+        if self.expression_spans {
+            Expr::Located(Box::new(expr), span)
+        } else {
+            expr
         }
     }
 
@@ -232,7 +250,14 @@ impl<'a> Parser<'a> {
         let lhs = self.parse_binary(0)?;
         if self.peek()?.is_some_and(|t| t.text == "=") {
             self.take()?;
-            return Ok(Expr::Assign(Box::new(lhs), Box::new(self.parse_assign()?)));
+            let rhs = self.parse_assign()?;
+            let span = if self.expression_spans {
+                Span {
+                    lo: lhs.location().expect("located assignment lhs").lo,
+                    hi: rhs.location().expect("located assignment rhs").hi,
+                }
+            } else { Span::default() };
+            return Ok(self.located(Expr::Assign(Box::new(lhs), Box::new(rhs)), span));
         }
         Ok(lhs)
     }
@@ -264,7 +289,13 @@ impl<'a> Parser<'a> {
             }
             self.take()?;
             let rhs = self.parse_binary(prec + 1)?;
-            lhs = Expr::Binary(op, Box::new(lhs), Box::new(rhs));
+            let span = if self.expression_spans {
+                Span {
+                    lo: lhs.location().expect("located binary lhs").lo,
+                    hi: rhs.location().expect("located binary rhs").hi,
+                }
+            } else { Span::default() };
+            lhs = self.located(Expr::Binary(op, Box::new(lhs), Box::new(rhs)), span);
         }
         Ok(lhs)
     }
@@ -278,8 +309,11 @@ impl<'a> Parser<'a> {
             "*" => Some(UnOp::Deref),
             _ => None,
         }) {
-            self.take()?;
-            return Ok(Expr::Unary(op, Box::new(self.parse_unary()?)));
+            let prefix = self.take()?.expect("peeked prefix");
+            let inner = self.parse_unary()?;
+            let end = inner.location().map_or(prefix.span.hi, |span| span.hi);
+            return Ok(self.located(Expr::Unary(op, Box::new(inner)),
+                Span { lo: prefix.span.lo, hi: end }));
         }
         // Keep synchronization tokens available to the recovery path.
         if let Some(token) = self.peek()? {
@@ -288,35 +322,34 @@ impl<'a> Parser<'a> {
             }
         }
         let mut expr = match self.take()? {
-            Some(t) if t.kind == TokenKind::String => Expr::StringLiteral(
-                crate::string_literal::decode_narrow_string(t.text)
+            Some(t) if t.kind == TokenKind::String => {
+                let bytes = crate::string_literal::decode_narrow_string(t.text)
                     .map_err(|reason| Diagnostic::coded(
-                        t.span,
-                        DiagnosticCode::LexicalInvalidCharacter,
-                        reason,
-                    ))?,
-            ),
-            Some(t) if t.kind == TokenKind::Character => Expr::Int(
-                crate::char_literal::parse_ascii_character(t.text)
+                        t.span, DiagnosticCode::LexicalInvalidCharacter, reason))?;
+                self.located(Expr::StringLiteral(bytes), t.span)
+            }
+            Some(t) if t.kind == TokenKind::Character => {
+                let value = crate::char_literal::parse_ascii_character(t.text)
                     .map_err(|reason| Diagnostic::coded(
-                        t.span,
-                        DiagnosticCode::LexicalInvalidCharacter,
-                        reason,
-                    ))?,
-            ),
-            Some(t) if t.kind == TokenKind::Number => Expr::Int(
-                t.text
-                    .parse()
-                    .map_err(|_| Diagnostic::coded(t.span, DiagnosticCode::SyntaxIntegerOverflow, "integer literal overflow"))?,
-            ),
-            Some(t) if matches!(t.kind, TokenKind::Identifier | TokenKind::TypedefName) => Expr::Name(t.text.to_owned()),
+                        t.span, DiagnosticCode::LexicalInvalidCharacter, reason))?;
+                self.located(Expr::Int(value), t.span)
+            }
+            Some(t) if t.kind == TokenKind::Number => {
+                let value = t.text.parse().map_err(|_| Diagnostic::coded(
+                    t.span, DiagnosticCode::SyntaxIntegerOverflow, "integer literal overflow"))?;
+                self.located(Expr::Int(value), t.span)
+            }
+            Some(t) if matches!(t.kind, TokenKind::Identifier | TokenKind::TypedefName) =>
+                self.located(Expr::Name(t.text.to_owned()), t.span),
             Some(t) if t.text == "(" => {
                 let e = self.parse_expr()?;
-                self.expect(")")?;
-                e
+                let close = self.expect(")")?;
+                self.located(e, Span { lo: t.span.lo, hi: close.span.hi })
             }
-            Some(t) => return Err(Diagnostic::coded(t.span, DiagnosticCode::SyntaxExpectedExpression, "expected expression")),
-            None => return Err(Diagnostic::coded(self.eof_span(), DiagnosticCode::SyntaxExpectedExpression, "expected expression")),
+            Some(t) => return Err(Diagnostic::coded(
+                t.span, DiagnosticCode::SyntaxExpectedExpression, "expected expression")),
+            None => return Err(Diagnostic::coded(
+                self.eof_span(), DiagnosticCode::SyntaxExpectedExpression, "expected expression")),
         };
         loop {
             match self.peek()?.map(|t| t.text) {
@@ -332,14 +365,18 @@ impl<'a> Parser<'a> {
                             self.take()?;
                         }
                     }
-                    self.expect(")")?;
-                    expr = Expr::Call(Box::new(expr), args);
+                    let close = self.expect(")")?;
+                    let start = expr.location().map_or(close.span.lo, |span| span.lo);
+                    expr = self.located(Expr::Call(Box::new(expr), args),
+                        Span { lo: start, hi: close.span.hi });
                 }
                 Some("[") => {
                     self.take()?;
                     let index = self.parse_expr()?;
-                    self.expect("]")?;
-                    expr = Expr::Index(Box::new(expr), Box::new(index));
+                    let close = self.expect("]")?;
+                    let start = expr.location().map_or(close.span.lo, |span| span.lo);
+                    expr = self.located(Expr::Index(Box::new(expr), Box::new(index)),
+                        Span { lo: start, hi: close.span.hi });
                 }
                 Some(".") | Some("->") => {
                     let arrow = self.take()?.expect("peeked operator").text == "->";
@@ -348,7 +385,9 @@ impl<'a> Parser<'a> {
                     if !matches!(token.kind, TokenKind::Identifier | TokenKind::TypedefName) {
                         return Err(Diagnostic::new(token.span, "expected structure member name"));
                     }
-                    expr = Expr::Member(Box::new(expr), token.text.to_owned(), arrow);
+                    let start = expr.location().map_or(token.span.lo, |span| span.lo);
+                    expr = self.located(Expr::Member(Box::new(expr), token.text.to_owned(), arrow),
+                        Span { lo: start, hi: token.span.hi });
                 }
                 _ => break,
             }
@@ -454,7 +493,7 @@ impl<'a> Parser<'a> {
         if !self.peek()?.is_some_and(|t| t.text == "{") {
             return self.parse_assign();
         }
-        self.take()?;
+        let open = self.take()?.expect("peeked opening brace");
         let mut values = Vec::new();
         if self.peek()?.is_some_and(|t| t.text == "}") {
             return Err(Diagnostic::new(self.peek()?.expect("peeked").span,
@@ -466,8 +505,9 @@ impl<'a> Parser<'a> {
             self.take()?;
             if self.peek()?.is_some_and(|t| t.text == "}") { break; }
         }
-        self.expect("}")?;
-        Ok(Expr::Initializer(values))
+        let close = self.expect("}")?;
+        Ok(self.located(Expr::Initializer(values),
+            Span { lo: open.span.lo, hi: close.span.hi }))
     }
 
     fn parse_decl(&mut self, is_typedef: bool) -> Result<Decl, Diagnostic> {

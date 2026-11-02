@@ -613,7 +613,8 @@ impl Checker {
     fn complete_string_array(
         &self, ty: CType, initializer: Option<&Expr>, span: Span
     ) -> Result<CType, Diagnostic> {
-        if let (CType::Array(element, bound), Some(Expr::StringLiteral(bytes))) = (&ty, initializer) {
+        if let (CType::Array(element, bound), Some(Expr::StringLiteral(bytes))) =
+            (&ty, initializer.map(Expr::without_location)) {
             if matches!(element.as_ref(), CType::Integer { rank: IntRank::Char, .. }) {
                 let len = u64::try_from(bytes.len())
                     .map_err(|_| type_error(span, "string literal exceeds supported array size"))?;
@@ -625,7 +626,8 @@ impl Checker {
                 }
             }
         }
-        if let (CType::Array(element, None), Some(Expr::Initializer(values))) = (&ty, initializer) {
+        if let (CType::Array(element, None), Some(Expr::Initializer(values))) =
+            (&ty, initializer.map(Expr::without_location)) {
             let count = u64::try_from(values.len())
                 .map_err(|_| type_error(span, "array initializer exceeds supported bounds"))?;
             return Ok(CType::Array(element.clone(), Some(count)));
@@ -636,6 +638,8 @@ impl Checker {
     fn check_object_initializer(
         &self, original: &Expr, ty: &CType, span: Span, is_static: bool
     ) -> Result<CheckedExpr, Diagnostic> {
+        let span = original.location().unwrap_or(span);
+        let original = original.without_location();
         if let Expr::Initializer(values) = original {
             let elements: Vec<&CType> = match ty {
                 CType::Struct { members, .. } => {
@@ -700,7 +704,7 @@ impl Checker {
         if kind == SymbolKind::Function && decl.init.is_some() {
             return Err(type_error(decl.span, "function declaration cannot have an initializer"));
         }
-        // C requires a file-scope object with internal linkage to have a
+// C requires a file-scope object with internal linkage to have a
         // complete type at its declaration, not merely at TU finalization.
         // This differs from external-linkage tentative definitions, which
         // may be completed by a later tag definition.
@@ -907,6 +911,8 @@ impl Checker {
     fn validate_static_initializer(
         &self, expression: &CheckedExpr, original: &Expr, ty: &CType, span: Span
     ) -> Result<(), Diagnostic> {
+        let span = original.location().unwrap_or(span);
+        let original = original.without_location();
         if let CType::Array(element, Some(_)) = ty {
             if matches!(original, Expr::StringLiteral(_))
                 && matches!(element.as_ref(), CType::Integer { rank: IntRank::Char, .. })
@@ -924,7 +930,7 @@ impl Checker {
         } else if matches!(ty, CType::Pointer(_)) {
             let null = const_eval::evaluate(expression, self.target) == Ok(0);
             let address_of_global = match original {
-                Expr::Unary(UnOp::Address, inner) => match inner.as_ref() {
+                Expr::Unary(UnOp::Address, inner) => match inner.without_location() {
                     Expr::Name(name) => self.globals.get(name).is_some_and(|s| s.kind != SymbolKind::Typedef),
                     _ => false,
                 },
@@ -1001,6 +1007,7 @@ impl Checker {
 
     fn check_expr(&self, expr: &Expr, span: Span) -> Result<CheckedExpr, Diagnostic> {
         match expr {
+            Expr::Located(inner, located_span) => self.check_expr(inner, *located_span),
             Expr::Initializer(_) => Err(type_error(span,
                 "brace initializer is only valid in an object declaration")),
             Expr::StringLiteral(bytes) => {
@@ -1161,12 +1168,14 @@ impl Checker {
                 Ok(CheckedExpr::value(result, CheckedExprKind::Binary(*op, Box::new(left), Box::new(right))))
             }
             Expr::Assign(lhs, rhs) => {
+                let lhs_span = lhs.location().unwrap_or(span);
+                let rhs_span = rhs.location().unwrap_or(span);
                 let lhs = self.check_expr(lhs, span)?;
                 if lhs.category != Category::LValue || matches!(lhs.ty, CType::Array(..)) {
-                    return Err(Diagnostic::coded(span, DiagnosticCode::SemanticInvalidAssignmentTarget, "left side of assignment must be a modifiable lvalue"));
+                    return Err(Diagnostic::coded(lhs_span, DiagnosticCode::SemanticInvalidAssignmentTarget, "left side of assignment must be a modifiable lvalue"));
                 }
                 let rhs_typed = self.check_expr(rhs, span)?;
-                let rhs_typed = self.convert_for_assignment(rhs_typed, &lhs.ty, rhs, span)?;
+                let rhs_typed = self.convert_for_assignment(rhs_typed, &lhs.ty, rhs, rhs_span)?;
                 Ok(CheckedExpr::value(lhs.ty.clone(), CheckedExprKind::Assign(Box::new(lhs), Box::new(rhs_typed))))
             }
             Expr::Call(callee, args) => {
