@@ -55,17 +55,28 @@ pub fn file(path: &Path, args: &[std::ffi::OsString]) -> Result<String, String> 
     let root = session.load_source_file(path)
         .map_err(|e| format!("cannot read C source {}: {e}", path.display()))?;
     let tokens = rcc_preprocess::preprocess(&mut session, root);
+    let map = session.source_map.read()
+        .map_err(|e| format!("internal source map lock poisoned: {e}"))?;
     let diagnostics = captured.diagnostics();
     let errors: Vec<_> = diagnostics.into_iter().filter(|d|
         matches!(d.level, Level::Error | Level::Bug)
-    ).map(|d| match d.code {
-        Some(code) => format!("error[{code}]: {}", d.message),
-        None => format!("error: {}", d.message),
+    ).map(|d| {
+        let location = d.labels.iter().find(|label| label.primary)
+            .or_else(|| d.labels.first())
+            .and_then(|label| {
+                if label.span.file.0 == u32::MAX { return None; }
+                let source = map.file(label.span.file);
+                let position = map.lookup_line_col(label.span.file, label.span.lo);
+                Some(format!("{}:{}:{}: ",
+                    source.name.display(), position.line, position.col))
+            }).unwrap_or_default();
+        match d.code {
+            Some(code) => format!("{location}error[{code}]: {}", d.message),
+            None => format!("{location}error: {}", d.message),
+        }
     }).collect();
     if !errors.is_empty() { return Err(errors.join("\n")); }
 
-    let map = session.source_map.read()
-        .map_err(|e| format!("internal source map lock poisoned: {e}"))?;
     let mut output = String::new();
     // A directive marks the NEXT physical source line. Print one only when
     // a non-synthetic origin changes, then emit token-separated spelling.
@@ -173,6 +184,25 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let error = result.unwrap_err();
         assert!(error.contains("deliberately-invalid"), "{error}");
+    }
+
+    #[test]
+    fn invalid_directive_in_nested_header_reports_original_file_and_line() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let dir = std::env::temp_dir().join(format!(
+            "mini-c-rcc-location-{}-{}", std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("unit.c");
+        let header = dir.join("broken.h");
+        std::fs::write(&src, "#include \"broken.h\"\\n").unwrap();
+        std::fs::write(&header, "int fine;\\n#error include_failure\\n").unwrap();
+        let result = file(&src, &[OsString::from("-E")]);
+        let _ = std::fs::remove_dir_all(dir);
+        let failure = result.unwrap_err();
+        assert!(failure.contains("broken.h:2:"), "{failure}");
+        assert!(failure.contains("include_failure"), "{failure}");
     }
 
     #[test]
