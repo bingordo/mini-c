@@ -5,6 +5,11 @@ use crate::ast::{Expr, BinOp, UnOp};
 pub Expression: Expr = <e:Assign> => e;
 Assign: Expr = {
     <l:LogicalOr> "=" <r:Assign> => Expr::Assign(Box::new(l), Box::new(r)),
+    <l:LogicalOr> "+=" <r:Assign> => Expr::CompoundAssign(BinOp::Add, Box::new(l), Box::new(r)),
+    <l:LogicalOr> "-=" <r:Assign> => Expr::CompoundAssign(BinOp::Sub, Box::new(l), Box::new(r)),
+    <l:LogicalOr> "*=" <r:Assign> => Expr::CompoundAssign(BinOp::Mul, Box::new(l), Box::new(r)),
+    <l:LogicalOr> "/=" <r:Assign> => Expr::CompoundAssign(BinOp::Div, Box::new(l), Box::new(r)),
+    <l:LogicalOr> "%=" <r:Assign> => Expr::CompoundAssign(BinOp::Mod, Box::new(l), Box::new(r)),
     <l:LogicalOr> "&=" <r:Assign> => Expr::CompoundAssign(BinOp::BitAnd, Box::new(l), Box::new(r)),
     <l:LogicalOr> "|=" <r:Assign> => Expr::CompoundAssign(BinOp::BitOr, Box::new(l), Box::new(r)),
     <l:LogicalOr> "^=" <r:Assign> => Expr::CompoundAssign(BinOp::BitXor, Box::new(l), Box::new(r)),
@@ -97,6 +102,11 @@ extern {
         "ident" => ExprToken::Ident(<&'input str>),
         "invalid" => ExprToken::Invalid(<&'input str>),
         "=" => ExprToken::Assign,
+        "+=" => ExprToken::AddAssign,
+        "-=" => ExprToken::SubAssign,
+        "*=" => ExprToken::MulAssign,
+        "/=" => ExprToken::DivAssign,
+        "%=" => ExprToken::ModAssign,
         "&=" => ExprToken::AndAssign,
         "|=" => ExprToken::OrAssign,
         "^=" => ExprToken::XorAssign,
