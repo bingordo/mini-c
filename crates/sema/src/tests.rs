@@ -768,3 +768,18 @@ fn indirect_calls_accept_function_pointers_and_explicit_function_dereference() {
             int main(void) { int (*fp)(int)=add; return fp(); }",
         "expects 1 arguments");
 }
+
+#[test]
+fn file_scope_internal_objects_require_complete_types() {
+    reject("static int missing[];", "file-scope static object requires a complete type");
+    reject("static struct Tag missing; struct Tag { int value; };",
+        "file-scope static object requires a complete type");
+    check("static int defined[] = {1,2}; \
+           static struct Tag *pointer; \
+           struct Tag { int value; }; \
+           static struct Tag ready; \
+           int main(void) { return defined[0] + ready.value; }").unwrap();
+    check("struct Later; struct Later tentative; \
+           struct Later { int value; };").unwrap();
+    check("extern struct Missing external;").unwrap();
+}
