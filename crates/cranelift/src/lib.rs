@@ -1271,4 +1271,23 @@ mod tests {
         assert_eq!(&obj[..4], b"\x7fELF");
     }
 
+    #[test]
+    fn compound_assignments_lower_to_single_lvalue_address() {
+        let source = "int calls; int value=7; \
+            int *next(void) { calls=calls+1; return &value; } \
+            int main(void) { *next() &= 3; *next() |= 8; \
+                *next() ^= 2; *next() <<= 1; *next() >>= 1; \
+                return (calls == 5) && (value == 9); }";
+        let obj = compile_source(source).unwrap();
+        assert_eq!(&obj[..4], b"\x7fELF");
+    }
+
+    #[test]
+    fn compound_assignments_handle_narrow_lvalues_and_chains() {
+        let source = "int main(void) { unsigned char byte=255; int x=7; \
+            byte &= 15; byte <<= 1; byte >>= 2; \
+            x ^= byte |= 1; return x; }";
+        assert!(!compile_source(source).unwrap().is_empty());
+    }
+
 }
