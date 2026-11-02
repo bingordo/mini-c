@@ -130,3 +130,24 @@ fn c_shift_precedence_between_additive_and_relational() {
     assert_eq!(parse_expression("a << b << c").unwrap(),
         bin(BinOp::Shl, bin(BinOp::Shl, name("a"), name("b")), name("c")));
 }
+
+
+#[test]
+fn compound_assignments_have_assignment_precedence_and_right_associativity() {
+    for (operator, binop) in [
+        ("&=", BinOp::BitAnd), ("|=", BinOp::BitOr),
+        ("^=", BinOp::BitXor), ("<<=", BinOp::Shl), (">>=", BinOp::Shr),
+    ] {
+        let parsed = parse_expression(&format!("a {operator} b = 3")).unwrap();
+        assert_eq!(parsed, Expr::CompoundAssign(binop, Box::new(name("a")),
+            Box::new(Expr::Assign(Box::new(name("b")), Box::new(Expr::Int(3))))));
+    }
+    assert_eq!(parse_expression("a &= b |= 7").unwrap(),
+        Expr::CompoundAssign(BinOp::BitAnd, Box::new(name("a")),
+            Box::new(Expr::CompoundAssign(BinOp::BitOr,
+                Box::new(name("b")), Box::new(Expr::Int(7))))));
+    assert_eq!(parse_expression("a + b &= 3").unwrap(),
+        Expr::CompoundAssign(BinOp::BitAnd,
+            Box::new(Expr::Binary(BinOp::Add, Box::new(name("a")), Box::new(name("b")))),
+            Box::new(Expr::Int(3))));
+}
