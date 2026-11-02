@@ -74,8 +74,12 @@ Common operator and call diagnostics now have stable codes and precise
 source spans: invalid call targets, unknown members, invalid member/subscript
 access, invalid unary/binary operand types, and non-scalar conditions.
 Wrong argument conversions highlight the offending argument instead of the
-entire call. Remaining work includes broader per-declarator spans and recovery
-inside an individual expression.
+entire call. Declarator diagnostics now distinguish missing declarators
+(S0104), invalid declarations (S0105), and malformed parameters (S0106);
+their primary spans highlight the offending token instead of the declaration
+start or an unrelated end of input. Deterministic insertion/deletion/truncation
+mutations cover nested declarators in both parser modes. Further precise
+semantic declarator spans and expression-internal recovery remain open.
 
 **Progress:** Diagnostics expose stable lexical/syntax/semantic
 category codes (L0001/S0001/T0001) and specific codes for common lexer errors,
