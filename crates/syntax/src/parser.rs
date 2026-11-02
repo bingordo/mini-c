@@ -533,14 +533,18 @@ impl<'a> Parser<'a> {
             .ok_or_else(|| Diagnostic::new(self.eof_span(), "expected type"))?;
         let (name, ty, _) = self.parse_declarator_shape(false)?.finish(base);
         self.scopes.declare(&name, if is_typedef { Binding::Typedef } else { Binding::Ordinary });
-        let init = if self.peek()?.is_some_and(|t| t.text == "=") {
+        let initializer_operator = self.peek()?.filter(|t| t.text == "=").map(|t| t.span);
+        let init = if initializer_operator.is_some() {
             self.take()?;
             Some(self.parse_initializer()?)
         } else {
             None
         };
-        if is_typedef && init.is_some() {
-            return Err(Diagnostic::new(Span { lo: start, hi: start }, "typedef cannot have an initializer"));
+        if is_typedef {
+            if let Some(span) = initializer_operator {
+                return Err(Diagnostic::coded(span, DiagnosticCode::SyntaxInvalidDeclaration,
+                    "typedef cannot have an initializer"));
+            }
         }
         let end = self.expect(";")?.span.hi;
         Ok(Decl { storage, name, ty, init, span: Span { lo: start, hi: end } })
@@ -806,14 +810,18 @@ impl ItemSource for Parser<'_> {
                 span: Span { lo: start, hi: end },
             })));
         }
-        let init = if self.peek()?.is_some_and(|t| t.text == "=") {
+        let initializer_operator = self.peek()?.filter(|t| t.text == "=").map(|t| t.span);
+        let init = if initializer_operator.is_some() {
             self.take()?;
             Some(self.parse_initializer()?)
         } else {
             None
         };
-        if is_typedef && init.is_some() {
-            return Err(Diagnostic::new(Span { lo: start, hi: start }, "typedef cannot have an initializer"));
+        if is_typedef {
+            if let Some(span) = initializer_operator {
+                return Err(Diagnostic::coded(span, DiagnosticCode::SyntaxInvalidDeclaration,
+                    "typedef cannot have an initializer"));
+            }
         }
         let end = self.expect(";")?.span.hi;
         let decl = Decl { storage, name, ty, init, span: Span { lo: start, hi: end } };
