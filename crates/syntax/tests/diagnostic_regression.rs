@@ -64,7 +64,7 @@ fn unexpected_non_eof_token_retains_its_span() {
     for (source, location, expected) in [
         ("int x )", Span { lo: 6, hi: 7 }, "expected ';'"),
         ("int f(void) { return ) ; }", Span { lo: 21, hi: 22 }, "expected expression"),
-        ("int f(,);", Span { lo: 6, hi: 7 }, "expected a type specifier"),
+        ("int f(,);", Span { lo: 6, hi: 7 }, "expected parameter type"),
     ] {
         let error = syntax_error(source);
         assert_eq!(error.span, location, "{source:?}: {error:?}");
