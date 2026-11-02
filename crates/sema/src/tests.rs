@@ -1097,3 +1097,16 @@ fn compound_bitwise_assignments_validate_lvalues_and_integer_promotions() {
     reject("int f(int x, int *p) { x ^= p; return x; }", "requires integer operands");
     reject("int f(int x) { (x + 1) <<= 2; return x; }", "modifiable integer lvalue");
 }
+
+
+#[test]
+fn arithmetic_compound_assignments_support_integer_and_pointer_lvalues() {
+    check("int f(unsigned char c, unsigned long n) { c += n; c *= 3; c -= 1; c /= 2; c %= 7; return c; }").unwrap();
+    check("int f(int a, int b) { a += b *= 3; a -= 1; a /= 2; a %= 5; return a; }").unwrap();
+    check("int f(int *p, int offset) { p += offset; p -= 1; return *p; }").unwrap();
+    check("int f(void) { struct Data { int x; }; struct Data a[2]; struct Data *p=a; p += 1; p -= 1; return 0; }").unwrap();
+    reject("int f(int *p) { p *= 2; return 0; }", "modifiable integer lvalue");
+    reject("int f(int *p) { p += p; return 0; }", "requires integer operands");
+    reject("int f(void *p) { p += 1; return 0; }", "complete object type");
+    reject("int f(int x) { (x+1) += 2; return x; }", "modifiable integer lvalue");
+}
