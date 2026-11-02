@@ -97,6 +97,7 @@ mod tests {
             ExternalItem::Function(Function {
             storage: StorageClass::Default,
                 name: format!("f{i}"),
+                name_span: None,
                 result: Type::Int,
                 params: vec![],
                 body: Stmt::Block(vec![]),
@@ -126,6 +127,7 @@ mod tests {
         let function = ExternalItem::Function(Function {
             storage: StorageClass::Default,
             name: "f".into(),
+            name_span: None,
             result: Type::Int,
             params: vec![],
             body: Stmt::Block(vec![]),
