@@ -91,6 +91,31 @@ returns its token vector, not during internal expansion. Full bounded-time
 and bounded-allocation preprocessing needs upstream resource-budget support.
 No C23 conformance claim is made.
 
+## Deterministic differential testing
+
+`crates/preprocess/tests/internal_differential.rs` now generates bounded,
+reproducible macro graphs using an in-tree xorshift generator with fixed
+seeds. The graphs vary nested object/function macro expansions, token
+pasting, stringification and conditional compilation. Each case is
+compared token-for-token against **both GCC and Clang**. Failed assertions
+print the exact source and seed to reproduce without requiring a fuzzing
+framework or a new dependency.
+
+The frequent `compiler-ci` checks use four seeds by default. For a
+larger test, manually dispatch the
+[Mini-C CI workflow](https://github.com/bingordo/compiler-ci/actions/workflows/mini-c-cranelift.yml)
+with `cpp_seed_count=128`, or run locally:
+
+```sh
+MINI_C_CPP_SEED_COUNT=128 cargo test -p mini-c-preprocess \
+  --features internal-rcc --test internal_differential
+```
+
+The upper bound of 128 protects the shared GitHub Actions budget. No
+claim of exhaustive C99 macro conformance follows from the seeded tests;
+they complement, rather than replace, the hand-written edge-case
+regressions and the pending upstream invocation-origin fix.
+
 ## Before enabling by default
 
 1. Increase the GCC/Clang differential corpus substantially and minimize
