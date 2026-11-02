@@ -700,6 +700,16 @@ impl Checker {
         if kind == SymbolKind::Function && decl.init.is_some() {
             return Err(type_error(decl.span, "function declaration cannot have an initializer"));
         }
+        // C requires a file-scope object with internal linkage to have a
+        // complete type at its declaration, not merely at TU finalization.
+        // This differs from external-linkage tentative definitions, which
+        // may be completed by a later tag definition.
+        if kind == SymbolKind::Object && decl.storage == StorageClass::Static
+            && ty.size_bytes(self.target).is_none()
+        {
+            return Err(type_error(decl.span,
+                "file-scope static object requires a complete type"));
+        }
         let defining = decl.init.is_some();
         self.declare_global(&decl.name, ty.clone(), kind, defining, decl.storage, decl.span)?;
         // A prior incomplete array declaration can be completed here; publish
