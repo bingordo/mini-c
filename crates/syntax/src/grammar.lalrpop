@@ -33,10 +33,15 @@ Equality: Expr = {
     Relational,
 };
 Relational: Expr = {
-    <l:Relational> "<" <r:Additive> => Expr::Binary(BinOp::Lt, Box::new(l), Box::new(r)),
-    <l:Relational> ">" <r:Additive> => Expr::Binary(BinOp::Gt, Box::new(l), Box::new(r)),
-    <l:Relational> "<=" <r:Additive> => Expr::Binary(BinOp::Le, Box::new(l), Box::new(r)),
-    <l:Relational> ">=" <r:Additive> => Expr::Binary(BinOp::Ge, Box::new(l), Box::new(r)),
+    <l:Relational> "<" <r:Shift> => Expr::Binary(BinOp::Lt, Box::new(l), Box::new(r)),
+    <l:Relational> ">" <r:Shift> => Expr::Binary(BinOp::Gt, Box::new(l), Box::new(r)),
+    <l:Relational> "<=" <r:Shift> => Expr::Binary(BinOp::Le, Box::new(l), Box::new(r)),
+    <l:Relational> ">=" <r:Shift> => Expr::Binary(BinOp::Ge, Box::new(l), Box::new(r)),
+    Shift,
+};
+Shift: Expr = {
+    <l:Shift> "<<" <r:Additive> => Expr::Binary(BinOp::Shl, Box::new(l), Box::new(r)),
+    <l:Shift> ">>" <r:Additive> => Expr::Binary(BinOp::Shr, Box::new(l), Box::new(r)),
     Additive,
 };
 Additive: Expr = {
@@ -105,6 +110,8 @@ extern {
         "|" => ExprToken::Pipe,
         "^" => ExprToken::Caret,
         "~" => ExprToken::Tilde,
+        "<<" => ExprToken::ShiftLeft,
+        ">>" => ExprToken::ShiftRight,
         "(" => ExprToken::LParen,
         ")" => ExprToken::RParen,
         "," => ExprToken::Comma,
