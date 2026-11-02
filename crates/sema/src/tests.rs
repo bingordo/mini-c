@@ -755,3 +755,16 @@ fn ordinary_check_stream_still_fails_fast_on_nested_semantic_errors() {
     assert!(error.message.contains("missing_a"), "{error:?}");
     assert!(checker.global("later").is_none());
 }
+
+#[test]
+fn indirect_calls_accept_function_pointers_and_explicit_function_dereference() {
+    check("int add(int x) { return x+1; } \
+           int (*global)(int) = add; \
+           struct Hooks { int (*invoke)(int); }; \
+           struct Hooks hooks = {add}; \
+           int main(void) { int (*local)(int) = add; \
+               return local(1) + global(2) + hooks.invoke(3) + (*add)(4); }").unwrap();
+    reject("int add(int x) { return x; } \
+            int main(void) { int (*fp)(int)=add; return fp(); }",
+        "expects 1 arguments");
+}

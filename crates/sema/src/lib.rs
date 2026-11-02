@@ -1089,6 +1089,9 @@ impl Checker {
                         Ok(CheckedExpr::value(ty, CheckedExprKind::Unary(*op, Box::new(typed))))
                     }
                     UnOp::Deref => {
+                        // Function designators decay to pointers before unary *.
+                        // This also permits (*function)(args), as required by C.
+                        let typed = typed.rvalue();
                         let CType::Pointer(inner_ty) = &typed.ty else {
                             return Err(type_error(span, "dereference requires a pointer"));
                         };
@@ -1096,7 +1099,7 @@ impl Checker {
                         let category = if matches!(ty, CType::Function { .. }) { Category::Function } else if ty == CType::Void {
                             return Err(type_error(span, "cannot dereference void pointer"));
                         } else { Category::LValue };
-                        Ok(CheckedExpr { ty, category, kind: CheckedExprKind::Unary(*op, Box::new(typed.rvalue())) })
+                        Ok(CheckedExpr { ty, category, kind: CheckedExprKind::Unary(*op, Box::new(typed)) })
                     }
                     UnOp::Not => {
                         if !typed.ty.is_scalar() { return Err(type_error(span, "logical not requires scalar operand")); }

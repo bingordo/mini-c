@@ -927,18 +927,33 @@ impl Lower<'_> {
                 Ok(value)
             }
             CheckedExprKind::Call(callee, args) => {
-                let CheckedExprKind::Name(name) = &callee.kind else {
-                    return Err("M2.5 only supports direct named function calls".into());
-                };
-                let id = self.functions.get(name)
-                    .map(|known| known.id)
-                    .ok_or_else(|| format!("M2.5 missing function declaration for '{name}'"))?;
                 let mut values = Vec::with_capacity(args.len());
                 for arg in args { values.push(self.expression(b, arg)?); }
-                let refid = self.module.declare_func_in_func(id, b.func);
-                let inst = b.ins().call(refid, &values);
-                let values = b.inst_results(inst);
-                if let Some(&result) = values.first() {
+                // Ordinary named functions use a direct call. Every other
+                // callable expression is a function pointer and must use the
+                // checked function signature for its indirect ABI.
+                let inst = if let (CheckedExprKind::Name(name), CType::Function { .. }) =
+                    (&callee.kind, &callee.ty)
+                {
+                    let id = self.functions.get(name)
+                        .map(|known| known.id)
+                        .ok_or_else(|| format!("missing function declaration for '{name}'"))?;
+                    let refid = self.module.declare_func_in_func(id, b.func);
+                    b.ins().call(refid, &values)
+                } else {
+                    let function_ty = match &callee.ty {
+                        CType::Function { .. } => &callee.ty,
+                        CType::Pointer(inner) if matches!(inner.as_ref(), CType::Function { .. }) =>
+                            inner.as_ref(),
+                        _ => return Err("indirect call requires a checked function pointer".into()),
+                    };
+                    let sig = signature(self.module, function_ty)?;
+                    let sigref = b.func.import_signature(sig);
+                    let address = self.expression(b, callee)?;
+                    b.ins().call_indirect(sigref, address, &values)
+                };
+                let results = b.inst_results(inst);
+                if let Some(&result) = results.first() {
                     Ok(result)
                 } else {
                     // All valid uses of a void function are statement expressions.
@@ -1134,6 +1149,29 @@ mod tests {
                 _ => false,
             }).count();
         assert_eq!(identity_refs, 3, "expected scalar, struct and array function relocations");
+    }
+
+    #[test]
+    fn compiles_local_global_and_member_function_pointer_calls() {
+        let examples = [
+            "int twice(int v) { return v*2; } \
+             int main(void) { int (*fp)(int) = twice; return fp(21)-42; }",
+            "int plus(int v) { return v+1; } \
+             int (*global)(int) = plus; int main(void) { return global(41)-42; }",
+            "int plus(int v) { return v+1; } \
+             struct Hooks { int (*call)(int); }; \
+             struct Hooks hooks = {plus}; \
+             int main(void) { return hooks.call(41)-42; }",
+            "int plus(int v) { return v+1; } \
+             int main(void) { return (*plus)(41)-42; }",
+            "void side_effect(int *p) { *p = 42; } \
+             int main(void) { int v=0; void (*fp)(int *) = side_effect; \
+                 fp(&v); return v-42; }",
+        ];
+        for source in examples {
+            let obj = compile_source(source).unwrap();
+            assert_eq!(&obj[..4], b"\x7fELF");
+        }
     }
 
     #[test]
