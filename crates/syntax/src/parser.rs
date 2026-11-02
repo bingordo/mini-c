@@ -421,7 +421,8 @@ impl<'a> Parser<'a> {
             Declarator::Name(String::new())
         } else {
             let span = self.peek()?.map_or(self.eof_span(), |token| token.span);
-            return Err(Diagnostic::new(span, "expected identifier in declarator"));
+            return Err(Diagnostic::coded(span, DiagnosticCode::SyntaxExpectedDeclarator,
+                "expected identifier in declarator"));
         };
 
         loop {
@@ -455,8 +456,14 @@ impl<'a> Parser<'a> {
             return Ok(params);
         }
         loop {
+            let token_span = self.peek()?.map_or(self.eof_span(), |token| token.span);
+            if self.peek()?.is_some_and(|token| matches!(token.text, "," | ")")) {
+                return Err(Diagnostic::coded(token_span, DiagnosticCode::SyntaxExpectedParameter,
+                    "expected parameter type"));
+            }
             let (base, lo) = self.parse_type()?
-                .ok_or_else(|| Diagnostic::new(self.eof_span(), "expected parameter type"))?;
+                .ok_or_else(|| Diagnostic::coded(self.eof_span(),
+                    DiagnosticCode::SyntaxExpectedParameter, "expected parameter type"))?;
             // The entire parameter list (void) denotes no parameters.
             if base == Type::Void && params.is_empty() {
                 if self.peek()?.is_some_and(|token| token.text == ")") {
@@ -470,7 +477,8 @@ impl<'a> Parser<'a> {
             }
             let (name, ty, _) = self.parse_declarator_shape(true)?.finish(base);
             if ty == Type::Void {
-                return Err(Diagnostic::new(Span { lo, hi: lo }, "parameter cannot have void type"));
+                return Err(Diagnostic::coded(token_span, DiagnosticCode::SyntaxExpectedParameter,
+                    "parameter cannot have void type"));
             }
             params.push(Decl {
                 storage: StorageClass::Default,
@@ -511,13 +519,15 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_decl(&mut self, is_typedef: bool) -> Result<Decl, Diagnostic> {
+        let storage_span = self.peek()?.map_or(self.eof_span(), |t| t.span);
         let storage = match self.peek()?.map(|t| t.text) {
             Some("static") => { self.take()?; StorageClass::Static },
             Some("extern") => { self.take()?; StorageClass::Extern },
             _ => StorageClass::Default,
         };
         if is_typedef && storage != StorageClass::Default {
-            return Err(Diagnostic::new(self.eof_span(), "typedef cannot combine with storage class"));
+            return Err(Diagnostic::coded(storage_span, DiagnosticCode::SyntaxInvalidDeclaration,
+                "typedef cannot combine with storage class"));
         }
         let (base, start) = self.parse_type()?
             .ok_or_else(|| Diagnostic::new(self.eof_span(), "expected type"))?;
@@ -735,13 +745,15 @@ impl ItemSource for Parser<'_> {
         self.pending_file_binding = None;
         let is_typedef = self.peek()?.is_some_and(|t| t.text == "typedef");
         if is_typedef { self.take()?; }
+        let storage_span = self.peek()?.map_or(self.eof_span(), |t| t.span);
         let storage = match self.peek()?.map(|t| t.text) {
             Some("static") => { self.take()?; StorageClass::Static },
             Some("extern") => { self.take()?; StorageClass::Extern },
             _ => StorageClass::Default,
         };
         if is_typedef && storage != StorageClass::Default {
-            return Err(Diagnostic::new(self.eof_span(), "typedef cannot combine with storage class"));
+            return Err(Diagnostic::coded(storage_span, DiagnosticCode::SyntaxInvalidDeclaration,
+                "typedef cannot combine with storage class"));
         }
         let Some((base, start)) = self.parse_type()? else {
             // EOF only succeeds when no declaration specifiers were consumed.
@@ -752,11 +764,13 @@ impl ItemSource for Parser<'_> {
         };
         if self.peek()?.is_some_and(|t| t.text == ";") {
             if !matches!(&base, Type::Struct { .. } | Type::Union { .. } | Type::Enum { .. } | Type::TagRef(..)) {
-                return Err(Diagnostic::new(self.peek()?.expect("peeked").span,
+                return Err(Diagnostic::coded(self.peek()?.expect("peeked").span,
+                    DiagnosticCode::SyntaxExpectedDeclarator,
                     "declaration requires an identifier"));
             }
             if is_typedef {
-                return Err(Diagnostic::new(self.peek()?.expect("peeked").span,
+                return Err(Diagnostic::coded(self.peek()?.expect("peeked").span,
+                    DiagnosticCode::SyntaxExpectedDeclarator,
                     "typedef requires a declarator"));
             }
             self.take()?;
@@ -766,9 +780,10 @@ impl ItemSource for Parser<'_> {
         self.pending_file_binding = Some((name.clone(), self.scopes.lookup(&name)));
         self.scopes.declare(&name, if is_typedef { Binding::Typedef } else { Binding::Ordinary });
 
-        if self.peek()?.is_some_and(|token| token.text == "{") {
+        if let Some(brace) = self.peek()?.filter(|token| token.text == "{") {
             let Type::Function { result, .. } = ty else {
-                return Err(Diagnostic::new(Span { lo: start, hi: start }, "function body requires a function declarator"));
+                return Err(Diagnostic::coded(brace.span, DiagnosticCode::SyntaxInvalidDeclaration,
+                    "function body requires a function declarator"));
             };
             if is_typedef {
                 return Err(Diagnostic::new(Span { lo: start, hi: start }, "typedef cannot define a function body"));
