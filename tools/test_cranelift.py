@@ -14,6 +14,15 @@ import subprocess
 import sys
 
 PROGRAMS = {
+    "shift_precedence": """int main(void) {
+        return ((1+2 << 3) < 30) + (32 >> 2+1) + (1 << 2 << 1);
+    }""",
+    "shift_signed_arithmetic": """int shr(int x, unsigned long n) { return x >> n; }
+        int main(void) { return shr(-32,3) + 100; }""",
+    "shift_unsigned_logical": """unsigned int shr(unsigned int x, int n) { return x >> n; }
+        int main(void) { return shr(~0,28); }""",
+    "shift_global_constant": """int mask = 1 << 7; int half = 128 >> 4;
+        int main(void) { return mask + half; }""",
     # These must agree with GCC at execution time, not merely type-check or
     # emit valid ELF. Keep all results within the shell's 8-bit exit range.
     "bitwise_precedence": """int main(void) {
