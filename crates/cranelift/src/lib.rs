@@ -1321,4 +1321,24 @@ mod tests {
         assert!(!compile_source(source).unwrap().is_empty());
     }
 
+    #[test]
+    fn compiles_arithmetic_compound_assignments_and_pointer_scaled_offsets() {
+        let src = "int calls; int a[4]; int *p=a; \
+                   int **slot(void) { calls += 1; return &p; } \
+                   int main(void) { a[1]=17; a[2]=23; \
+                       *slot() += 2; *slot() -= 1; \
+                       return calls + *p; }";
+        let obj = compile_source(src).unwrap();
+        assert_eq!(&obj[..4], b"\x7fELF");
+    }
+
+    #[test]
+    fn compiles_unsigned_arithmetic_compound_assignments() {
+        let src = "int main(void) { unsigned char c=250; int a=12; \
+                   c += 10; c *= 3; c /= 2; c %= 7; \
+                   a += 2; a -= 1; a *= 2; a /= 3; a %= 5; \
+                   return c+a; }";
+        assert!(!compile_source(src).unwrap().is_empty());
+    }
+
 }
