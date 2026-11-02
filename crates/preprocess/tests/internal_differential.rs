@@ -173,7 +173,39 @@ char *t = EXPAND_STRING(VAL);
 }
 
 #[test]
-fn line_directives_and_builtin_line_values() {
+fn line_directives_and_direct_builtin_line_values() {
+    compare(r#"
+#line 100 "virtual name.c"
+int first = __LINE__;
+int second = __LINE__;
+"#, &[]);
+}
+
+#[test]
+fn macro_wrapped_line_builtin_is_rejected_instead_of_miscompiled() {
+    use std::ffi::OsString;
+    let dir = std::env::temp_dir().join(format!(
+        "mini-c-line-macro-{}-{}",
+        std::process::id(),
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("line.c");
+    std::fs::write(&source,
+        "#line 100 \"virtual.c\"\n#define WHICH_LINE __LINE__\nint n = WHICH_LINE;\n",
+    ).unwrap();
+    let result = file(&source, &Config {
+        executable: OsString::from("internal"),
+        args: vec![OsString::from("-E")],
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+    let error = result.unwrap_err().to_string();
+    assert!(error.contains("invocation-site"), "{error}");
+}
+
+#[test]
+#[ignore = "upstream rcc must preserve macro invocation spans for __LINE__; tracking exact GCC behavior"]
+fn line_builtin_inside_macro_matches_gcc_when_upstream_fixed() {
     compare(r#"
 #line 100 "virtual name.c"
 int first = __LINE__;
