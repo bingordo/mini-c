@@ -1142,7 +1142,7 @@ impl Checker {
                         if !typed.ty.is_scalar() { return Err(Diagnostic::coded(span, DiagnosticCode::SemanticInvalidOperatorOperands, "logical not requires scalar operand")); }
                         Ok(CheckedExpr::value(CType::int(), CheckedExprKind::Unary(*op, Box::new(typed.rvalue()))))
                     }
-                    UnOp::Plus | UnOp::Neg => {
+                    UnOp::Plus | UnOp::Neg | UnOp::BitNot => {
                         if !typed.ty.is_integer() { return Err(Diagnostic::coded(span, DiagnosticCode::SemanticInvalidOperatorOperands, "arithmetic unary operator requires integer")); }
                         let ty = self.target.promote(&typed.ty);
                         Ok(CheckedExpr::value(ty.clone(), CheckedExprKind::Unary(*op, Box::new(self.convert(typed, &ty)))))
@@ -1153,6 +1153,7 @@ impl Checker {
                 let left = self.check_expr(lhs, span)?.rvalue();
                 let right = self.check_expr(rhs, span)?.rvalue();
                 let logical = matches!(op, BinOp::And | BinOp::Or);
+                let bitwise = matches!(op, BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor);
                 let relation = matches!(op, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge);
                 if logical {
                     if !(left.ty.is_scalar() && right.ty.is_scalar()) {
@@ -1179,6 +1180,10 @@ impl Checker {
                     {
                         return self.pointer_offset(*op, right, left, span);
                     }
+                }
+                if bitwise && !(left.ty.is_integer() && right.ty.is_integer()) {
+                    return Err(Diagnostic::coded(span, DiagnosticCode::SemanticInvalidOperatorOperands,
+                        "bitwise operator requires integer operands"));
                 }
                 let common = self.target.common_integer(&left.ty, &right.ty)
                     .ok_or_else(|| Diagnostic::coded(span, DiagnosticCode::SemanticInvalidOperatorOperands, "operator requires compatible integer operands"))?;

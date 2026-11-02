@@ -949,3 +949,14 @@ fn plain_parser_preserves_legacy_fallback_spans_and_errors() {
     assert_eq!(error.code, DiagnosticCode::SemanticInvalidSubscript);
     assert!(error.span.hi >= error.span.lo);
 }
+
+
+#[test]
+fn bitwise_integer_promotions_and_pointer_rejection() {
+    check("int f(int x) { return ~x & 255; }").unwrap();
+    check("unsigned int f(unsigned char c) { return c | 16; }").unwrap();
+    check("int f(int a, int b) { return (a ^ b) & 31; }").unwrap();
+    check("int f(int a) { return (a & 3) == 2 || (a | 4) != 0; }").unwrap();
+    reject("int f(int *p) { return p & 7; }", "bitwise operator requires integer");
+    reject("int f(int *p) { return ~p; }", "arithmetic unary operator requires integer");
+}
