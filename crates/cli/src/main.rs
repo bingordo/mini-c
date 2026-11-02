@@ -16,7 +16,7 @@ fn check(path: &str, cpp: Option<&preprocess::Config>) -> Result<(), String> {
     };
     let file = SourceFile::new(path, &source);
     let map = cpp.map(|_| SourceMap::from_preprocessed(&source, path));
-    let mut parser = Parser::new(&source);
+    let mut parser = Parser::new_with_spans(&source);
     let mut checker = Checker::new(Target::default()).expect("valid default target");
     loop {
         // The checker only retains symbol/type state, not completed function ASTs.
@@ -52,7 +52,7 @@ fn check_recovering(
     };
     let file = SourceFile::new(path, &source);
     let map = cpp.map(|_| SourceMap::from_preprocessed(&source, path));
-    let mut parser = Parser::new(&source);
+    let mut parser = Parser::new_with_spans(&source);
     let mut checker = Checker::new(Target::default()).expect("valid default target");
     let errors = mini_c_sema::diagnose_stream_recovering(
         &mut parser, &mut checker, max_errors,

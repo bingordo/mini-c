@@ -769,6 +769,78 @@ fn indirect_calls_accept_function_pointers_and_explicit_function_dereference() {
         "expects 1 arguments");
 }
 
+
+#[test]
+fn located_parser_reports_precise_undeclared_identifier_byte_span() {
+    use mini_c_syntax::diag::DiagnosticCode;
+    let source = "/* β */\nint f(void) { int valid=1; return valid + missing; }";
+    let mut parser = Parser::new_with_spans(source);
+    let mut checker = Checker::new(Target::default()).unwrap();
+    let errors = diagnose_stream_recovering(&mut parser, &mut checker, 4);
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert_eq!(errors[0].code, DiagnosticCode::SemanticUndeclaredIdentifier);
+    let lo = source.find("missing").unwrap();
+    assert_eq!(errors[0].span, mini_c_syntax::ast::Span { lo, hi: lo + 7 });
+}
+
+#[test]
+fn located_parser_points_to_specific_bad_operand_not_whole_function() {
+    use mini_c_syntax::diag::DiagnosticCode;
+    let source = "int f(void) { int value=1; value=2; return value + missing; }";
+    let mut parser = Parser::new_with_spans(source);
+    let mut checker = Checker::new(Target::default()).unwrap();
+    let error = diagnose_stream_recovering(&mut parser, &mut checker, 2)
+        .into_iter().next().expect("semantic error");
+    assert_eq!(error.code, DiagnosticCode::SemanticUndeclaredIdentifier);
+    let lo = source.find("missing").unwrap();
+    assert_eq!(error.span, mini_c_syntax::ast::Span { lo, hi: lo + 7 });
+}
+
+#[test]
+fn located_parser_marks_invalid_assignment_lhs() {
+    use mini_c_syntax::diag::DiagnosticCode;
+    let source = "int f(void) { int x=0; 1 = x; return 0; }";
+    let mut parser = Parser::new_with_spans(source);
+    let mut checker = Checker::new(Target::default()).unwrap();
+    let errors = diagnose_stream_recovering(&mut parser, &mut checker, 2);
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert_eq!(errors[0].code, DiagnosticCode::SemanticInvalidAssignmentTarget);
+    let lo = source.find("1 = x").unwrap();
+    assert_eq!(errors[0].span, mini_c_syntax::ast::Span { lo, hi: lo + 1 });
+}
+
+#[test]
+fn located_parser_preserves_array_string_and_function_pointer_initializers() {
+    let source = concat!(
+        "int items[] = {1,2,3};\n",
+        "char text[] = \"hi\";\n",
+        "int identity(int x) { return x; }\n",
+        "int (*callback)(int) = identity;\n",
+        "int f(void) { return items[1]; }\n",
+    );
+    let mut parser = Parser::new_with_spans(source);
+    let mut checker = Checker::new(Target::default()).unwrap();
+    let errors = diagnose_stream_recovering(&mut parser, &mut checker, 4);
+    assert!(errors.is_empty(), "{errors:?}");
+    assert!(checker.global("items").is_some());
+    assert!(checker.global("text").is_some());
+    assert!(checker.global("callback").is_some());
+    assert!(checker.global("f").is_some());
+}
+
+#[test]
+fn ordinary_parser_remains_unannotated() {
+    let source = "int value=2+3;";
+    let mut parser = Parser::new(source);
+    let item = parser.next_item().unwrap().unwrap();
+    let mini_c_syntax::stream::ExternalItem::Declaration(decl) = item else {
+        panic!("expected declaration");
+    };
+    let value = decl.init.expect("initializer");
+    assert!(value.location().is_none());
+    assert!(matches!(value, Expr::Binary(..)));
+}
+
 #[test]
 fn file_scope_internal_objects_require_complete_types() {
     reject("static int missing[];", "file-scope static object requires a complete type");
