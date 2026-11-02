@@ -174,14 +174,21 @@ Mini-C's supported language; that does not change M6's external-tool scope.
 [Candidate research](Internal_CPP_Crate_Review.md) identified several
 standalone Rust preprocessing engines. To keep Mini-C independent of other
 compiler frontends, we have introduced an optional `internal-cpp` Cargo
-feature using the pinned C99 `rcc_preprocess` engine **only** inside
-`crates/preprocess`. The checked Mini-C AST, semantic analyzer, backend
-interfaces and other compiler crates remain independent of rcc and cinrs.
+feature using a **narrow local patch** of the pinned C99
+`rcc_preprocess` engine inside `vendor/rcc_preprocess`. The remaining rcc
+dependencies stay pinned upstream; Mini-C's checked AST, semantic analyzer,
+backend interfaces and other compiler crates remain independent of rcc/cinrs.
 
 The experimental `--cpp=internal` mode expands macros and headers without
 starting an external preprocessor. Both the checker CLI and Cranelift ELF
-driver can exercise it, with a GCC differential token fixture corpus in
-`compiler-ci`. External `cc -E` remains the default and full-C reference.
+driver exercise it. The dynamic `__LINE__`/`__FILE__` macro-invocation
+bug is resolved ([issue #12](https://github.com/bingordo/mini-c/issues/12)),
+with active GCC/Clang conformance tests including `#line`, header macros,
+nested calls, stringification and pasting. The full 128-seed regression suite
+and native integration passed in
+[compiler-ci #41414910339](https://github.com/bingordo/compiler-ci/actions/runs/41414910339);
+routine CI is restored to four seeds. External `cc -E` remains the
+default and full-C reference.
 
 This is a **prototype, not complete full internal C preprocessing**.
 Remaining gates include broad C99 adversarial conformance, macro-origin
