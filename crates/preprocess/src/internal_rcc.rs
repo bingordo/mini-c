@@ -225,8 +225,8 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let src = dir.join("unit.c");
         let header = dir.join("broken.h");
-        std::fs::write(&src, "#include \"broken.h\"\\n").unwrap();
-        std::fs::write(&header, "int fine;\\n#error include_failure\\n").unwrap();
+        std::fs::write(&src, "#include \"broken.h\"\n").unwrap();
+        std::fs::write(&header, "int fine;\n#error include_failure\n").unwrap();
         let result = file(&src, &[OsString::from("-E")]);
         let _ = std::fs::remove_dir_all(dir);
         let failure = result.unwrap_err();
