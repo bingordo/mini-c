@@ -758,32 +758,41 @@ impl Lower<'_> {
         }
     }
 
-    fn pointer_offset(
-        &mut self, b: &mut FunctionBuilder<'_>, op: BinOp,
-        pointer: &CheckedExpr, offset: &CheckedExpr,
+    /// Byte displacement shared by ordinary pointer arithmetic and pointer
+    /// compound assignments. Both call sites evaluate their operands once.
+    fn pointer_displacement(
+        b: &mut FunctionBuilder<'_>, raw_index: Value,
+        offset_ty: &CType, element: &CType,
     ) -> Result<Value> {
-        let CType::Pointer(element) = &pointer.ty else {
-            return Err("M2.5 malformed checked pointer arithmetic".into());
-        };
         let width = element.size_bytes(Target::default())
-            .ok_or("M2.5 pointer arithmetic requires sized element")?;
-        let width = i64::try_from(width).map_err(|_| "M2.5 pointer element too large")?;
-        let base = self.expression(b, pointer)?;
-        let raw_index = self.integer_value(b, offset)?;
-        let raw_type = b.func.dfg.value_type(raw_index);
-        let index = if raw_type == types::I64 { raw_index } else if matches!(
-            offset.ty, CType::Integer { unsigned: true, .. }
-        ) {
+            .ok_or("pointer arithmetic requires sized element")?;
+        let width = i64::try_from(width).map_err(|_| "pointer element too large")?;
+        let index = if b.func.dfg.value_type(raw_index) == types::I64 {
+            raw_index
+        } else if matches!(offset_ty, CType::Integer { unsigned: true, .. }) {
             b.ins().uextend(types::I64, raw_index)
         } else {
             b.ins().sextend(types::I64, raw_index)
         };
         let scale = b.ins().iconst(types::I64, width);
-        let displacement = b.ins().imul(index, scale);
+        Ok(b.ins().imul(index, scale))
+    }
+
+    fn pointer_offset(
+        &mut self, b: &mut FunctionBuilder<'_>, op: BinOp,
+        pointer: &CheckedExpr, offset: &CheckedExpr,
+    ) -> Result<Value> {
+        let CType::Pointer(element) = &pointer.ty else {
+            return Err("malformed checked pointer arithmetic".into());
+        };
+        let base = self.expression(b, pointer)?;
+        let raw_index = self.integer_value(b, offset)?;
+        let displacement = Self::pointer_displacement(
+            b, raw_index, &offset.ty, element.as_ref())?;
         Ok(match op {
             BinOp::Add => b.ins().iadd(base, displacement),
             BinOp::Sub => b.ins().isub(base, displacement),
-            _ => return Err("M2.5 invalid checked pointer operator".into()),
+            _ => return Err("invalid checked pointer operator".into()),
         })
     }
 
@@ -883,6 +892,21 @@ impl Lower<'_> {
                 let address = self.place(b, lhs)?;
                 let old = b.ins().load(scalar_type(&lhs.ty)?,
                     ir::MemFlagsData::new(), address, 0);
+                if let CType::Pointer(element) = computation_ty {
+                    // C pointer +=/-= scales by the complete element size.
+                    // The lvalue address above and right expression below
+                    // are each computed exactly once.
+                    let offset = self.integer_value(b, rhs)?;
+                    let displacement = Self::pointer_displacement(
+                        b, offset, &rhs.ty, element.as_ref())?;
+                    let result = match op {
+                        BinOp::Add => b.ins().iadd(old, displacement),
+                        BinOp::Sub => b.ins().isub(old, displacement),
+                        _ => return Err("invalid pointer compound operator".into()),
+                    };
+                    b.ins().store(ir::MemFlagsData::new(), result, address, 0);
+                    return Ok(result);
+                }
                 let left = Self::convert(b, old, &lhs.ty, computation_ty)?;
                 let mut right = self.integer_value(b, rhs)?;
                 if matches!(op, BinOp::Shl | BinOp::Shr) &&
@@ -895,6 +919,13 @@ impl Lower<'_> {
                     BinOp::BitAnd => b.ins().band(left, right),
                     BinOp::BitOr => b.ins().bor(left, right),
                     BinOp::BitXor => b.ins().bxor(left, right),
+                    BinOp::Add => b.ins().iadd(left, right),
+                    BinOp::Sub => b.ins().isub(left, right),
+                    BinOp::Mul => b.ins().imul(left, right),
+                    BinOp::Div if unsigned => b.ins().udiv(left, right),
+                    BinOp::Div => b.ins().sdiv(left, right),
+                    BinOp::Mod if unsigned => b.ins().urem(left, right),
+                    BinOp::Mod => b.ins().srem(left, right),
                     BinOp::Shl => b.ins().ishl(left, right),
                     BinOp::Shr if unsigned => b.ins().ushr(left, right),
                     BinOp::Shr => b.ins().sshr(left, right),
@@ -1288,6 +1319,26 @@ mod tests {
             byte &= 15; byte <<= 1; byte >>= 2; \
             x ^= byte |= 1; return x; }";
         assert!(!compile_source(source).unwrap().is_empty());
+    }
+
+    #[test]
+    fn compiles_arithmetic_compound_assignments_and_pointer_scaled_offsets() {
+        let src = "int calls; int a[4]; int *p=a; \
+                   int **slot(void) { calls += 1; return &p; } \
+                   int main(void) { a[1]=17; a[2]=23; \
+                       *slot() += 2; *slot() -= 1; \
+                       return calls + *p; }";
+        let obj = compile_source(src).unwrap();
+        assert_eq!(&obj[..4], b"\x7fELF");
+    }
+
+    #[test]
+    fn compiles_unsigned_arithmetic_compound_assignments() {
+        let src = "int main(void) { unsigned char c=250; int a=12; \
+                   c += 10; c *= 3; c /= 2; c %= 7; \
+                   a += 2; a -= 1; a *= 2; a /= 3; a %= 5; \
+                   return c+a; }";
+        assert!(!compile_source(src).unwrap().is_empty());
     }
 
 }

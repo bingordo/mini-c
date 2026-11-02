@@ -1233,10 +1233,16 @@ impl Checker {
                 let lhs_span = lhs.location().unwrap_or(span);
                 let rhs_span = rhs.location().unwrap_or(span);
                 let lhs = self.check_expr(lhs, span)?;
-                if lhs.category != Category::LValue || !lhs.ty.is_integer() {
+                let arithmetic = matches!(op,
+                    BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod);
+                let pointer_arithmetic = matches!(op, BinOp::Add | BinOp::Sub)
+                    && matches!(&lhs.ty, CType::Pointer(_));
+                if lhs.category != Category::LValue
+                    || !(lhs.ty.is_integer() || pointer_arithmetic)
+                {
                     return Err(Diagnostic::coded(lhs_span,
                         DiagnosticCode::SemanticInvalidAssignmentTarget,
-                        "compound assignment requires a modifiable integer lvalue"));
+                        "compound assignment requires a modifiable integer lvalue or pointer +=/-="));
                 }
                 let rhs_checked = self.check_expr(rhs, span)?.rvalue();
                 if !rhs_checked.ty.is_integer() {
@@ -1244,16 +1250,32 @@ impl Checker {
                         DiagnosticCode::SemanticInvalidOperatorOperands,
                         "compound assignment requires integer operands"));
                 }
-                let computation_ty = match op {
-                    BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor =>
-                        self.target.common_integer(&lhs.ty, &rhs_checked.ty)
-                            .ok_or_else(|| type_error(span, "incompatible compound assignment operands"))?,
-                    BinOp::Shl | BinOp::Shr => self.target.promote(&lhs.ty),
-                    _ => return Err(type_error(span, "unsupported compound assignment operator")),
+                let computation_ty = if pointer_arithmetic {
+                    // C only permits +/- a scalar integer offset for pointers
+                    // to complete object types, with element-sized scaling.
+                    let CType::Pointer(element) = &lhs.ty else { unreachable!() };
+                    let complete = self.complete_tag_type(element.as_ref().clone(), lhs_span)?;
+                    if complete.size_bytes(self.target).is_none() {
+                        return Err(type_error(lhs_span,
+                            "pointer arithmetic requires a complete object type"));
+                    }
+                    CType::Pointer(Box::new(complete))
+                } else if arithmetic || matches!(op,
+                    BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor)
+                {
+                    self.target.common_integer(&lhs.ty, &rhs_checked.ty)
+                        .ok_or_else(|| type_error(span, "incompatible compound assignment operands"))?
+                } else if matches!(op, BinOp::Shl | BinOp::Shr) {
+                    self.target.promote(&lhs.ty)
+                } else {
+                    return Err(type_error(span, "unsupported compound assignment operator"));
                 };
-                // A shift's right operand gets its own integer promotion;
-                // the computation/result type comes solely from the left.
-                let rhs_ty = if matches!(op, BinOp::Shl | BinOp::Shr) {
+                // Shift and pointer offsets promote their right operand
+                // independently; all other operations apply the usual
+                // arithmetic conversions to both operands.
+                let rhs_ty = if pointer_arithmetic ||
+                    matches!(op, BinOp::Shl | BinOp::Shr)
+                {
                     self.target.promote(&rhs_checked.ty)
                 } else {
                     computation_ty.clone()

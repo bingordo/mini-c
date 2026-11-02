@@ -250,6 +250,11 @@ impl<'a> Parser<'a> {
         let lhs = self.parse_binary(0)?;
         if let Some(op) = self.peek()?.and_then(|t| match t.text {
             "=" => Some(None),
+            "+=" => Some(Some(BinOp::Add)),
+            "-=" => Some(Some(BinOp::Sub)),
+            "*=" => Some(Some(BinOp::Mul)),
+            "/=" => Some(Some(BinOp::Div)),
+            "%=" => Some(Some(BinOp::Mod)),
             "&=" => Some(Some(BinOp::BitAnd)),
             "|=" => Some(Some(BinOp::BitOr)),
             "^=" => Some(Some(BinOp::BitXor)),

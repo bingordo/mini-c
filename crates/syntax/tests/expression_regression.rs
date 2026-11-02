@@ -151,3 +151,21 @@ fn compound_assignments_have_assignment_precedence_and_right_associativity() {
             Box::new(Expr::Binary(BinOp::Add, Box::new(name("a")), Box::new(name("b")))),
             Box::new(Expr::Int(3))));
 }
+
+
+#[test]
+fn arithmetic_compound_assignments_parse_with_right_associativity() {
+    let operators = [
+        ("+=", BinOp::Add), ("-=", BinOp::Sub),
+        ("*=", BinOp::Mul), ("/=", BinOp::Div), ("%=", BinOp::Mod),
+    ];
+    for (token, op) in operators {
+        assert_eq!(parse_expression(&format!("a {token} b = 2")).unwrap(),
+            Expr::CompoundAssign(op, Box::new(name("a")),
+                Box::new(Expr::Assign(Box::new(name("b")), Box::new(Expr::Int(2))))));
+    }
+    assert_eq!(parse_expression("a += b *= 3").unwrap(),
+        Expr::CompoundAssign(BinOp::Add, Box::new(name("a")),
+            Box::new(Expr::CompoundAssign(BinOp::Mul,
+                Box::new(name("b")), Box::new(Expr::Int(3))))));
+}
