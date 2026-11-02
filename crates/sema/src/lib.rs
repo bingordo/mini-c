@@ -599,7 +599,8 @@ impl Checker {
             }
             ExternalItem::Typedef(decl) => {
                 let ty = self.resolve(&decl.ty, decl.span)?;
-                self.declare_global(&decl.name, ty.clone(), SymbolKind::Typedef, false, decl.storage, decl.span)?;
+                self.declare_global(&decl.name, ty.clone(), SymbolKind::Typedef, false, decl.storage,
+                    decl.name_span.unwrap_or(decl.span))?;
                 Ok(CheckedItem::Typedef { name: decl.name, ty })
             }
             ExternalItem::Declaration(decl) => self.check_global(decl).map(CheckedItem::Declaration),
@@ -715,7 +716,8 @@ impl Checker {
                 "file-scope static object requires a complete type"));
         }
         let defining = decl.init.is_some();
-        self.declare_global(&decl.name, ty.clone(), kind, defining, decl.storage, decl.span)?;
+        self.declare_global(&decl.name, ty.clone(), kind, defining, decl.storage,
+            decl.name_span.unwrap_or(decl.span))?;
         // A prior incomplete array declaration can be completed here; publish
         // the composite type to both the checked item and later references.
         let ty = self.global(&decl.name).expect("registered global").ty.clone();
@@ -748,12 +750,15 @@ impl Checker {
             params: params.iter().map(|p| p.ty.clone()).collect(),
         };
         // Register before checking the body: recursive calls are legal.
-        self.declare_global(&func.name, signature.clone(), SymbolKind::Function, true, func.storage, func.span)?;
+        self.declare_global(&func.name, signature.clone(), SymbolKind::Function, true, func.storage,
+            func.name_span.unwrap_or(func.span))?;
         self.locals.push(HashMap::new());
         self.tags.borrow_mut().push(HashMap::new());
         self.result_ty = Some(result);
-        for param in &params {
-            if let Err(err) = self.define_local(&param.name, param.ty.clone(), SymbolKind::Object, Linkage::None, param.span) {
+        for (parsed_param, param) in func.params.iter().zip(&params) {
+            if let Err(err) = self.define_local(&param.name, param.ty.clone(),
+                SymbolKind::Object, Linkage::None,
+                parsed_param.name_span.unwrap_or(param.span)) {
                 self.pop_tag_scope();
                 self.locals.pop();
                 self.result_ty = None;
@@ -839,12 +844,14 @@ impl Checker {
                     if decl.init.is_some() {
                         return Err(type_error(decl.span, "block-scope extern cannot have an initializer"));
                     }
-                    self.declare_global(&decl.name, ty.clone(), SymbolKind::Object, false, decl.storage, decl.span)?;
+                    self.declare_global(&decl.name, ty.clone(), SymbolKind::Object, false, decl.storage,
+                        decl.name_span.unwrap_or(decl.span))?;
                 }
                 let linkage = if decl.storage == StorageClass::Extern {
                     self.global(&decl.name).expect("registered extern").linkage
                 } else { Linkage::None };
-                self.define_local(&decl.name, ty.clone(), SymbolKind::Object, linkage, decl.span)?;
+                self.define_local(&decl.name, ty.clone(), SymbolKind::Object, linkage,
+                    decl.name_span.unwrap_or(decl.span))?;
                 let initializer = decl.init.as_ref()
                     .map(|value| self.check_object_initializer(value, &ty, decl.span,
                         decl.storage == StorageClass::Static))
@@ -857,7 +864,8 @@ impl Checker {
             }
             Stmt::Typedef(decl) => {
                 let ty = self.resolve(&decl.ty, decl.span)?;
-                self.define_local(&decl.name, ty.clone(), SymbolKind::Typedef, Linkage::None, decl.span)?;
+                self.define_local(&decl.name, ty.clone(), SymbolKind::Typedef, Linkage::None,
+                    decl.name_span.unwrap_or(decl.span))?;
                 CheckedStmt::Typedef { name: decl.name.clone(), ty }
             }
             Stmt::Expr(expr) => {
