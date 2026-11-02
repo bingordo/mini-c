@@ -822,6 +822,15 @@ impl Lower<'_> {
             }
             CheckedExprKind::Unary(op, inner) => {
                 if *op == UnOp::Address {
+                    if let (CType::Function { .. }, CheckedExprKind::Name(name)) =
+                        (&inner.ty, &inner.kind)
+                    {
+                        let id = self.functions.get(name)
+                            .map(|known| known.id)
+                            .ok_or_else(|| format!("missing function declaration for '{name}'"))?;
+                        let reference = self.module.declare_func_in_func(id, b.func);
+                        return Ok(b.ins().func_addr(types::I64, reference));
+                    }
                     return self.place(b, inner);
                 }
                 if *op == UnOp::Deref {
@@ -1078,6 +1087,18 @@ mod tests {
         let error = compile_source("int f(int x) { if (x) return x; }").unwrap_err();
         assert!(error.contains("may reach its end"), "{error}");
         assert!(!compile_source("int main(void) { int x = 1; }").unwrap().is_empty());
+    }
+
+    #[test]
+    fn implicit_function_designators_initialize_static_and_local_pointers() {
+        let src = "int identity(int x) { return x; } \
+                   int (*global)(int) = identity; \
+                   struct WithCallback { int (*fn)(int); }; \
+                   struct WithCallback callbacks[1] = {{identity}}; \
+                   int main(void) { int (*local)(int) = identity; \
+                       return local != 0 && global != 0; }";
+        let obj = compile_source(src).unwrap();
+        assert_eq!(&obj[..4], b"\x7fELF");
     }
 
     #[test]

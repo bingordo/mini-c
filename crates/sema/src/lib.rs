@@ -53,6 +53,12 @@ impl CheckedExpr {
         Self { ty, category: Category::Value, kind }
     }
     fn rvalue(self) -> Self {
+        // A function designator converts to a pointer to that function in
+        // value contexts, except for the operand of the address-of operator.
+        if self.category == Category::Function {
+            let ty = CType::Pointer(Box::new(self.ty.clone()));
+            return Self::value(ty, CheckedExprKind::Unary(UnOp::Address, Box::new(self)));
+        }
         if self.category == Category::LValue {
             match &self.ty {
                 CType::Array(element, _) => Self::value(
@@ -905,7 +911,9 @@ impl Checker {
                     _ => false,
                 },
                 Expr::Name(name) => self.globals.get(name).is_some_and(|s|
-                    matches!(&s.ty, CType::Array(..))),
+                    matches!(&s.ty, CType::Array(..)) ||
+                    (s.kind == SymbolKind::Function && matches!(ty, CType::Pointer(inner)
+                        if matches!(inner.as_ref(), CType::Function { .. })))),
                 Expr::StringLiteral(_) => matches!(ty, CType::Pointer(element)
                     if matches!(element.as_ref(), CType::Integer { rank: IntRank::Char, .. } | CType::Void)),
                 _ => false,
@@ -1141,7 +1149,14 @@ impl Checker {
                 Ok(CheckedExpr::value(lhs.ty.clone(), CheckedExprKind::Assign(Box::new(lhs), Box::new(rhs_typed))))
             }
             Expr::Call(callee, args) => {
-                let callee = self.check_expr(callee, span)?.rvalue();
+                let callee = self.check_expr(callee, span)?;
+                // Keep direct named function calls in their existing IR form;
+                // other function-value contexts use implicit pointer decay.
+                let callee = if callee.category == Category::Function {
+                    callee
+                } else {
+                    callee.rvalue()
+                };
                 let signature = match &callee.ty {
                     CType::Function { result, params } => Some((result.as_ref(), params.as_slice())),
                     CType::Pointer(inner) => match inner.as_ref() {

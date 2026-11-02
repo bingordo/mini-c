@@ -650,3 +650,14 @@ fn streaming_drops_local_tag_layouts() {
         assert_eq!(checker.tag_definitions.borrow().len(), 1);
     }
 }
+
+#[test]
+fn function_designators_decay_in_initializer_and_assignment_contexts() {
+    check("int identity(int x) { return x; } \
+           int (*global)(int) = identity; \
+           int (*table[1])(int) = {identity}; \
+           int main(void) { int (*local)(int) = identity; \
+               local = identity; return local != 0; }").unwrap();
+    reject("int identity(int x) { return x; } int *wrong = identity;",
+        "pointer initializer requires");
+}
