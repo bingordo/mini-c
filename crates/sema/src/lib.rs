@@ -166,6 +166,14 @@ impl Checker {
     }
 
     pub fn global(&self, name: &str) -> Option<&Symbol> { self.globals.get(name) }
+
+    /// Query the completed file-scope type after all external declarations.
+    /// Incomplete tagged tentative objects may acquire their layout later
+    /// without an explicit object redeclaration.
+    pub fn completed_global_type(&self, name: &str) -> Option<CType> {
+        let symbol = self.global(name)?;
+        self.try_complete_tag_type(symbol.ty.clone()).ok()
+    }
     pub fn target(&self) -> Target { self.target }
 
     fn lookup(&self, name: &str) -> Option<&Symbol> {
