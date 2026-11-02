@@ -11,21 +11,21 @@ use crate::scopes::{Binding, Scopes};
 /// `int *a[3]` is an array of pointers; `int (*a)[3]` is a pointer to an array.
 /// This is parser-internal, so checked/frontend APIs still use `Type`.
 enum Declarator {
-    Name(String),
+    Name(String, Option<Span>),
     Pointer(Box<Self>),
     Array(Box<Self>, Option<Expr>),
     Function(Box<Self>, Vec<Decl>),
 }
 
 impl Declarator {
-    fn finish(self, base: Type) -> (String, Type, Option<Vec<Decl>>) {
+    fn finish(self, base: Type) -> (String, Type, Option<Vec<Decl>>, Option<Span>) {
         match self {
-            Self::Name(name) => (name, base, None),
+            Self::Name(name, span) => (name, base, None, span),
             Self::Pointer(inner) => inner.finish(Type::Pointer(Box::new(base))),
             Self::Array(inner, bound) => inner.finish(Type::Array(Box::new(base), bound.map(Box::new))),
             Self::Function(inner, params) => {
                 let param_types = params.iter().map(|param| param.ty.clone()).collect();
-                let (name, ty, inner_params) = inner.finish(Type::Function {
+                let (name, ty, inner_params, name_span) = inner.finish(Type::Function {
                     result: Box::new(base),
                     params: param_types,
                 });
@@ -36,7 +36,7 @@ impl Declarator {
                 } else {
                     inner_params
                 };
-                (name, ty, definition_params)
+                (name, ty, definition_params, name_span)
             }
         }
     }
@@ -420,9 +420,9 @@ impl<'a> Parser<'a> {
                     | "struct" | "union" | "enum" | "if" | "else" | "while" | "return" | "break" | "continue")
         }) {
             self.take()?;
-            Declarator::Name(token.text.to_owned())
+            Declarator::Name(token.text.to_owned(), self.expression_spans.then_some(token.span))
         } else if allow_abstract {
-            Declarator::Name(String::new())
+            Declarator::Name(String::new(), None)
         } else {
             let span = self.peek()?.map_or(self.eof_span(), |token| token.span);
             return Err(Diagnostic::coded(span, DiagnosticCode::SyntaxExpectedDeclarator,
@@ -479,7 +479,7 @@ impl<'a> Parser<'a> {
                     return Err(Diagnostic::new(self.eof_span(), "expected ')'"));
                 }
             }
-            let (name, ty, _) = self.parse_declarator_shape(true)?.finish(base);
+            let (name, ty, _, name_span) = self.parse_declarator_shape(true)?.finish(base);
             if ty == Type::Void {
                 return Err(Diagnostic::coded(token_span, DiagnosticCode::SyntaxExpectedParameter,
                     "parameter cannot have void type"));
@@ -487,6 +487,7 @@ impl<'a> Parser<'a> {
             params.push(Decl {
                 storage: StorageClass::Default,
                 name,
+                name_span,
                 ty,
                 init: None,
                 span: Span { lo, hi: lo },
@@ -535,7 +536,7 @@ impl<'a> Parser<'a> {
         }
         let (base, start) = self.parse_type()?
             .ok_or_else(|| Diagnostic::new(self.eof_span(), "expected type"))?;
-        let (name, ty, _) = self.parse_declarator_shape(false)?.finish(base);
+        let (name, ty, _, name_span) = self.parse_declarator_shape(false)?.finish(base);
         self.scopes.declare(&name, if is_typedef { Binding::Typedef } else { Binding::Ordinary });
         let initializer_operator = self.peek()?.filter(|t| t.text == "=").map(|t| t.span);
         let init = if initializer_operator.is_some() {
@@ -551,7 +552,7 @@ impl<'a> Parser<'a> {
             }
         }
         let end = self.expect(";")?.span.hi;
-        Ok(Decl { storage, name, ty, init, span: Span { lo: start, hi: end } })
+        Ok(Decl { storage, name, name_span, ty, init, span: Span { lo: start, hi: end } })
     }
 
     fn parse_tag_or_decl(&mut self) -> Result<Stmt, Diagnostic> {
@@ -561,7 +562,7 @@ impl<'a> Parser<'a> {
             self.take()?;
             return Ok(Stmt::Tag(base));
         }
-        let (name, ty, _) = self.parse_declarator_shape(false)?.finish(base);
+        let (name, ty, _, name_span) = self.parse_declarator_shape(false)?.finish(base);
         self.scopes.declare(&name, Binding::Ordinary);
         let init = if self.peek()?.is_some_and(|t| t.text == "=") {
             self.take()?;
@@ -569,7 +570,7 @@ impl<'a> Parser<'a> {
         } else { None };
         let end = self.expect(";")?.span.hi;
         Ok(Stmt::Decl(Decl {
-            storage: StorageClass::Default, name, ty, init,
+            storage: StorageClass::Default, name, name_span, ty, init,
             span: Span { lo: start, hi: end },
         }))
     }
@@ -695,14 +696,14 @@ impl<'a> Parser<'a> {
                 while !self.peek()?.is_some_and(|t| t.text == "}") {
                     let (base, start) = self.parse_type()?.ok_or_else(||
                         Diagnostic::new(self.eof_span(), "unterminated struct definition"))?;
-                    let (name, ty, params) = self.parse_declarator_shape(false)?.finish(base);
+                    let (name, ty, params, name_span) = self.parse_declarator_shape(false)?.finish(base);
                     if params.is_some() || matches!(ty, Type::Function { .. }) {
                         return Err(Diagnostic::new(Span { lo: start, hi: start },
                             "struct member cannot have function type"));
                     }
                     let end = self.expect(";")?.span.hi;
                     members.push(Decl {
-                        storage: StorageClass::Default, name, ty, init: None,
+                        storage: StorageClass::Default, name, name_span, ty, init: None,
                         span: Span { lo: start, hi: end },
                     });
                 }
@@ -784,7 +785,7 @@ impl ItemSource for Parser<'_> {
             self.take()?;
             return Ok(Some(ExternalItem::Tag(base)));
         }
-        let (name, ty, definition_params) = self.parse_declarator_shape(false)?.finish(base);
+        let (name, ty, definition_params, name_span) = self.parse_declarator_shape(false)?.finish(base);
         self.pending_file_binding = Some((name.clone(), self.scopes.lookup(&name)));
         self.scopes.declare(&name, if is_typedef { Binding::Typedef } else { Binding::Ordinary });
 
@@ -808,6 +809,7 @@ impl ItemSource for Parser<'_> {
             return Ok(Some(ExternalItem::Function(Function {
                 storage,
                 name,
+                name_span,
                 result: *result,
                 params,
                 body,
@@ -828,7 +830,7 @@ impl ItemSource for Parser<'_> {
             }
         }
         let end = self.expect(";")?.span.hi;
-        let decl = Decl { storage, name, ty, init, span: Span { lo: start, hi: end } };
+        let decl = Decl { storage, name, name_span, ty, init, span: Span { lo: start, hi: end } };
         Ok(Some(if is_typedef { ExternalItem::Typedef(decl) } else { ExternalItem::Declaration(decl) }))
     }
 }

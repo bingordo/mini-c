@@ -264,6 +264,20 @@ mod tests {
         assert!(result.is_ok(), "{result:?}");
     }
     #[test]
+    fn cli_uses_exact_declaration_name_columns() {
+        let path = std::env::temp_dir().join(format!(
+            "mini-c-named-diagnostic-{}.c", std::process::id(),
+        ));
+        std::fs::write(&path, "int x;\nlong x;\n").unwrap();
+        let filename = path.to_str().unwrap();
+        let result = check_recovering(filename, None, 3).unwrap_err();
+        assert!(result.contains(":2:6: error[T0103]"), "{result}");
+        let result = check(filename, None).unwrap_err();
+        assert!(result.contains(":2:6:"), "{result}");
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn opt_in_multi_error_cli_reports_bounded_codes_and_locations() {
         let path = std::env::temp_dir().join(format!(
             "mini-c-multi-diagnostic-{}.c", std::process::id(),
