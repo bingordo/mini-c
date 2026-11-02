@@ -1,0 +1,38 @@
+name: Regenerate arithmetic compound assignment parser
+on:
+  push:
+    branches: ['review/arithmetic-compound-assignments']
+    paths:
+      - 'crates/syntax/src/grammar.lalrpop'
+      - '.github/workflows/regenerate-arithmetic-compound-parser.yml'
+  pull_request:
+    branches: ['main']
+    paths:
+      - 'crates/syntax/src/grammar.lalrpop'
+      - '.github/workflows/regenerate-arithmetic-compound-parser.yml'
+permissions:
+  contents: write
+concurrency:
+  group: mini-c-regenerate-arithmetic-compound-parser
+  cancel-in-progress: true
+jobs:
+  regenerate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: review/arithmetic-compound-assignments
+          persist-credentials: true
+      - name: Regenerate checked-in LALRPOP parser
+        run: cargo run --manifest-path tools/parser-codegen/Cargo.toml -- --write
+      - name: Commit only generated parser
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add crates/syntax/src/grammar.rs
+          if ! git diff --cached --quiet; then
+            git commit -m 'gen: arithmetic compound assignment parser'
+            git push origin HEAD:review/arithmetic-compound-assignments
+          fi
