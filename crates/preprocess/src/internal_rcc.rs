@@ -94,8 +94,10 @@ pub fn file(path: &Path, args: &[std::ffi::OsString]) -> Result<String, String> 
             return Err("dynamic __LINE__/__FILE__ within a macro replacement                 list requires invocation-site source tracking not yet available                 in the pinned internal engine; use --cpp=cc".into());
         }
     }
-    drop(preprocessor);
-    let map = session.source_map.read()
+    // Keep rcc's logical #line map alive while reconstructing the Mini-C
+    // source stream. Physical token spans are not sufficient here: a source
+    // file may have been renamed or renumbered by an active directive.
+    let map = preprocessor.session.source_map.read()
         .map_err(|e| format!("internal source map lock poisoned: {e}"))?;
     let diagnostics = captured.diagnostics();
     let errors: Vec<_> = diagnostics.into_iter().filter(|d|
@@ -105,10 +107,13 @@ pub fn file(path: &Path, args: &[std::ffi::OsString]) -> Result<String, String> 
             .or_else(|| d.labels.first())
             .and_then(|label| {
                 if label.span.file.0 == u32::MAX { return None; }
-                let source = map.file(label.span.file);
                 let position = map.lookup_line_col(label.span.file, label.span.lo);
+                let logical_file = preprocessor.line_overrides.effective_file(
+                    &map, label.span.file, label.span.lo);
+                let line = preprocessor.line_overrides.effective_line(
+                    &map, label.span.file, label.span.lo);
                 Some(format!("{}:{}:{}: ",
-                    source.name.display(), position.line, position.col))
+                    map.file(logical_file).name.display(), line, position.col))
             }).unwrap_or_default();
         match d.code {
             Some(code) => format!("{location}error[{code}]: {}", d.message),
@@ -139,13 +144,16 @@ pub fn file(path: &Path, args: &[std::ffi::OsString]) -> Result<String, String> 
             .ok_or("preprocessor returned an invalid token span")?;
         let original_file = !source.name.to_string_lossy().starts_with('<');
         if original_file {
-            let origin = map.lookup_line_col(token.span.file, token.span.lo);
-            let location = (token.span.file.0, origin.line);
+            let logical_file = preprocessor.line_overrides.effective_file(
+                &map, token.span.file, token.span.lo);
+            let logical_line = preprocessor.line_overrides.effective_line(
+                &map, token.span.file, token.span.lo);
+            let location = (logical_file.0, logical_line);
             if last_origin != Some(location) {
                 if !output.is_empty() && !output.ends_with('\n') { output.push('\n'); }
-                let filename = source.name.to_string_lossy()
+                let filename = map.file(logical_file).name.to_string_lossy()
                     .replace('\\', "\\\\").replace('"', "\\\"");
-                output.push_str(&format!("# {} \"{}\"\n", origin.line, filename));
+                output.push_str(&format!("# {} \"{}\"\n", logical_line, filename));
                 last_origin = Some(location);
             }
         }
