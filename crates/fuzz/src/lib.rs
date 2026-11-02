@@ -166,6 +166,36 @@ mod tests {
     }
 
     #[test]
+    fn bitwise_shift_oracle_guards_defined_signed_operations() {
+        let instruction = |op, rhs| Instruction { op, rhs };
+        assert_eq!(checked_step(10, instruction(Op::BitAnd, 6)), Some(2));
+        assert_eq!(checked_step(10, instruction(Op::BitOr, 6)), Some(14));
+        assert_eq!(checked_step(10, instruction(Op::BitXor, 6)), Some(12));
+        assert_eq!(checked_step(10, instruction(Op::Shl, 2)), Some(40));
+        assert_eq!(checked_step(40, instruction(Op::Shr, 2)), Some(10));
+        assert_eq!(checked_step(-1, instruction(Op::Shl, 2)), None);
+        assert_eq!(checked_step(-1, instruction(Op::Shr, 2)), None);
+        assert_eq!(checked_step(1, instruction(Op::Shl, 32)), None);
+        assert_eq!(checked_step(1, instruction(Op::Shr, -1)), None);
+    }
+
+    #[test]
+    fn seeded_programs_cover_binary_and_compound_bitwise_shifts() {
+        let mut op_seen = [false; 5];
+        let mut compound_seen = [false; 5];
+        for seed in 0..64 {
+            let case = generate(seed, 120);
+            parse_case(&case).unwrap_or_else(|e| panic!("seed {seed}: {e}"));
+            for (i, op) in [Op::BitAnd, Op::BitOr, Op::BitXor, Op::Shl, Op::Shr].iter().enumerate() {
+                op_seen[i] |= case.instructions.iter().any(|ins| ins.op == *op);
+                compound_seen[i] |= case.source.contains(&format!("x {}= ", symbol(*op)));
+            }
+        }
+        assert!(op_seen.into_iter().all(|seen| seen), "missing generated bitwise or shift operation");
+        assert!(compound_seen.into_iter().all(|seen| seen), "missing compound-assignment coverage");
+    }
+
+    #[test]
     fn zero_step_case_is_valid() {
         let case = generate(0, 0);
         assert!(case.instructions.is_empty());
