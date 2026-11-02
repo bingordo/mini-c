@@ -214,3 +214,32 @@ int second = __LINE__;
 int third = WHICH_LINE;
 "#, &[]);
 }
+
+#[test]
+fn command_line_defines_and_undefines_follow_last_operation() {
+    // GCC applies -D and -U in argument order, including redefinition.
+    // rcc's original options representation groups these by kind; the
+    // Mini-C adapter must not reorder the user's command-line semantics.
+    compare(r#"
+#if FEATURE == 7
+int final_feature = 7;
+#else
+#error macro override was not applied
+#endif
+"#, &["-DFEATURE=1", "-UFEATURE", "-DFEATURE=7"]);
+
+    compare(r#"
+#ifdef FEATURE
+#error feature should have been undefined
+#else
+int feature_is_missing = 1;
+#endif
+"#, &["-DFEATURE=1", "-UFEATURE"]);
+}
+
+#[test]
+fn command_line_macro_redefinitions_keep_last_value() {
+    compare("int last = NUMBER;\n", &[
+        "-DNUMBER=17", "-DNUMBER=23",
+    ]);
+}
