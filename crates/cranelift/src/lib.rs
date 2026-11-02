@@ -1232,4 +1232,14 @@ mod tests {
         assert_eq!(&obj[..4], b"\x7fELF");
     }
 
+    #[test]
+    fn emits_shift_operations_with_independent_integer_promotions() {
+        let source = "int left(int x, long count) { return x << count; } \\
+             unsigned int logical(unsigned int x, int count) { return x >> count; } \\
+             int arithmetic(int x, unsigned long count) { return x >> count; } \\
+             int main(void) { return left(3,2)+logical(16,3)+arithmetic(-8,2); }";
+        let obj = compile_source(source).unwrap();
+        assert_eq!(&obj[..4], b"\x7fELF");
+    }
+
 }
