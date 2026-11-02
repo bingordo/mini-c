@@ -5,6 +5,11 @@ on:
     paths:
       - 'crates/syntax/src/grammar.lalrpop'
       - '.github/workflows/regenerate-shift-parser.yml'
+  pull_request:
+    branches: ['main']
+    paths:
+      - 'crates/syntax/src/grammar.lalrpop'
+      - '.github/workflows/regenerate-shift-parser.yml'
   workflow_dispatch:
 permissions:
   contents: write
@@ -18,6 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: review/shift-operators-current-main
           persist-credentials: true
       - name: Generate parser from editable LALRPOP grammar
         run: cargo run --manifest-path tools/parser-codegen/Cargo.toml -- --write
