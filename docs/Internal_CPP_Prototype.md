@@ -55,6 +55,42 @@ This is the initial, deliberately small corpus. It neither proves full C99
 conformance nor covers C23. Tests compare tokens, never whitespace or
 preprocessor-specific directives.
 
+## Conformance-hardening checkpoint (2026-11-01)
+
+The optional adapter now has GCC **and** Clang token-level comparisons
+for nested/function/empty/variadic macros, raw vs indirect token pasting,
+stringification, recursion hide sets, #if arithmetic, multiline splicing,
+comments, guarded and unguarded includes, #pragma once, direct #line and
+__LINE__ behavior, and command-line -D/-U redefinitions.
+
+Mini-C normalizes ordered -D/-U operations per macro before constructing
+rcc's command-line options. The pinned rcc engine internally applies all
+defines before all undefines, unlike GCC/Clang's argument order; the adapter
+now preserves the effective final operation for each macro. For duplicate
+-DNAME definitions GCC may emit warnings that the adapter does not
+reproduce; the expanded token result is compared.
+
+The adapter also consumes rcc's **logical** #line overrides for both its
+emitted source markers and preprocessor errors, including virtual file names
+and header paths. Native Mini-C frontend diagnostics continue to use the
+existing line-marker mapping.
+
+**Known upstream defect — [Mini-C issue #12](https://github.com/bingordo/mini-c/issues/12):**
+The pinned expander loses macro invocation location for dynamic __LINE__ /
+__FILE__ tokens in replacement lists. A GCC test gives 103 for
+`#define WHICH_LINE __LINE__` invoked at logical line 103, but rcc gives
+102 (definition line). Rather than silently miscompile a supported C
+program, the adapter conservatively rejects affected dynamic-builtin
+expansions and points the caller to `--cpp=cc`. The exact GCC reproducer
+remains in CI marked ignored until an upstream fix propagates invocation
+spans through substitution/rescanning. This guard can reject some valid
+cases and is not yet a substitute for complete macro-origin tracking.
+
+Resource limitations remain: the 16 MiB output guard is applied after rcc
+returns its token vector, not during internal expansion. Full bounded-time
+and bounded-allocation preprocessing needs upstream resource-budget support.
+No C23 conformance claim is made.
+
 ## Before enabling by default
 
 1. Increase the GCC/Clang differential corpus substantially and minimize
