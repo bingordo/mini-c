@@ -1189,6 +1189,21 @@ impl Checker {
                         return self.pointer_offset(*op, right, left, span);
                     }
                 }
+                if matches!(op, BinOp::Shl | BinOp::Shr) {
+                    if !(left.ty.is_integer() && right.ty.is_integer()) {
+                        return Err(Diagnostic::coded(span, DiagnosticCode::SemanticInvalidOperatorOperands,
+                            "shift operator requires integer operands"));
+                    }
+                    // Unlike arithmetic/bitwise binary operators, shifts apply
+                    // integer promotion independently to each operand and
+                    // retain the promoted LEFT operand's type.
+                    let left_ty = self.target.promote(&left.ty);
+                    let right_ty = self.target.promote(&right.ty);
+                    return Ok(CheckedExpr::value(left_ty.clone(), CheckedExprKind::Binary(
+                        *op, Box::new(self.convert(left, &left_ty)),
+                        Box::new(self.convert(right, &right_ty)),
+                    )));
+                }
                 if bitwise && !(left.ty.is_integer() && right.ty.is_integer()) {
                     return Err(Diagnostic::coded(span, DiagnosticCode::SemanticInvalidOperatorOperands,
                         "bitwise operator requires integer operands"));
