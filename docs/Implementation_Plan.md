@@ -63,11 +63,11 @@ successful earlier declarations while reverting failed global definitions and
 nested externs. It is accessible through `diagnose_stream_recovering`.
 The `mini-c check --max-errors=N` CLI now exposes bounded multi-error
 reporting without changing the default fail-fast path. Diagnostic-only checking
-continues after independent erroneous statements in the outermost function
-block using per-statement local snapshots and global undo logs. Nested
-statements still fail fast within that statement; diagnostic-only recovery
-discards failed functions rather than emitting partial code.
-Expression-level semantic spans and nested statement recovery remain open.
+continues after independent erroneous statements in nested function
+blocks (including if/while bodies), using recovery-only local/tag snapshots
+and stacked global undo logs. Error budgets apply across nesting boundaries.
+Diagnostic-only recovery discards failed functions instead of emitting partial
+code. Expression-level semantic spans remain open.
 
 **Progress:** Diagnostics expose stable lexical/syntax/semantic
 category codes (L0001/S0001/T0001) and specific codes for common lexer errors,
@@ -81,7 +81,8 @@ end-of-input byte spans, restores nested typedef scopes on parse errors, and
 has table-driven malformed syntax tests plus a bounded deletion-mutation
 regression. These are incremental correctness improvements, **not** completion
 of M2.25: not every diagnostic has a specific code yet; semantic
-expression spans and recovery within a damaged function remain open.
+expression spans and finer-grained recovery inside an individual expression
+remain open.
 Bounded cross-declaration syntax/semantic recovery is implemented and verified
 in [bingordo syntax CI 40312729615](https://github.com/bingordo/mini-c/actions/runs/40312729615).
 

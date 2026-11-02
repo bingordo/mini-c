@@ -661,3 +661,97 @@ fn function_designators_decay_in_initializer_and_assignment_contexts() {
     reject("int identity(int x) { return x; } int *wrong = identity;",
         "pointer initializer requires");
 }
+
+
+#[test]
+fn nested_block_recovery_collects_all_independent_errors_in_source_order() {
+    use mini_c_syntax::diag::DiagnosticCode;
+    let source = concat!(
+        "int broken(void) {\n",
+        "  if (1) {\n",
+        "    int x = missing_one;\n",
+        "    int y = missing_two;\n",
+        "  }\n",
+        "  int z = missing_three;\n",
+        "  return 0;\n",
+        "}\n",
+        "int afterward(void) { return 7; }\n",
+    );
+    let mut checker = Checker::new(Target::default()).unwrap();
+    let mut parser = Parser::new(source);
+    let errors = diagnose_stream_recovering(&mut parser, &mut checker, 8);
+    assert_eq!(errors.len(), 3, "{errors:?}");
+    for (error, name) in errors.iter().zip([
+        "missing_one", "missing_two", "missing_three",
+    ]) {
+        assert_eq!(error.code, DiagnosticCode::SemanticUndeclaredIdentifier);
+        assert!(error.message.contains(name), "{error:?}");
+    }
+    assert!(checker.global("broken").is_none());
+    assert!(checker.global("afterward").is_some());
+}
+
+#[test]
+fn nested_loop_and_if_recovery_respect_the_shared_diagnostic_limit() {
+    let source = concat!(
+        "int broken(void) {\n",
+        "  int count = 2;\n",
+        "  while (count) {\n",
+        "    if (1) {\n",
+        "      int x = first_missing;\n",
+        "      int y = second_missing;\n",
+        "    }\n",
+        "    int z = third_missing;\n",
+        "    count = count - 1;\n",
+        "  }\n",
+        "  return count;\n",
+        "}\n",
+        "int after(void) { return 0; }\n",
+    );
+    let mut checker = Checker::new(Target::default()).unwrap();
+    let mut parser = Parser::new(source);
+    let errors = diagnose_stream_recovering(&mut parser, &mut checker, 2);
+    assert_eq!(errors.len(), 2, "{errors:?}");
+    assert!(errors[0].message.contains("first_missing"), "{errors:?}");
+    assert!(errors[1].message.contains("second_missing"), "{errors:?}");
+    assert!(checker.global("broken").is_none());
+    // The limit stops parsing before the next external declaration.
+    assert!(checker.global("after").is_none());
+}
+
+#[test]
+fn nested_recovery_does_not_leak_externs_or_tag_definitions() {
+    let source = concat!(
+        "int broken(void) {\n",
+        "  if (1) {\n",
+        "    extern int temporary;\n",
+        "    struct Hidden { int member; } value;\n",
+        "    int bad = unknown;\n",
+        "  }\n",
+        "  return 0;\n",
+        "}\n",
+        "int good(void) { return 1; }\n",
+    );
+    let mut checker = Checker::new(Target::default()).unwrap();
+    let mut parser = Parser::new(source);
+    let errors = diagnose_stream_recovering(&mut parser, &mut checker, 5);
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(checker.global("broken").is_none());
+    assert!(checker.global("temporary").is_none());
+    assert!(checker.global("good").is_some());
+    assert!(checker.tag_definitions.borrow().is_empty());
+    assert_eq!(checker.tags.borrow().len(), 1);
+}
+
+#[test]
+fn ordinary_check_stream_still_fails_fast_on_nested_semantic_errors() {
+    let source = concat!(
+        "int bad(void) { if (1) { int a=missing_a; int b=missing_b; } return 0; }\n",
+        "int later(void) { return 1; }\n",
+    );
+    let mut checker = Checker::new(Target::default()).unwrap();
+    let mut parser = Parser::new(source);
+    let error = check_stream(&mut parser, &mut checker, |_| Ok(())).unwrap_err();
+    assert!(error.message.contains("missing_a"), "{error:?}");
+    assert!(checker.global("later").is_none());
+}

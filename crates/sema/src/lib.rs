@@ -153,16 +153,18 @@ pub struct Checker {
     // Enabled only by the recovery API. Normal compilation has no
     // transactional logging or symbol-table copying overhead.
     rollback_log: Option<HashMap<String, Option<Symbol>>>,
-    statement_undo: Option<HashMap<String, Option<Symbol>>>,
+    // One undo map per active statement. Changes are recorded in every
+    // ancestor map as well, so a failing enclosing statement can roll back
+    // successful nested declarations without losing earlier symbol values.
+    statement_undo: Vec<HashMap<String, Option<Symbol>>>,
     recovery_errors: Option<Vec<Diagnostic>>,
     recovery_limit: usize,
-    recovery_depth: usize,
 }
 
 impl Checker {
     pub fn new(target: Target) -> Result<Self, Diagnostic> {
-        Ok(Self { target: target.validate()?, next_tag_identity: Cell::new(1), tags: RefCell::new(vec![HashMap::new()]), tag_definitions: RefCell::new(HashMap::new()), globals: HashMap::new(), locals: Vec::new(), result_ty: None, loop_depth: 0, rollback_log: None, statement_undo: None,
-            recovery_errors: None, recovery_limit: 0, recovery_depth: 0 })
+        Ok(Self { target: target.validate()?, next_tag_identity: Cell::new(1), tags: RefCell::new(vec![HashMap::new()]), tag_definitions: RefCell::new(HashMap::new()), globals: HashMap::new(), locals: Vec::new(), result_ty: None, loop_depth: 0, rollback_log: None, statement_undo: Vec::new(),
+            recovery_errors: None, recovery_limit: 0 })
     }
 
     pub fn global(&self, name: &str) -> Option<&Symbol> { self.globals.get(name) }
@@ -489,16 +491,16 @@ impl Checker {
         } else {
             Linkage::External
         };
-        if self.rollback_log.is_some() || self.statement_undo.is_some() {
-            // Log the first value before a tentative mutation. The outer
-            // transaction covers the whole external item; the inner one
-            // covers a single statement during diagnostic recovery.
+        if self.rollback_log.is_some() || !self.statement_undo.is_empty() {
+            // Log the first value at every active recovery checkpoint.
+            // A failure in a nested statement restores just that statement,
+            // while failure of the containing statement restores all of it.
             let previous = self.globals.get(name).cloned();
             if let Some(log) = &mut self.rollback_log {
                 log.entry(name.to_owned()).or_insert_with(|| previous.clone());
             }
-            if let Some(log) = &mut self.statement_undo {
-                log.entry(name.to_owned()).or_insert(previous);
+            for log in &mut self.statement_undo {
+                log.entry(name.to_owned()).or_insert_with(|| previous.clone());
             }
         }
         if let Some(prior) = self.globals.get_mut(name) {
@@ -547,7 +549,6 @@ impl Checker {
         self.rollback_log = Some(HashMap::new());
         self.recovery_errors = Some(Vec::new());
         self.recovery_limit = max_errors;
-        self.recovery_depth = 0;
         let result = self.check_item(item);
         let mut errors = self.recovery_errors.take().expect("diagnostic collection");
         if let Err(error) = result {
@@ -559,9 +560,9 @@ impl Checker {
             *self.tags.borrow_mut() = saved_tags;
             *self.tag_definitions.borrow_mut() = saved_definitions;
         }
-        self.statement_undo = None;
+        debug_assert!(self.statement_undo.is_empty());
+        self.statement_undo.clear();
         self.recovery_limit = 0;
-        self.recovery_depth = 0;
         errors
     }
 
@@ -759,9 +760,10 @@ impl Checker {
     }
 
     fn check_statements(&mut self, statements: &[Stmt], span: Span) -> Result<Vec<CheckedStmt>, Diagnostic> {
-        // In normal compilation, or while inside an already checked nested
-        // statement, keep the original fail-fast behavior and no snapshots.
-        if self.recovery_errors.is_none() || self.recovery_depth != 0 {
+        // Ordinary compilation retains the fast, fail-first behavior.
+        // Diagnostic recovery can instead continue through independent
+        // statements at every brace nesting depth, including if/while bodies.
+        if self.recovery_errors.is_none() {
             return statements.iter().map(|s| self.check_stmt(s, span)).collect();
         }
         let mut checked = Vec::with_capacity(statements.len());
@@ -776,11 +778,9 @@ impl Checker {
             let tag_snapshot = self.tags.borrow().clone();
             let definitions_snapshot = self.tag_definitions.borrow().clone();
             let loop_depth = self.loop_depth;
-            self.statement_undo = Some(HashMap::new());
-            self.recovery_depth += 1;
+            self.statement_undo.push(HashMap::new());
             let result = self.check_stmt(statement, span);
-            self.recovery_depth -= 1;
-            let changed = self.statement_undo.take().expect("statement transaction");
+            let changed = self.statement_undo.pop().expect("statement transaction");
             match result {
                 Ok(stmt) => checked.push(stmt),
                 Err(error) => {
