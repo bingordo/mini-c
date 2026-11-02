@@ -23,6 +23,12 @@ pub enum DiagnosticCode {
     SemanticInvalidAssignmentTarget,
     SemanticWrongArgumentCount,
     SemanticIncompatibleAssignment,
+    SemanticNotCallable,
+    SemanticUnknownMember,
+    SemanticInvalidMemberAccess,
+    SemanticInvalidSubscript,
+    SemanticInvalidOperatorOperands,
+    SemanticInvalidCondition,
 }
 
 impl DiagnosticCode {
@@ -45,6 +51,12 @@ impl DiagnosticCode {
             Self::SemanticInvalidAssignmentTarget => "T0106",
             Self::SemanticWrongArgumentCount => "T0107",
             Self::SemanticIncompatibleAssignment => "T0108",
+            Self::SemanticNotCallable => "T0109",
+            Self::SemanticUnknownMember => "T0110",
+            Self::SemanticInvalidMemberAccess => "T0111",
+            Self::SemanticInvalidSubscript => "T0112",
+            Self::SemanticInvalidOperatorOperands => "T0113",
+            Self::SemanticInvalidCondition => "T0114",
         }
     }
 }

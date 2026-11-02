@@ -70,7 +70,12 @@ Diagnostic-only recovery discards failed functions instead of emitting partial
 code. `Parser::new_with_spans` now optionally annotates expressions with
 byte-accurate source ranges; the CLI uses this for fail-fast and recovery
 diagnostics. `Parser::new` retains its original backend-facing AST.
-More specialized per-operator diagnostics remain to be implemented.
+Common operator and call diagnostics now have stable codes and precise
+source spans: invalid call targets, unknown members, invalid member/subscript
+access, invalid unary/binary operand types, and non-scalar conditions.
+Wrong argument conversions highlight the offending argument instead of the
+entire call. Remaining work includes broader per-declarator spans and recovery
+inside an individual expression.
 
 **Progress:** Diagnostics expose stable lexical/syntax/semantic
 category codes (L0001/S0001/T0001) and specific codes for common lexer errors,
