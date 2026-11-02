@@ -110,6 +110,8 @@ pub enum Expr {
     /// Postfix member selection: true for `->`, false for `.`.
     Member(Box<Expr>, Ident, bool),
     Assign(Box<Expr>, Box<Expr>),
+    /// Single-evaluation compound assignment; op is the underlying binary operation.
+    CompoundAssign(BinOp, Box<Expr>, Box<Expr>),
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnOp {
