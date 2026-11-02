@@ -4,7 +4,7 @@
 //! expanded preprocessing tokens of rcc_preprocess and converts them back to
 //! token-separated C text for Mini-C's unchanged, standalone parser.
 //! The adapter is feature gated pending GCC/Clang differential validation.
-use std::path::{Path, PathBuf};
+use std::{collections::BTreeMap, path::{Path, PathBuf}};
 
 use rcc_errors::Level;
 use rcc_lexer::PpTokenKind;
@@ -20,6 +20,11 @@ const MAX_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 /// This function never launches an external C preprocessor or shell.
 pub fn file(path: &Path, args: &[std::ffi::OsString]) -> Result<String, String> {
     let mut opts = rcc_session::Options::default();
+    // GCC applies -D and -U in command-line order. The pinned rcc Options
+    // instead processes every -D before every -U, so normalize each name to
+    // its final operation before passing it into the independent engine.
+    // The outer Option distinguishes undef from a valueless -DNAME.
+    let mut macro_actions: BTreeMap<String, Option<Option<String>>> = BTreeMap::new();
     for arg in args {
         let arg = arg.to_str().ok_or("internal preprocessor needs UTF-8 option values")?;
         if arg == "-E" {
@@ -37,16 +42,22 @@ pub fn file(path: &Path, args: &[std::ffi::OsString]) -> Result<String, String> 
             if !c_identifier(name) {
                 return Err(format!("invalid internal macro name: {name}"));
             }
-            opts.cli_defines.push((name.to_owned(), value));
+            macro_actions.insert(name.to_owned(), Some(value));
         } else if let Some(name) = arg.strip_prefix("-U") {
             if !c_identifier(name) {
                 return Err(format!("invalid internal undef name: {name}"));
             }
-            opts.cli_undefines.push(name.to_owned());
+            macro_actions.insert(name.to_owned(), None);
         } else {
             return Err(format!(
                 "unsupported internal preprocessor option {arg:?}; use --cpp=cc for this switch"
             ));
+        }
+    }
+    for (name, action) in macro_actions {
+        match action {
+            Some(value) => opts.cli_defines.push((name, value)),
+            None => opts.cli_undefines.push(name),
         }
     }
 
