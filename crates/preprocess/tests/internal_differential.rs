@@ -16,6 +16,10 @@ fn compare(fixture: &str, flags: &[&str]) {
     std::fs::create_dir_all(dir.join("inc folder")).unwrap();
     std::fs::write(dir.join("inc folder").join("data.h"),
         "#ifndef DATA_H\n#define DATA_H\n#define HEADER_VALUE 23\n#endif\n").unwrap();
+    std::fs::write(dir.join("inc folder").join("unguarded.h"),
+        "int repeated_header;\n").unwrap();
+    std::fs::write(dir.join("inc folder").join("once.h"),
+        "#pragma once\nint only_once;\n").unwrap();
     let path = dir.join("sample.c");
     std::fs::write(&path, fixture).unwrap();
     let args: Vec<OsString> = std::iter::once(OsString::from("-E"))
@@ -24,6 +28,9 @@ fn compare(fixture: &str, flags: &[&str]) {
         .chain(flags.iter().map(OsString::from)).collect();
     let external = file(Path::new(&path), &Config {
         executable: OsString::from("cc"), args: args.clone(),
+    });
+    let clang = file(Path::new(&path), &Config {
+        executable: OsString::from("clang"), args: args.clone(),
     });
     let internal = file(Path::new(&path), &Config {
         executable: OsString::from("internal"), args,
@@ -35,8 +42,16 @@ fn compare(fixture: &str, flags: &[&str]) {
         other => other.unwrap(),
     };
     let internal = internal.unwrap();
-    assert_eq!(tokens(&internal), tokens(&external),
-        "internal preprocessing mismatch\nsource:\n{fixture}\ninternal:\n{internal}\nexternal:\n{external}");
+    let result = tokens(&internal);
+    assert_eq!(result, tokens(&external),
+        "internal/GCC preprocessing mismatch\nsource:\n{fixture}\ninternal:\n{internal}\nGCC:\n{external}");
+    match clang {
+        Ok(clang) => assert_eq!(result, tokens(&clang),
+            "internal/Clang preprocessing mismatch\nsource:\n{fixture}\ninternal:\n{internal}\nClang:\n{clang}"),
+        Err(mini_c_preprocess::Error::Io(e))
+            if e.kind() == std::io::ErrorKind::NotFound => {},
+        Err(error) => panic!("Clang rejected fixture: {error:?}\n{fixture}"),
+    }
 }
 
 #[test]
@@ -88,5 +103,82 @@ int result = FORWARD(
     2,
     3
 );
+"#, &[]);
+}
+
+#[test]
+fn zero_argument_macros_and_empty_arguments() {
+    compare(r#"
+#define VOID()
+#define VALUE() 17
+#define ID(x) x
+#define ARG2(a,b) a + b
+int first = VALUE();
+int second = ID(23);
+int third = ARG2(ID(3), ID(5));
+int fourth = VALUE() VOID() + 1;
+"#, &[]);
+}
+
+#[test]
+fn conditional_bitwise_and_ternary_precedence() {
+    compare(r#"
+#define A 0x17
+#define B 5
+#if defined(A) && !defined(MISSING) && ((A >> 1) >= B) && ((A & 3) == 3)
+int included = 11;
+#elif 1
+int wrong_branch = 0;
+#else
+#error unreachable
+#endif
+#if (0 ? 1 : (3 + 4 * 2)) == 11
+int ternary_result = 7;
+#endif
+"#, &[]);
+}
+
+#[test]
+fn comments_and_backslash_newline_translation_phases() {
+    compare("#define ADD(a,b) ((a) + \\\n (b))\n\
+        #define REPL /* comment */ 27\n\
+        int answer = ADD(REPL, 3); // comment\n\
+        int another = 1/**/+/**/2;\n", &[]);
+}
+
+#[test]
+fn unguarded_headers_expand_multiple_times_but_pragma_once_does_not() {
+    compare(r#"
+#include <unguarded.h>
+#include <unguarded.h>
+#include <once.h>
+#include <once.h>
+int done = 1;
+"#, &[]);
+}
+
+#[test]
+fn adjacent_paste_and_stringification_preserve_c99_rules() {
+    compare(r#"
+#define CAT(a,b) a##b
+#define XCAT(a,b) CAT(a,b)
+#define STRING(x) #x
+#define EXPAND_STRING(x) STRING(x)
+#define VAL value
+int CAT(pre_,VAL) = 1;
+int XCAT(pre_,VAL) = 2;
+char *s = STRING(VAL + 3);
+char *t = EXPAND_STRING(VAL);
+"#, &[]);
+}
+
+#[test]
+fn line_directives_and_builtin_line_values() {
+    compare(r#"
+#line 100 "virtual name.c"
+int first = __LINE__;
+int second = __LINE__;
+#define WHICH_LINE __LINE__
+int third = WHICH_LINE;
 "#, &[]);
 }
