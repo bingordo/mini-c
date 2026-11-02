@@ -430,6 +430,19 @@ impl Compiler {
         Ok(())
     }
 
+    /// Resolve late-completed file-scope tags before final ELF data layout.
+    /// This is separate from add() so streaming declarations need not retain
+    /// the entire translation unit or update prior checked items.
+    pub fn complete_file_object_types(&mut self, checker: &Checker) -> Result<()> {
+        for (name, data) in &mut self.data {
+            let resolved = checker.completed_global_type(name)
+                .ok_or_else(|| format!("missing semantic declaration for global '{name}'"))?;
+            data.ty = data.ty.composite(&resolved)
+                .ok_or_else(|| format!("conflicting final global object type for '{name}'"))?;
+        }
+        Ok(())
+    }
+
     pub fn finish(mut self) -> Result<Vec<u8>> {
         for (name, data) in &self.data {
             if data.initialized.is_none() && !data.tentative { continue; }
@@ -523,6 +536,7 @@ pub fn compile_source_diagnostic(source: &str) -> std::result::Result<Vec<u8>, C
         let checked = checker.check_item(item).map_err(CompileError::Diagnostic)?;
         compiler.add(checked).map_err(CompileError::Backend)?;
     }
+    compiler.complete_file_object_types(&checker).map_err(CompileError::Backend)?;
     compiler.finish().map_err(CompileError::Backend)
 }
 
@@ -1134,6 +1148,19 @@ mod tests {
                    struct Node { int value; }; \
                    int read(struct Node *p) { return p->value; }";
         assert!(!compile_source(src).unwrap().is_empty());
+    }
+
+    #[test]
+    fn file_scope_tentative_struct_type_completes_without_object_redeclaration() {
+        let source = "struct Node; struct Node global; \
+                      struct Node { int value; }; \
+                      int main(void) { global.value = 7; return global.value - 7; }";
+        let obj = compile_source(source).unwrap();
+        assert_eq!(&obj[..4], b"\x7fELF");
+        let incomplete = compile_source("struct Missing; struct Missing global;");
+        assert!(incomplete.unwrap_err().contains("incomplete global object"));
+        let external = compile_source("extern struct Missing external;");
+        assert!(external.is_ok(), "{external:?}");
     }
 
     #[test]
