@@ -138,6 +138,8 @@ pub enum BinOp {
     BitAnd,
     BitOr,
     BitXor,
+    Shl,
+    Shr,
 }
 
 impl Expr {

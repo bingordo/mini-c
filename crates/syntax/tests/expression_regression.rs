@@ -116,3 +116,17 @@ fn bitwise_operator_precedence_and_complement() {
     assert_eq!(parse_expression("a && b | c").unwrap(),
         binary(BinOp::And, name("a"), binary(BinOp::BitOr, name("b"), name("c"))));
 }
+
+
+#[test]
+fn c_shift_precedence_between_additive_and_relational() {
+    let bin = |op, a, b| Expr::Binary(op, Box::new(a), Box::new(b));
+    assert_eq!(parse_expression("a + b << c < d").unwrap(),
+        bin(BinOp::Lt,
+            bin(BinOp::Shl, bin(BinOp::Add, name("a"), name("b")), name("c")),
+            name("d")));
+    assert_eq!(parse_expression("a >> b + c").unwrap(),
+        bin(BinOp::Shr, name("a"), bin(BinOp::Add, name("b"), name("c"))));
+    assert_eq!(parse_expression("a << b << c").unwrap(),
+        bin(BinOp::Shl, bin(BinOp::Shl, name("a"), name("b")), name("c")));
+}

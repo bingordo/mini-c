@@ -65,6 +65,34 @@ pub fn evaluate(expr: &CheckedExpr, target: Target) -> Result<i128, &'static str
                 _ => {}
             }
             let b = evaluate(rhs, target)?;
+            if matches!(op, BinOp::Shl | BinOp::Shr) {
+                let CType::Integer { rank, unsigned } = &expr.ty else {
+                    return Err("shift requires integer type");
+                };
+                let width = target.bits(*rank);
+                // Negative and >=-width counts have undefined behavior in C.
+                if b < 0 || b >= i128::from(width) {
+                    return Err("shift count out of range in constant expression");
+                }
+                let count = u32::try_from(b).map_err(|_| "shift count out of range")?;
+                return match op {
+                    BinOp::Shl => {
+                        if !*unsigned && a < 0 {
+                            return Err("left shift of negative signed integer");
+                        }
+                        let shifted = a.checked_shl(count).ok_or("invalid left shift")?;
+                        if *unsigned {
+                            normalize(shifted, &expr.ty, target)
+                        } else {
+                            bounded_arithmetic(shifted, &expr.ty, target)
+                        }
+                    }
+                    // The supported x86-64 target uses arithmetic right shift
+                    // for signed negative values (implementation-defined in C).
+                    BinOp::Shr => normalize(a >> count, &expr.ty, target),
+                    _ => unreachable!(),
+                };
+            }
             let result = match op {
                 BinOp::Add => a.checked_add(b),
                 BinOp::Sub => a.checked_sub(b),
@@ -80,6 +108,7 @@ pub fn evaluate(expr: &CheckedExpr, target: Target) -> Result<i128, &'static str
                 BinOp::BitAnd => return normalize(a & b, &expr.ty, target),
                 BinOp::BitOr => return normalize(a | b, &expr.ty, target),
                 BinOp::BitXor => return normalize(a ^ b, &expr.ty, target),
+                BinOp::Shl | BinOp::Shr => unreachable!(),
                 BinOp::And => return Ok(i128::from(a != 0 && b != 0)),
                 BinOp::Or => return Ok(i128::from(a != 0 || b != 0)),
             };

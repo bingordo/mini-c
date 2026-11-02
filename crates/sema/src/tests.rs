@@ -1072,3 +1072,16 @@ fn bounded_malformed_declaration_semantic_mutations_do_not_panic() {
         }
     }
 }
+
+
+#[test]
+fn shift_operators_promote_independently_and_reject_pointer_operands() {
+    check("unsigned long f(unsigned int x, unsigned long n) { return x << n; }").unwrap();
+    check("int f(unsigned char x, long n) { return x >> n; }").unwrap();
+    check("int f(int x, long n) { return x << n; }").unwrap();
+    reject("int f(int *p) { return p << 3; }", "shift operator requires integer operands");
+    reject("int f(int *p) { return 3 >> p; }", "shift operator requires integer operands");
+    reject("int a = 1 << 32;", "shift count out of range");
+    reject("int a = 1 >> -1;", "shift count out of range");
+    reject("int a = 1 << 31;", "signed integer overflow");
+}

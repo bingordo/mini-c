@@ -900,6 +900,14 @@ impl Lower<'_> {
                     if b.func.dfg.value_type(right) != types::I64 { right = Self::convert(b, right, &rhs.ty, &CType::Pointer(Box::new(CType::Void)))?; }
                 }
                 let unsigned = pointer_comparison || matches!(&lhs.ty, CType::Integer { unsigned: true, .. });
+                if matches!(op, BinOp::Shl | BinOp::Shr) {
+                    // Cranelift's shift instructions operate at the width of
+                    // the promoted left operand, independent of the promoted
+                    // right operand's C type.
+                    if b.func.dfg.value_type(right) != b.func.dfg.value_type(left) {
+                        right = Self::convert(b, right, &rhs.ty, &lhs.ty)?;
+                    }
+                }
                 let value = match op {
                     BinOp::Add => b.ins().iadd(left, right),
                     BinOp::Sub => b.ins().isub(left, right),
@@ -907,6 +915,9 @@ impl Lower<'_> {
                     BinOp::BitAnd => b.ins().band(left, right),
                     BinOp::BitOr => b.ins().bor(left, right),
                     BinOp::BitXor => b.ins().bxor(left, right),
+                    BinOp::Shl => b.ins().ishl(left, right),
+                    BinOp::Shr if unsigned => b.ins().ushr(left, right),
+                    BinOp::Shr => b.ins().sshr(left, right),
                     BinOp::Div => if unsigned { b.ins().udiv(left, right) } else { b.ins().sdiv(left, right) },
                     BinOp::Mod => if unsigned { b.ins().urem(left, right) } else { b.ins().srem(left, right) },
                     BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
@@ -1218,6 +1229,16 @@ mod tests {
         let src = "int f(unsigned int x) { return (~x & 255) | (x ^ 23); }\
                    int g(int a, int b) { return (a & b) ^ (a | b); }";
         let obj = compile_source(src).unwrap();
+        assert_eq!(&obj[..4], b"\x7fELF");
+    }
+
+    #[test]
+    fn emits_shift_operations_with_independent_integer_promotions() {
+        let source = "int left(int x, long count) { return x << count; } \
+             unsigned int logical(unsigned int x, int count) { return x >> count; } \
+             int arithmetic(int x, unsigned long count) { return x >> count; } \
+             int main(void) { return left(3,2)+logical(16,3)+arithmetic(-8,2); }";
+        let obj = compile_source(source).unwrap();
         assert_eq!(&obj[..4], b"\x7fELF");
     }
 

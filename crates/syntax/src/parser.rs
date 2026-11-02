@@ -275,11 +275,13 @@ impl<'a> Parser<'a> {
             "<=" => (BinOp::Le, 7),
             ">" => (BinOp::Gt, 7),
             ">=" => (BinOp::Ge, 7),
-            "+" => (BinOp::Add, 8),
-            "-" => (BinOp::Sub, 8),
-            "*" => (BinOp::Mul, 9),
-            "/" => (BinOp::Div, 9),
-            "%" => (BinOp::Mod, 9),
+            "<<" => (BinOp::Shl, 8),
+            ">>" => (BinOp::Shr, 8),
+            "+" => (BinOp::Add, 9),
+            "-" => (BinOp::Sub, 9),
+            "*" => (BinOp::Mul, 10),
+            "/" => (BinOp::Div, 10),
+            "%" => (BinOp::Mod, 10),
             _ => return None,
         })
     }
