@@ -871,7 +871,8 @@ impl Checker {
                     (Some(_), CType::Void) => return Err(type_error(span, "void function cannot return a value")),
                     (Some(value), _) => {
                         let expr = self.check_expr(value, span)?;
-                        Some(self.convert_for_assignment(expr, &expected, value, span)?)
+                        Some(self.convert_for_assignment(expr, &expected, value,
+                            value.location().unwrap_or(span))?)
                     }
                 };
                 CheckedStmt::Return(checked)
@@ -901,9 +902,11 @@ impl Checker {
     }
 
     fn check_condition(&self, cond: &Expr, span: Span) -> Result<CheckedExpr, Diagnostic> {
+        let span = cond.location().unwrap_or(span);
         let typed = self.check_expr(cond, span)?.rvalue();
         if !typed.ty.is_scalar() {
-            return Err(type_error(span, "condition requires a scalar type"));
+            return Err(Diagnostic::coded(span, DiagnosticCode::SemanticInvalidCondition,
+                "condition requires a scalar type"));
         }
         Ok(typed)
     }
@@ -996,7 +999,7 @@ impl Checker {
             self.convert(pointer, &converted_pointer)
         };
         if !integer.ty.is_integer() {
-            return Err(type_error(span, "pointer arithmetic requires an integer offset"));
+            return Err(Diagnostic::coded(span, DiagnosticCode::SemanticInvalidOperatorOperands, "pointer arithmetic requires an integer offset"));
         }
         let integer_ty = self.target.promote(&integer.ty);
         let integer = self.convert(integer, &integer_ty);
@@ -1007,7 +1010,24 @@ impl Checker {
 
     fn check_expr(&self, expr: &Expr, span: Span) -> Result<CheckedExpr, Diagnostic> {
         match expr {
-            Expr::Located(inner, located_span) => self.check_expr(inner, *located_span),
+            Expr::Located(inner, located_span) => {
+                self.check_expr(inner, *located_span).map_err(|mut error| {
+                    // A field lookup has a distinct source token at the end
+                    // of the member expression. Prefer that exact token over
+                    // the complete base-and-member expression.
+                    if error.code == DiagnosticCode::SemanticUnknownMember
+                        && error.span == *located_span
+                    {
+                        if let Expr::Member(_, field, _) = inner.as_ref() {
+                            error.span = Span {
+                                lo: located_span.hi.saturating_sub(field.len()),
+                                hi: located_span.hi,
+                            };
+                        }
+                    }
+                    error
+                })
+            },
             Expr::Initializer(_) => Err(type_error(span,
                 "brace initializer is only valid in an object declaration")),
             Expr::StringLiteral(bytes) => {
@@ -1042,11 +1062,11 @@ impl Checker {
                 let object = if *arrow {
                     let base = base.rvalue();
                     let CType::Pointer(inner) = &base.ty else {
-                        return Err(type_error(span, "arrow operator requires a pointer to struct"));
+                        return Err(Diagnostic::coded(span, DiagnosticCode::SemanticInvalidMemberAccess, "arrow operator requires a pointer to struct"));
                     };
                     let complete = self.complete_tag_type(inner.as_ref().clone(), span)?;
                     if !matches!(complete, CType::Struct { .. } | CType::Union { .. }) {
-                        return Err(type_error(span, "arrow operator requires a pointer to struct or union"));
+                        return Err(Diagnostic::coded(span, DiagnosticCode::SemanticInvalidMemberAccess, "arrow operator requires a pointer to struct or union"));
                     }
                     CheckedExpr {
                         ty: complete,
@@ -1055,7 +1075,7 @@ impl Checker {
                     }
                 } else {
                     if base.category != Category::LValue {
-                        return Err(type_error(span, "dot operator requires an addressable struct"));
+                        return Err(Diagnostic::coded(span, DiagnosticCode::SemanticInvalidMemberAccess, "dot operator requires an addressable struct"));
                     }
                     base
                 };
@@ -1063,10 +1083,10 @@ impl Checker {
                 object.ty = self.complete_tag_type(object.ty.clone(), span)?;
                 let members = match &object.ty {
                     CType::Struct { members, .. } | CType::Union { members, .. } => members,
-                    _ => return Err(type_error(span, "member access requires a struct or union")),
+                    _ => return Err(Diagnostic::coded(span, DiagnosticCode::SemanticInvalidMemberAccess, "member access requires a struct or union")),
                 };
                 let field = members.iter().find(|m| m.name == *name).ok_or_else(||
-                    type_error(span, format!("unknown struct member '{name}'")))?;
+                    Diagnostic::coded(span, DiagnosticCode::SemanticUnknownMember, format!("unknown struct member '{name}'")))?;
                 let field_ty = field.ty.clone();
                 let offset = field.offset;
                 Ok(CheckedExpr {
@@ -1085,7 +1105,7 @@ impl Checker {
                 } else if matches!(offset.ty, CType::Pointer(_)) {
                     (offset, base)
                 } else {
-                    return Err(type_error(span, "subscript requires pointer and integer operands"));
+                    return Err(Diagnostic::coded(span, DiagnosticCode::SemanticInvalidSubscript, "subscript requires pointer and integer operands"));
                 };
                 let added = self.pointer_offset(BinOp::Add, ptr, idx, span)?;
                 let CType::Pointer(element) = &added.ty else { unreachable!() };
@@ -1100,7 +1120,7 @@ impl Checker {
                 match op {
                     UnOp::Address => {
                         if typed.category == Category::Value {
-                            return Err(type_error(span, "address-of requires an lvalue or function"));
+                            return Err(Diagnostic::coded(span, DiagnosticCode::SemanticInvalidOperatorOperands, "address-of requires an lvalue or function"));
                         }
                         let ty = CType::Pointer(Box::new(typed.ty.clone()));
                         Ok(CheckedExpr::value(ty, CheckedExprKind::Unary(*op, Box::new(typed))))
@@ -1110,7 +1130,7 @@ impl Checker {
                         // This also permits (*function)(args), as required by C.
                         let typed = typed.rvalue();
                         let CType::Pointer(inner_ty) = &typed.ty else {
-                            return Err(type_error(span, "dereference requires a pointer"));
+                            return Err(Diagnostic::coded(span, DiagnosticCode::SemanticInvalidOperatorOperands, "dereference requires a pointer"));
                         };
                         let ty = self.complete_tag_type((**inner_ty).clone(), span)?;
                         let category = if matches!(ty, CType::Function { .. }) { Category::Function } else if ty == CType::Void {
@@ -1119,11 +1139,11 @@ impl Checker {
                         Ok(CheckedExpr { ty, category, kind: CheckedExprKind::Unary(*op, Box::new(typed)) })
                     }
                     UnOp::Not => {
-                        if !typed.ty.is_scalar() { return Err(type_error(span, "logical not requires scalar operand")); }
+                        if !typed.ty.is_scalar() { return Err(Diagnostic::coded(span, DiagnosticCode::SemanticInvalidOperatorOperands, "logical not requires scalar operand")); }
                         Ok(CheckedExpr::value(CType::int(), CheckedExprKind::Unary(*op, Box::new(typed.rvalue()))))
                     }
                     UnOp::Plus | UnOp::Neg => {
-                        if !typed.ty.is_integer() { return Err(type_error(span, "arithmetic unary operator requires integer")); }
+                        if !typed.ty.is_integer() { return Err(Diagnostic::coded(span, DiagnosticCode::SemanticInvalidOperatorOperands, "arithmetic unary operator requires integer")); }
                         let ty = self.target.promote(&typed.ty);
                         Ok(CheckedExpr::value(ty.clone(), CheckedExprKind::Unary(*op, Box::new(self.convert(typed, &ty)))))
                     }
@@ -1136,7 +1156,7 @@ impl Checker {
                 let relation = matches!(op, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge);
                 if logical {
                     if !(left.ty.is_scalar() && right.ty.is_scalar()) {
-                        return Err(type_error(span, "logical operator requires scalar operands"));
+                        return Err(Diagnostic::coded(span, DiagnosticCode::SemanticInvalidOperatorOperands, "logical operator requires scalar operands"));
                     }
                     return Ok(CheckedExpr::value(CType::int(), CheckedExprKind::Binary(*op, Box::new(left), Box::new(right))));
                 }
@@ -1161,7 +1181,7 @@ impl Checker {
                     }
                 }
                 let common = self.target.common_integer(&left.ty, &right.ty)
-                    .ok_or_else(|| type_error(span, "operator requires compatible integer operands"))?;
+                    .ok_or_else(|| Diagnostic::coded(span, DiagnosticCode::SemanticInvalidOperatorOperands, "operator requires compatible integer operands"))?;
                 let left = self.convert(left, &common);
                 let right = self.convert(right, &common);
                 let result = if relation { CType::int() } else { common };
@@ -1179,6 +1199,7 @@ impl Checker {
                 Ok(CheckedExpr::value(lhs.ty.clone(), CheckedExprKind::Assign(Box::new(lhs), Box::new(rhs_typed))))
             }
             Expr::Call(callee, args) => {
+                let callee_span = callee.location().unwrap_or(span);
                 let callee = self.check_expr(callee, span)?;
                 // Keep direct named function calls in their existing IR form;
                 // other function-value contexts use implicit pointer decay.
@@ -1196,7 +1217,8 @@ impl Checker {
                     _ => None,
                 };
                 let Some((result, params)) = signature else {
-                    return Err(type_error(span, "called expression is not a function"));
+                    return Err(Diagnostic::coded(callee_span, DiagnosticCode::SemanticNotCallable,
+                        "called expression is not a function"));
                 };
                 if args.len() != params.len() {
                     return Err(Diagnostic::coded(span, DiagnosticCode::SemanticWrongArgumentCount, format!("function expects {} arguments, got {}", params.len(), args.len())));
@@ -1204,7 +1226,8 @@ impl Checker {
                 let mut checked_args = Vec::with_capacity(args.len());
                 for (arg, ty) in args.iter().zip(params) {
                     let typed = self.check_expr(arg, span)?;
-                    checked_args.push(self.convert_for_assignment(typed, ty, arg, span)?);
+                    checked_args.push(self.convert_for_assignment(typed, ty, arg,
+                        arg.location().unwrap_or(span))?);
                 }
                 let ty = result.clone();
                 Ok(CheckedExpr::value(ty, CheckedExprKind::Call(Box::new(callee), checked_args)))

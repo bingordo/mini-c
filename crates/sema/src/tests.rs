@@ -855,3 +855,97 @@ fn file_scope_internal_objects_require_complete_types() {
            struct Later { int value; };").unwrap();
     check("extern struct Missing external;").unwrap();
 }
+
+
+#[test]
+fn located_operator_diagnostics_have_specific_codes_and_spans() {
+    use mini_c_syntax::{ast::Span, diag::DiagnosticCode};
+    let cases = [
+        (
+            "int f(void) { int x; return x(); }",
+            DiagnosticCode::SemanticNotCallable, "T0109", "x()",
+            1usize,
+        ),
+        (
+            "struct S { int good; }; int f(void) { struct S s; return s.missing; }",
+            DiagnosticCode::SemanticUnknownMember, "T0110", "missing",
+            "missing".len(),
+        ),
+        (
+            "int f(void) { int x; return x.foo; }",
+            DiagnosticCode::SemanticInvalidMemberAccess, "T0111", "x.foo",
+            "x.foo".len(),
+        ),
+        (
+            "int f(void) { int x; return x[1]; }",
+            DiagnosticCode::SemanticInvalidSubscript, "T0112", "x[1]",
+            "x[1]".len(),
+        ),
+        (
+            "int f(void) { int *p; return p * 2; }",
+            DiagnosticCode::SemanticInvalidOperatorOperands, "T0113", "p * 2",
+            "p * 2".len(),
+        ),
+        (
+            "struct S { int field; }; int f(void) { struct S s; if(s) return 1; return 0; }",
+            DiagnosticCode::SemanticInvalidCondition, "T0114", "if(s)",
+            1usize,
+        ),
+        (
+            "int take(int *p) { return 0; } int f(void) { return take(42); }",
+            DiagnosticCode::SemanticIncompatibleAssignment, "T0108", "42",
+            2usize,
+        ),
+        (
+            "int take(int x) { return x; } int f(void) { return take(); }",
+            DiagnosticCode::SemanticWrongArgumentCount, "T0107", "take()",
+            "take()".len(),
+        ),
+        (
+            "int f(void) { return *2; }",
+            DiagnosticCode::SemanticInvalidOperatorOperands, "T0113", "*2",
+            2usize,
+        ),
+    ];
+    for (source, code, stable, search, len) in cases {
+        let mut parser = Parser::new_with_spans(source);
+        let mut checker = Checker::new(Target::default()).unwrap();
+        let errors = diagnose_stream_recovering(&mut parser, &mut checker, 2);
+        assert_eq!(errors.len(), 1, "{source:?}: {errors:?}");
+        let error = &errors[0];
+        assert_eq!(error.code, code, "{source:?}: {error:?}");
+        assert_eq!(error.code.as_str(), stable);
+        let lo = if search == "if(s)" {
+            source.find("if(s)").unwrap() + 3
+        } else {
+            source.rfind(search).unwrap()
+        };
+        assert_eq!(error.span, Span { lo, hi: lo + len }, "{source:?}: {error:?}");
+    }
+}
+
+#[test]
+fn invalid_nested_calls_are_reported_at_the_correct_callee() {
+    use mini_c_syntax::{ast::Span, diag::DiagnosticCode};
+    let source = "int f(void) { int n=1; return n() + n(); }";
+    let mut parser = Parser::new_with_spans(source);
+    let mut checker = Checker::new(Target::default()).unwrap();
+    let errors = diagnose_stream_recovering(&mut parser, &mut checker, 5);
+    // Recovery is per statement: the first invalid call is reported,
+    // but the other operand in that statement is not independently retried.
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert_eq!(errors[0].code, DiagnosticCode::SemanticNotCallable);
+    let lo = source.find("n()").unwrap();
+    assert_eq!(errors[0].span, Span { lo, hi: lo + 1 });
+}
+
+#[test]
+fn plain_parser_preserves_legacy_fallback_spans_and_errors() {
+    use mini_c_syntax::diag::DiagnosticCode;
+    let src = "int f(void) { int x; return x[1]; }";
+    let mut parser = Parser::new(src);
+    let mut checker = Checker::new(Target::default()).unwrap();
+    let error = check_stream(&mut parser, &mut checker, |_| Ok(())).unwrap_err();
+    assert_eq!(error.code, DiagnosticCode::SemanticInvalidSubscript);
+    assert!(error.span.hi >= error.span.lo);
+}
