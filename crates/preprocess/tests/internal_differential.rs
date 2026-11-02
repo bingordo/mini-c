@@ -243,3 +243,84 @@ fn command_line_macro_redefinitions_keep_last_value() {
         "-DNUMBER=17", "-DNUMBER=23",
     ]);
 }
+
+fn next_random(state: &mut u64) -> u64 {
+    // Deterministic xorshift64, with no external rand dependency.
+    *state ^= *state << 13;
+    *state ^= *state >> 7;
+    *state ^= *state << 17;
+    *state
+}
+
+fn macro_graph_fixture(seed: u64) -> String {
+    let mut random = seed | 1;
+    let a = next_random(&mut random) % 29 + 1;
+    let b = next_random(&mut random) % 13 + 1;
+    let c = next_random(&mut random) % 11 + 1;
+    let depth = (next_random(&mut random) % 5 + 1) as usize;
+    let mut fixture = format!(
+        "/* seed: {seed} */\n\
+         #define BASE {a}\n\
+         #define FACTOR {b}\n\
+         #define ADD(x,y) ((x)+(y))\n\
+         #define MULTIPLY(x,y) ((x)*(y))\n\
+         #define STRINGIZE(x) #x\n\
+         #define EXPAND_STRINGIZE(x) STRINGIZE(x)\n\
+         #define CONCAT(x,y) x##y\n\
+         #define INDIRECT_CONCAT(x,y) CONCAT(x,y)\n\
+         #define SUFFIX {c}\n"
+    );
+    for level in 0..depth {
+        let prior = if level == 0 {
+            "BASE".to_owned()
+        } else {
+            format!("LEVEL{}", level - 1)
+        };
+        // Each stage uses the preceding macro as a complete argument,
+        // exercising nested rescanning and whitespace preservation.
+        fixture.push_str(&format!(
+            "#define LEVEL{level} ADD({prior}, FACTOR)\n"
+        ));
+    }
+    fixture.push_str(&format!(
+        "int result = MULTIPLY(LEVEL{}, SUFFIX);\n",
+        depth - 1,
+    ));
+    fixture.push_str(
+        "int CONCAT(raw_,SUFFIX) = 7;\n\
+         int INDIRECT_CONCAT(expanded_,SUFFIX) = 11;\n\
+         char *direct = STRINGIZE(SUFFIX);\n\
+         char *indirect = EXPAND_STRINGIZE(SUFFIX);\n\
+         #if defined(BASE) && ((BASE + FACTOR) > BASE)\n\
+         int conditional = 1;\n\
+         #else\n\
+         #error wrong expansion result\n\
+         #endif\n",
+    );
+    fixture
+}
+
+#[test]
+fn seeded_macro_graph_differential_regressions() {
+    // The default adds only four small compiler invocations to frequent CI.
+    // A manual extended run can use MINI_C_CPP_SEED_COUNT=128; a failing
+    // fixture prints its seed for deterministic, one-case reproduction.
+    let count = std::env::var("MINI_C_CPP_SEED_COUNT")
+        .ok().and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(4).clamp(1, 128);
+    for index in 0..count {
+        let seed = 0x619A_5A31_A4C3_E19Fu64
+            .wrapping_add((index as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        let fixture = macro_graph_fixture(seed);
+        compare(&fixture, &[]);
+    }
+}
+
+#[test]
+fn seeded_macro_graph_generator_is_reproducible() {
+    let first = macro_graph_fixture(0x1234_5678);
+    assert_eq!(first, macro_graph_fixture(0x1234_5678));
+    assert_ne!(first, macro_graph_fixture(0x1234_5679));
+    assert!(first.contains("/* seed: 305419896 */"));
+    assert!(first.contains("#define ADD(x,y)"));
+}
