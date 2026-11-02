@@ -1213,4 +1213,12 @@ mod tests {
         assert!(!compile_source("extern int a[];").unwrap().is_empty());
     }
 
+    #[test]
+    fn compiles_bitwise_integer_expressions() {
+        let src = "int f(unsigned int x) { return (~x & 255) | (x ^ 23); }\
+                   int g(int a, int b) { return (a & b) ^ (a | b); }";
+        let obj = compile_source(src).unwrap();
+        assert_eq!(&obj[..4], b"\x7fELF");
+    }
+
 }
