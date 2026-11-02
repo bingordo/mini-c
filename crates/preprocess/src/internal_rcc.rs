@@ -54,7 +54,36 @@ pub fn file(path: &Path, args: &[std::ffi::OsString]) -> Result<String, String> 
     session.opts = opts;
     let root = session.load_source_file(path)
         .map_err(|e| format!("cannot read C source {}: {e}", path.display()))?;
-    let tokens = rcc_preprocess::preprocess(&mut session, root);
+    let mut preprocessor = rcc_preprocess::Preprocessor::new(&mut session);
+    let tokens = preprocessor.run(root);
+
+    // The pinned rcc expander currently treats dynamic predefined macros in
+    // replacement lists as if they occurred at the *definition* location.
+    // This silently changes __LINE__ / __FILE__ at invocation sites. Reject
+    // those expansions rather than return incorrect C tokens; removing this
+    // gate requires a tested upstream invocation-span fix.
+    let suspicious_definitions = {
+        let map = preprocessor.session.source_map.read()
+            .map_err(|e| format!("internal source map lock poisoned: {e}"))?;
+        preprocessor.macros.iter().any(|def| def.body.iter().any(|token| {
+            if token.kind != PpTokenKind::Ident { return false; }
+            let file = map.file(token.span.file);
+            let lo = token.span.lo.0 as usize;
+            let hi = token.span.hi.0 as usize;
+            matches!(file.src.get(lo..hi), Some("__LINE__" | "__FILE__"))
+        }))
+    };
+    if suspicious_definitions {
+        let map = preprocessor.session.source_map.read()
+            .map_err(|e| format!("internal source map lock poisoned: {e}"))?;
+        if tokens.iter().any(|token| {
+            let name = &map.file(token.span.file).name;
+            matches!(name.to_str(), Some("<builtin:__LINE__>" | "<builtin:__FILE__>"))
+        }) {
+            return Err("dynamic __LINE__/__FILE__ within a macro replacement                 list requires invocation-site source tracking not yet available                 in the pinned internal engine; use --cpp=cc".into());
+        }
+    }
+    drop(preprocessor);
     let map = session.source_map.read()
         .map_err(|e| format!("internal source map lock poisoned: {e}"))?;
     let diagnostics = captured.diagnostics();
