@@ -4,7 +4,7 @@ use mini_c_syntax::parser::Parser;
 use mini_c_syntax::stream::ItemSource;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Op { Add, Sub, Mul, Div, Rem }
+pub enum Op { Add, Sub, Mul, Div, Rem, BitAnd, BitOr, BitXor, Shl, Shr }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Instruction { pub op: Op, pub rhs: i32 }
@@ -33,11 +33,27 @@ pub fn checked_step(lhs: i32, ins: Instruction) -> Option<i32> {
         Op::Mul => lhs.checked_mul(ins.rhs),
         Op::Div => lhs.checked_div(ins.rhs),
         Op::Rem => lhs.checked_rem(ins.rhs),
+        // Keep bitwise operations on nonnegative signed operands, so their
+        // semantics do not depend on representations of negative integers.
+        Op::BitAnd if lhs >= 0 && ins.rhs >= 0 => Some(lhs & ins.rhs),
+        Op::BitOr if lhs >= 0 && ins.rhs >= 0 => Some(lhs | ins.rhs),
+        Op::BitXor if lhs >= 0 && ins.rhs >= 0 => Some(lhs ^ ins.rhs),
+        // C's signed left-shift is only defined if the result is representable;
+        // the generator subsequently limits every result to [-32767, 32767].
+        Op::Shl if lhs >= 0 && (0..=4).contains(&ins.rhs) =>
+            lhs.checked_shl(ins.rhs as u32),
+        Op::Shr if lhs >= 0 && (0..=4).contains(&ins.rhs) =>
+            lhs.checked_shr(ins.rhs as u32),
+        _ => None,
     }
 }
 
 fn symbol(op: Op) -> &'static str {
-    match op { Op::Add => "+", Op::Sub => "-", Op::Mul => "*", Op::Div => "/", Op::Rem => "%" }
+    match op {
+        Op::Add => "+", Op::Sub => "-", Op::Mul => "*", Op::Div => "/", Op::Rem => "%",
+        Op::BitAnd => "&", Op::BitOr => "|", Op::BitXor => "^",
+        Op::Shl => "<<", Op::Shr => ">>",
+    }
 }
 
 /// Independent oracle: checked i32 operations on a compact instruction stream.
@@ -48,14 +64,29 @@ pub fn generate(seed: u64, steps: usize) -> Case {
     let mut instructions = Vec::with_capacity(steps);
     let mut source = String::from("int main(void) { int x = 1;\n");
     for iteration in 0..steps {
-        let op = match rng.range(5) {
+        let op = match rng.range(10) {
             0 => Op::Add, 1 => Op::Sub, 2 => Op::Mul,
-            3 => Op::Div, _ => Op::Rem,
+            3 => Op::Div, 4 => Op::Rem, 5 => Op::BitAnd,
+            6 => Op::BitOr, 7 => Op::BitXor, 8 => Op::Shl,
+            _ => Op::Shr,
         };
-        let rhs = (rng.range(41) as i32) + 1;
+        let rhs = match op {
+            Op::Shl | Op::Shr => rng.range(5) as i32,
+            Op::BitAnd | Op::BitOr | Op::BitXor => rng.range(256) as i32,
+            _ => (rng.range(41) as i32) + 1,
+        };
         let ins = Instruction { op, rhs };
         if let Some(next) = checked_step(value, ins).filter(|v| (-32767..=32767).contains(v)) {
-            source.push_str(&format!("x = x {} {};\n", symbol(op), rhs));
+            // Use the recently implemented compound-assignment path as well
+            // as ordinary binary expressions, with the SAME independent
+            // instruction oracle for both spellings.
+            let compound = matches!(op, Op::BitAnd | Op::BitOr | Op::BitXor |
+                Op::Shl | Op::Shr) && rng.range(2) == 0;
+            if compound {
+                source.push_str(&format!("x {}= {};\n", symbol(op), rhs));
+            } else {
+                source.push_str(&format!("x = x {} {};\n", symbol(op), rhs));
+            }
             value = next;
             instructions.push(ins);
         }
