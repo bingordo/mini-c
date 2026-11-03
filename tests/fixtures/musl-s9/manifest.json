@@ -1,0 +1,18 @@
+{
+  "description": "Unmodified Mini-C S9 snapshots from bingordo/compiler, fixed source commit fa772aeaaca463792e14465159723158abcc6186",
+  "musl_upstream_commit": "7813e9119eb5fe681b6750b8a033a0490bca0941",
+  "files": {
+    "abs.c": "197012e6f7d5a2a55beb6c7d093cf4a081a3a9b6",
+    "isalpha.c": "aecc1d86a8f9eab9917c0ba415e0fbe0e9c11bc3",
+    "isascii.c": "b0b6853901f007baaae22b14c44f216016b08ae7",
+    "isblank.c": "368651c8ce0f06914152816100cc126e46d06ff6",
+    "iscntrl.c": "0cc99b473ba2adb428a30c67b805ebb4aa3857e5",
+    "isdigit.c": "8f55a76f5f584be73431a1b11f457174f7b44ac8",
+    "isgraph.c": "c7a59178bf7010970772e8479439eea2b5177b8e",
+    "islower.c": "40113ad2a92d0f8fb4c4721063b94562736819de",
+    "isprint.c": "f577efe3a207bdd22d541e5d6ec95db8084929c4",
+    "isspace.c": "818369fdd8859fa2b1c247d316a638e0d0aa1809",
+    "isupper.c": "15b55c259e1da1117aa834ac5f955ee51f485911",
+    "toascii.c": "ddc8e07f631d279258257eb382bb3fa35ab4cf81"
+  }
+}
