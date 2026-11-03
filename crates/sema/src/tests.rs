@@ -1266,7 +1266,7 @@ fn integer_constant_c_type_selection_and_unsigned_ranges() {
         "integer constant exceeds supported");
     reject("long f(void) { return 18446744073709551615; }",
         "decimal literal exceeds supported");
-    reject("int f(void) { return 7llu; }", "suffix");
+    check("int f(void) { return 7llu; }").unwrap();
 }
 
 #[test]
@@ -1280,7 +1280,7 @@ fn nondecimal_type_selection_respects_nondefault_target_widths() {
         ("0x10000", Some((IntRank::Long, false))),
         ("0x80000000", Some((IntRank::Long, true))),
         ("0xffffffff", Some((IntRank::Long, true))),
-        ("0x100000000", None),
+        ("0x100000000", Some((IntRank::LongLong, false))),
         ("65535", Some((IntRank::Long, false))),
         ("65535U", Some((IntRank::Int, true))),
         ("65536U", Some((IntRank::Long, true))),
