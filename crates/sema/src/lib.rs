@@ -1197,7 +1197,7 @@ impl Checker {
                         return Err(Diagnostic::coded(span, DiagnosticCode::SemanticInvalidMemberAccess, "arrow operator requires a pointer to struct"));
                     };
                     let complete = self.complete_tag_type(inner.as_ref().clone(), span)?;
-                    if !matches!(complete, CType::Struct { .. } | CType::Union { .. }) {
+                    if !matches!(complete.unqualified(), CType::Struct { .. } | CType::Union { .. }) {
                         return Err(Diagnostic::coded(span, DiagnosticCode::SemanticInvalidMemberAccess, "arrow operator requires a pointer to struct or union"));
                     }
                     CheckedExpr {
@@ -1213,13 +1213,21 @@ impl Checker {
                 };
                 let mut object = object;
                 object.ty = self.complete_tag_type(object.ty.clone(), span)?;
-                let members = match &object.ty {
+                let members = match object.ty.unqualified() {
                     CType::Struct { members, .. } | CType::Union { members, .. } => members,
                     _ => return Err(Diagnostic::coded(span, DiagnosticCode::SemanticInvalidMemberAccess, "member access requires a struct or union")),
                 };
                 let field = members.iter().find(|m| m.name == *name).ok_or_else(||
                     Diagnostic::coded(span, DiagnosticCode::SemanticUnknownMember, format!("unknown struct member '{name}'")))?;
-                let field_ty = field.ty.clone();
+                // A member of a const aggregate is itself nonmodifiable.
+                // Array member qualification applies to its element type.
+                let field_ty = if object.ty.is_const() {
+                    match field.ty.clone() {
+                        CType::Array(element, count) =>
+                            CType::Array(Box::new((*element).with_const()), count),
+                        other => other.with_const(),
+                    }
+                } else { field.ty.clone() };
                 let offset = field.offset;
                 Ok(CheckedExpr {
                     ty: field_ty,
@@ -1294,7 +1302,9 @@ impl Checker {
                     return Ok(CheckedExpr::value(CType::int(), CheckedExprKind::Binary(*op, Box::new(left), Box::new(right))));
                 }
                 if relation && (matches!((&left.ty, &right.ty), (CType::Pointer(a), CType::Pointer(b))
-                        if a.same_type(b) || **a == CType::Void || **b == CType::Void)
+                        if a.unqualified().same_type(b.unqualified())
+                            || *a.unqualified() == CType::Void
+                            || *b.unqualified() == CType::Void)
                     || (matches!(op, BinOp::Eq | BinOp::Ne)
                         && ((matches!(left.ty, CType::Pointer(_)) && const_eval::evaluate(&right, self.target) == Ok(0))
                             || (matches!(right.ty, CType::Pointer(_)) && const_eval::evaluate(&left, self.target) == Ok(0))))) {
@@ -1360,15 +1370,22 @@ impl Checker {
                 } else if let (CType::Pointer(a), CType::Pointer(b)) =
                     (&yes.ty, &no.ty)
                 {
-                    if a.same_type(b) {
-                        yes.ty.clone()
-                    } else if **a == CType::Void || **b == CType::Void {
-                        CType::Pointer(Box::new(CType::Void))
+                    let base_a = a.unqualified();
+                    let base_b = b.unqualified();
+                    let unified = if base_a.same_type(base_b) {
+                        base_a.clone()
+                    } else if *base_a == CType::Void || *base_b == CType::Void {
+                        CType::Void
                     } else {
                         return Err(Diagnostic::coded(span,
                             DiagnosticCode::SemanticInvalidOperatorOperands,
                             "conditional operands require compatible types"));
-                    }
+                    };
+                    CType::Pointer(Box::new(
+                        if a.is_const() || b.is_const() {
+                            unified.with_const()
+                        } else { unified }
+                    ))
                 } else if matches!(&yes.ty, CType::Pointer(_))
                     && no.ty.is_integer()
                     && const_eval::evaluate(&no, self.target) == Ok(0)
