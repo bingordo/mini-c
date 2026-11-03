@@ -1221,3 +1221,14 @@ fn explicit_integer_casts_handle_typedefs_and_unsigned_conversions() {
     reject("int f(int x) { return (void)x; }", "unsupported cast type-name");
     check("typedef int T; int f(void) { int T=3; return (T)+1; }").unwrap();
 }
+
+#[test]
+fn pinned_s9_hex_integer_functions_typecheck_unchanged() {
+    check("int isascii(int c) { return !(c&~0x7f); }").unwrap();
+    check("int iscntrl(int c) { return (unsigned)c < 0x20 || c == 0x7f; }").unwrap();
+    check("int isgraph(int c) { return (unsigned)c-0x21 < 0x5e; }").unwrap();
+    check("int isprint(int c) { return (unsigned)c-0x20 < 0x5f; }").unwrap();
+    check("int toascii(int c) { return c & 0x7f; }").unwrap();
+    reject("int bad(void) { return 0xFFFFFFFF; }", "unsigned literal typing");
+    reject("int bad(void) { return 08; }", "integer constant");
+}

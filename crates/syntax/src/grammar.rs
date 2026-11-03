@@ -1,5 +1,5 @@
 // auto-generated: "lalrpop 0.23.1"
-// sha3: cb69568bdd0b8dd37397ed070bc740af5049e6b925013844e4f402b608e153dc
+// sha3: 3109a0ba9351fa41737c1281cd055305985545e2a0cc7ea5afbd6696976b7f85
 use crate::expr_lexer::ExprToken;
 use crate::ast::{Expr, BinOp, UnOp};
 #[allow(unused_extern_crates)]
@@ -3565,7 +3565,7 @@ fn __action61<
     (_, n, _): (usize, &'input str, usize),
 ) -> Result<Expr,__lalrpop_util::ParseError<usize,ExprToken<'input>,&'static str>>
 {
-    n.parse::<u64>().map(Expr::Int).map_err(|_| lalrpop_util::ParseError::User { error: "integer literal exceeds u64 range" })
+    crate::integer_literal::parse_integer_literal(n).map(Expr::Int).map_err(|reason| lalrpop_util::ParseError::User { error: reason })
 }
 
 #[allow(clippy::too_many_arguments, clippy::needless_lifetimes, clippy::just_underscores_and_digits)]

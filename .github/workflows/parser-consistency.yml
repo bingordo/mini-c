@@ -22,4 +22,10 @@ jobs:
         with:
           workspaces: tools/parser-codegen -> target
       - run: cargo run --manifest-path tools/parser-codegen/Cargo.toml -- --check
+      - name: Show reproducible parser regeneration diff on failure
+        if: failure()
+        shell: bash
+        run: |
+          cargo run --manifest-path tools/parser-codegen/Cargo.toml -- --write
+          git diff -- crates/syntax/src/grammar.rs | head -200
       # The main syntax workflow runs the tests; avoid redundant CI work here.

@@ -17,12 +17,12 @@ To compare against a separately available checkout of `bingordo/compiler`:
 python3 tools/test_musl_s9.py --compiler-repo ../compiler
 ```
 
-The script invokes `mini-c check --cpp=none` independently for each of the twelve fixtures and records every failure's return code, stdout, and stderr in `target/s9-musl-acceptance.json`. It does not rewrite the C functions, download external sources, or invoke Cargo. It rejects missing fixtures or a missing checker instead of silently weakening coverage. The gate requires unchanged `isblank` and a configurable minimum number of accepted functions; the initial floor is one. The tool **measures acceptance**, not native code execution or conformance.
+The script invokes `mini-c check --cpp=none` independently for each of the twelve fixtures and records every failure's return code, stdout, and stderr in `target/s9-musl-acceptance.json`. It does not rewrite the C functions, download external sources, or invoke Cargo. It rejects missing fixtures or a missing checker instead of silently weakening coverage. The gate requires unchanged `isblank` and a configurable minimum number of accepted functions; the verified regression floor is twelve. The tool **measures acceptance**, not native code execution or conformance.
 
-To raise the regression floor after a verified implementation milestone:
+To override the regression floor explicitly (the default is now twelve):
 
 ```sh
-python3 tools/test_musl_s9.py --compiler-repo ../compiler --min-accepted 4
+python3 tools/test_musl_s9.py --compiler-repo ../compiler --min-accepted 12
 ```
 
 Do not raise the threshold until the same revision has passed the checker gate and independent GCC differential runtime tests with defined inputs. Compare the accepted functions through the native compiler adapter and optional Cranelift backend separately; preserve all failures as artifacts and distinguish syntax rejection, semantic rejection, backend unsupported features, and wrong-code behavior.
@@ -35,6 +35,8 @@ Do not raise the threshold until the same revision has passed the checker gate a
 - **Next acceptance gate:** execute the twelve *unmodified* pinned S9 fixtures through `tools/test_musl_s9.py`, record accepted/total and all rejection diagnostics; run verified native compiler/Cranelift vs GCC comparisons for accepted functions. CI success on targeted analogues is not a substitute for the full corpus count.
 - **Next language and ABI priorities:** address remaining real-C rejections based on that report; only expand features demonstrated to block representative code, and preserve correct type semantics. Keep unsupported conversions explicitly rejected.
 
-Do not raise the current S9 acceptance floor above one until the pinned corpus check actually verifies a higher count. The remaining work is end-to-end native adapter validation and documented corpus coverage, not reimplementing already landed language features.
+The pinned corpus now accepts **12/12 unchanged functions** in Mini-C's checker, verified by [CI #41688535794](https://github.com/bingordo/mini-c/actions/runs/41688535794). PR #35 adds the hexadecimal and octal literal support that closed the five remaining frontend rejections, and the default acceptance floor is now twelve. The integer-literal AST currently lacks base information, so unsuffixed nondecimal literals above signed 32-bit `int` range are rejected explicitly rather than silently assigned an incorrect C type. Suffix handling and complete nondecimal integer type selection remain future work.
+
+The remaining gate is end-to-end **native compiler adapter** validation against GCC on the pinned functions, not reimplementing landed syntax features. Cranelift's targeted GCC differential cases are a useful secondary reference but do not establish complete native adapter correctness.
 
 Keep the main parser incremental and both frontend crates backend-independent. Use the ordinary short target checks on every PR; reserve full compiler-ci integration for a verified vertical slice.
