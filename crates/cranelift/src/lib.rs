@@ -1143,7 +1143,10 @@ impl Lower<'_> {
                 b.switch_to_block(exit);
                 Ok(true)
             }
-            CheckedStmt::For { init, cond, step, body } => {
+            CheckedStmt::For(for_loop) => {
+                let (init, cond, step, body) = (
+                    &for_loop.init, &for_loop.cond, &for_loop.step, &for_loop.body,
+                );
                 self.scopes.push(HashMap::new());
                 if let Some(init) = init {
                     if !self.statement(b, init)? {
