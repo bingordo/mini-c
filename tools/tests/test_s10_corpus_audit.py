@@ -93,6 +93,25 @@ class S10CorpusTests(unittest.TestCase):
         record["native_object"] = {"exit": 0}
         self.assertEqual(s10.stage(record, True), "object_accepted")
 
+    def test_first_error_identifies_system_header_location(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "sample.i"
+            path.write_text(
+                '# 1 "/usr/include/string.h" 1 3 4\n'
+                '# 210 "/usr/include/string.h" 3 4\n'
+                'typedef long unsigned int size_t;\n'
+                '# 1 "/tmp/sample.c" 2\n'
+                'int main(void) { return 0; }\n'
+            )
+            record = {"exit": 1,
+                      "stderr": f"{path}:3:14: error: expected identifier"}
+            result = s10.first_frontend_error(record, path)
+            self.assertEqual(result["source_marker"], "/usr/include/string.h")
+            self.assertEqual(result["preprocessed_line"], 3)
+            self.assertEqual(result["line_text"],
+                             "typedef long unsigned int size_t;")
+            self.assertIsNone(s10.first_frontend_error({"exit": 0}, path))
+
     def test_timeout_is_a_recorded_failure(self):
         with patch.object(s10.subprocess, "run",
                           side_effect=subprocess.TimeoutExpired(["cc"], 1)):
