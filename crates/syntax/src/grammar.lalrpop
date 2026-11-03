@@ -79,7 +79,7 @@ Unary: Expr = {
 Postfix: Expr = {
     <target:Postfix> "++" => Expr::Update { target: Box::new(target), increment: true, postfix: true },
     <target:Postfix> "--" => Expr::Update { target: Box::new(target), increment: false, postfix: true },
-    <callee:Postfix> "( <args:CallArgs> ")" => Expr::Call(Box::new(callee), args),
+    <callee:Postfix> "(" <args:CallArgs> ")" => Expr::Call(Box::new(callee), args),
     Primary,
 };
 CallArgs: Vec<Expr> = {
