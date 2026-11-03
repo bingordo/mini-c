@@ -1151,3 +1151,21 @@ fn for_loop_declaration_scopes_and_optional_expressions() {
     reject("int f(void) { for (int i=0; i<2; i++) { } return i; }", "undeclared identifier");
     reject("int f(void) { for (int i=0; i<2; i++) { } int j=i; return 0; }", "undeclared identifier");
 }
+
+
+#[test]
+fn comma_expression_sequence_values_and_lvalue_rules() {
+    check("int main(void) { int x=0; int y=0; return (x=2, y=5, x+y); }").unwrap();
+    check("void touch(void) { return; } int main(void) { return (touch(), 7); }").unwrap();
+    check("int main(void) { int x=3; int *p=0; return *(p=&x, p); }").unwrap();
+    check("int f(int a,int b) { return a+b; } int main(void) { int a=0; return f((a=2, a), 3); }").unwrap();
+    check("int main(void) { int a[2]={1,2}; return a[0]+a[1]; }").unwrap();
+    check("int main(void) { int i=0; int j=0; int s=0; for (i=0,j=0; i<4; i++, j+=2) { s+=i+j; } return s; }").unwrap();
+    reject("int main(void) { int x=0; int y=0; (x,y)=3; return 0; }",
+        "modifiable lvalue");
+    reject("int main(void) { int x=0; int y=0; (x,y)++; return 0; }",
+        "modifiable");
+    reject("int global=(1,2);", "integer constant expression");
+    reject("int f(int a,int b) { return a+b; } int main(void) { return f(1,2,3); }",
+        "expects 2 arguments");
+}
