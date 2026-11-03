@@ -870,27 +870,41 @@ impl<'a> Parser<'a> {
                 else { Type::Struct { tag, members } }
             }
             "void" => { self.take()?; Type::Void }
-            "char" => { self.take()?; Type::Char }
-            "int" => { self.take()?; Type::Int }
-            "long" => {
-                self.take()?;
-                if self.peek()?.is_some_and(|t| t.text == "int") { self.take()?; }
-                Type::Long
-            }
-            "unsigned" | "signed" => {
-                let unsigned = token.text == "unsigned";
-                self.take()?;
-                let base = match self.peek()?.map(|t| t.text) {
-                    Some("char") => { self.take()?; Type::Char },
-                    Some("int") => { self.take()?; Type::Int },
-                    Some("long") => {
-                        self.take()?;
-                        if self.peek()?.is_some_and(|t| t.text == "int") { self.take()?; }
-                        Type::Long
+            "char" | "int" | "long" | "unsigned" | "signed" => {
+                // C integer declaration specifiers are order-independent:
+                // glibc's standard typedef 'long unsigned int size_t' must
+                // mean exactly the same type as 'unsigned long int'.
+                // Fail closed on duplicates and unsupported long long rather
+                // than quietly treating a second specifier as a declarator.
+                let mut is_char = false;
+                let mut is_int = false;
+                let mut is_long = false;
+                let mut sign: Option<bool> = None;
+                loop {
+                    let Some(next) = self.peek()? else { break };
+                    match next.text {
+                        "char" if !is_char && !is_int && !is_long => is_char = true,
+                        "int" if !is_int && !is_char => is_int = true,
+                        "long" if !is_long && !is_char => is_long = true,
+                        "unsigned" if sign.is_none() => sign = Some(true),
+                        "signed" if sign.is_none() => sign = Some(false),
+                        "char" | "int" | "long" | "unsigned" | "signed" => {
+                            return Err(Diagnostic::coded(next.span,
+                                DiagnosticCode::SyntaxInvalidDeclaration,
+                                "invalid or unsupported integer type-specifier combination"));
+                        }
+                        _ => break,
                     }
-                    _ => Type::Int,
-                };
-                if unsigned { Type::Unsigned(Box::new(base)) } else { Type::Signed(Box::new(base)) }
+                    self.take()?;
+                }
+                let base = if is_char { Type::Char }
+                    else if is_long { Type::Long }
+                    else { Type::Int };
+                match sign {
+                    Some(true) => Type::Unsigned(Box::new(base)),
+                    Some(false) => Type::Signed(Box::new(base)),
+                    None => base,
+                }
             }
             _ if token.kind == TokenKind::TypedefName => {
                 self.take()?;
