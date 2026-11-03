@@ -77,11 +77,10 @@ pub fn generate(seed: u64, steps: usize) -> Case {
         };
         let ins = Instruction { op, rhs };
         if let Some(next) = checked_step(value, ins).filter(|v| (-32767..=32767).contains(v)) {
-            // Use the recently implemented compound-assignment path as well
-            // as ordinary binary expressions, with the SAME independent
-            // instruction oracle for both spellings.
-            let compound = matches!(op, Op::BitAnd | Op::BitOr | Op::BitXor |
-                Op::Shl | Op::Shr) && rng.range(2) == 0;
+            // Every generated operator has a compound-assignment form.
+            // Randomize spelling only AFTER checked_step established defined
+            // C behavior, so both forms use the identical numeric oracle.
+            let compound = rng.range(2) == 0;
             if compound {
                 source.push_str(&format!("x {}= {};\n", symbol(op), rhs));
             } else {
@@ -193,6 +192,25 @@ mod tests {
         }
         assert!(op_seen.into_iter().all(|seen| seen), "missing generated bitwise or shift operation");
         assert!(compound_seen.into_iter().all(|seen| seen), "missing compound-assignment coverage");
+    }
+
+    #[test]
+    fn seeded_arithmetic_compound_assignments_cover_every_operator() {
+        let mut binary_seen = [false; 5];
+        let mut compound_seen = [false; 5];
+        for seed in 0..96 {
+            let case = generate(seed, 150);
+            parse_case(&case).unwrap_or_else(|e| panic!("seed {seed}: {e}"));
+            for (i, op) in [Op::Add, Op::Sub, Op::Mul, Op::Div, Op::Rem].iter().enumerate() {
+                let sym = symbol(*op);
+                binary_seen[i] |= case.source.contains(&format!("x = x {sym} "));
+                compound_seen[i] |= case.source.contains(&format!("x {sym}= "));
+            }
+        }
+        assert!(binary_seen.into_iter().all(|seen| seen),
+            "missing generated ordinary arithmetic operator");
+        assert!(compound_seen.into_iter().all(|seen| seen),
+            "missing generated arithmetic compound operator");
     }
 
     #[test]
