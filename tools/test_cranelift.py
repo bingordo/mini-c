@@ -48,7 +48,7 @@ PROGRAMS = {
         return result*10+x; }""",
     "ternary_in_for_increment": """int main(void) {
         int i=0; int j=0;
-        for (; i<4; i++, i==2 ? j++ : j+=2) {}
+        for (; i<4; i++, i==2 ? j++ : (j+=2)) {}
         return j; }""",
     "do_while_executes_once": """int main(void) {
         int x=3; do { x+=5; } while (0); return x; }""",
