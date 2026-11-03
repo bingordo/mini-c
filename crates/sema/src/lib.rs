@@ -1085,7 +1085,11 @@ impl Checker {
         // The source array undergoes the standard array-to-pointer conversion
         // before checking scalar assignment compatibility.
         let expr = expr.rvalue();
-        let compatible = match (ty, &expr.ty) {
+        // Initializing a const-qualified object is permitted. Only the
+        // stored value type loses top-level const; nested pointer qualifiers
+        // remain intact and cannot be discarded.
+        let value_ty = ty.unqualified();
+        let compatible = match (value_ty, &expr.ty) {
             (CType::Struct { .. }, CType::Struct { .. }) |
             (CType::Union { .. }, CType::Union { .. }) => ty.same_type(&expr.ty),
             (CType::Integer { .. }, CType::Integer { .. }) => true,
@@ -1097,7 +1101,7 @@ impl Checker {
         if !compatible {
             return Err(Diagnostic::coded(span, DiagnosticCode::SemanticIncompatibleAssignment, format!("incompatible assignment: {:?} to {:?}", expr.ty, ty)));
         }
-        Ok(self.convert(expr, ty))
+        Ok(self.convert(expr, value_ty))
     }
 
     /// Form a checked pointer + integer or pointer - integer expression.
