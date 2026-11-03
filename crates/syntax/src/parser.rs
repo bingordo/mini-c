@@ -472,7 +472,7 @@ impl<'a> Parser<'a> {
             matches!(token.kind, TokenKind::Identifier | TokenKind::TypedefName)
                 && !matches!(token.text, "int" | "char" | "long" | "void"
                     | "unsigned" | "signed" | "typedef" | "static" | "extern"
-                    | "struct" | "union" | "enum" | "if" | "else" | "while" | "for" | "return" | "break" | "continue")
+                    | "struct" | "union" | "enum" | "if" | "else" | "while" | "do" | "for" | "return" | "break" | "continue")
         }) {
             self.take()?;
             Declarator::Name(token.text.to_owned(), self.expression_spans.then_some(token.span))
@@ -706,6 +706,16 @@ impl<'a> Parser<'a> {
                 })();
                 self.scopes.leave();
                 parsed
+            }
+            "do" => {
+                self.take()?;
+                let body = Box::new(self.parse_stmt()?);
+                self.expect("while")?;
+                self.expect("(")?;
+                let cond = self.parse_expr()?;
+                self.expect(")")?;
+                self.expect(";")?;
+                Ok(Stmt::DoWhile { body, cond })
             }
             "break" => { self.take()?; self.expect(";")?; Ok(Stmt::Break) }
             "continue" => { self.take()?; self.expect(";")?; Ok(Stmt::Continue) }
