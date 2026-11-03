@@ -175,9 +175,25 @@ impl<'a> Scanner<'a> {
                 }
                 TokenKind::String
             } else if ch.is_ascii_digit() {
-                offset += 1;
-                while offset < source.len() && source.as_bytes()[offset].is_ascii_digit() {
+                if rest.starts_with("0x") || rest.starts_with("0X") {
+                    offset += 2;
+                    let digit_start = offset;
+                    while offset < source.len() && source.as_bytes()[offset].is_ascii_hexdigit() {
+                        offset += 1;
+                    }
+                    if offset == digit_start {
+                        self.offset = offset;
+                        return Err(Diagnostic::coded(
+                            Span { lo: start, hi: offset },
+                            crate::diag::DiagnosticCode::LexicalNumericSuffix,
+                            "hexadecimal integer constant requires at least one digit",
+                        ));
+                    }
+                } else {
                     offset += 1;
+                    while offset < source.len() && source.as_bytes()[offset].is_ascii_digit() {
+                        offset += 1;
+                    }
                 }
                 if offset < source.len()
                     && (source.as_bytes()[offset].is_ascii_alphabetic()
