@@ -30,6 +30,8 @@ pub enum CheckedExprKind {
     Name(String),
     Unary(UnOp, Box<CheckedExpr>),
     Binary(BinOp, Box<CheckedExpr>, Box<CheckedExpr>),
+    /// Sequenced left-to-right comma; result is always a non-lvalue.
+    Comma(Box<CheckedExpr>, Box<CheckedExpr>),
     Assign(Box<CheckedExpr>, Box<CheckedExpr>),
     /// The compound operator is applied to the old lvalue and right operand
     /// at computation_ty, then narrowed once to the lvalue type.
@@ -1255,6 +1257,16 @@ impl Checker {
                 let right = self.convert(right, &common);
                 let result = if relation { CType::int() } else { common };
                 Ok(CheckedExpr::value(result, CheckedExprKind::Binary(*op, Box::new(left), Box::new(right))))
+            }
+            Expr::Comma(lhs, rhs) => {
+                // Both operands undergo their ordinary value conversions.
+                // The comma operator sequences them and returns the rvalue
+                // of the right expression, including void and pointer types.
+                let left = self.check_expr(lhs, span)?.rvalue();
+                let right = self.check_expr(rhs, span)?.rvalue();
+                Ok(CheckedExpr::value(right.ty.clone(), CheckedExprKind::Comma(
+                    Box::new(left), Box::new(right),
+                )))
             }
             Expr::Assign(lhs, rhs) => {
                 let lhs_span = lhs.location().unwrap_or(span);
