@@ -129,6 +129,36 @@ and GNU header spellings/extensions. Treat header parsing independently
 from the actual string-body feature coverage. It would be misleading
 to report the function bodies as 24 proven frontend failures.
 
+## Third measurement: const/restrict semantics, next GNU attribute barrier
+
+[PR #46](https://github.com/bingordo/mini-c/pull/46) adds
+qualifier-aware declarator parsing for `const`, `restrict` and GNU
+`__restrict` spellings, and preserves `const` through backend-neutral
+semantic types. It enforces immutable object/member lvalues, pointer
+qualification and no-const-discard conversions, while keeping
+`restrict` an alias-analysis promise with no generated no-alias
+optimizations. It preserves concurrent S11 `long long` support.
+
+[Syntax CI #41741709240](https://github.com/bingordo/mini-c/actions/runs/41741709240)
+and [Cranelift/GCC CI #41741709183](https://github.com/bingordo/mini-c/actions/runs/41741709183)
+passed on the combined implementation.
+
+The S10 original 24 source files, manifest and GCC invocation are unchanged.
+The full preprocessed translation-unit acceptance rate is still **0/24**.
+All 24 now pass the formerly common `const`/`restrict` function
+declarations and first fail at GNU trailing
+`__attribute__ ((__nothrow__ , __leaf__))` annotations in libc headers
+(23 cases in `string.h`, one in `strings.h`).
+This is measurable progression through the *host headers*, not proven
+acceptance of the underlying musl string-function bodies.
+
+The next actionable compatibility milestone is structured GNU attribute
+syntax for external function/object declarations, preserving meaningful
+ABI/layout/calling-convention attributes and explicitly rejecting
+unimplemented ones instead of indiscriminately deleting attributes.
+`volatile` remains unsupported because it affects observable access
+behavior; it must not be silently erased.
+
 ## Follow-up priority
 
 Use the report's rejected/total counts to rank concrete parser and semantic
