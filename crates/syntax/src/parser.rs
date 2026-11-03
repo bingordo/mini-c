@@ -408,8 +408,9 @@ impl<'a> Parser<'a> {
                 self.located(Expr::Int(value), t.span)
             }
             Some(t) if t.kind == TokenKind::Number => {
-                let value = t.text.parse().map_err(|_| Diagnostic::coded(
-                    t.span, DiagnosticCode::SyntaxIntegerOverflow, "integer literal overflow"))?;
+                let value = crate::integer_literal::parse_integer_literal(t.text)
+                    .map_err(|reason| Diagnostic::coded(
+                        t.span, DiagnosticCode::SyntaxIntegerOverflow, reason))?;
                 self.located(Expr::Int(value), t.span)
             }
             Some(t) if matches!(t.kind, TokenKind::Identifier | TokenKind::TypedefName) =>
