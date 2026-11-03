@@ -904,13 +904,13 @@ impl<'a> Parser<'a> {
                 // than quietly treating a second specifier as a declarator.
                 let mut is_char = false;
                 let mut is_int = false;
-                let mut is_long = false;
+                let mut long_count = 0u8;
                 let mut sign: Option<bool> = None;
                 while let Some(next) = self.peek()? {
                     match next.text {
-                        "char" if !is_char && !is_int && !is_long => is_char = true,
+                        "char" if !is_char && !is_int && long_count == 0 => is_char = true,
                         "int" if !is_int && !is_char => is_int = true,
-                        "long" if !is_long && !is_char => is_long = true,
+                        "long" if long_count < 2 && !is_char => long_count += 1,
                         "unsigned" if sign.is_none() => sign = Some(true),
                         "signed" if sign.is_none() => sign = Some(false),
                         "const" => qualifiers.is_const = true,
@@ -926,7 +926,8 @@ impl<'a> Parser<'a> {
                     self.take()?;
                 }
                 let base = if is_char { Type::Char }
-                    else if is_long { Type::Long }
+                    else if long_count == 2 { Type::LongLong }
+                    else if long_count == 1 { Type::Long }
                     else { Type::Int };
                 match sign {
                     Some(true) => Type::Unsigned(Box::new(base)),
