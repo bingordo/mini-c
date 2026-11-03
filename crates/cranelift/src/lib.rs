@@ -873,6 +873,12 @@ impl Lower<'_> {
                     UnOp::Address | UnOp::Deref => unreachable!(),
                 }
             }
+            CheckedExprKind::Comma(left, right) => {
+                // C comma expressions provide a sequence point. Preserve
+                // effects from the left before computing the right value.
+                self.expression(b, left)?;
+                self.expression(b, right)
+            }
             CheckedExprKind::Assign(lhs, rhs) => {
                 let address = self.place(b, lhs)?;
                 let rhs_value = self.expression(b, rhs)?;
