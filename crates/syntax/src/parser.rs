@@ -1,6 +1,6 @@
 //! Incremental parser for the first supported subset of external declarations.
 //! Each complete function body is returned separately; earlier bodies are not retained.
-use crate::ast::{BinOp, Decl, Expr, Function, Span, Stmt, StorageClass, TagKind, Type, UnOp};
+use crate::ast::{BinOp, Decl, Expr, Function, Qualifiers, Span, Stmt, StorageClass, TagKind, Type, UnOp};
 use crate::diag::{Diagnostic, DiagnosticCode};
 use crate::lexer::{Scanner, Token, TokenKind};
 use crate::stream::{ExternalItem, ItemSource};
@@ -12,7 +12,7 @@ use crate::scopes::{Binding, Scopes};
 /// This is parser-internal, so checked/frontend APIs still use `Type`.
 enum Declarator {
     Name(String, Option<Span>),
-    Pointer(Box<Self>),
+    Pointer(Box<Self>, Qualifiers),
     Array(Box<Self>, Option<Expr>),
     Function(Box<Self>, Vec<Decl>),
 }
@@ -21,7 +21,14 @@ impl Declarator {
     fn finish(self, base: Type) -> (String, Type, Option<Vec<Decl>>, Option<Span>) {
         match self {
             Self::Name(name, span) => (name, base, None, span),
-            Self::Pointer(inner) => inner.finish(Type::Pointer(Box::new(base))),
+            Self::Pointer(inner, qualifiers) => {
+                let pointer = Type::Pointer(Box::new(base));
+                inner.finish(if qualifiers.any() {
+                    Type::Qualified(Box::new(pointer), qualifiers)
+                } else {
+                    pointer
+                })
+            },
             Self::Array(inner, bound) => inner.finish(Type::Array(Box::new(base), bound.map(Box::new))),
             Self::Function(inner, params) => {
                 let param_types = params.iter().map(|param| param.ty.clone()).collect();
@@ -499,22 +506,10 @@ impl<'a> Parser<'a> {
     /// Named declarators are required for ordinary definitions and declarations;
     /// parameter declarators may omit their name.
     fn parse_declarator_shape(&mut self, allow_abstract: bool) -> Result<Declarator, Diagnostic> {
-        let mut stars = 0;
+        let mut stars = Vec::new();
         while self.peek()?.is_some_and(|token| token.text == "*") {
             self.take()?;
-            stars += 1;
-            // C99 restrict qualifies the immediately preceding pointer,
-            // not its pointee. __restrict/__restrict__ are GNU spellings
-            // commonly emitted by glibc headers. The frontend currently
-            // makes no restrict-based alias optimizations, so omitting the
-            // qualifier from the lowered pointer type is conservative.
-            // Do not also ignore const/volatile: they affect observable
-            // modifiability and access semantics.
-            while self.peek()?.is_some_and(|token| matches!(
-                token.text, "restrict" | "__restrict" | "__restrict__"
-            )) {
-                self.take()?;
-            }
+            stars.push(self.parse_qualifiers()?);
         }
         let mut direct = if self.peek()?.is_some_and(|token| token.text == "(") {
             self.take()?;
@@ -524,7 +519,8 @@ impl<'a> Parser<'a> {
         } else if let Some(token) = self.peek()?.filter(|token| {
             matches!(token.kind, TokenKind::Identifier | TokenKind::TypedefName)
                 && !matches!(token.text, "int" | "char" | "long" | "void"
-                    | "unsigned" | "signed" | "typedef" | "static" | "extern"
+                    | "unsigned" | "signed" | "const" | "restrict" | "__restrict" | "__restrict__"
+                    | "typedef" | "static" | "extern"
                     | "struct" | "union" | "enum" | "if" | "else" | "while" | "do" | "for" | "return" | "break" | "continue")
         }) {
             self.take()?;
@@ -556,8 +552,11 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        for _ in 0..stars {
-            direct = Declarator::Pointer(Box::new(direct));
+        // The first written '*' is the outermost pointer. Apply the
+        // declarator operators in reverse so that 'int **const p' qualifies
+        // the pointer variable, not its inner pointee pointer.
+        for qualifiers in stars.into_iter().rev() {
+            direct = Declarator::Pointer(Box::new(direct), qualifiers);
         }
         Ok(direct)
     }
@@ -730,7 +729,7 @@ impl<'a> Parser<'a> {
                             }
                             "struct" | "union" | "enum" => self.parse_tag_or_decl()?,
                             "static" | "extern" | "int" | "char" | "long"
-                                | "void" | "unsigned" | "signed" =>
+                                | "void" | "unsigned" | "signed" | "const" | "restrict" | "__restrict" | "__restrict__" =>
                                 Stmt::Decl(self.parse_decl(false)?),
                             _ if token.kind == TokenKind::TypedefName =>
                                 Stmt::Decl(self.parse_decl(false)?),
@@ -775,7 +774,8 @@ impl<'a> Parser<'a> {
             "typedef" => { self.take()?; Ok(Stmt::Typedef(self.parse_decl(true)?)) },
             "static" | "extern" => Ok(Stmt::Decl(self.parse_decl(false)?)),
             "struct" | "union" | "enum" => self.parse_tag_or_decl(),
-            "int" | "char" | "long" | "void" | "unsigned" | "signed" => Ok(Stmt::Decl(self.parse_decl(false)?)),
+            "int" | "char" | "long" | "void" | "unsigned" | "signed"
+                | "const" | "restrict" | "__restrict" | "__restrict__" => Ok(Stmt::Decl(self.parse_decl(false)?)),
             _ if token.kind == TokenKind::TypedefName => Ok(Stmt::Decl(self.parse_decl(false)?)),
             _ => { let expr = self.parse_expr()?; self.expect(";")?; Ok(Stmt::Expr(Some(expr))) }
         }
@@ -807,9 +807,13 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_type(&mut self) -> Result<Option<(Type, usize)>, Diagnostic> {
-        let Some(token) = self.peek()? else {
+        let Some(first) = self.peek()? else {
             return Ok(None);
         };
+        let mut qualifiers = self.parse_qualifiers()?;
+        let token = self.peek()?.ok_or_else(|| Diagnostic::new(
+            first.span, "type qualifier requires a type specifier"
+        ))?;
         let ty = match token.text {
             "enum" => {
                 self.take()?;
@@ -820,7 +824,12 @@ impl<'a> Parser<'a> {
                 if !self.peek()?.is_some_and(|t| t.text == "{") {
                     let tag = tag.ok_or_else(|| Diagnostic::new(token.span,
                         "anonymous enum requires enumerators"))?;
-                    return Ok(Some((Type::TagRef(TagKind::Enum, tag), token.span.lo)));
+                    let mut ty = Type::TagRef(TagKind::Enum, tag);
+                    let trailing = self.parse_qualifiers()?;
+                    qualifiers.is_const |= trailing.is_const;
+                    qualifiers.is_restrict |= trailing.is_restrict;
+                    if qualifiers.any() { ty = Type::Qualified(Box::new(ty), qualifiers); }
+                    return Ok(Some((ty, first.span.lo)));
                 }
                 self.take()?;
                 if self.peek()?.is_some_and(|t| t.text == "}") {
@@ -856,7 +865,12 @@ impl<'a> Parser<'a> {
                     let tag = tag.ok_or_else(|| Diagnostic::new(token.span,
                         "anonymous struct or union requires a member definition"))?;
                     let kind = if is_union { TagKind::Union } else { TagKind::Struct };
-                    return Ok(Some((Type::TagRef(kind, tag), token.span.lo)));
+                    let mut ty = Type::TagRef(kind, tag);
+                    let trailing = self.parse_qualifiers()?;
+                    qualifiers.is_const |= trailing.is_const;
+                    qualifiers.is_restrict |= trailing.is_restrict;
+                    if qualifiers.any() { ty = Type::Qualified(Box::new(ty), qualifiers); }
+                    return Ok(Some((ty, first.span.lo)));
                 }
                 self.take()?;
                 let mut members = Vec::new();
@@ -886,8 +900,8 @@ impl<'a> Parser<'a> {
                 // C integer declaration specifiers are order-independent:
                 // glibc's standard typedef 'long unsigned int size_t' must
                 // mean exactly the same type as 'unsigned long int'.
-                // Accept one or two 'long' specifiers, retaining the distinct
-                // long long rank even if its representation equals long.
+                // Fail closed on duplicates and unsupported long long rather
+                // than quietly treating a second specifier as a declarator.
                 let mut is_char = false;
                 let mut is_int = false;
                 let mut long_count = 0u8;
@@ -899,6 +913,9 @@ impl<'a> Parser<'a> {
                         "long" if long_count < 2 && !is_char => long_count += 1,
                         "unsigned" if sign.is_none() => sign = Some(true),
                         "signed" if sign.is_none() => sign = Some(false),
+                        "const" => qualifiers.is_const = true,
+                        "restrict" | "__restrict" | "__restrict__" =>
+                            qualifiers.is_restrict = true,
                         "char" | "int" | "long" | "unsigned" | "signed" => {
                             return Err(Diagnostic::coded(next.span,
                                 DiagnosticCode::SyntaxInvalidDeclaration,
@@ -924,7 +941,28 @@ impl<'a> Parser<'a> {
             }
             _ => return Err(Diagnostic::new(token.span, "expected a type specifier")),
         };
-        Ok(Some((ty, token.span.lo)))
+        let trailing = self.parse_qualifiers()?;
+        qualifiers.is_const |= trailing.is_const;
+        qualifiers.is_restrict |= trailing.is_restrict;
+        let ty = if qualifiers.any() {
+            Type::Qualified(Box::new(ty), qualifiers)
+        } else { ty };
+        Ok(Some((ty, first.span.lo)))
+    }
+
+    /// Qualifiers are permitted before/after a specifier and on each '*'.
+    /// GNU headers spell restrict as __restrict or __restrict__.
+    fn parse_qualifiers(&mut self) -> Result<Qualifiers, Diagnostic> {
+        let mut result = Qualifiers::default();
+        while let Some(token) = self.peek()? {
+            match token.text {
+                "const" => result.is_const = true,
+                "restrict" | "__restrict" | "__restrict__" => result.is_restrict = true,
+                _ => break,
+            }
+            self.take()?;
+        }
+        Ok(result)
     }
 }
 

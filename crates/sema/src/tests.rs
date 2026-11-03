@@ -1319,3 +1319,42 @@ fn long_long_distinct_rank_literal_and_usual_arithmetic_conversions() {
     reject("long long f(void) { return 9223372036854775808LL; }", "integer constant exceeds");
     reject("int f(void) { return 1LLL; }", "suffix");
 }
+
+#[test]
+fn const_objects_pointer_targets_and_restrict_are_semantically_checked() {
+    check("int f(void) { const int x=7; return x; }").unwrap();
+    check("int f(void) { int x=7; const int *p=&x; return *p; }").unwrap();
+    check("int f(int *restrict p) { *p=3; return *p; }").unwrap();
+    check("int f(const int *__restrict p) { return *p; }").unwrap();
+    check("int f(void) { int x=2; int *const p=&x; *p=3; return x; }").unwrap();
+    check("typedef int *Ptr; int f(void) { int x=3; Ptr const p=&x; *p=7; return x; }").unwrap();
+    check("int f(const int *p) { const int *q=p; return *q; }").unwrap();
+    reject("int f(void) { const int x=1; x=2; return x; }",
+        "modifiable lvalue");
+    reject("int f(void) { const int x=1; ++x; return x; }",
+        "modifiable");
+    reject("int f(void) { const int x=1; x+=2; return x; }",
+        "modifiable");
+    reject("int f(void) { const int x=1; const int *p=&x; *p=2; return x; }",
+        "modifiable lvalue");
+    reject("int f(void) { int x=1; int *const p=&x; p=0; return x; }",
+        "modifiable lvalue");
+    reject("int f(void) { const int x=1; int *p=&x; return *p; }",
+        "incompatible assignment");
+    reject("int f(void) { int x=1; int **p=0; const int **q=p; return 0; }",
+        "incompatible assignment");
+    reject("int f(void) { restrict int x=3; return x; }",
+        "restrict requires a pointer");
+}
+
+
+#[test]
+fn const_aggregate_members_and_pointer_conditional_qualifiers() {
+    check("struct S { int x; }; int f(void) { struct S s={7}; const struct S *p=&s; return p->x; }").unwrap();
+    check("int f(void) { int x=1; int *p=&x; const int *q=p; return (p==q) + (q==p); }").unwrap();
+    check("int f(void) { int x=1; int *p=&x; const int *q=p; return *(1 ? p : q); }").unwrap();
+    check("int f(void) { int x=1; const int *p=&x; const void *q=p; return q != 0; }").unwrap();
+    reject("struct S { int x; }; int f(void) { struct S s={7}; const struct S *p=&s; p->x=9; return s.x; }", "modifiable lvalue");
+    reject("int f(void) { int x=1; const int *q=&x; void *p=q; return 0; }", "incompatible assignment");
+    reject("int f(void) { int x=1; int *p=&x; const int *q=p; int *r=(1?p:q); return 0; }", "incompatible assignment");
+}

@@ -14,6 +14,26 @@ import subprocess
 import sys
 
 PROGRAMS = {
+    "const_global_integer": """const int value=11;
+        int main(void) { return value; }""",
+    "const_global_pointer_relocation": """int value=17; int *const p=&value;
+        int main(void) { return *p; }""",
+    "const_member_read": """struct Pair { int x; };
+        int main(void) { struct Pair a={13}; const struct Pair *p=&a;
+            return p->x; }""",
+    "const_conditional_pointer_merge": """int main(void) {
+        int x=7; int *p=&x; const int *q=p;
+        return *(1 ? p : q); }""",
+    "const_local_immutable": """int main(void) {
+        const int x=9; return x; }""",
+    "const_pointer_reads": """int main(void) {
+        int x=7; const int *p=&x; return *p; }""",
+    "restrict_parameters": """int read(const int *__restrict p) { return *p; }
+        int main(void) { int x=19; return read(&x); }""",
+    "const_pointer_object": """int main(void) {
+        int x=8; int *const p=&x; *p=5; return x; }""",
+    "const_typedef_pointer": """typedef int *Ptr; int main(void) {
+        int x=7; Ptr const p=&x; *p=3; return x; }""",
     "s11_longlong_signed_basic": """long long f(long long x) { return x + 1LL; }
         int main(void) { return f(4294967296LL) == 4294967297LL; }""",
     "s11_unsigned_longlong_max": """unsigned long long f(unsigned long long x) {

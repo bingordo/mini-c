@@ -19,7 +19,8 @@ use std::collections::HashMap;
 type Result<T> = std::result::Result<T, String>;
 
 fn scalar_type(ty: &CType) -> Result<ir::Type> {
-    match ty {
+    // Object qualifiers affect modifiability, not physical ABI storage.
+    match ty.unqualified() {
         CType::Integer { rank: IntRank::Char, .. } => Ok(types::I8),
         CType::Integer { rank: IntRank::Int, .. } => Ok(types::I32),
         CType::Integer { rank: IntRank::Long | IntRank::LongLong, .. } | CType::Pointer(_) => Ok(types::I64),
@@ -39,7 +40,7 @@ fn signature(module: &ObjectModule, ty: &CType) -> Result<ir::Signature> {
     for param in params {
         sig.params.push(AbiParam::new(scalar_type(param)?));
     }
-    if result.as_ref() != &CType::Void {
+    if result.unqualified() != &CType::Void {
         sig.returns.push(AbiParam::new(scalar_type(result)?));
     }
     Ok(sig)
@@ -278,10 +279,10 @@ impl Compiler {
                 }
                 Some(bytes)
             } else {
-            if !decl.ty.is_integer() && !matches!(decl.ty, CType::Pointer(_)) {
+            if !decl.ty.is_integer() && !matches!(decl.ty.unqualified(), CType::Pointer(_)) {
                 return Err(format!("global initializer for '{name}' requires scalar support"));
             }
-            let value = if matches!(decl.ty, CType::Pointer(_)) {
+            let value = if matches!(decl.ty.unqualified(), CType::Pointer(_)) {
                 // The checker has already validated the null-pointer constant.
                 // Address-of-symbol initializers require data relocations.
                 let mut integer = init;
@@ -565,7 +566,7 @@ impl Lower<'_> {
     /// Current x86-64 LP64 object model: use explicit storage for all local
     /// objects so that aliases through &x, p[i], and *p stay coherent.
     fn alignment(ty: &CType) -> u8 {
-        match ty {
+        match ty.unqualified() {
             CType::Struct { align, .. } | CType::Union { align, .. } =>
                 u8::try_from(align.trailing_zeros()).unwrap_or(3),
             CType::Array(element, _) => Self::alignment(element),

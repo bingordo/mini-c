@@ -1,8 +1,8 @@
 //! C99 pointer restrict (and GNU spellings) from ordinary libc declarations.
-//! Since Mini-C does not make no-alias assumptions, dropping restrict after
-//! syntax checking is conservative: it does not change load/store semantics.
+//! Restrict is retained at the correct pointer level in syntax, then lowered
+//! without alias assumptions; this never changes observable load/store values.
 use mini_c_syntax::{
-    ast::Type,
+    ast::{Qualifiers, Type},
     parser::Parser,
     stream::{ExternalItem, ItemSource},
 };
@@ -26,9 +26,11 @@ fn pointer_restrict_specifiers_preserve_parameter_types() {
             panic!("expected function type");
         };
         assert_eq!(*result, Type::Pointer(Box::new(Type::Void)));
+        let restrict = Qualifiers { is_const: false, is_restrict: true };
         assert_eq!(params, vec![
-            Type::Pointer(Box::new(Type::Void)),
-            Type::Pointer(Box::new(Type::Alias("const_void_dummy".into()))),
+            Type::Qualified(Box::new(Type::Pointer(Box::new(Type::Void))), restrict),
+            Type::Qualified(Box::new(Type::Pointer(
+                Box::new(Type::Alias("const_void_dummy".into())))), restrict),
         ]);
         assert!(p.next_item().unwrap().is_none());
     }
@@ -40,12 +42,17 @@ fn restrict_applies_to_each_pointer_level_not_the_pointee() {
     let Some(ExternalItem::Declaration(decl))=Parser::new(source).next_item().unwrap()
         else { panic!("expected function declaration"); };
     let Type::Function { params, .. }=decl.ty else { panic!("function type"); };
-    assert_eq!(params, vec![Type::Pointer(Box::new(Type::Pointer(Box::new(Type::Int))))]);
+    let restrict = Qualifiers { is_const: false, is_restrict: true };
+    assert_eq!(params, vec![Type::Qualified(Box::new(Type::Pointer(Box::new(
+        Type::Qualified(Box::new(Type::Pointer(Box::new(Type::Int))), restrict)
+    ))), restrict)]);
 }
 
 #[test]
 fn reject_unattached_restrict_and_volatile_instead_of_silently_ignoring() {
-    for source in ["restrict int x;", "__restrict int x;", "int volatile x;", "int *volatile p;"] {
+    // Restrict on a nonpointer is a semantic violation after type resolution;
+    // unsupported volatile must still be rejected at the parser boundary.
+    for source in ["int volatile x;", "int *volatile p;"] {
         assert!(Parser::new(source).next_item().is_err(), "{source}");
     }
 }

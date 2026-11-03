@@ -69,13 +69,15 @@ impl CheckedExpr {
             return Self::value(ty, CheckedExprKind::Unary(UnOp::Address, Box::new(self)));
         }
         if self.category == Category::LValue {
-            match &self.ty {
+            match self.ty.unqualified() {
                 CType::Array(element, _) => Self::value(
                     CType::Pointer(element.clone()),
                     CheckedExprKind::ArrayDecay(Box::new(self)),
                 ),
                 _ => {
-                    let ty = self.ty.clone();
+                    // C lvalue conversion removes top-level const but keeps
+                    // the pointee qualifier of any pointer value.
+                    let ty = self.ty.unqualified().clone();
                     Self::value(ty, CheckedExprKind::Load(Box::new(self)))
                 }
             }
@@ -276,6 +278,7 @@ impl Checker {
 
     fn complete_tag_type(&self, ty: CType, span: Span) -> Result<CType, Diagnostic> {
         match ty {
+            CType::Qualified(inner) => Ok(self.complete_tag_type(*inner, span)?.with_const()),
             CType::TagRef { name, identity, .. } => self.tag_definitions.borrow()
                 .get(&identity).cloned().ok_or_else(|| type_error(span,
                     format!("incomplete struct, union or enum tag '{name}'"))),
@@ -287,6 +290,7 @@ impl Checker {
 
     fn try_complete_tag_type(&self, ty: CType) -> Result<CType, Diagnostic> {
         match ty {
+            CType::Qualified(inner) => Ok(self.try_complete_tag_type(*inner)?.with_const()),
             CType::TagRef { kind, name, identity } => Ok(self.tag_definitions.borrow()
                 .get(&identity).cloned()
                 .unwrap_or(CType::TagRef { kind, name, identity })),
@@ -314,6 +318,23 @@ impl Checker {
 
     fn resolve(&mut self, ty: &Type, span: Span) -> Result<CType, Diagnostic> {
         Ok(match ty {
+            Type::Qualified(inner, qualifiers) => {
+                let base = self.resolve(inner, span)?;
+                if qualifiers.is_restrict && !matches!(base.unqualified(), CType::Pointer(_)) {
+                    return Err(type_error(span, "restrict requires a pointer object type"));
+                }
+                if qualifiers.is_const {
+                    if matches!(base.unqualified(), CType::Function { .. }) {
+                        return Err(type_error(span, "const cannot qualify a function type"));
+                    }
+                    // Qualifiers of typedef array types apply to their elements.
+                    match base {
+                        CType::Array(element, count) => CType::Array(
+                            Box::new((*element).with_const()), count),
+                        other => other.with_const(),
+                    }
+                } else { base }
+            }
             Type::Void => CType::Void,
             Type::Char => CType::Integer { rank: IntRank::Char, unsigned: !self.target.char_is_signed },
             Type::Int => CType::int(),
@@ -768,7 +789,7 @@ impl Checker {
         }
         let signature = CType::Function {
             result: Box::new(result.clone()),
-            params: params.iter().map(|p| p.ty.clone()).collect(),
+            params: params.iter().map(|p| p.ty.unqualified().clone()).collect(),
         };
         // Register before checking the body: recursive calls are legal.
         self.declare_global(&func.name, signature.clone(), SymbolKind::Function, true, func.storage,
@@ -979,6 +1000,8 @@ impl Checker {
     ) -> Result<(), Diagnostic> {
         let span = original.location().unwrap_or(span);
         let original = original.without_location();
+        // Const storage still has ordinary static initialization rules.
+        let ty = ty.unqualified();
         if let CType::Array(element, Some(_)) = ty {
             if matches!(original, Expr::StringLiteral(_))
                 && matches!(element.as_ref(), CType::Integer { rank: IntRank::Char, .. })
@@ -1022,8 +1045,15 @@ impl Checker {
             Type::Char => CType::Integer {
                 rank: IntRank::Char, unsigned: !self.target.char_is_signed,
             },
+            Type::Qualified(inner, qualifiers) => {
+                if qualifiers.is_restrict {
+                    return Err(type_error(span, "restrict requires a pointer object type"));
+                }
+                return self.cast_integer_type(inner, span);
+            },
             Type::Int => CType::int(),
             Type::Long => CType::Integer { rank: IntRank::Long, unsigned: false },
+            Type::LongLong => CType::Integer { rank: IntRank::LongLong, unsigned: false },
             Type::Signed(inner) | Type::Unsigned(inner) => {
                 let CType::Integer { rank, .. } = self.cast_integer_type(inner, span)? else {
                     return Err(type_error(span, "integer cast requires an integer type"));
@@ -1059,19 +1089,23 @@ impl Checker {
         // The source array undergoes the standard array-to-pointer conversion
         // before checking scalar assignment compatibility.
         let expr = expr.rvalue();
-        let compatible = match (ty, &expr.ty) {
+        // Initializing a const-qualified object is permitted. Only the
+        // stored value type loses top-level const; nested pointer qualifiers
+        // remain intact and cannot be discarded.
+        let value_ty = ty.unqualified();
+        let compatible = match (value_ty, &expr.ty) {
             (CType::Struct { .. }, CType::Struct { .. }) |
             (CType::Union { .. }, CType::Union { .. }) => ty.same_type(&expr.ty),
             (CType::Integer { .. }, CType::Integer { .. }) => true,
             (CType::Pointer(lhs), CType::Pointer(rhs)) =>
-                lhs.same_type(rhs) || **lhs == CType::Void || **rhs == CType::Void,
+                CType::compatible_pointee_assignment(lhs, rhs),
             (CType::Pointer(_), CType::Integer { .. }) => const_eval::evaluate(&expr, self.target) == Ok(0),
             _ => false,
         };
         if !compatible {
             return Err(Diagnostic::coded(span, DiagnosticCode::SemanticIncompatibleAssignment, format!("incompatible assignment: {:?} to {:?}", expr.ty, ty)));
         }
-        Ok(self.convert(expr, ty))
+        Ok(self.convert(expr, value_ty))
     }
 
     /// Form a checked pointer + integer or pointer - integer expression.
@@ -1165,7 +1199,7 @@ impl Checker {
                         return Err(Diagnostic::coded(span, DiagnosticCode::SemanticInvalidMemberAccess, "arrow operator requires a pointer to struct"));
                     };
                     let complete = self.complete_tag_type(inner.as_ref().clone(), span)?;
-                    if !matches!(complete, CType::Struct { .. } | CType::Union { .. }) {
+                    if !matches!(complete.unqualified(), CType::Struct { .. } | CType::Union { .. }) {
                         return Err(Diagnostic::coded(span, DiagnosticCode::SemanticInvalidMemberAccess, "arrow operator requires a pointer to struct or union"));
                     }
                     CheckedExpr {
@@ -1181,13 +1215,21 @@ impl Checker {
                 };
                 let mut object = object;
                 object.ty = self.complete_tag_type(object.ty.clone(), span)?;
-                let members = match &object.ty {
+                let members = match object.ty.unqualified() {
                     CType::Struct { members, .. } | CType::Union { members, .. } => members,
                     _ => return Err(Diagnostic::coded(span, DiagnosticCode::SemanticInvalidMemberAccess, "member access requires a struct or union")),
                 };
                 let field = members.iter().find(|m| m.name == *name).ok_or_else(||
                     Diagnostic::coded(span, DiagnosticCode::SemanticUnknownMember, format!("unknown struct member '{name}'")))?;
-                let field_ty = field.ty.clone();
+                // A member of a const aggregate is itself nonmodifiable.
+                // Array member qualification applies to its element type.
+                let field_ty = if object.ty.is_const() {
+                    match field.ty.clone() {
+                        CType::Array(element, count) =>
+                            CType::Array(Box::new((*element).with_const()), count),
+                        other => other.with_const(),
+                    }
+                } else { field.ty.clone() };
                 let offset = field.offset;
                 Ok(CheckedExpr {
                     ty: field_ty,
@@ -1262,7 +1304,9 @@ impl Checker {
                     return Ok(CheckedExpr::value(CType::int(), CheckedExprKind::Binary(*op, Box::new(left), Box::new(right))));
                 }
                 if relation && (matches!((&left.ty, &right.ty), (CType::Pointer(a), CType::Pointer(b))
-                        if a.same_type(b) || **a == CType::Void || **b == CType::Void)
+                        if a.unqualified().same_type(b.unqualified())
+                            || *a.unqualified() == CType::Void
+                            || *b.unqualified() == CType::Void)
                     || (matches!(op, BinOp::Eq | BinOp::Ne)
                         && ((matches!(left.ty, CType::Pointer(_)) && const_eval::evaluate(&right, self.target) == Ok(0))
                             || (matches!(right.ty, CType::Pointer(_)) && const_eval::evaluate(&left, self.target) == Ok(0))))) {
@@ -1328,15 +1372,22 @@ impl Checker {
                 } else if let (CType::Pointer(a), CType::Pointer(b)) =
                     (&yes.ty, &no.ty)
                 {
-                    if a.same_type(b) {
-                        yes.ty.clone()
-                    } else if **a == CType::Void || **b == CType::Void {
-                        CType::Pointer(Box::new(CType::Void))
+                    let base_a = a.unqualified();
+                    let base_b = b.unqualified();
+                    let unified = if base_a.same_type(base_b) {
+                        base_a.clone()
+                    } else if *base_a == CType::Void || *base_b == CType::Void {
+                        CType::Void
                     } else {
                         return Err(Diagnostic::coded(span,
                             DiagnosticCode::SemanticInvalidOperatorOperands,
                             "conditional operands require compatible types"));
-                    }
+                    };
+                    CType::Pointer(Box::new(
+                        if a.is_const() || b.is_const() {
+                            unified.with_const()
+                        } else { unified }
+                    ))
                 } else if matches!(&yes.ty, CType::Pointer(_))
                     && no.ty.is_integer()
                     && const_eval::evaluate(&no, self.target) == Ok(0)
@@ -1379,7 +1430,8 @@ impl Checker {
                 let lhs_span = lhs.location().unwrap_or(span);
                 let rhs_span = rhs.location().unwrap_or(span);
                 let lhs = self.check_expr(lhs, span)?;
-                if lhs.category != Category::LValue || matches!(lhs.ty, CType::Array(..)) {
+                if lhs.category != Category::LValue || lhs.ty.is_const()
+                    || matches!(lhs.ty.unqualified(), CType::Array(..)) {
                     return Err(Diagnostic::coded(lhs_span, DiagnosticCode::SemanticInvalidAssignmentTarget, "left side of assignment must be a modifiable lvalue"));
                 }
                 let rhs_typed = self.check_expr(rhs, span)?;
@@ -1394,7 +1446,7 @@ impl Checker {
                     BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod);
                 let pointer_arithmetic = matches!(op, BinOp::Add | BinOp::Sub)
                     && matches!(&lhs.ty, CType::Pointer(_));
-                if lhs.category != Category::LValue
+                if lhs.category != Category::LValue || lhs.ty.is_const()
                     || !(lhs.ty.is_integer() || pointer_arithmetic)
                 {
                     return Err(Diagnostic::coded(lhs_span,
@@ -1445,7 +1497,7 @@ impl Checker {
             Expr::Update { target, increment, postfix } => {
                 let target_span = target.location().unwrap_or(span);
                 let checked = self.check_expr(target, target_span)?;
-                if checked.category != Category::LValue
+                if checked.category != Category::LValue || checked.ty.is_const()
                     || !(checked.ty.is_integer() || matches!(checked.ty, CType::Pointer(_)))
                 {
                     return Err(Diagnostic::coded(target_span,
