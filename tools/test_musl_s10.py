@@ -15,6 +15,7 @@ import argparse
 from collections import Counter
 import hashlib
 import json
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -84,6 +85,34 @@ def succeeded(record: dict | None) -> bool:
     return record is not None and record.get("exit") == 0
 
 
+def first_frontend_error(record: dict | None, path: Path) -> dict | None:
+    """Identify the exact preprocessed line and nearest #line source marker.
+
+    Distinguishes a host-header blocker from a real upstream function-body
+    blocker without rewriting or silently dropping any of the source files.
+    """
+    if record is None or succeeded(record) or not path.is_file():
+        return None
+    match = re.search(r":(\d+):(\d+): error:", record.get("stderr", ""))
+    if not match:
+        return None
+    line_number, column = (int(x) for x in match.groups())
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    if line_number < 1 or line_number > len(lines):
+        return None
+    origin = None
+    for line in lines[:line_number]:
+        marker = re.match(r'^#\s+\d+\s+"([^"]+)"', line)
+        if marker:
+            origin = marker.group(1)
+    return {
+        "preprocessed_line": line_number,
+        "column": column,
+        "source_marker": origin,
+        "line_text": lines[line_number - 1].strip()[:300],
+    }
+
+
 def stage(case: dict, with_backend: bool) -> str:
     if not succeeded(case["preprocess"]):
         return "preprocess_rejected"
@@ -129,6 +158,7 @@ def check_one(name: str, args: argparse.Namespace, temp: Path) -> dict:
         "gcc_syntax": gcc,
         "preprocess": cpp,
         "frontend": frontend,
+        "first_frontend_error": first_frontend_error(frontend, preprocessed),
         "native_object": native_object,
     }
     case["stage"] = stage(case, args.backend is not None)
