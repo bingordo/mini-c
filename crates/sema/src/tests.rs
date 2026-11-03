@@ -1268,3 +1268,27 @@ fn integer_constant_c_type_selection_and_unsigned_ranges() {
         "decimal literal exceeds supported");
     reject("int f(void) { return 7llu; }", "suffix");
 }
+
+#[test]
+fn nondecimal_type_selection_respects_nondefault_target_widths() {
+    use mini_c_syntax::integer_literal::decode_integer_literal;
+    let model = Target { char_is_signed: true, int_bits: 16, long_bits: 32 };
+    let cases = [
+        ("0x7fff", Some((IntRank::Int, false))),
+        ("0x8000", Some((IntRank::Int, true))),
+        ("0xffff", Some((IntRank::Int, true))),
+        ("0x10000", Some((IntRank::Long, false))),
+        ("0x80000000", Some((IntRank::Long, true))),
+        ("0xffffffff", Some((IntRank::Long, true))),
+        ("0x100000000", None),
+        ("65535", Some((IntRank::Long, false))),
+        ("65535U", Some((IntRank::Int, true))),
+        ("65536U", Some((IntRank::Long, true))),
+    ];
+    for (spelling, expected) in cases {
+        let literal = decode_integer_literal(spelling).unwrap();
+        let selected = model.integer_literal(literal);
+        let expected = expected.map(|(rank, unsigned)| CType::Integer { rank, unsigned });
+        assert_eq!(selected, expected, "{spelling}");
+    }
+}
