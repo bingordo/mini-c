@@ -119,7 +119,7 @@ included, but its **first error moved past stddef.h** in all 24 files:
 - **23/24:** first rejection in `/usr/include/string.h`, at the
   `memcpy` declaration with GNU `__restrict` pointer qualifiers
 - **1/24:** first rejection in `/usr/include/strings.h`, at the
-  `bcmp` declaration using GNU `__s1` and related declarations
+  `bcmp` declaration using `const void *` parameters
 
 This demonstrates an actual semantic-compatible parser improvement
 without misrepresenting the corpus acceptance number. Next investigate
