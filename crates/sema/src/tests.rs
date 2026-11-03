@@ -1310,7 +1310,7 @@ fn long_long_distinct_rank_literal_and_usual_arithmetic_conversions() {
     }
     assert_eq!(model.integer_literal(decode_integer_literal("4294967295UL").unwrap()), Some(ul.clone()));
     assert_eq!(model.integer_literal(decode_integer_literal("4294967296UL").unwrap()), Some(ull.clone()));
-    assert_eq!(model.integer_literal(decode_integer_literal("0xffffffff").unwrap()), Some(ul.clone()));
+    assert_eq!(model.integer_literal(decode_integer_literal("0xffffffff").unwrap()), Some(CType::Integer { rank: IntRank::Int, unsigned: true }));
     assert_eq!(model.common_integer(&ul, &ll), Some(ll.clone()));
     assert_eq!(model.common_integer(&ull, &ll), Some(ull));
     check("long long f(long long x) { return x + 1LL; }").unwrap();
