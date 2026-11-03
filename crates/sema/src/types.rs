@@ -35,6 +35,8 @@ pub enum CType {
     /// Pointers retain identity while the tag's definition can arrive later.
     TagRef { kind: TagKind, name: String, identity: u64 },
     Void,
+    /// Retain top-level const independently from runtime representation.
+    Qualified(Box<CType>),
     Integer { rank: IntRank, unsigned: bool },
     Pointer(Box<CType>),
     /// Incomplete arrays use None; bound and full object layout are target-dependent.
@@ -43,10 +45,26 @@ pub enum CType {
 }
 
 impl CType {
+    /// Remove top-level const only. Nested pointee const must be retained.
+    pub fn unqualified(&self) -> &Self {
+        match self { Self::Qualified(inner) => inner.unqualified(), other => other }
+    }
+    pub fn is_const(&self) -> bool { matches!(self, Self::Qualified(_)) }
+    pub fn with_const(self) -> Self {
+        if self.is_const() { self } else { Self::Qualified(Box::new(self)) }
+    }
+    /// C pointer assignment may add, but not discard, immediate pointee const.
+    /// Nested pointer targets must be exactly compatible (not T** -> const T**).
+    pub fn compatible_pointee_assignment(dest: &Self, source: &Self) -> bool {
+        if source.is_const() && !dest.is_const() { return false; }
+        let (dest, source) = (dest.unqualified(), source.unqualified());
+        dest.same_type(source) || matches!(dest, Self::Void) || matches!(source, Self::Void)
+    }
     /// Target-specific object alignment in bytes for x86-64 LP64.
     pub fn align_bytes(&self, target: Target) -> Option<u64> {
         match self {
             Self::Void | Self::Function { .. } | Self::TagRef { .. } => None,
+            Self::Qualified(inner) => inner.align_bytes(target),
             Self::Struct { align, .. } | Self::Union { align, .. } => Some(*align),
             Self::Array(element, _) => element.align_bytes(target),
             Self::Pointer(_) => Some(8),
@@ -59,6 +77,8 @@ impl CType {
     pub fn same_type(&self, other: &Self) -> bool {
         use CType::{Struct, Union, TagRef};
         match (self, other) {
+            (CType::Qualified(a), CType::Qualified(b)) => a.same_type(b),
+            (CType::Qualified(_), _) | (_, CType::Qualified(_)) => false,
             (Struct { identity: a, .. }, Struct { identity: b, .. }) |
             (Union { identity: a, .. }, Union { identity: b, .. }) =>
                 a == b,
@@ -81,6 +101,8 @@ impl CType {
     pub fn composite(&self, other: &Self) -> Option<Self> {
         if self == other { return Some(self.clone()); }
         match (self, other) {
+            (Self::Qualified(a), Self::Qualified(b)) =>
+                Some(Self::Qualified(Box::new(a.composite(b)?))),
             (Self::Pointer(a), Self::Pointer(b)) =>
                 Some(Self::Pointer(Box::new(a.composite(b)?))),
             (Self::Array(a, na), Self::Array(b, nb)) => {
@@ -107,15 +129,22 @@ impl CType {
         }
     }
 
-    pub fn is_integer(&self) -> bool { matches!(self, Self::Integer { .. }) }
-    pub fn is_scalar(&self) -> bool { self.is_integer() || matches!(self, Self::Pointer(_)) }
-    pub fn is_object(&self) -> bool { !matches!(self, Self::Void | Self::Function { .. }) }
+    pub fn is_integer(&self) -> bool {
+        matches!(self.unqualified(), Self::Integer { .. })
+    }
+    pub fn is_scalar(&self) -> bool {
+        matches!(self.unqualified(), Self::Integer { .. } | Self::Pointer(_))
+    }
+    pub fn is_object(&self) -> bool {
+        !matches!(self.unqualified(), Self::Void | Self::Function { .. })
+    }
 
     /// Known object size in bytes for the currently supported LP64 model.
     /// Incomplete arrays, void/function types and overflowing extents have no size.
     pub fn size_bytes(&self, target: Target) -> Option<u64> {
         match self {
             Self::Void | Self::Function { .. } | Self::TagRef { .. } => None,
+            Self::Qualified(inner) => inner.size_bytes(target),
             Self::Struct { size, .. } | Self::Union { size, .. } => Some(*size),
             Self::Integer { rank, .. } => Some(u64::from(target.bits(*rank) / 8)),
             Self::Pointer(_) => Some(8), // Current target model is LP64.
@@ -207,9 +236,9 @@ impl Target {
     }
 
     pub fn promote(self, ty: &CType) -> CType {
-        match ty {
+        match ty.unqualified() {
             CType::Integer { rank: IntRank::Char, .. } => CType::int(),
-            _ => ty.clone(),
+            other => other.clone(),
         }
     }
 
