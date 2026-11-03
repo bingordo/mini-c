@@ -1169,3 +1169,16 @@ fn comma_expression_sequence_values_and_lvalue_rules() {
     reject("int f(int a,int b) { return a+b; } int main(void) { return f(1,2,3); }",
         "expects 2 arguments");
 }
+
+
+#[test]
+fn do_while_statements_are_post_test_loops_with_scoped_bodies() {
+    check("int f(void) { int x=0; do { x++; } while (x<3); return x; }").unwrap();
+    check("int f(void) { int x=0; do ; while (x++<2); return x; }").unwrap();
+    check("int f(void) { int x=0; do { x++; if(x==2)continue; } while (x<4); return x; }").unwrap();
+    check("int f(void) { int i=0; int checks=0; do { i++; } while (checks++,i<3); return checks; }").unwrap();
+    check("int f(void) { int sum=0; for (int i=0; i<3; i++) { int j=0; do { j++; if(j==2)continue; sum+=i+j; } while (j<3); } return sum; }").unwrap();
+    check("int f(void) { int x=7; do { int x=3; x++; } while (0); return x; }").unwrap();
+    reject("int f(void) { struct S { int x; }; struct S s; do { } while (s); return 0; }",
+        "condition requires a scalar type");
+}

@@ -103,6 +103,7 @@ pub enum CheckedStmt {
     Return(Option<CheckedExpr>),
     If { cond: CheckedExpr, then: Box<CheckedStmt>, otherwise: Option<Box<CheckedStmt>> },
     While { cond: CheckedExpr, body: Box<CheckedStmt> },
+    DoWhile { body: Box<CheckedStmt>, cond: CheckedExpr },
     For(Box<CheckedFor>),
     Break,
     Continue,
@@ -914,6 +915,14 @@ impl Checker {
                 let body_result = self.check_stmt(body, span);
                 self.loop_depth -= 1;
                 CheckedStmt::While { cond, body: Box::new(body_result?) }
+            }
+            Stmt::DoWhile { body, cond } => {
+                self.loop_depth += 1;
+                let body_result = self.check_stmt(body, span);
+                self.loop_depth -= 1;
+                let body = Box::new(body_result?);
+                let cond = self.check_condition(cond, span)?;
+                CheckedStmt::DoWhile { body, cond }
             }
             Stmt::For { init, cond, step, body } => {
                 // The initializer's identifiers and tags remain visible in

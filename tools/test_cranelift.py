@@ -14,6 +14,29 @@ import subprocess
 import sys
 
 PROGRAMS = {
+    "do_while_executes_once": """int main(void) {
+        int x=3; do { x+=5; } while (0); return x; }""",
+    "do_while_continue_condition": """int main(void) {
+        int i=0; int checks=0;
+        do { i++; if (i==1) continue; } while (checks++, i<3);
+        return i*10+checks; }""",
+    "do_while_break_skips_condition": """int main(void) {
+        int x=0; do { x++; break; } while (x+=100);
+        return x; }""",
+    "do_while_nested_in_for": """int main(void) {
+        int sum=0; for (int i=0; i<3; i++) {
+            int j=0; do {
+                j++; if (j==2) continue; sum+=i+j;
+            } while (j<3);
+        } return sum; }""",
+    "do_while_condition_side_effect": """int main(void) {
+        int x=0; int checks=0;
+        do { x++; } while (checks++, x<4);
+        return checks*10+x; }""",
+    "do_while_empty_body": """int main(void) {
+        int x=0; do ; while (x++<2); return x; }""",
+    "do_while_nested_scope": """int main(void) {
+        int x=9; do { int x=4; x++; } while (0); return x; }""",
     "comma_for_multiple_counters": """int main(void) {
         int i=0; int j=0; int total=0;
         for (i=0,j=0; i<5; i++, j+=3) total+=i+j;
