@@ -46,6 +46,17 @@ pub struct Decl {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TagKind { Struct, Union, Enum }
 
+/// C object-type qualifiers. Restrict is retained in the syntax tree to
+/// check legal placement, but has no runtime representation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Qualifiers {
+    pub is_const: bool,
+    pub is_restrict: bool,
+}
+impl Qualifiers {
+    pub fn any(self) -> bool { self.is_const || self.is_restrict }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Type {
     Void,
@@ -53,6 +64,8 @@ pub enum Type {
     Int,
     Long,
     Alias(Ident),
+    /// Qualifiers bind to this type, not to the nearest pointer's pointee.
+    Qualified(Box<Type>, Qualifiers),
     Signed(Box<Type>),
     Unsigned(Box<Type>),
     Pointer(Box<Type>),
