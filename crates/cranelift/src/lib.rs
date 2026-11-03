@@ -1149,6 +1149,25 @@ impl Lower<'_> {
                 b.switch_to_block(exit);
                 Ok(true)
             }
+            CheckedStmt::DoWhile { body, cond } => {
+                let loop_body = b.create_block();
+                let test = b.create_block();
+                let exit = b.create_block();
+                // Unlike while, do-while always executes the body first.
+                b.ins().jump(loop_body, &[]);
+                self.loops.push((exit, test));
+                b.switch_to_block(loop_body);
+                let body_live = self.statement(b, body)?;
+                self.loops.pop();
+                if body_live { b.ins().jump(test, &[]); }
+                // A continue in a do-while must evaluate its condition,
+                // not restart the body directly.
+                b.switch_to_block(test);
+                let value = self.condition(b, cond)?;
+                b.ins().brif(value, loop_body, &[], exit, &[]);
+                b.switch_to_block(exit);
+                Ok(true)
+            }
             CheckedStmt::For(for_loop) => {
                 let (init, cond, step, body) = (
                     &for_loop.init, &for_loop.cond, &for_loop.step, &for_loop.body,
