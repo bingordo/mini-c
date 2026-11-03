@@ -873,6 +873,34 @@ impl Lower<'_> {
                     UnOp::Address | UnOp::Deref => unreachable!(),
                 }
             }
+            CheckedExprKind::Conditional(condition, yes, no) => {
+                // Build separate blocks: evaluating both operands and using a
+                // select would incorrectly execute the unchosen side effects.
+                let test = self.condition(b, condition)?;
+                let then_block = b.create_block();
+                let else_block = b.create_block();
+                let join = b.create_block();
+                let ty = match &expr.ty {
+                    CType::Void => types::I32, // no meaningful result value
+                    CType::Struct { .. } | CType::Union { .. } => types::I64,
+                    other => scalar_type(other)?,
+                };
+                let result = b.declare_var(ty);
+                b.ins().brif(test, then_block, &[], else_block, &[]);
+
+                b.switch_to_block(then_block);
+                let left_value = self.expression(b, yes)?;
+                b.def_var(result, left_value);
+                b.ins().jump(join, &[]);
+
+                b.switch_to_block(else_block);
+                let right_value = self.expression(b, no)?;
+                b.def_var(result, right_value);
+                b.ins().jump(join, &[]);
+
+                b.switch_to_block(join);
+                Ok(b.use_var(result))
+            }
             CheckedExprKind::Comma(left, right) => {
                 // C comma expressions provide a sequence point. Preserve
                 // effects from the left before computing the right value.
