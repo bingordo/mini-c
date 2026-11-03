@@ -1444,4 +1444,18 @@ mod tests {
         }
     }
 
+    #[test]
+    fn compiles_comma_sequence_with_for_and_function_arguments() {
+        let sources = [
+            "int main(void) { int i=0; int j=0; int s=0; for (i=0,j=0; i<4; i++,j+=2) s+=i+j; return s; }",
+            "int f(int a,int b) { return a+b; } int main(void) { int x=0; return f((x=3,x),4); }",
+            "int main(void) { int x=0; int *p=0; return *(x=7,p=&x,p); }",
+            "void mark(void) { return; } int main(void) { return (mark(), 7); }",
+        ];
+        for source in sources {
+            let object = compile_source(source).unwrap();
+            assert_eq!(&object[..4], b"\x7fELF");
+        }
+    }
+
 }
