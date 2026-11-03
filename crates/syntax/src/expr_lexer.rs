@@ -14,6 +14,8 @@ pub enum ExprToken<'a> {
     Character(&'a str),
     Invalid(&'a str),
     Assign,
+    PlusPlus,
+    MinusMinus,
     AddAssign,
     SubAssign,
     MulAssign,
@@ -67,6 +69,8 @@ pub fn tokenize(source: &str) -> Result<Vec<(usize, ExprToken<'_>, usize)>, Diag
             TokenKind::Identifier | TokenKind::TypedefName => ExprToken::Ident(token.text),
             TokenKind::Punctuation => match token.text {
                 "=" => ExprToken::Assign,
+                "++" => ExprToken::PlusPlus,
+                "--" => ExprToken::MinusMinus,
                 "+=" => ExprToken::AddAssign,
                 "-=" => ExprToken::SubAssign,
                 "*=" => ExprToken::MulAssign,
