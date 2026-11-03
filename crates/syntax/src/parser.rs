@@ -1389,4 +1389,55 @@ mod tests {
         assert!(Parser::new("int f(int x) { return (unsigned *)x; }").next_item().is_err());
     }
 
+    #[test]
+    fn integer_decl_specifiers_accept_valid_c_orderings() {
+        let unsigned_long = Type::Unsigned(Box::new(Type::Long));
+        let signed_long = Type::Signed(Box::new(Type::Long));
+        let unsigned_char = Type::Unsigned(Box::new(Type::Char));
+        let signed_char = Type::Signed(Box::new(Type::Char));
+        for (spelling, expected) in [
+            ("long unsigned int", unsigned_long.clone()),
+            ("unsigned long int", unsigned_long.clone()),
+            ("int long unsigned", unsigned_long.clone()),
+            ("int unsigned long", unsigned_long.clone()),
+            ("unsigned int long", unsigned_long.clone()),
+            ("long int signed", signed_long.clone()),
+            ("signed long int", signed_long.clone()),
+            ("char signed", signed_char.clone()),
+            ("signed char", signed_char),
+            ("char unsigned", unsigned_char.clone()),
+            ("unsigned char", unsigned_char),
+            ("signed", Type::Signed(Box::new(Type::Int))),
+            ("unsigned", Type::Unsigned(Box::new(Type::Int))),
+            ("long", Type::Long),
+            ("int", Type::Int),
+            ("void", Type::Void),
+        ] {
+            let source = format!("typedef {spelling} T;");
+            let mut parser = Parser::new(&source);
+            let Some(ExternalItem::Typedef(decl)) = parser.next_item().unwrap() else {
+                panic!("expected typedef declaration: {source}");
+            };
+            assert_eq!(decl.ty, expected, "spelling: {spelling}");
+            assert!(parser.next_item().unwrap().is_none());
+        }
+    }
+
+    #[test]
+    fn integer_decl_specifiers_reject_duplicates_and_contradictions() {
+        for spelling in [
+            "long long", "int int", "signed signed", "unsigned unsigned",
+            "signed unsigned", "unsigned signed", "long char", "char int",
+            "void int", "void unsigned", "long void", "char long unsigned",
+        ] {
+            let source = format!("typedef {spelling} T;");
+            let mut parser = Parser::new(&source);
+            let error = parser.next_item().expect_err(&source);
+            assert!(
+                error.message.contains("type specifier"),
+                "{source}: unexpected error {error:?}"
+            );
+        }
+    }
+
 }
