@@ -3565,7 +3565,7 @@ fn __action61<
     (_, n, _): (usize, &'input str, usize),
 ) -> Result<Expr,__lalrpop_util::ParseError<usize,ExprToken<'input>,&'static str>>
 {
-    crate::integer_literal::parse_integer_literal(n).map(Expr::Int).map_err(|reason| lalrpop_util::ParseError::User { error: reason })
+    crate::integer_literal::parse_integer_expression(n).map_err(|reason| lalrpop_util::ParseError::User { error: reason })
 }
 
 #[allow(clippy::too_many_arguments, clippy::needless_lifetimes, clippy::just_underscores_and_digits)]
