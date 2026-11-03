@@ -14,6 +14,17 @@ import subprocess
 import sys
 
 PROGRAMS = {
+    "s11_longlong_signed_basic": """long long f(long long x) { return x + 1LL; }
+        int main(void) { return f(4294967296LL) == 4294967297LL; }""",
+    "s11_unsigned_longlong_max": """unsigned long long f(unsigned long long x) {
+            return x ^ 0xffffffffffffffffULL;
+        }
+        int main(void) { return f(0ULL) == 18446744073709551615ULL; }""",
+    "s11_longlong_rank_mixed": """int main(void) {
+        long x = 3L; long long y = 4LL;
+        unsigned long long z = 5ULL;
+        return (x + y == 7LL) + (z > y)*2;
+    }""",
     "s10_hex_unsigned_comparison": """int main(void) {
         return (0xffffffff > 0) + (0x80000000 < 0)*2
             + ((unsigned long)0xffffffff == 4294967295UL)*4;
