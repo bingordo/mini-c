@@ -880,8 +880,7 @@ impl<'a> Parser<'a> {
                 let mut is_int = false;
                 let mut is_long = false;
                 let mut sign: Option<bool> = None;
-                loop {
-                    let Some(next) = self.peek()? else { break };
+                while let Some(next) = self.peek()? {
                     match next.text {
                         "char" if !is_char && !is_int && !is_long => is_char = true,
                         "int" if !is_int && !is_char => is_int = true,
