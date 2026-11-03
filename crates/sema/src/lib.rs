@@ -101,8 +101,18 @@ pub enum CheckedStmt {
     Return(Option<CheckedExpr>),
     If { cond: CheckedExpr, then: Box<CheckedStmt>, otherwise: Option<Box<CheckedStmt>> },
     While { cond: CheckedExpr, body: Box<CheckedStmt> },
+    For(Box<CheckedFor>),
     Break,
     Continue,
+}
+
+/// Keep the relatively large for-loop payload out of the main statement enum.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CheckedFor {
+    pub init: Option<Box<CheckedStmt>>,
+    pub cond: Option<CheckedExpr>,
+    pub step: Option<CheckedExpr>,
+    pub body: Box<CheckedStmt>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -902,6 +912,32 @@ impl Checker {
                 let body_result = self.check_stmt(body, span);
                 self.loop_depth -= 1;
                 CheckedStmt::While { cond, body: Box::new(body_result?) }
+            }
+            Stmt::For { init, cond, step, body } => {
+                // The initializer's identifiers and tags remain visible in
+                // the condition, increment and body, but not after the loop.
+                self.locals.push(HashMap::new());
+                self.tags.borrow_mut().push(HashMap::new());
+                let checked = (|| -> Result<CheckedStmt, Diagnostic> {
+                    let init = init.as_deref()
+                        .map(|stmt| self.check_stmt(stmt, span).map(Box::new))
+                        .transpose()?;
+                    let cond = cond.as_ref()
+                        .map(|expr| self.check_condition(expr, span))
+                        .transpose()?;
+                    let step = step.as_ref()
+                        .map(|expr| self.check_expr(expr, span).map(CheckedExpr::rvalue))
+                        .transpose()?;
+                    self.loop_depth += 1;
+                    let body = self.check_stmt(body, span);
+                    self.loop_depth -= 1;
+                    Ok(CheckedStmt::For(Box::new(CheckedFor {
+                        init, cond, step, body: Box::new(body?),
+                    })))
+                })();
+                self.pop_tag_scope();
+                self.locals.pop();
+                checked?
             }
             Stmt::Break => {
                 if self.loop_depth == 0 { return Err(type_error(span, "break outside loop")); }

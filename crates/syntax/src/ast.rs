@@ -88,6 +88,13 @@ pub enum Stmt {
         cond: Expr,
         body: Box<Stmt>,
     },
+    /// The initializer declaration has a scope spanning condition, step, and body.
+    For {
+        init: Option<Box<Stmt>>,
+        cond: Option<Expr>,
+        step: Option<Expr>,
+        body: Box<Stmt>,
+    },
     Break,
     Continue,
 }

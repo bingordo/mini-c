@@ -14,6 +14,29 @@ import subprocess
 import sys
 
 PROGRAMS = {
+    "for_continue_runs_increment": """int main(void) {
+        int sum=0; for (int i=0; i<6; i++) {
+            if (i==2) continue; sum += i;
+        } return sum; }""",
+    "for_nested_break_continue": """int main(void) {
+        int sum=0; for (int i=0; i<4; i++)
+            for (int j=0; j<5; j++) {
+                if (j==1) continue; if (i==3) break;
+                sum += i+j;
+            }
+        return sum; }""",
+    "for_scope_shadowing": """int main(void) {
+        int i=17; int sum=0; for (int i=0; i<4; ++i) sum += i;
+        return i+sum; }""",
+    "for_no_initializer": """int main(void) {
+        int i=0; int sum=0; for (; i<5; i++) sum+=i;
+        return sum; }""",
+    "for_infinite_break": """int main(void) {
+        int i=0; for (;;) { ++i; if (i==5) break; }
+        return i; }""",
+    "for_no_step": """int main(void) {
+        int i=0; for (int j=0; j<4; ) { i+=j; j++; }
+        return i; }""",
     "increment_postfix_vs_prefix": """int main(void) {
         int x=3; int old=x++; int now=++x; return old*10+now; }""",
     "decrement_postfix_vs_prefix": """int main(void) {

@@ -457,7 +457,7 @@ impl<'a> Parser<'a> {
             matches!(token.kind, TokenKind::Identifier | TokenKind::TypedefName)
                 && !matches!(token.text, "int" | "char" | "long" | "void"
                     | "unsigned" | "signed" | "typedef" | "static" | "extern"
-                    | "struct" | "union" | "enum" | "if" | "else" | "while" | "return" | "break" | "continue")
+                    | "struct" | "union" | "enum" | "if" | "else" | "while" | "for" | "return" | "break" | "continue")
         }) {
             self.take()?;
             Declarator::Name(token.text.to_owned(), self.expression_spans.then_some(token.span))
@@ -642,6 +642,55 @@ impl<'a> Parser<'a> {
                 self.expect(")")?;
                 let body = Box::new(self.parse_stmt()?);
                 Ok(Stmt::While { cond, body })
+            }
+            "for" => {
+                self.take()?;
+                self.expect("(")?;
+                // A for-initializer declaration has its own scope, including
+                // typedef classification. Restore it even on syntax errors.
+                self.scopes.enter();
+                let parsed = (|| {
+                    let init = if self.peek()?.is_some_and(|t| t.text == ";") {
+                        self.take()?;
+                        None
+                    } else {
+                        let token = self.peek()?.expect("for initializer token");
+                        let stmt = match token.text {
+                            "typedef" => {
+                                self.take()?;
+                                Stmt::Typedef(self.parse_decl(true)?)
+                            }
+                            "struct" | "union" | "enum" => self.parse_tag_or_decl()?,
+                            "static" | "extern" | "int" | "char" | "long"
+                                | "void" | "unsigned" | "signed" =>
+                                Stmt::Decl(self.parse_decl(false)?),
+                            _ if token.kind == TokenKind::TypedefName =>
+                                Stmt::Decl(self.parse_decl(false)?),
+                            _ => {
+                                let expr = self.parse_expr()?;
+                                self.expect(";")?;
+                                Stmt::Expr(Some(expr))
+                            }
+                        };
+                        Some(Box::new(stmt))
+                    };
+                    let cond = if self.peek()?.is_some_and(|t| t.text == ";") {
+                        None
+                    } else {
+                        Some(self.parse_expr()?)
+                    };
+                    self.expect(";")?;
+                    let step = if self.peek()?.is_some_and(|t| t.text == ")") {
+                        None
+                    } else {
+                        Some(self.parse_expr()?)
+                    };
+                    self.expect(")")?;
+                    let body = Box::new(self.parse_stmt()?);
+                    Ok(Stmt::For { init, cond, step, body })
+                })();
+                self.scopes.leave();
+                parsed
             }
             "break" => { self.take()?; self.expect(";")?; Ok(Stmt::Break) }
             "continue" => { self.take()?; self.expect(";")?; Ok(Stmt::Continue) }

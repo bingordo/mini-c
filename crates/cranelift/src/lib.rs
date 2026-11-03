@@ -1143,6 +1143,43 @@ impl Lower<'_> {
                 b.switch_to_block(exit);
                 Ok(true)
             }
+            CheckedStmt::For(for_loop) => {
+                let (init, cond, step, body) = (
+                    &for_loop.init, &for_loop.cond, &for_loop.step, &for_loop.body,
+                );
+                self.scopes.push(HashMap::new());
+                if let Some(init) = init {
+                    if !self.statement(b, init)? {
+                        return Err("invalid terminating for-loop initializer".into());
+                    }
+                }
+                let header = b.create_block();
+                let loop_body = b.create_block();
+                // Unlike while, continue must evaluate the for increment.
+                let increment = b.create_block();
+                let exit = b.create_block();
+                b.ins().jump(header, &[]);
+                b.switch_to_block(header);
+                if let Some(cond) = cond {
+                    let value = self.condition(b, cond)?;
+                    b.ins().brif(value, loop_body, &[], exit, &[]);
+                } else {
+                    b.ins().jump(loop_body, &[]);
+                }
+                self.loops.push((exit, increment));
+                b.switch_to_block(loop_body);
+                let body_live = self.statement(b, body)?;
+                self.loops.pop();
+                if body_live { b.ins().jump(increment, &[]); }
+                b.switch_to_block(increment);
+                if let Some(step) = step {
+                    self.expression(b, step)?;
+                }
+                b.ins().jump(header, &[]);
+                b.switch_to_block(exit);
+                self.scopes.pop();
+                Ok(true)
+            }
             CheckedStmt::Break => {
                 let (break_dest, _) = self.loops.last()
                     .copied().ok_or("break outside loop in checked IR")?;
@@ -1385,6 +1422,20 @@ mod tests {
                 unsigned char c=0; int saved=(c=260); \
                 return saved+c; }";
         assert!(!compile_source(source).unwrap().is_empty());
+    }
+
+    #[test]
+    fn compiles_for_loops_with_continue_increment_and_nested_breaks() {
+        let sources = [
+            "int main(void) { int s=0; for(int i=0;i<5;i++) { if(i==2)continue; s+=i; } return s; }",
+            "int main(void) { int i=0; for(;;) { i++; if(i==3)break; } return i; }",
+            "int main(void) { int s=0; for(int i=0;i<3;i++) for(int j=0;j<4;j++) { if(j==2)continue; if(i==2)break; s+=i+j; } return s; }",
+            "int main(void) { int i=7; for(int i=0;i<4;i++) {} return i; }",
+        ];
+        for source in sources {
+            let obj = compile_source(source).unwrap();
+            assert_eq!(&obj[..4], b"\x7fELF");
+        }
     }
 
 }
