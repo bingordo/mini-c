@@ -1366,4 +1366,25 @@ mod tests {
         assert!(!compile_source(src).unwrap().is_empty());
     }
 
+    #[test]
+    fn compiles_prefix_postfix_updates_without_recomputing_lvalue() {
+        let source = "int calls; int value=3; \
+            int *slot(void) { calls += 1; return &value; } \
+            int main(void) { int old=(*slot())++; \
+                int after=++*slot(); \
+                return old+after+calls; }";
+        let obj = compile_source(source).unwrap();
+        assert_eq!(&obj[..4], b"\x7fELF");
+    }
+
+    #[test]
+    fn compiles_pointer_increment_decrement_and_narrow_assignment_values() {
+        let source = "struct Pair { int x; int y; }; \
+            int main(void) { struct Pair a[3]; \
+                struct Pair *p=a; p++; ++p; p--; \
+                unsigned char c=0; int saved=(c=260); \
+                return saved+c; }";
+        assert!(!compile_source(source).unwrap().is_empty());
+    }
+
 }
