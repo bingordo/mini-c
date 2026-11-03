@@ -46,8 +46,8 @@ def main() -> int:
     parser.add_argument("--checker", type=Path, default=Path("target/debug/mini-c"))
     parser.add_argument("--report", type=Path, default=Path("target/s9-musl-acceptance.json"))
     parser.add_argument("--timeout", type=float, default=15)
-    parser.add_argument("--min-accepted", type=int, default=1,
-                        help="regression floor; raise it after each verified language milestone")
+    parser.add_argument("--min-accepted", type=int, default=12,
+                        help="minimum accepted pinned functions (default: full S9 corpus)")
     args = parser.parse_args()
 
     corpus = (args.compiler_repo.resolve() / RELATIVE if args.compiler_repo
