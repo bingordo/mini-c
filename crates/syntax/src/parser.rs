@@ -552,7 +552,10 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        for qualifiers in stars {
+        // The first written '*' is the outermost pointer. Apply the
+        // declarator operators in reverse so that 'int **const p' qualifies
+        // the pointer variable, not its inner pointee pointer.
+        for qualifiers in stars.into_iter().rev() {
             direct = Declarator::Pointer(Box::new(direct), qualifiers);
         }
         Ok(direct)
@@ -821,7 +824,12 @@ impl<'a> Parser<'a> {
                 if !self.peek()?.is_some_and(|t| t.text == "{") {
                     let tag = tag.ok_or_else(|| Diagnostic::new(token.span,
                         "anonymous enum requires enumerators"))?;
-                    return Ok(Some((Type::TagRef(TagKind::Enum, tag), token.span.lo)));
+                    let mut ty = Type::TagRef(TagKind::Enum, tag);
+                    let trailing = self.parse_qualifiers()?;
+                    qualifiers.is_const |= trailing.is_const;
+                    qualifiers.is_restrict |= trailing.is_restrict;
+                    if qualifiers.any() { ty = Type::Qualified(Box::new(ty), qualifiers); }
+                    return Ok(Some((ty, first.span.lo)));
                 }
                 self.take()?;
                 if self.peek()?.is_some_and(|t| t.text == "}") {
@@ -857,7 +865,12 @@ impl<'a> Parser<'a> {
                     let tag = tag.ok_or_else(|| Diagnostic::new(token.span,
                         "anonymous struct or union requires a member definition"))?;
                     let kind = if is_union { TagKind::Union } else { TagKind::Struct };
-                    return Ok(Some((Type::TagRef(kind, tag), token.span.lo)));
+                    let mut ty = Type::TagRef(kind, tag);
+                    let trailing = self.parse_qualifiers()?;
+                    qualifiers.is_const |= trailing.is_const;
+                    qualifiers.is_restrict |= trailing.is_restrict;
+                    if qualifiers.any() { ty = Type::Qualified(Box::new(ty), qualifiers); }
+                    return Ok(Some((ty, first.span.lo)));
                 }
                 self.take()?;
                 let mut members = Vec::new();
