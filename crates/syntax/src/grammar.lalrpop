@@ -104,7 +104,7 @@ CallArgs: Vec<Expr> = {
     },
 };
 Primary: Expr = {
-    <n:"number"> =>? crate::integer_literal::parse_integer_literal(n).map(Expr::Int).map_err(|reason| lalrpop_util::ParseError::User { error: reason }),
+    <n:"number"> =>? crate::integer_literal::parse_integer_expression(n).map_err(|reason| lalrpop_util::ParseError::User { error: reason }),
     <literal:"character"> =>? crate::char_literal::parse_ascii_character(literal).map(Expr::Int).map_err(|reason| lalrpop_util::ParseError::User { error: reason }),
     <n:"ident"> => Expr::Name(n.to_owned()),
     "(" <e:Comma> ")" => e,
