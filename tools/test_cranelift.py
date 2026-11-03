@@ -14,6 +14,42 @@ import subprocess
 import sys
 
 PROGRAMS = {
+    "ternary_lazy_true": """int main(void) {
+        int x=0; int value=1 ? (x+=3) : (x+=40);
+        return value*10+x; }""",
+    "ternary_lazy_false": """int main(void) {
+        int x=0; int value=0 ? (x+=40) : (x+=3);
+        return value*10+x; }""",
+    "ternary_unchosen_division": """int main(void) {
+        int zero=0; return zero ? (10/zero) : 19; }""",
+    "ternary_nested_associativity": """int main(void) {
+        int a=0; int b=1;
+        return a ? 11 : b ? 23 : 47; }""",
+    "ternary_condition_side_effect": """int main(void) {
+        int calls=0; int x=4; int result=(++calls) ? x+2 : x+10;
+        return calls*10+result; }""",
+    "ternary_integer_conversions": """int main(void) {
+        unsigned char c=250; long y=7;
+        return (c>200 ? c : y) / 5; }""",
+    "ternary_pointer_and_null": """int main(void) {
+        int x=13; int *p=0 ? 0 : &x;
+        return *(1 ? p : 0); }""",
+    "ternary_void_only_one_call": """int calls;
+        void touch(void) { calls++; }
+        int main(void) {
+            int c=0; c ? touch() : touch();
+            return calls; }""",
+    "ternary_structure_selection": """struct Pair { int x; int y; };
+        int main(void) {
+            struct Pair a={3,5}; struct Pair b={7,11};
+            struct Pair c=0 ? a : b; return c.x+c.y; }""",
+    "ternary_true_comma_sequence": """int main(void) {
+        int x=0; int result=1 ? (x+=2,x+=3) : (x+=40);
+        return result*10+x; }""",
+    "ternary_in_for_increment": """int main(void) {
+        int i=0; int j=0;
+        for (; i<4; i++, i==2 ? j++ : j+=2) {}
+        return j; }""",
     "do_while_executes_once": """int main(void) {
         int x=3; do { x+=5; } while (0); return x; }""",
     "do_while_continue_condition": """int main(void) {
