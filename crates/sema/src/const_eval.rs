@@ -117,7 +117,8 @@ pub fn evaluate(expr: &CheckedExpr, target: Target) -> Result<i128, &'static str
         }
         CheckedExprKind::Initializer(_) | CheckedExprKind::Member(..) | CheckedExprKind::StringLiteral(_) | CheckedExprKind::Name(_) | CheckedExprKind::Load(_) |
         CheckedExprKind::ArrayDecay(_) | CheckedExprKind::Assign(..) |
-        CheckedExprKind::CompoundAssign(..) | CheckedExprKind::Call(..) =>
+        CheckedExprKind::CompoundAssign(..) | CheckedExprKind::Update { .. } |
+        CheckedExprKind::Call(..) =>
             Err("not an integer constant expression"),
     }
 }
