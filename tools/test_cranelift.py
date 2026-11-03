@@ -14,6 +14,28 @@ import subprocess
 import sys
 
 PROGRAMS = {
+    "s10_hex_unsigned_comparison": """int main(void) {
+        return (0xffffffff > 0) + (0x80000000 < 0)*2
+            + ((unsigned long)0xffffffff == 4294967295UL)*4;
+    }""",
+    "s10_hex_wide_typing": """int main(void) {
+        long a = 0x100000000; unsigned long b = 0xffffffffffffffffUL;
+        return (a == 4294967296L) + (b > a)*2
+            + (b == (unsigned long)-1)*4;
+    }""",
+    "s10_octal_unsigned": """int main(void) {
+        unsigned int a = 037777777777;
+        return (a == 4294967295UL) + ((a >> 31) == 1)*2;
+    }""",
+    "s10_suffix_mixed_case": """int main(void) {
+        unsigned int a = 17u; long b = 17L;
+        unsigned long c = 17Lu; unsigned long d = 17Ul;
+        return (a == b) + (c == d)*2 + (c == 17ul)*4;
+    }""",
+    "s10_unsigned_long_max": """int main(void) {
+        unsigned long x = 18446744073709551615UL;
+        return (x == 0xffffffffffffffff) + (x > 0)*2;
+    }""",
     "hex_musl_isascii": """int isascii(int c) { return !(c&~0x7f); }
         int main(void) { return isascii(127)*4 + isascii(128)*2 + isascii(-1); }""",
     "hex_musl_iscntrl": """int iscntrl(int c) { return (unsigned)c < 0x20 || c == 0x7f; }
