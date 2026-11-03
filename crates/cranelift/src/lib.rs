@@ -22,7 +22,7 @@ fn scalar_type(ty: &CType) -> Result<ir::Type> {
     match ty {
         CType::Integer { rank: IntRank::Char, .. } => Ok(types::I8),
         CType::Integer { rank: IntRank::Int, .. } => Ok(types::I32),
-        CType::Integer { rank: IntRank::Long, .. } | CType::Pointer(_) => Ok(types::I64),
+        CType::Integer { rank: IntRank::Long | IntRank::LongLong, .. } | CType::Pointer(_) => Ok(types::I64),
         CType::Struct { .. } | CType::Union { .. } | CType::TagRef { .. } |
         CType::Array(..) => Err(format!(
             "unsupported SysV aggregate-by-value ABI for {ty:?}; use pointer parameters/returns"

@@ -2,8 +2,7 @@
 //!
 //! Typing is target-dependent and belongs in semantic analysis. The syntax
 //! crate stores a value and enough spelling information to distinguish an
-//! unsuffixed decimal literal from a hexadecimal/octal constant. C long long
-//! and C23 binary/bit-precise literals remain explicitly unsupported.
+//! unsuffixed decimal literal from a hexadecimal/octal constant. C23 binary and bit-precise literals remain explicitly unsupported.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IntegerLiteral {
@@ -11,6 +10,8 @@ pub struct IntegerLiteral {
     pub nondecimal: bool,
     pub unsigned: bool,
     pub long: bool,
+    /// Distinguish the rank of LL/ULL from L/UL (even when both are 64 bits).
+    pub long_long: bool,
 }
 
 pub fn decode_integer_literal(text: &str) -> Result<IntegerLiteral, &'static str> {
@@ -38,16 +39,25 @@ pub fn decode_integer_literal(text: &str) -> Result<IntegerLiteral, &'static str
     let value = u64::from_str_radix(&text[start..end], base)
         .map_err(|_| "invalid or overflowing integer constant")?;
     let suffix = &text[end..];
+    // Only U, L, LL, UL, LU, ULL and LLU (case-insensitive) are valid.
+    // In particular, an isolated third L or repeated U must be rejected.
     let mut unsigned = false;
-    let mut long = false;
+    let mut long_count = 0u8;
+    let mut seen_u_after_l = false;
     for ch in suffix.bytes() {
         match ch.to_ascii_lowercase() {
-            b'u' if !unsigned => unsigned = true,
-            b'l' if !long => long = true,
+            b'u' if !unsigned => {
+                unsigned = true;
+                if long_count != 0 { seen_u_after_l = true; }
+            }
+            b'l' if long_count < 2 && !seen_u_after_l => long_count += 1,
             _ => return Err("invalid or unsupported integer literal suffix"),
         }
     }
-    Ok(IntegerLiteral { value, nondecimal, unsigned, long })
+    Ok(IntegerLiteral {
+        value, nondecimal, unsigned,
+        long: long_count >= 1, long_long: long_count == 2,
+    })
 }
 
 /// Backward-compatible value-only API for callers that do not type constants.
@@ -74,31 +84,35 @@ mod tests {
     use super::*;
     #[test]
     fn decode_integer_suffixes_and_radices() {
-        for (text, value, nondecimal, unsigned, long) in [
-            ("0", 0, false, false, false),
-            ("9", 9, false, false, false),
-            ("2147483648", 2147483648, false, false, false),
-            ("0x7f", 127, true, false, false),
-            ("0X2A", 42, true, false, false),
-            ("077", 63, true, false, false),
-            ("0xffffffff", 4294967295, true, false, false),
-            ("0xFFFFFFFFFFFFFFFF", u64::MAX, true, false, false),
-            ("123u", 123, false, true, false),
-            ("123L", 123, false, false, true),
-            ("123uL", 123, false, true, true),
-            ("123lU", 123, false, true, true),
-            ("0x80000000U", 2147483648, true, true, false),
-            ("18446744073709551615UL", u64::MAX, false, true, true),
+        for (text, value, nondecimal, unsigned, long, long_long) in [
+            ("0", 0, false, false, false, false),
+            ("9", 9, false, false, false, false),
+            ("2147483648", 2147483648, false, false, false, false),
+            ("0x7f", 127, true, false, false, false),
+            ("0X2A", 42, true, false, false, false),
+            ("077", 63, true, false, false, false),
+            ("0xffffffff", 4294967295, true, false, false, false),
+            ("0xFFFFFFFFFFFFFFFF", u64::MAX, true, false, false, false),
+            ("123u", 123, false, true, false, false),
+            ("123L", 123, false, false, true, false),
+            ("123uL", 123, false, true, true, false),
+            ("123lU", 123, false, true, true, false),
+            ("0x80000000U", 2147483648, true, true, false, false),
+            ("18446744073709551615UL", u64::MAX, false, true, true, false),
+            ("123LL", 123, false, false, true, true),
+            ("123llu", 123, false, true, true, true),
+            ("123UlL", 123, false, true, true, true),
+            ("0xffffffffffffffffULL", u64::MAX, true, true, true, true),
         ] {
             assert_eq!(decode_integer_literal(text), Ok(IntegerLiteral {
-                value, nondecimal, unsigned, long,
+                value, nondecimal, unsigned, long, long_long,
             }), "{text}");
         }
     }
     #[test]
     fn reject_invalid_constants_and_suffixes() {
         for text in ["", "x", "0x", "0X", "0xg", "0x1g", "08", "09",
-                     "123ll", "123llu", "123uu", "123lul", "12uz", "0b101",
+                     "123lll", "123uu", "123lul", "12uz", "0b101",
                      "18446744073709551616", "0xFFFFFFFFFFFFFFFFFFFFFFFF"] {
             assert!(decode_integer_literal(text).is_err(), "{text}");
         }
