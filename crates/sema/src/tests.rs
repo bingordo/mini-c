@@ -1126,8 +1126,7 @@ fn prefix_and_postfix_updates_validate_modifiable_scalar_lvalues() {
         "pointer to complete object type");
     reject("int f(void) { int a[2]; a++; return 0; }",
         "increment/decrement requires a modifiable");
-    reject("int f(void) { int x=0; int v[1]={x++}; return 0; }",
-        "integer constant expression");
+    reject("int x; int a=x++;", "integer constant expression");
 }
 
 #[test]
