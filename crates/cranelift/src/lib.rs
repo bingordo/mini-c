@@ -1143,6 +1143,40 @@ impl Lower<'_> {
                 b.switch_to_block(exit);
                 Ok(true)
             }
+            CheckedStmt::For { init, cond, step, body } => {
+                self.scopes.push(HashMap::new());
+                if let Some(init) = init {
+                    if !self.statement(b, init)? {
+                        return Err("invalid terminating for-loop initializer".into());
+                    }
+                }
+                let header = b.create_block();
+                let loop_body = b.create_block();
+                // Unlike while, continue must evaluate the for increment.
+                let increment = b.create_block();
+                let exit = b.create_block();
+                b.ins().jump(header, &[]);
+                b.switch_to_block(header);
+                if let Some(cond) = cond {
+                    let value = self.condition(b, cond)?;
+                    b.ins().brif(value, loop_body, &[], exit, &[]);
+                } else {
+                    b.ins().jump(loop_body, &[]);
+                }
+                self.loops.push((exit, increment));
+                b.switch_to_block(loop_body);
+                let body_live = self.statement(b, body)?;
+                self.loops.pop();
+                if body_live { b.ins().jump(increment, &[]); }
+                b.switch_to_block(increment);
+                if let Some(step) = step {
+                    self.expression(b, step)?;
+                }
+                b.ins().jump(header, &[]);
+                b.switch_to_block(exit);
+                self.scopes.pop();
+                Ok(true)
+            }
             CheckedStmt::Break => {
                 let (break_dest, _) = self.loops.last()
                     .copied().ok_or("break outside loop in checked IR")?;
