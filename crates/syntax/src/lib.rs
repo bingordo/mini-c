@@ -4,6 +4,7 @@ pub mod char_literal;
 pub mod diag;
 pub mod expr_lexer;
 pub mod lexer;
+pub mod integer_literal;
 pub mod parser;
 pub mod scopes;
 pub mod source;
