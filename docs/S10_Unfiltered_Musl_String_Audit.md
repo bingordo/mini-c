@@ -81,14 +81,23 @@ The unfiltered cohort produced:
 | Mini-C syntax/semantic frontend accepted (whole preprocessed units) | **0/24** |
 | Reported Mini-C frontend rejections | **24/24** |
 
-Every Mini-C failure was encountered very early in the preprocessed input
-(around physical lines 49–50). The source-code checker currently sees
-glibc-style system declarations **before** reaching these musl function
-bodies; this is not evidence that all 24 algorithm bodies individually
-use unsupported constructs. The audit therefore now records the precise
-preprocessed failing line and nearest preprocessor source-marker for
-each rejection, so future work can separate system-header limitations
-from actual real-world language coverage.
+The [final syntax CI #41702729328](https://github.com/bingordo/mini-c/actions/runs/41702729328)
+confirmed the same totals with the diagnostic-origin instrumentation.
+**All 24 first errors map to GCC's system header stddef.h**, at the
+same declaration:
+
+~~~c
+typedef long unsigned int size_t;
+~~~
+
+The incremental Mini-C parser currently does not accept the fully valid
+C declaration-specifier ordering **long unsigned int**. Every rejection
+occurs **before** the original musl function body is reached; 0/24 is
+therefore a full-header compatibility baseline, not a measurement that
+all 24 algorithms themselves are unsupported. The report retains the
+first preprocessed error line and nearest #line source marker for every
+file to help distinguish subsequent header failures from actual
+function-body C feature gaps.
 
 The initial Mini-C acceptance floor stays at zero. Do not turn this
 coverage gate into an artificially green benchmark by dropping failures
