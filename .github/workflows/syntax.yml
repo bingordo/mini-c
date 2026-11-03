@@ -82,17 +82,8 @@ jobs:
       # Compile just the checker, reusing the workspace build/cache above.
       - name: Build Mini-C checker for pinned musl acceptance
         run: cargo build -p mini-c
-      - name: Checkout pinned S9 musl fixtures
-        uses: actions/checkout@v4
-        with:
-          repository: bingordo/compiler
-          ref: fa772aeaaca463792e14465159723158abcc6186
-          path: compiler-s9
-          persist-credentials: false
-          sparse-checkout: |
-            tools/mini-c-driver/examples/benchmark_generated_fusion/musl
-      - name: Check unchanged S9 musl source and preserve per-function diagnostics
-        run: python3 tools/test_musl_s9.py --compiler-repo compiler-s9 --report target/s9-musl-acceptance.json
+      - name: Check immutable S9 musl source and preserve per-function diagnostics
+        run: python3 tools/test_musl_s9.py --report target/s9-musl-acceptance.json
       - name: Upload S9 acceptance report (including rejections)
         if: always()
         uses: actions/upload-artifact@v4
