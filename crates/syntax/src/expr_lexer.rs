@@ -49,6 +49,8 @@ pub enum ExprToken<'a> {
     LParen,
     RParen,
     Comma,
+    Question,
+    Colon,
 }
 
 /// Return byte offsets and borrowed token payloads for the generated parser.
@@ -104,6 +106,8 @@ pub fn tokenize(source: &str) -> Result<Vec<(usize, ExprToken<'_>, usize)>, Diag
                 "(" => ExprToken::LParen,
                 ")" => ExprToken::RParen,
                 "," => ExprToken::Comma,
+                "?" => ExprToken::Question,
+                ":" => ExprToken::Colon,
                 _ => ExprToken::Invalid(token.text),
             },
         };

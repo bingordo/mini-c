@@ -261,8 +261,31 @@ impl<'a> Parser<'a> {
         Ok(lhs)
     }
 
+    fn parse_conditional(&mut self) -> Result<Expr, Diagnostic> {
+        let condition = self.parse_binary(0)?;
+        if !self.peek()?.is_some_and(|token| token.text == "?") {
+            return Ok(condition);
+        }
+        self.take()?;
+        // ISO C: the middle operand is a full expression (commas included);
+        // the last operand is another conditional-expression, associating
+        // ternaries to the right. Assignment binds less tightly.
+        let when_true = self.parse_expr()?;
+        self.expect(":")?;
+        let when_false = self.parse_conditional()?;
+        let span = if self.expression_spans {
+            Span {
+                lo: condition.location().expect("located conditional condition").lo,
+                hi: when_false.location().expect("located conditional false arm").hi,
+            }
+        } else { Span::default() };
+        Ok(self.located(Expr::Conditional(
+            Box::new(condition), Box::new(when_true), Box::new(when_false),
+        ), span))
+    }
+
     fn parse_assign(&mut self) -> Result<Expr, Diagnostic> {
-        let lhs = self.parse_binary(0)?;
+        let lhs = self.parse_conditional()?;
         if let Some(op) = self.peek()?.and_then(|t| match t.text {
             "=" => Some(None),
             "+=" => Some(Some(BinOp::Add)),

@@ -56,6 +56,15 @@ pub fn evaluate(expr: &CheckedExpr, target: Target) -> Result<i128, &'static str
                 UnOp::Deref | UnOp::Address => Err("not an integer constant expression"),
             }
         }
+        CheckedExprKind::Conditional(condition, yes, no) => {
+            // Only the selected arm contributes to an integer constant
+            // expression; unselected division by zero must not be evaluated.
+            if evaluate(condition, target)? != 0 {
+                evaluate(yes, target)
+            } else {
+                evaluate(no, target)
+            }
+        }
         CheckedExprKind::Binary(op, lhs, rhs) => {
             let a = evaluate(lhs, target)?;
             // Respect C short-circuit semantics even in constant expressions.

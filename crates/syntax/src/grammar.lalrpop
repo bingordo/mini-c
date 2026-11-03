@@ -10,17 +10,24 @@ Comma: Expr = {
     Assign,
 };
 Assign: Expr = {
-    <l:LogicalOr> "=" <r:Assign> => Expr::Assign(Box::new(l), Box::new(r)),
-    <l:LogicalOr> "+=" <r:Assign> => Expr::CompoundAssign(BinOp::Add, Box::new(l), Box::new(r)),
-    <l:LogicalOr> "-=" <r:Assign> => Expr::CompoundAssign(BinOp::Sub, Box::new(l), Box::new(r)),
-    <l:LogicalOr> "*=" <r:Assign> => Expr::CompoundAssign(BinOp::Mul, Box::new(l), Box::new(r)),
-    <l:LogicalOr> "/=" <r:Assign> => Expr::CompoundAssign(BinOp::Div, Box::new(l), Box::new(r)),
-    <l:LogicalOr> "%=" <r:Assign> => Expr::CompoundAssign(BinOp::Mod, Box::new(l), Box::new(r)),
-    <l:LogicalOr> "&=" <r:Assign> => Expr::CompoundAssign(BinOp::BitAnd, Box::new(l), Box::new(r)),
-    <l:LogicalOr> "|=" <r:Assign> => Expr::CompoundAssign(BinOp::BitOr, Box::new(l), Box::new(r)),
-    <l:LogicalOr> "^=" <r:Assign> => Expr::CompoundAssign(BinOp::BitXor, Box::new(l), Box::new(r)),
-    <l:LogicalOr> "<<=" <r:Assign> => Expr::CompoundAssign(BinOp::Shl, Box::new(l), Box::new(r)),
-    <l:LogicalOr> ">>=" <r:Assign> => Expr::CompoundAssign(BinOp::Shr, Box::new(l), Box::new(r)),
+    <l:Conditional> "=" <r:Assign> => Expr::Assign(Box::new(l), Box::new(r)),
+    <l:Conditional> "+=" <r:Assign> => Expr::CompoundAssign(BinOp::Add, Box::new(l), Box::new(r)),
+    <l:Conditional> "-=" <r:Assign> => Expr::CompoundAssign(BinOp::Sub, Box::new(l), Box::new(r)),
+    <l:Conditional> "*=" <r:Assign> => Expr::CompoundAssign(BinOp::Mul, Box::new(l), Box::new(r)),
+    <l:Conditional> "/=" <r:Assign> => Expr::CompoundAssign(BinOp::Div, Box::new(l), Box::new(r)),
+    <l:Conditional> "%=" <r:Assign> => Expr::CompoundAssign(BinOp::Mod, Box::new(l), Box::new(r)),
+    <l:Conditional> "&=" <r:Assign> => Expr::CompoundAssign(BinOp::BitAnd, Box::new(l), Box::new(r)),
+    <l:Conditional> "|=" <r:Assign> => Expr::CompoundAssign(BinOp::BitOr, Box::new(l), Box::new(r)),
+    <l:Conditional> "^=" <r:Assign> => Expr::CompoundAssign(BinOp::BitXor, Box::new(l), Box::new(r)),
+    <l:Conditional> "<<=" <r:Assign> => Expr::CompoundAssign(BinOp::Shl, Box::new(l), Box::new(r)),
+    <l:Conditional> ">>=" <r:Assign> => Expr::CompoundAssign(BinOp::Shr, Box::new(l), Box::new(r)),
+    Conditional,
+};
+// Conditional has lower precedence than || but higher than assignment.
+// The middle operand is a full comma-expression, as required by C.
+Conditional: Expr = {
+    <condition:LogicalOr> "?" <yes:Comma> ":" <no:Conditional> =>
+        Expr::Conditional(Box::new(condition), Box::new(yes), Box::new(no)),
     LogicalOr,
 };
 LogicalOr: Expr = {
@@ -147,5 +154,7 @@ extern {
         "(" => ExprToken::LParen,
         ")" => ExprToken::RParen,
         "," => ExprToken::Comma,
+        "?" => ExprToken::Question,
+        ":" => ExprToken::Colon,
     }
 }
