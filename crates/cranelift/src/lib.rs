@@ -1519,4 +1519,19 @@ mod tests {
         }
     }
 
+    #[test]
+    fn compiles_lazy_conditional_integer_pointer_and_void_branches() {
+        let sources = [
+            "int main(void) { int x=0; int y=1 ? ++x : ++x; return y+x; }",
+            "int main(void) { int x=2; return 0 ? 20/(x-x) : 9; }",
+            "int main(void) { int x=4; int *p=1 ? &x : 0; return *p; }",
+            "void touch(void) { return; } int main(void) { 1 ? touch() : touch(); return 0; }",
+            "int main(void) { int c=0; return c ? 2 : c ? 4 : 7; }",
+        ];
+        for source in sources {
+            let object = compile_source(source).unwrap();
+            assert_eq!(&object[..4], b"\x7fELF");
+        }
+    }
+
 }
