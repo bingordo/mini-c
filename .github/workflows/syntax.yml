@@ -84,6 +84,19 @@ jobs:
         run: cargo build -p mini-c
       - name: Check immutable S9 musl source and preserve per-function diagnostics
         run: python3 tools/test_musl_s9.py --report target/s9-musl-acceptance.json
+      - name: S10 unfiltered musl string corpus and explicit rejection accounting
+        run: |
+          python3 tools/test_musl_s10.py \
+            --checker target/debug/mini-c \
+            --report target/s10-musl-string-acceptance.json
+      - name: Upload S10 full coverage report (including rejections)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mini-c-s10-unfiltered-string
+          path: target/s10-musl-string-acceptance.json
+          if-no-files-found: warn
+          retention-days: 14
       - name: Upload S9 acceptance report (including rejections)
         if: always()
         uses: actions/upload-artifact@v4
