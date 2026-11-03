@@ -14,6 +14,14 @@ import subprocess
 import sys
 
 PROGRAMS = {
+    "integer_type_specifier_long_unsigned": """int main(void) {
+        long unsigned int a=7;
+        int long unsigned b=9;
+        unsigned long int c=11;
+        return (int)(a+b+c); }""",
+    "integer_type_specifier_signed_char": """char signed f(char signed x) {
+        return x; }
+        int main(void) { char signed x=27; return f(x); }""",
     "s10_hex_unsigned_comparison": """int main(void) {
         return (0xffffffff > 0) + (0x80000000 < 0)*2
             + ((unsigned long)0xffffffff == 4294967295UL)*4;
