@@ -67,6 +67,33 @@ CI: .github/workflows/syntax.yml uploads the complete unfiltered report as
 mini-c-s10-unfiltered-string. The original 12/12 S9 gates remain unchanged,
 ensuring a known native-compatible control group.
 
+## First measured baseline (2026-11-03)
+
+The first [S10 syntax CI run #41702023466](https://github.com/bingordo/mini-c/actions/runs/41702023466)
+completed successfully, including the independent reference-harness tests.
+The unfiltered cohort produced:
+
+| Metric | Outcome |
+| --- | ---: |
+| Original upstream full translation units selected and SHA-verified | 24/24 |
+| Host GCC syntax accepted | 24/24 |
+| Host C preprocessing completed | 24/24 |
+| Mini-C syntax/semantic frontend accepted (whole preprocessed units) | **0/24** |
+| Reported Mini-C frontend rejections | **24/24** |
+
+Every Mini-C failure was encountered very early in the preprocessed input
+(around physical lines 49–50). The source-code checker currently sees
+glibc-style system declarations **before** reaching these musl function
+bodies; this is not evidence that all 24 algorithm bodies individually
+use unsupported constructs. The audit therefore now records the precise
+preprocessed failing line and nearest preprocessor source-marker for
+each rejection, so future work can separate system-header limitations
+from actual real-world language coverage.
+
+The initial Mini-C acceptance floor stays at zero. Do not turn this
+coverage gate into an artificially green benchmark by dropping failures
+or editing the pinned function sources.
+
 ## Follow-up priority
 
 Use the report's rejected/total counts to rank concrete parser and semantic
