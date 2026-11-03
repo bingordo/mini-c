@@ -57,11 +57,11 @@ pub fn parse_integer_literal(text: &str) -> Result<u64, &'static str> {
 
 /// The original AST `Int` represents an unsuffixed signed-decimal literal.
 /// Preserve it for existing clients and small unsuffixed nondecimal constants
-/// (which have the same C type), but retain spelling where C type differs.
+/// (which have the same C type on all supported targets), but retain\n/// spelling where C type differs.
 pub fn parse_integer_expression(text: &str) -> Result<crate::ast::Expr, &'static str> {
     let literal = decode_integer_literal(text)?;
     if !literal.unsigned && !literal.long
-        && (!literal.nondecimal || literal.value <= i32::MAX as u64)
+        && (!literal.nondecimal || literal.value <= i16::MAX as u64)
     {
         Ok(crate::ast::Expr::Int(literal.value))
     } else {
