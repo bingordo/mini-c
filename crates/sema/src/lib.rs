@@ -101,14 +101,18 @@ pub enum CheckedStmt {
     Return(Option<CheckedExpr>),
     If { cond: CheckedExpr, then: Box<CheckedStmt>, otherwise: Option<Box<CheckedStmt>> },
     While { cond: CheckedExpr, body: Box<CheckedStmt> },
-    For {
-        init: Option<Box<CheckedStmt>>,
-        cond: Option<CheckedExpr>,
-        step: Option<CheckedExpr>,
-        body: Box<CheckedStmt>,
-    },
+    For(Box<CheckedFor>),
     Break,
     Continue,
+}
+
+/// Keep the relatively large for-loop payload out of the main statement enum.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CheckedFor {
+    pub init: Option<Box<CheckedStmt>>,
+    pub cond: Option<CheckedExpr>,
+    pub step: Option<CheckedExpr>,
+    pub body: Box<CheckedStmt>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -927,9 +931,9 @@ impl Checker {
                     self.loop_depth += 1;
                     let body = self.check_stmt(body, span);
                     self.loop_depth -= 1;
-                    Ok(CheckedStmt::For {
+                    Ok(CheckedStmt::For(Box::new(CheckedFor {
                         init, cond, step, body: Box::new(body?),
-                    })
+                    })))
                 })();
                 self.pop_tag_scope();
                 self.locals.pop();
