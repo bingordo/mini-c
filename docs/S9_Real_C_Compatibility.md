@@ -21,11 +21,14 @@ python3 tools/test_musl_s9.py --compiler-repo ../compiler --min-accepted 4
 
 Do not raise the threshold until the same revision has passed the checker gate and independent GCC differential runtime tests with defined inputs. Compare the accepted functions through the native compiler adapter and optional Cranelift backend separately; preserve all failures as artifacts and distinguish syntax rejection, semantic rejection, backend unsupported features, and wrong-code behavior.
 
-## Milestone priorities (as of 2026-11-03)
+## Milestone status (2026-11-03)
 
-- **Already implemented:** integer C character constants, bitwise operators, shifts, compound assignments, prefix/postfix updates, `for`, comma expressions, and `do-while`. These should not be counted as outstanding work merely because issue #4 predates their implementation.
-- **Next major vertical slice:** C explicit integer casts with typedef-sensitive type-name disambiguation, integer promotions and signed/unsigned conversions. Include `(unsigned)c`, nested casts and representational boundary cases. Preserve target integer widths in both semantic analysis and Cranelift lowering; use GCC as the differential oracle.
-- **Following slice:** conditional expressions `?:`, with correct precedence/right associativity, common result type and conversion, and strict evaluation of only the selected branch.
-- **Exit criteria:** rerun all twelve pinned S9 functions unchanged and report accepted/total, per-function diagnostics, and cross-backend runtime comparisons (including signed/unsigned edge conditions). Do not claim complete support simply from a parser acceptance count.
+- **Implemented:** character constants; bitwise, shift and compound-assignment operators; prefix/postfix updates; `for`, comma and `do-while` expressions/statements; and conditional expressions `?:` with lazy branch evaluation.
+- **Implemented and validated:** explicit integer casts, including `(unsigned)c`, nested casts, integer typedef type-names, signed/unsigned wrapping and narrowing. PR [#33](https://github.com/bingordo/mini-c/pull/33) merged after passing [syntax CI](https://github.com/bingordo/mini-c/actions/runs/41660398565) and [Cranelift/GCC differential CI](https://github.com/bingordo/mini-c/actions/runs/41660398548). This uses the existing typed conversion path instead of a separate backend.
+- **Known boundaries:** cast type-names with pointers, `void`, and aggregates are deliberately not supported in this slice. The standalone LALRPOP expression entry point cannot resolve typedef-sensitive casts and remains limited; the incremental translation-unit parser is the supported path.
+- **Next acceptance gate:** execute the twelve *unmodified* pinned S9 fixtures through `tools/test_musl_s9.py`, record accepted/total and all rejection diagnostics; run verified native compiler/Cranelift vs GCC comparisons for accepted functions. CI success on targeted analogues is not a substitute for the full corpus count.
+- **Next language and ABI priorities:** address remaining real-C rejections based on that report; only expand features demonstrated to block representative code, and preserve correct type semantics. Keep unsupported conversions explicitly rejected.
+
+Do not raise the current S9 acceptance floor above one until the pinned corpus check actually verifies a higher count. The remaining work is end-to-end native adapter validation and documented corpus coverage, not reimplementing already landed language features.
 
 Keep the main parser incremental and both frontend crates backend-independent. Use the ordinary short target checks on every PR; reserve full compiler-ci integration for a verified vertical slice.
