@@ -407,6 +407,50 @@ mod tests {
     }
 
     #[test]
+    fn seeded_ternary_cases_cover_both_arms_nesting_and_scalar_pointer_types() {
+        let mut simple = [false; 2];
+        let mut nested_outer = [false; 2];
+        let mut nested_inner = [false; 2];
+        for seed in 0..96 {
+            let case = generate(seed, 145);
+            parse_case(&case).unwrap_or_else(|err| panic!("seed {seed}: {err}"));
+            for choice in 0..=1 {
+                let label = choice.to_string();
+                simple[choice] |= case.source.contains(
+                    &format!("conditional-simple chosen={label}")
+                );
+                nested_outer[choice] |= case.source.contains(
+                    &format!("conditional-nested outer={label}")
+                );
+                nested_inner[choice] |= case.source.contains(
+                    &format!("inner={label}")
+                );
+                // Every nonempty source exercises both pointer/null choices
+                // and narrow-unsigned-char vs signed-long conversions.
+                assert!(case.source.contains(
+                    &format!("conditional-types chosen={label}")
+                ), "seed {seed}: missing typed branch {choice}");
+            }
+            assert!(case.source.contains("int *nullable=(x >="));
+            assert!(case.source.contains("void *mixed=(x >="));
+            assert!(case.source.contains("int zero=0; int lazy="));
+            let mut expected = 1;
+            for &instruction in &case.instructions {
+                expected = checked_step(expected, instruction)
+                    .expect("conditional trace must contain only valid operations");
+                assert!((-32767..=32767).contains(&expected));
+            }
+            assert_eq!(expected, case.expected, "seed {seed}");
+        }
+        assert!(simple.into_iter().all(|seen| seen),
+            "missed a simple conditional arm");
+        assert!(nested_outer.into_iter().all(|seen| seen),
+            "missed an outer nested conditional arm");
+        assert!(nested_inner.into_iter().all(|seen| seen),
+            "missed an inner nested conditional arm");
+    }
+
+    #[test]
     fn zero_step_case_is_valid() {
         let case = generate(0, 0);
         assert!(case.instructions.is_empty());
