@@ -48,6 +48,31 @@ This compiles all twelve unchanged, SHA-verified musl functions to ELF objects t
 
 The pinned corpus now accepts **12/12 unchanged functions** in Mini-C's checker, verified by [CI #41688535794](https://github.com/bingordo/mini-c/actions/runs/41688535794). Merged PR #35 adds the hexadecimal and octal literal support that closed the five remaining frontend rejections, and the default acceptance floor is now twelve. The integer-literal AST currently lacks base information, so unsuffixed nondecimal literals above signed 32-bit `int` range are rejected explicitly rather than silently assigned an incorrect C type. Suffix handling and complete nondecimal integer type selection remain future work.
 
-The remaining cross-repository gate is end-to-end **bingordo/compiler native adapter** validation against GCC for the same pinned functions, exercising native assembly and direct ELF object modes where supported. The completed Cranelift differential run is an independent reference, not proof that the compiler's separate x86 backend is correct.
+## Cross-repository native adapter closure (2026-11-03)
+
+The cross-repository native adapter gate is now **complete for all twelve
+pinned S9 functions**. [Compiler PR #272](https://github.com/bingordo/compiler/pull/272)
+synchronized both the standalone compiler Mini-C adapter and main compiler
+CLI's exact syntax/sema pins to this repository's
+`ffbc2c87fae1148e99de17ccdabee0b061be35df` revision.
+
+The independent compiler x86 backend now compiles the unchanged original
+musl function sources using both **direct ELF object output** and **GNU
+assembly**. The [native compiler CI run #41698702650](https://github.com/bingordo/compiler/actions/runs/41698702650)
+passed **12/12 direct ELF vs GCC** and **12/12 GNU assembly vs GCC**,
+using the same GCC-built harness and `-O2 -fwrapv -fno-builtin` reference
+for each source. Each fixture is Git-blob hash checked; the gate preserves
+a JSON summary and failing C/object/log reproducers.
+
+This is distinct from Mini-C's Cranelift reference backend, whose 12/12
+differential run was already green. Both results concern this narrowly
+pinned test set and inputs; neither establishes full musl coverage or ISO C
+conformance. The native adapter's extra source constructs are tested
+elsewhere, not certified by the S9 corpus.
+
+The next evidence-oriented step is a larger unfiltered set of licensed
+real-C functions with explicit accepted/total accounting. Performance,
+assembly size, and optimizer-fusion measurements should only follow
+validated native execution on that broader sample.
 
 Keep the main parser incremental and both frontend crates backend-independent. Use the ordinary short target checks on every PR; reserve full compiler-ci integration for a verified vertical slice.
