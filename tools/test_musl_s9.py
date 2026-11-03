@@ -68,7 +68,7 @@ def main() -> int:
         parser.error("pinned S9 manifest must list exactly twelve function fixtures")
     for name in NAMES:
         data = (corpus / f"{name}.c").read_bytes()
-        blob = b"blob " + str(len(data)).encode("ascii") + b"\\0" + data
+        blob = b"blob " + str(len(data)).encode("ascii") + b"\0" + data
         actual = hashlib.sha1(blob).hexdigest()
         if actual != manifest["files"][f"{name}.c"]:
             parser.error(f"fixture has changed from pinned Git blob: {name}.c")
