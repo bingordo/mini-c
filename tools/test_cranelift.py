@@ -14,6 +14,17 @@ import subprocess
 import sys
 
 PROGRAMS = {
+    "hex_musl_isascii": """int isascii(int c) { return !(c&~0x7f); }
+        int main(void) { return isascii(127)*4 + isascii(128)*2 + isascii(-1); }""",
+    "hex_musl_iscntrl": """int iscntrl(int c) { return (unsigned)c < 0x20 || c == 0x7f; }
+        int main(void) { return iscntrl(0)*8 + iscntrl(31)*4
+            + iscntrl(127)*2 + iscntrl(-1); }""",
+    "hex_musl_isgraph": """int isgraph(int c) { return (unsigned)c-0x21 < 0x5e; }
+        int main(void) { return isgraph(33)*4 + isgraph(126)*2 + isgraph(32); }""",
+    "hex_musl_isprint": """int isprint(int c) { return (unsigned)c-0x20 < 0x5f; }
+        int main(void) { return isprint(32)*4 + isprint(126)*2 + isprint(127); }""",
+    "hex_musl_toascii": """int toascii(int c) { return c & 0x7f; }
+        int main(void) { return toascii(255)-127 + toascii(65); }""",
     "cast_musl_isdigit": """int isdigit(int c) { return (unsigned)c-'0'<10; }
         int main(void) { return isdigit('7')*10+isdigit(-1); }""",
     "cast_musl_isalpha": """int isalpha(int c) { return ((unsigned)c|32)-'a'<26; }
