@@ -215,3 +215,30 @@ fn comma_is_left_associative_and_below_assignment() {
         ]));
     assert!(parse_expression("a,").is_err());
 }
+
+
+#[test]
+fn conditional_precedence_associativity_and_full_true_expression() {
+    let ternary = |cond, yes, no| Expr::Conditional(
+        Box::new(cond), Box::new(yes), Box::new(no));
+    assert_eq!(parse_expression("a ? b : c ? d : e").unwrap(),
+        ternary(name("a"), name("b"),
+            ternary(name("c"), name("d"), name("e"))));
+    assert_eq!(parse_expression("a || b ? c : d").unwrap(),
+        ternary(Expr::Binary(BinOp::Or, Box::new(name("a")), Box::new(name("b"))),
+            name("c"), name("d")));
+    assert_eq!(parse_expression("a ? b, c : d").unwrap(),
+        ternary(name("a"),
+            Expr::Comma(Box::new(name("b")), Box::new(name("c"))),
+            name("d")));
+    assert_eq!(parse_expression("x = c ? a : b").unwrap(),
+        Expr::Assign(Box::new(name("x")), Box::new(ternary(
+            name("c"), name("a"), name("b")))));
+    assert_eq!(parse_expression("f(a ? b : c, d)").unwrap(),
+        Expr::Call(Box::new(name("f")), vec![
+            ternary(name("a"), name("b"), name("c")), name("d")
+        ]));
+    for incomplete in ["a ? b", "a ? : c", "a ? b :", "a ? b : c ? d"] {
+        assert!(parse_expression(incomplete).is_err(), "accepted {incomplete}");
+    }
+}
