@@ -1292,3 +1292,12 @@ fn nondecimal_type_selection_respects_nondefault_target_widths() {
         assert_eq!(selected, expected, "{spelling}");
     }
 }
+
+
+#[test]
+fn reordered_integer_decl_specifiers_preserve_checked_types() {
+    check("typedef long unsigned int size_t; size_t f(size_t n) { return n+1; }").unwrap();
+    check("long signed int f(long signed int n) { return n-1; }").unwrap();
+    check("int unsigned long f(int unsigned long n) { return n+1; }").unwrap();
+    check("char signed f(char signed x) { return x; }").unwrap();
+}
