@@ -124,6 +124,8 @@ pub enum Expr {
     Assign(Box<Expr>, Box<Expr>),
     /// C comma operator, evaluated left to right with the value of the right operand.
     Comma(Box<Expr>, Box<Expr>),
+    /// Explicit C scalar cast; the type name is resolved during semantic analysis.
+    Cast(Type, Box<Expr>),
     /// Single-evaluation compound assignment; op is the underlying binary operation.
     CompoundAssign(BinOp, Box<Expr>, Box<Expr>),
     /// C prefix/postfix ++/--. Bool is increment (true) or decrement (false).
