@@ -1136,3 +1136,18 @@ fn nested_assignments_preserve_types_and_value_categories() {
     reject("int f(void) { int a=0; (a=3)=4; return a; }",
         "modifiable lvalue");
 }
+
+
+#[test]
+fn for_loop_declaration_scopes_and_optional_expressions() {
+    check("int f(void) { int result=0; for (int i=0; i<5; i++) result+=i; return result; }").unwrap();
+    check("int f(void) { int x=0; for (; x<4; x++) { if(x==2) continue; } return x; }").unwrap();
+    check("int f(void) { for (;;) { break; } return 0; }").unwrap();
+    check("int f(void) { int i=8; for (int i=0; i<2; i++) {} return i; }").unwrap();
+    check("typedef int T; int f(void) { for (int T=0; T<2; T++) {} T x=1; return x; }").unwrap();
+    check("int f(void) { int s=0; for (int i=0; i<3; i++) for (int j=0; j<3; j++) { if (j==1) continue; s+=i+j; } return s; }").unwrap();
+    reject("int f(void) { for (int i=0; i<2; i++) {} return i; }", "undeclared identifier");
+    reject("int f(void) { for (int i=0; i<2; i++) {} i++; return 0; }", "undeclared identifier");
+    reject("int f(void) { for (int i=0; i<2; i++) { } return i; }", "undeclared identifier");
+    reject("int f(void) { for (int i=0; i<2; i++) { } int j=i; return 0; }", "undeclared identifier");
+}
