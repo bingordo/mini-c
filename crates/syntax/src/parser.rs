@@ -869,28 +869,52 @@ impl<'a> Parser<'a> {
                 if is_union { Type::Union { tag, members } }
                 else { Type::Struct { tag, members } }
             }
-            "void" => { self.take()?; Type::Void }
-            "char" => { self.take()?; Type::Char }
-            "int" => { self.take()?; Type::Int }
-            "long" => {
-                self.take()?;
-                if self.peek()?.is_some_and(|t| t.text == "int") { self.take()?; }
-                Type::Long
-            }
-            "unsigned" | "signed" => {
-                let unsigned = token.text == "unsigned";
-                self.take()?;
-                let base = match self.peek()?.map(|t| t.text) {
-                    Some("char") => { self.take()?; Type::Char },
-                    Some("int") => { self.take()?; Type::Int },
-                    Some("long") => {
-                        self.take()?;
-                        if self.peek()?.is_some_and(|t| t.text == "int") { self.take()?; }
-                        Type::Long
+            "void" | "char" | "int" | "long" | "unsigned" | "signed" => {
+                // C integer specifiers are unordered: 'long unsigned int',
+                // 'unsigned long int', and 'int long unsigned' denote one
+                // type. Collect the short supported set in a single pass,
+                // rejecting duplicates and contradictory combinations.
+                // 'long long', _Bool, floats and qualifiers remain outside
+                // this intentionally small frontend subset.
+                let mut seen_int = false;
+                let mut seen_char = false;
+                let mut seen_long = false;
+                let mut seen_void = false;
+                let mut seen_signed = false;
+                let mut seen_unsigned = false;
+                while let Some(next) = self.peek()? {
+                    let already_seen = match next.text {
+                        "void" => { let was = seen_void; seen_void = true; was }
+                        "char" => { let was = seen_char; seen_char = true; was }
+                        "int" => { let was = seen_int; seen_int = true; was }
+                        "long" => { let was = seen_long; seen_long = true; was }
+                        "signed" => { let was = seen_signed; seen_signed = true; was }
+                        "unsigned" => { let was = seen_unsigned; seen_unsigned = true; was }
+                        _ => break,
+                    };
+                    if already_seen {
+                        return Err(Diagnostic::coded(next.span,
+                            DiagnosticCode::SyntaxInvalidDeclaration,
+                            "duplicate or unsupported C type specifier"));
                     }
-                    _ => Type::Int,
-                };
-                if unsigned { Type::Unsigned(Box::new(base)) } else { Type::Signed(Box::new(base)) }
+                    self.take()?;
+                }
+                let incompatible = (seen_signed && seen_unsigned)
+                    || (seen_void && (seen_char || seen_int || seen_long
+                                      || seen_signed || seen_unsigned))
+                    || (seen_char && (seen_int || seen_long));
+                if incompatible {
+                    return Err(Diagnostic::coded(token.span,
+                        DiagnosticCode::SyntaxInvalidDeclaration,
+                        "incompatible C type specifiers"));
+                }
+                let base = if seen_void { Type::Void }
+                    else if seen_char { Type::Char }
+                    else if seen_long { Type::Long }
+                    else { Type::Int };
+                if seen_unsigned { Type::Unsigned(Box::new(base)) }
+                else if seen_signed { Type::Signed(Box::new(base)) }
+                else { base }
             }
             _ if token.kind == TokenKind::TypedefName => {
                 self.take()?;
