@@ -63,6 +63,7 @@ pub enum Type {
     Char,
     Int,
     Long,
+    LongLong,
     Alias(Ident),
     /// Qualifiers bind to this type, not to the nearest pointer's pointee.
     Qualified(Box<Type>, Qualifiers),
