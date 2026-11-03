@@ -1477,4 +1477,18 @@ mod tests {
         }
     }
 
+    #[test]
+    fn compiles_do_while_post_test_and_continue_targets() {
+        let sources = [
+            "int main(void) { int x=0; do { x++; } while(0); return x; }",
+            "int main(void) { int i=0; int checks=0; do { i++; if(i==1)continue; } while (checks++, i<3); return i*10+checks; }",
+            "int main(void) { int i=0; do { ++i; if(i==1)break; } while(i<10); return i; }",
+            "int main(void) { int sum=0; for(int i=0;i<3;i++) { int j=0; do { ++j; if(j==2)continue; sum+=i+j; } while(j<3); } return sum; }",
+        ];
+        for source in sources {
+            let object = compile_source(source).unwrap();
+            assert_eq!(&object[..4], b"\x7fELF");
+        }
+    }
+
 }
