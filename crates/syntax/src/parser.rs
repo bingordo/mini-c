@@ -503,6 +503,18 @@ impl<'a> Parser<'a> {
         while self.peek()?.is_some_and(|token| token.text == "*") {
             self.take()?;
             stars += 1;
+            // C99 restrict qualifies the immediately preceding pointer,
+            // not its pointee. __restrict/__restrict__ are GNU spellings
+            // commonly emitted by glibc headers. The frontend currently
+            // makes no restrict-based alias optimizations, so omitting the
+            // qualifier from the lowered pointer type is conservative.
+            // Do not also ignore const/volatile: they affect observable
+            // modifiability and access semantics.
+            while self.peek()?.is_some_and(|token| matches!(
+                token.text, "restrict" | "__restrict" | "__restrict__"
+            )) {
+                self.take()?;
+            }
         }
         let mut direct = if self.peek()?.is_some_and(|token| token.text == "(") {
             self.take()?;
