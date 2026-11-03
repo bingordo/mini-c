@@ -14,6 +14,16 @@ import subprocess
 import sys
 
 PROGRAMS = {
+    "const_global_integer": """const int value=11;
+        int main(void) { return value; }""",
+    "const_global_pointer_relocation": """int value=17; int *const p=&value;
+        int main(void) { return *p; }""",
+    "const_member_read": """struct Pair { int x; };
+        int main(void) { struct Pair a={13}; const struct Pair *p=&a;
+            return p->x; }""",
+    "const_conditional_pointer_merge": """int main(void) {
+        int x=7; int *p=&x; const int *q=p;
+        return *(1 ? p : q); }""",
     "const_local_immutable": """int main(void) {
         const int x=9; return x; }""",
     "const_pointer_reads": """int main(void) {
