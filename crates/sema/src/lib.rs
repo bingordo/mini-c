@@ -1012,6 +1012,37 @@ impl Checker {
         Ok(())
     }
 
+    /// Resolve the integer subset of C cast type-names without mutating tags
+    /// or scopes; expression checking only holds an immutable checker borrow.
+    fn cast_integer_type(&self, ty: &Type, span: Span) -> Result<CType, Diagnostic> {
+        let resolved = match ty {
+            Type::Char => CType::Integer {
+                rank: IntRank::Char, unsigned: !self.target.char_is_signed,
+            },
+            Type::Int => CType::int(),
+            Type::Long => CType::Integer { rank: IntRank::Long, unsigned: false },
+            Type::Signed(inner) | Type::Unsigned(inner) => {
+                let CType::Integer { rank, .. } = self.cast_integer_type(inner, span)? else {
+                    return Err(type_error(span, "integer cast requires an integer type"));
+                };
+                CType::Integer { rank, unsigned: matches!(ty, Type::Unsigned(_)) }
+            }
+            Type::Alias(name) => {
+                let symbol = self.lookup(name).ok_or_else(||
+                    type_error(span, format!("unknown cast typedef '{name}'")))?;
+                if symbol.kind != SymbolKind::Typedef {
+                    return Err(type_error(span, format!("'{name}' does not name a type")));
+                }
+                symbol.ty.clone()
+            }
+            _ => return Err(type_error(span, "unsupported cast type-name")),
+        };
+        if !resolved.is_integer() {
+            return Err(type_error(span, "only integer casts are supported"));
+        }
+        Ok(resolved)
+    }
+
     fn convert(&self, expr: CheckedExpr, ty: &CType) -> CheckedExpr {
         let expr = expr.rvalue();
         if &expr.ty == ty || (expr.ty.same_type(ty) &&
@@ -1266,6 +1297,14 @@ impl Checker {
                 let right = self.convert(right, &common);
                 let result = if relation { CType::int() } else { common };
                 Ok(CheckedExpr::value(result, CheckedExprKind::Binary(*op, Box::new(left), Box::new(right))))
+            }
+            Expr::Cast(ty, operand) => {
+                let dest = self.cast_integer_type(ty, span)?;
+                let value = self.check_expr(operand, span)?.rvalue();
+                if !value.ty.is_integer() {
+                    return Err(type_error(span, "integer cast requires integer operand"));
+                }
+                Ok(self.convert(value, &dest))
             }
             Expr::Comma(lhs, rhs) => {
                 // Both operands undergo their ordinary value conversions.
