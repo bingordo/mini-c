@@ -194,3 +194,24 @@ fn prefix_and_postfix_updates_have_correct_precedence() {
         target: Box::new(parse("*p")), increment: true, postfix: true,
     });
 }
+
+
+#[test]
+fn comma_is_left_associative_and_below_assignment() {
+    let comma = |a, b| Expr::Comma(Box::new(a), Box::new(b));
+    assert_eq!(parse_expression("a, b, c").unwrap(),
+        comma(comma(name("a"), name("b")), name("c")));
+    assert_eq!(parse_expression("a = b, c = d").unwrap(),
+        comma(
+            Expr::Assign(Box::new(name("a")), Box::new(name("b"))),
+            Expr::Assign(Box::new(name("c")), Box::new(name("d"))),
+        ));
+    assert_eq!(parse_expression("f(1, 2)").unwrap(),
+        Expr::Call(Box::new(name("f")), vec![Expr::Int(1), Expr::Int(2)]));
+    assert_eq!(parse_expression("f((a = 1, a), 2)").unwrap(),
+        Expr::Call(Box::new(name("f")), vec![
+            comma(Expr::Assign(Box::new(name("a")), Box::new(Expr::Int(1))), name("a")),
+            Expr::Int(2),
+        ]));
+    assert!(parse_expression("a,").is_err());
+}

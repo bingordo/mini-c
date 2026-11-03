@@ -2,7 +2,13 @@ grammar<'input>;
 use crate::expr_lexer::ExprToken;
 use crate::ast::{Expr, BinOp, UnOp};
 
-pub Expression: Expr = <e:Assign> => e;
+pub Expression: Expr = <e:Comma> => e;
+// Only the full expression entry point admits unparenthesized commas.
+// Call arguments and initializer elements are assignment-expressions.
+Comma: Expr = {
+    <left:Comma> "," <right:Assign> => Expr::Comma(Box::new(left), Box::new(right)),
+    Assign,
+};
 Assign: Expr = {
     <l:LogicalOr> "=" <r:Assign> => Expr::Assign(Box::new(l), Box::new(r)),
     <l:LogicalOr> "+=" <r:Assign> => Expr::CompoundAssign(BinOp::Add, Box::new(l), Box::new(r)),
@@ -94,7 +100,7 @@ Primary: Expr = {
     <n:"number"> =>? n.parse::<u64>().map(Expr::Int).map_err(|_| lalrpop_util::ParseError::User { error: "integer literal exceeds u64 range" }),
     <literal:"character"> =>? crate::char_literal::parse_ascii_character(literal).map(Expr::Int).map_err(|reason| lalrpop_util::ParseError::User { error: reason }),
     <n:"ident"> => Expr::Name(n.to_owned()),
-    "(" <e:Assign> ")" => e,
+    "(" <e:Comma> ")" => e,
 };
 
 extern {

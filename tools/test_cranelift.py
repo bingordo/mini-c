@@ -14,6 +14,33 @@ import subprocess
 import sys
 
 PROGRAMS = {
+    "comma_for_multiple_counters": """int main(void) {
+        int i=0; int j=0; int total=0;
+        for (i=0,j=0; i<5; i++, j+=3) total+=i+j;
+        return total; }""",
+    "comma_for_continue_step": """int main(void) {
+        int i=0; int j=0; int sum=0;
+        for (i=0,j=0; i<5; i++,j++) {
+            if (i==2) continue;
+            sum+=i+j;
+        }
+        return sum; }""",
+    "comma_sequence_calls": """int trace;
+        void mark(int n) { trace=trace*10+n; }
+        int main(void) { mark(1),mark(2),mark(3); return trace; }""",
+    "comma_parenthesized_call_argument": """int plus(int a,int b) { return a+b; }
+        int main(void) { int x=0;
+            return plus((x=4,x+1),6); }""",
+    "comma_index_expression": """int main(void) {
+        int values[3]; int i=0;
+        values[0]=3; values[1]=11; values[2]=19;
+        return values[(i=1,i)] + i; }""",
+    "comma_pointer_value": """int main(void) {
+        int x=7; int *p=0; return *(p=&x,p); }""",
+    "comma_aggregate_initializer_separators": """int main(void) {
+        int x[3]={2,3,5}; return x[0]+x[1]+x[2]; }""",
+    "comma_nested_assignment": """int main(void) {
+        int x=0; int y=0; return (x=3,y=4,x*y); }""",
     "for_continue_runs_increment": """int main(void) {
         int sum=0; for (int i=0; i<6; i++) {
             if (i==2) continue; sum += i;

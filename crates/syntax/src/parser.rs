@@ -243,7 +243,22 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_expr(&mut self) -> Result<Expr, Diagnostic> {
-        self.parse_assign()
+        // The comma operator has the lowest precedence and associates to
+        // the left. Assignment-expression contexts (e.g. function arguments
+        // and initializer elements) call parse_assign directly.
+        let mut lhs = self.parse_assign()?;
+        while self.peek()?.is_some_and(|token| token.text == ",") {
+            self.take()?;
+            let rhs = self.parse_assign()?;
+            let span = if self.expression_spans {
+                Span {
+                    lo: lhs.location().expect("located comma lhs").lo,
+                    hi: rhs.location().expect("located comma rhs").hi,
+                }
+            } else { Span::default() };
+            lhs = self.located(Expr::Comma(Box::new(lhs), Box::new(rhs)), span);
+        }
+        Ok(lhs)
     }
 
     fn parse_assign(&mut self) -> Result<Expr, Diagnostic> {
@@ -393,7 +408,7 @@ impl<'a> Parser<'a> {
                     let mut args = Vec::new();
                     if !self.peek()?.is_some_and(|t| t.text == ")") {
                         loop {
-                            args.push(self.parse_expr()?);
+                            args.push(self.parse_assign()?);
                             if !self.peek()?.is_some_and(|t| t.text == ",") {
                                 break;
                             }
