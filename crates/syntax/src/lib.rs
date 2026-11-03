@@ -124,4 +124,17 @@ mod tests {
         assert!(parse_expression("(alpha + 4) / 2").is_ok());
         assert!(parse_expression("1 +").is_err());
     }
+    #[test]
+    fn radix_literals_in_both_expression_parsers() {
+        use ast::Expr;
+        for (source, value) in [
+            ("0x7f", 127), ("0X20", 32), ("077", 63), ("0", 0),
+        ] {
+            assert_eq!(parse_expression(source).unwrap(), Expr::Int(value), "{source}");
+        }
+        for source in ["0x", "0xG", "08", "0x80000000", "0xFFFFFFFF"] {
+            assert!(parse_expression(source).is_err(), "{source}");
+        }
+    }
+
 }
