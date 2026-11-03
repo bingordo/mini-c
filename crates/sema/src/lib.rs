@@ -1000,6 +1000,8 @@ impl Checker {
     ) -> Result<(), Diagnostic> {
         let span = original.location().unwrap_or(span);
         let original = original.without_location();
+        // Const storage still has ordinary static initialization rules.
+        let ty = ty.unqualified();
         if let CType::Array(element, Some(_)) = ty {
             if matches!(original, Expr::StringLiteral(_))
                 && matches!(element.as_ref(), CType::Integer { rank: IntRank::Char, .. })
