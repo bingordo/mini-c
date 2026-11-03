@@ -392,9 +392,20 @@ impl<'a> Parser<'a> {
             Some(t) if matches!(t.kind, TokenKind::Identifier | TokenKind::TypedefName) =>
                 self.located(Expr::Name(t.text.to_owned()), t.span),
             Some(t) if t.text == "(" => {
-                let e = self.parse_expr()?;
-                let close = self.expect(")")?;
-                self.located(e, Span { lo: t.span.lo, hi: close.span.hi })
+                // Typedef-aware type-name recognition distinguishes (T)x from
+                // (x) without rewinding the incremental lexer. Only integer
+                // scalar type names are accepted in this first cast slice.
+                if let Some((ty, _)) = self.parse_type()? {
+                    let close = self.expect(")")?;
+                    let operand = self.parse_unary()?;
+                    let hi = operand.location().map_or(close.span.hi, |span| span.hi);
+                    self.located(Expr::Cast(ty, Box::new(operand)),
+                        Span { lo: t.span.lo, hi })
+                } else {
+                    let e = self.parse_expr()?;
+                    let close = self.expect(")")?;
+                    self.located(e, Span { lo: t.span.lo, hi: close.span.hi })
+                }
             }
             Some(t) => return Err(Diagnostic::coded(
                 t.span, DiagnosticCode::SyntaxExpectedExpression, "expected expression")),
