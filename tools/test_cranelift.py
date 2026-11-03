@@ -14,6 +14,17 @@ import subprocess
 import sys
 
 PROGRAMS = {
+    "cast_musl_isdigit": """int isdigit(int c) { return (unsigned)c-'0'<10; }
+        int main(void) { return isdigit('7')*10+isdigit(-1); }""",
+    "cast_musl_isalpha": """int isalpha(int c) { return ((unsigned)c|32)-'a'<26; }
+        int main(void) { return isalpha('A')*10+isalpha('9')+isalpha(-1); }""",
+    "cast_unsigned_wrap": """int main(void) {
+        unsigned int u=(unsigned)-1;
+        return (u>0) + ((int)u==-1)*2 + ((unsigned char)257==1)*4;
+    }""",
+    "cast_typedef": """typedef unsigned long U;
+        int main(void) { int x=-1; U y=(U)x; return (y>0)+((int)(unsigned char)257==1)*2; }""",
+    "cast_not_lvalue": """int main(void) { int x=8; return ((unsigned)x)+1; }""",
     "ternary_lazy_true": """int main(void) {
         int x=0; int value=1 ? (x+=3) : (x+=40);
         return value*10+x; }""",
