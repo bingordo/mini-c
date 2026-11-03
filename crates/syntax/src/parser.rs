@@ -395,7 +395,13 @@ impl<'a> Parser<'a> {
                 // Typedef-aware type-name recognition distinguishes (T)x from
                 // (x) without rewinding the incremental lexer. Only integer
                 // scalar type names are accepted in this first cast slice.
-                if let Some((ty, _)) = self.parse_type()? {
+                let cast_type = self.peek()?.is_some_and(|next| {
+                    matches!(next.text, "int" | "char" | "long" | "void" |
+                        "signed" | "unsigned" | "struct" | "union" | "enum")
+                        || next.kind == TokenKind::TypedefName
+                });
+                if cast_type {
+                    let (ty, _) = self.parse_type()?.expect("type-name lookahead");
                     let close = self.expect(")")?;
                     let operand = self.parse_unary()?;
                     let hi = operand.location().map_or(close.span.hi, |span| span.hi);
