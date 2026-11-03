@@ -103,6 +103,29 @@ The initial Mini-C acceptance floor stays at zero. Do not turn this
 coverage gate into an artificially green benchmark by dropping failures
 or editing the pinned function sources.
 
+## Next blocker isolated by integer-specifier support (2026-11-03)
+
+The incremental parser now accepts C's equivalent type-specifier orders,
+including `long unsigned int`, without adding another primitive type or
+rewriting upstream inputs. It continues to reject duplicated and
+contradictory combinations.
+
+[Syntax CI #41703530648](https://github.com/bingordo/mini-c/actions/runs/41703530648)
+and [Cranelift/GCC CI #41703530700](https://github.com/bingordo/mini-c/actions/runs/41703530700)
+passed on the parser fix. S10 still reports **0/24 complete translation
+units accepted** because the entire host system header is intentionally
+included, but its **first error moved past stddef.h** in all 24 files:
+
+- **23/24:** first rejection in `/usr/include/string.h`, at the
+  `memcpy` declaration with GNU `__restrict` pointer qualifiers
+- **1/24:** first rejection in `/usr/include/strings.h`, at the
+  `bcmp` declaration using GNU `__s1` and related declarations
+
+This demonstrates an actual semantic-compatible parser improvement
+without misrepresenting the corpus acceptance number. Next investigate
+general C type qualifiers and GNU header declarations; avoid
+per-function parser overrides or silently dropping system declarations.
+
 ## Follow-up priority
 
 Use the report's rejected/total counts to rank concrete parser and semantic
