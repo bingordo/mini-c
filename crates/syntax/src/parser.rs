@@ -503,6 +503,16 @@ impl<'a> Parser<'a> {
         while self.peek()?.is_some_and(|token| token.text == "*") {
             self.take()?;
             stars += 1;
+            // C99 restrict and the GNU __restrict spellings qualify the
+            // pointer just declared, not the pointed-to element. The
+            // current AST deliberately does not use restrict for alias
+            // optimization, so treating it as an unexploited promise is
+            // semantically conservative; never drop volatile qualifiers.
+            if self.peek()?.is_some_and(|token|
+                matches!(token.text, "restrict" | "__restrict" | "__restrict__"))
+            {
+                self.take()?;
+            }
         }
         let mut direct = if self.peek()?.is_some_and(|token| token.text == "(") {
             self.take()?;
