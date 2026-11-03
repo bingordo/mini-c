@@ -279,10 +279,10 @@ impl Compiler {
                 }
                 Some(bytes)
             } else {
-            if !decl.ty.is_integer() && !matches!(decl.ty, CType::Pointer(_)) {
+            if !decl.ty.is_integer() && !matches!(decl.ty.unqualified(), CType::Pointer(_)) {
                 return Err(format!("global initializer for '{name}' requires scalar support"));
             }
-            let value = if matches!(decl.ty, CType::Pointer(_)) {
+            let value = if matches!(decl.ty.unqualified(), CType::Pointer(_)) {
                 // The checker has already validated the null-pointer constant.
                 // Address-of-symbol initializers require data relocations.
                 let mut integer = init;
