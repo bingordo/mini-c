@@ -1,0 +1,38 @@
+name: Regenerate comma-expression LALRPOP parser
+on:
+  push:
+    branches: ['review/comma-expressions-20261103']
+    paths:
+      - 'crates/syntax/src/grammar.lalrpop'
+      - '.github/workflows/regenerate-comma-parser.yml'
+  pull_request:
+    branches: ['main']
+    paths:
+      - 'crates/syntax/src/grammar.lalrpop'
+      - '.github/workflows/regenerate-comma-parser.yml'
+permissions:
+  contents: write
+concurrency:
+  group: mini-c-regenerate-comma-parser
+  cancel-in-progress: true
+jobs:
+  regenerate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: review/comma-expressions-20261103
+          persist-credentials: true
+      - name: Regenerate checked-in parser
+        run: cargo run --manifest-path tools/parser-codegen/Cargo.toml -- --write
+      - name: Commit regenerated grammar.rs
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add crates/syntax/src/grammar.rs
+          if ! git diff --cached --quiet; then
+            git commit -m 'gen(syntax): regenerate comma-expression grammar'
+            git push origin HEAD:review/comma-expressions-20261103
+          fi
