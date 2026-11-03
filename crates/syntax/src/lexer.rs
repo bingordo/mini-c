@@ -195,27 +195,28 @@ impl<'a> Scanner<'a> {
                         offset += 1;
                     }
                 }
+                // Keep C U/L suffixes as part of the number token. Validate
+                // the entire suffix here, never split an invalid token into
+                // a valid integer and a stray identifier.
                 if offset < source.len()
                     && (source.as_bytes()[offset].is_ascii_alphabetic()
                         || source.as_bytes()[offset] == b'_')
                 {
-                    // Advance past the whole unsupported suffix. Recovery must
-                    // never encounter the same error at the same source offset.
                     while offset < source.len()
                         && (source.as_bytes()[offset].is_ascii_alphanumeric()
                             || source.as_bytes()[offset] == b'_')
                     {
                         offset += 1;
                     }
-                    self.offset = offset;
-                    return Err(Diagnostic::coded(
-                        Span {
-                            lo: start,
-                            hi: offset,
-                        },
-                        crate::diag::DiagnosticCode::LexicalNumericSuffix,
-                        "unsupported numeric literal or suffix",
-                    ));
+                    let token = &source[start..offset];
+                    if crate::integer_literal::decode_integer_literal(token).is_err() {
+                        self.offset = offset;
+                        return Err(Diagnostic::coded(
+                            Span { lo: start, hi: offset },
+                            crate::diag::DiagnosticCode::LexicalNumericSuffix,
+                            "unsupported numeric literal or suffix",
+                        ));
+                    }
                 }
                 TokenKind::Number
             } else {
