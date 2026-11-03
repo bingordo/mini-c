@@ -34,6 +34,8 @@ pub enum CheckedExprKind {
     /// The compound operator is applied to the old lvalue and right operand
     /// at computation_ty, then narrowed once to the lvalue type.
     CompoundAssign(BinOp, Box<CheckedExpr>, Box<CheckedExpr>, CType),
+    /// Prefix/postfix ++/--, preserving a single lvalue and its computation type.
+    Update { target: Box<CheckedExpr>, increment: bool, postfix: bool, computation_ty: CType },
     Call(Box<CheckedExpr>, Vec<CheckedExpr>),
     Convert(Box<CheckedExpr>),
     Load(Box<CheckedExpr>),
@@ -1284,6 +1286,34 @@ impl Checker {
                 let result_ty = lhs.ty.clone();
                 Ok(CheckedExpr::value(result_ty, CheckedExprKind::CompoundAssign(
                     *op, Box::new(lhs), Box::new(rhs_checked), computation_ty)))
+            }
+            Expr::Update { target, increment, postfix } => {
+                let target_span = target.location().unwrap_or(span);
+                let checked = self.check_expr(target, target_span)?;
+                if checked.category != Category::LValue
+                    || !(checked.ty.is_integer() || matches!(checked.ty, CType::Pointer(_)))
+                {
+                    return Err(Diagnostic::coded(target_span,
+                        DiagnosticCode::SemanticInvalidAssignmentTarget,
+                        "increment/decrement requires a modifiable integer or pointer lvalue"));
+                }
+                let computation_ty = if let CType::Pointer(pointee) = &checked.ty {
+                    let complete = self.complete_tag_type(pointee.as_ref().clone(), target_span)?;
+                    if complete.size_bytes(self.target).is_none() {
+                        return Err(type_error(target_span,
+                            "increment/decrement requires pointer to complete object type"));
+                    }
+                    CType::Pointer(Box::new(complete))
+                } else {
+                    self.target.promote(&checked.ty)
+                };
+                let ty = checked.ty.clone();
+                Ok(CheckedExpr::value(ty, CheckedExprKind::Update {
+                    target: Box::new(checked),
+                    increment: *increment,
+                    postfix: *postfix,
+                    computation_ty,
+                }))
             }
             Expr::Call(callee, args) => {
                 let callee_span = callee.location().unwrap_or(span);

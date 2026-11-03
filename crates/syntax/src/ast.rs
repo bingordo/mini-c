@@ -112,6 +112,8 @@ pub enum Expr {
     Assign(Box<Expr>, Box<Expr>),
     /// Single-evaluation compound assignment; op is the underlying binary operation.
     CompoundAssign(BinOp, Box<Expr>, Box<Expr>),
+    /// C prefix/postfix ++/--. Bool is increment (true) or decrement (false).
+    Update { target: Box<Expr>, increment: bool, postfix: bool },
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnOp {

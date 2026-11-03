@@ -886,6 +886,31 @@ impl Lower<'_> {
                     Ok(rhs_value)
                 }
             }
+            CheckedExprKind::Update { target, increment, postfix, computation_ty } => {
+                // ++ and -- must evaluate the lvalue's address exactly once.
+                // Postfix yields the loaded old value; prefix the stored new one.
+                let address = self.place(b, target)?;
+                let old = b.ins().load(scalar_type(&target.ty)?,
+                    ir::MemFlagsData::new(), address, 0);
+                let stored = if let CType::Pointer(element) = computation_ty {
+                    let width = element.size_bytes(Target::default())
+                        .ok_or("increment/decrement requires complete pointer element")?;
+                    let width = i64::try_from(width)
+                        .map_err(|_| "pointer element exceeds supported offset")?;
+                    b.ins().iadd_imm_s(old, if *increment { width } else { -width })
+                } else {
+                    let promoted = Self::convert(b, old, &target.ty, computation_ty)?;
+                    let one = b.ins().iconst(scalar_type(computation_ty)?, 1);
+                    let computed = if *increment {
+                        b.ins().iadd(promoted, one)
+                    } else {
+                        b.ins().isub(promoted, one)
+                    };
+                    Self::convert(b, computed, computation_ty, &target.ty)?
+                };
+                b.ins().store(ir::MemFlagsData::new(), stored, address, 0);
+                Ok(if *postfix { old } else { stored })
+            }
             CheckedExprKind::CompoundAssign(op, lhs, rhs, computation_ty) => {
                 // Never lower as lhs = lhs op rhs: a subscript, dereference,
                 // or member expression may compute an address with side effects.
@@ -1339,6 +1364,27 @@ mod tests {
                    a += 2; a -= 1; a *= 2; a /= 3; a %= 5; \
                    return c+a; }";
         assert!(!compile_source(src).unwrap().is_empty());
+    }
+
+    #[test]
+    fn compiles_prefix_postfix_updates_without_recomputing_lvalue() {
+        let source = "int calls; int value=3; \
+            int *slot(void) { calls += 1; return &value; } \
+            int main(void) { int old=(*slot())++; \
+                int after=++*slot(); \
+                return old+after+calls; }";
+        let obj = compile_source(source).unwrap();
+        assert_eq!(&obj[..4], b"\x7fELF");
+    }
+
+    #[test]
+    fn compiles_pointer_increment_decrement_and_narrow_assignment_values() {
+        let source = "struct Pair { int x; int y; }; \
+            int main(void) { struct Pair a[3]; \
+                struct Pair *p=a; p++; ++p; p--; \
+                unsigned char c=0; int saved=(c=260); \
+                return saved+c; }";
+        assert!(!compile_source(source).unwrap().is_empty());
     }
 
 }

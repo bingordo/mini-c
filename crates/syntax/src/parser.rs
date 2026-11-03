@@ -323,6 +323,18 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_unary(&mut self) -> Result<Expr, Diagnostic> {
+        if let Some(increment) = self.peek()?.and_then(|t| match t.text {
+            "++" => Some(true),
+            "--" => Some(false),
+            _ => None,
+        }) {
+            let prefix = self.take()?.expect("peeked update operator");
+            let inner = self.parse_unary()?;
+            let end = inner.location().map_or(prefix.span.hi, |loc| loc.hi);
+            return Ok(self.located(Expr::Update {
+                target: Box::new(inner), increment, postfix: false,
+            }, Span { lo: prefix.span.lo, hi: end }));
+        }
         if let Some(op) = self.peek()?.and_then(|t| match t.text {
             "+" => Some(UnOp::Plus),
             "-" => Some(UnOp::Neg),
@@ -411,6 +423,15 @@ impl<'a> Parser<'a> {
                     let start = expr.location().map_or(token.span.lo, |span| span.lo);
                     expr = self.located(Expr::Member(Box::new(expr), token.text.to_owned(), arrow),
                         Span { lo: start, hi: token.span.hi });
+                }
+                Some("++") | Some("--") => {
+                    let token = self.take()?.expect("peeked postfix update");
+                    let start = expr.location().map_or(token.span.lo, |loc| loc.lo);
+                    expr = self.located(Expr::Update {
+                        target: Box::new(expr),
+                        increment: token.text == "++",
+                        postfix: true,
+                    }, Span { lo: start, hi: token.span.hi });
                 }
                 _ => break,
             }

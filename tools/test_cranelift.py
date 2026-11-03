@@ -14,6 +14,29 @@ import subprocess
 import sys
 
 PROGRAMS = {
+    "increment_postfix_vs_prefix": """int main(void) {
+        int x=3; int old=x++; int now=++x; return old*10+now; }""",
+    "decrement_postfix_vs_prefix": """int main(void) {
+        int x=7; int old=x--; int now=--x; return old*10+now; }""",
+    "increment_dereference_once": """int calls; int x=3;
+        int *slot(void) { calls += 1; return &x; }
+        int main(void) { int old=(*slot())++;
+            int now=++*slot(); return calls*50+old*10+now; }""",
+    "increment_pointer_array_elements": """int main(void) {
+        int a[3]; a[0]=5; a[1]=17; a[2]=19;
+        int *p=a; int x=*p++; int y=*++p;
+        return x+y+*p; }""",
+    "increment_struct_pointer_scaling": """struct Pair { int x; int y; };
+        struct Pair a[3];
+        int main(void) { a[0].x=3; a[1].x=7; a[2].x=11;
+            struct Pair *p=a; p++; ++p; p--;
+            return p->x; }""",
+    "assignment_expression_narrowing": """int main(void) {
+        unsigned char c=0; int saved=(c=260);
+        return saved*10+c; }""",
+    "assignment_expression_chain": """int main(void) {
+        int a=0; int b=0; int c=0;
+        int saved=(a=b=c=7); return saved+a+b+c; }""",
     "arithmetic_compound_scalar": """int main(void) {
         int a=17; int b=3; a += b *= 2; a -= 1;
         a *= 4; a /= 3; a %= 9; return a+b; }""",

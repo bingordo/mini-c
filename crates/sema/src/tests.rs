@@ -1110,3 +1110,29 @@ fn arithmetic_compound_assignments_support_integer_and_pointer_lvalues() {
     reject("int f(void *p) { p += 1; return 0; }", "complete object type");
     reject("int f(int x) { (x+1) += 2; return x; }", "modifiable integer lvalue");
 }
+
+
+#[test]
+fn prefix_and_postfix_updates_validate_modifiable_scalar_lvalues() {
+    check("int f(int *p) { int old=(*p)++; int new=++*p; return old+new; }").unwrap();
+    check("int f(void) { unsigned char c=1; c++; --c; return c++; }").unwrap();
+    check("int f(int *p) { p++; --p; return *p; }").unwrap();
+    check("int f(void) { struct Pair { int x; int y; }; struct Pair a[2]; struct Pair *p=a; p++; --p; return 0; }").unwrap();
+    reject("int f(int x) { ++(x+1); return x; }",
+        "increment/decrement requires a modifiable");
+    reject("int f(int x) { (x++)++; return x; }",
+        "increment/decrement requires a modifiable");
+    reject("int f(void *p) { p++; return 0; }",
+        "pointer to complete object type");
+    reject("int f(void) { int a[2]; a++; return 0; }",
+        "increment/decrement requires a modifiable");
+    reject("int x; int a=x++;", "integer constant expression");
+}
+
+#[test]
+fn nested_assignments_preserve_types_and_value_categories() {
+    check("int f(void) { int a=0; int b=0; return (a=b=5)+a+b; }").unwrap();
+    check("int f(void) { unsigned char x=0; return (x=260) == 4; }").unwrap();
+    reject("int f(void) { int a=0; (a=3)=4; return a; }",
+        "modifiable lvalue");
+}

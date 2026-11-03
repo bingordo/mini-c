@@ -66,6 +66,8 @@ Multiplicative: Expr = {
     Unary,
 };
 Unary: Expr = {
+    "++" <e:Unary> => Expr::Update { target: Box::new(e), increment: true, postfix: false },
+    "--" <e:Unary> => Expr::Update { target: Box::new(e), increment: false, postfix: false },
     "+" <e:Unary> => Expr::Unary(UnOp::Plus, Box::new(e)),
     "-" <e:Unary> => Expr::Unary(UnOp::Neg, Box::new(e)),
     "!" <e:Unary> => Expr::Unary(UnOp::Not, Box::new(e)),
@@ -75,6 +77,8 @@ Unary: Expr = {
     Postfix,
 };
 Postfix: Expr = {
+    <target:Postfix> "++" => Expr::Update { target: Box::new(target), increment: true, postfix: true },
+    <target:Postfix> "--" => Expr::Update { target: Box::new(target), increment: false, postfix: true },
     <callee:Postfix> "(" <args:CallArgs> ")" => Expr::Call(Box::new(callee), args),
     Primary,
 };
@@ -102,6 +106,8 @@ extern {
         "ident" => ExprToken::Ident(<&'input str>),
         "invalid" => ExprToken::Invalid(<&'input str>),
         "=" => ExprToken::Assign,
+        "++" => ExprToken::PlusPlus,
+        "--" => ExprToken::MinusMinus,
         "+=" => ExprToken::AddAssign,
         "-=" => ExprToken::SubAssign,
         "*=" => ExprToken::MulAssign,
