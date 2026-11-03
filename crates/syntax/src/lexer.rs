@@ -358,4 +358,16 @@ mod tests {
         }
     }
 
+    #[test]
+    fn hexadecimal_and_octal_token_spans() {
+        let tokens = scan("x=0x7f; y=0X2A; z=077;").unwrap();
+        let numbers: Vec<_> = tokens.iter().filter(|t| t.kind == TokenKind::Number).collect();
+        assert_eq!(numbers.iter().map(|t| t.text).collect::<Vec<_>>(),
+            ["0x7f", "0X2A", "077"]);
+        assert_eq!(numbers[0].span, Span { lo: 2, hi: 6 });
+        for bad in ["0x", "0X", "0xG", "0x1g", "123u", "0b101"] {
+            assert!(scan(bad).is_err(), "{bad}");
+        }
+    }
+
 }
