@@ -32,6 +32,8 @@ pub enum CheckedExprKind {
     Binary(BinOp, Box<CheckedExpr>, Box<CheckedExpr>),
     /// Sequenced left-to-right comma; result is always a non-lvalue.
     Comma(Box<CheckedExpr>, Box<CheckedExpr>),
+    /// Lazy, non-lvalue C conditional; both arms are coerced to one result type.
+    Conditional(Box<CheckedExpr>, Box<CheckedExpr>, Box<CheckedExpr>),
     Assign(Box<CheckedExpr>, Box<CheckedExpr>),
     /// The compound operator is applied to the old lvalue and right operand
     /// at computation_ty, then narrowed once to the lvalue type.
@@ -1266,6 +1268,56 @@ impl Checker {
                 let right = self.convert(right, &common);
                 let result = if relation { CType::int() } else { common };
                 Ok(CheckedExpr::value(result, CheckedExprKind::Binary(*op, Box::new(left), Box::new(right))))
+            }
+            Expr::Conditional(condition, yes, no) => {
+                let condition = self.check_condition(condition, span)?;
+                // Type-check both alternatives, but only one will be executed.
+                // Both are value contexts, including array/function decay.
+                let yes = self.check_expr(yes, span)?.rvalue();
+                let no = self.check_expr(no, span)?.rvalue();
+                let ty = if let Some(integer) =
+                    self.target.common_integer(&yes.ty, &no.ty)
+                {
+                    integer
+                } else if yes.ty == CType::Void && no.ty == CType::Void {
+                    CType::Void
+                } else if matches!((&yes.ty, &no.ty),
+                    (CType::Struct { .. }, CType::Struct { .. }) |
+                    (CType::Union { .. }, CType::Union { .. }))
+                    && yes.ty.same_type(&no.ty)
+                {
+                    yes.ty.clone()
+                } else if let (CType::Pointer(a), CType::Pointer(b)) =
+                    (&yes.ty, &no.ty)
+                {
+                    if a.same_type(b) {
+                        yes.ty.clone()
+                    } else if **a == CType::Void || **b == CType::Void {
+                        CType::Pointer(Box::new(CType::Void))
+                    } else {
+                        return Err(Diagnostic::coded(span,
+                            DiagnosticCode::SemanticInvalidOperatorOperands,
+                            "conditional operands require compatible types"));
+                    }
+                } else if matches!(&yes.ty, CType::Pointer(_))
+                    && no.ty.is_integer()
+                    && const_eval::evaluate(&no, self.target) == Ok(0)
+                {
+                    yes.ty.clone()
+                } else if matches!(&no.ty, CType::Pointer(_))
+                    && yes.ty.is_integer()
+                    && const_eval::evaluate(&yes, self.target) == Ok(0)
+                {
+                    no.ty.clone()
+                } else {
+                    return Err(Diagnostic::coded(span,
+                        DiagnosticCode::SemanticInvalidOperatorOperands,
+                        "conditional operands require compatible types"));
+                };
+                let yes = self.convert(yes, &ty);
+                let no = self.convert(no, &ty);
+                Ok(CheckedExpr::value(ty, CheckedExprKind::Conditional(
+                    Box::new(condition), Box::new(yes), Box::new(no))))
             }
             Expr::Comma(lhs, rhs) => {
                 // Both operands undergo their ordinary value conversions.

@@ -873,6 +873,34 @@ impl Lower<'_> {
                     UnOp::Address | UnOp::Deref => unreachable!(),
                 }
             }
+            CheckedExprKind::Conditional(condition, yes, no) => {
+                // Build separate blocks: evaluating both operands and using a
+                // select would incorrectly execute the unchosen side effects.
+                let test = self.condition(b, condition)?;
+                let then_block = b.create_block();
+                let else_block = b.create_block();
+                let join = b.create_block();
+                let ty = match &expr.ty {
+                    CType::Void => types::I32, // no meaningful result value
+                    CType::Struct { .. } | CType::Union { .. } => types::I64,
+                    other => scalar_type(other)?,
+                };
+                let result = b.declare_var(ty);
+                b.ins().brif(test, then_block, &[], else_block, &[]);
+
+                b.switch_to_block(then_block);
+                let left_value = self.expression(b, yes)?;
+                b.def_var(result, left_value);
+                b.ins().jump(join, &[]);
+
+                b.switch_to_block(else_block);
+                let right_value = self.expression(b, no)?;
+                b.def_var(result, right_value);
+                b.ins().jump(join, &[]);
+
+                b.switch_to_block(join);
+                Ok(b.use_var(result))
+            }
             CheckedExprKind::Comma(left, right) => {
                 // C comma expressions provide a sequence point. Preserve
                 // effects from the left before computing the right value.
@@ -1484,6 +1512,21 @@ mod tests {
             "int main(void) { int i=0; int checks=0; do { i++; if(i==1)continue; } while (checks++, i<3); return i*10+checks; }",
             "int main(void) { int i=0; do { ++i; if(i==1)break; } while(i<10); return i; }",
             "int main(void) { int sum=0; for(int i=0;i<3;i++) { int j=0; do { ++j; if(j==2)continue; sum+=i+j; } while(j<3); } return sum; }",
+        ];
+        for source in sources {
+            let object = compile_source(source).unwrap();
+            assert_eq!(&object[..4], b"\x7fELF");
+        }
+    }
+
+    #[test]
+    fn compiles_lazy_conditional_integer_pointer_and_void_branches() {
+        let sources = [
+            "int main(void) { int x=0; int y=1 ? ++x : ++x; return y+x; }",
+            "int main(void) { int x=2; return 0 ? 20/(x-x) : 9; }",
+            "int main(void) { int x=4; int *p=1 ? &x : 0; return *p; }",
+            "void touch(void) { return; } int main(void) { 1 ? touch() : touch(); return 0; }",
+            "int main(void) { int c=0; return c ? 2 : c ? 4 : 7; }",
         ];
         for source in sources {
             let object = compile_source(source).unwrap();
