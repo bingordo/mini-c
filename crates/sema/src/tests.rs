@@ -1182,3 +1182,28 @@ fn do_while_statements_are_post_test_loops_with_scoped_bodies() {
     reject("int f(void) { struct S { int x; }; struct S s; do { } while (s); return 0; }",
         "condition requires a scalar type");
 }
+
+
+#[test]
+fn conditional_operator_types_lazy_branches_and_null_pointers() {
+    check("int main(void) { int x=0; return 1 ? 7 : (x=99); }").unwrap();
+    check("int main(void) { int x=0; return 0 ? (x=99) : 7; }").unwrap();
+    check("int main(void) { unsigned char c=255; long x=9; return 1 ? c : x; }").unwrap();
+    check("int main(void) { int x=5; int *p=1 ? &x : 0; return *p; }").unwrap();
+    check("int main(void) { int x=5; int *p=0 ? 0 : &x; return *p; }").unwrap();
+    check("int main(void) { int x=5; void *p=0; int *q=&x; return (1 ? q : p) == q; }").unwrap();
+    check("struct S { int x; }; int main(void) { struct S a={3}; struct S b={7}; struct S c=1 ? a : b; return c.x; }").unwrap();
+    check("void touch(void) { return; } int main(void) { 1 ? touch() : touch(); return 0; }").unwrap();
+    check("int main(void) { int x=2; return (1 ? x : x+1); }").unwrap();
+    check("int a = 1 ? 9 : 1/0; int b = 0 ? 1/0 : 3;").unwrap();
+    reject("int main(void) { int x=0; int y=1; (1 ? x : y) = 3; return x; }",
+        "modifiable lvalue");
+    reject("int main(void) { int x=0; int y=1; (1 ? x : y)++; return x; }",
+        "modifiable");
+    reject("int main(void) { return 1 ? 2 : (void)0; }",
+        "expected expression");
+    reject("int main(void) { int x=0; int *p=&x; return 1 ? p : 3; }",
+        "conditional operands require compatible types");
+    reject("void mark(void) { return; } int main(void) { return 1 ? mark() : 3; }",
+        "conditional operands require compatible types");
+}
