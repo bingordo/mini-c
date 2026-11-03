@@ -4,10 +4,16 @@ The compiler's [S9 investigation](https://github.com/bingordo/compiler/blob/main
 
 ## Reproducible frontend acceptance
 
-Run from a Mini-C checkout with the checker already built and a **local** checkout of `bingordo/compiler`:
+Run from a Mini-C checkout with the checker already built. The twelve fixture files are retained byte-for-byte in `tests/fixtures/musl-s9`, together with the musl MIT license and a manifest of source Git blob hashes. CI checks that every file still matches its pinned hash, without requiring credentials to the private compiler repository:
 
 ```sh
 cargo build -p mini-c
+python3 tools/test_musl_s9.py
+```
+
+To compare against a separately available checkout of `bingordo/compiler`:
+
+```sh
 python3 tools/test_musl_s9.py --compiler-repo ../compiler
 ```
 
