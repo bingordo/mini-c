@@ -52,6 +52,7 @@ pub enum Type {
     Char,
     Int,
     Long,
+    LongLong,
     Alias(Ident),
     Signed(Box<Type>),
     Unsigned(Box<Type>),
