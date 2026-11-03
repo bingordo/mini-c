@@ -54,9 +54,9 @@ fn signed_unsigned_and_char_specifier_orders_retain_type_meaning() {
 fn rejected_duplicate_and_conflicting_specifiers_have_precise_diagnostics() {
     for source in [
         "unsigned signed int bad;", "signed unsigned int bad;",
-        "long long bad;", "long char bad;", "char int bad;",
+        "long long long bad;", "long char bad;", "char int bad;",
         "int int bad;", "unsigned unsigned bad;",
-        "long unsigned long bad;", "char char bad;",
+        "long unsigned long long bad;", "char char bad;",
     ] {
         let error = Parser::new(source).next_item().unwrap_err();
         assert_eq!(error.code, DiagnosticCode::SyntaxInvalidDeclaration,
@@ -78,4 +78,26 @@ fn csmith_style_parameter_declarations_accept_any_integer_specifier_order() {
         Type::Unsigned(Box::new(Type::Long)),
         Type::Unsigned(Box::new(Type::Int)),
     ]);
+}
+
+#[test]
+fn long_long_orders_preserve_distinct_rank() {
+    for spelling in [
+        "long long", "long long int", "long int long", "int long long",
+        "signed long long", "long signed long int",
+    ] {
+        let source = format!("{spelling} x;");
+        let Some(ExternalItem::Declaration(d)) = Parser::new(&source).next_item().unwrap()
+        else { panic!("declaration expected: {spelling}"); };
+        let expected = if spelling.contains("signed") {
+            Type::Signed(Box::new(Type::LongLong))
+        } else { Type::LongLong };
+        assert_eq!(d.ty, expected, "{spelling}");
+    }
+    for spelling in ["unsigned long long", "long unsigned long int", "int long long unsigned"] {
+        let source = format!("{spelling} x;");
+        let Some(ExternalItem::Declaration(d)) = Parser::new(&source).next_item().unwrap()
+        else { panic!("declaration expected: {spelling}"); };
+        assert_eq!(d.ty, Type::Unsigned(Box::new(Type::LongLong)), "{spelling}");
+    }
 }

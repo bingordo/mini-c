@@ -5,7 +5,7 @@ use mini_c_syntax::diag::Diagnostic;
 use mini_c_syntax::integer_literal::IntegerLiteral;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum IntRank { Char, Int, Long }
+pub enum IntRank { Char, Int, Long, LongLong }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructMember {
@@ -203,7 +203,7 @@ impl Target {
     }
 
     pub fn bits(self, rank: IntRank) -> u16 {
-        match rank { IntRank::Char => 8, IntRank::Int => self.int_bits, IntRank::Long => self.long_bits }
+        match rank { IntRank::Char => 8, IntRank::Int => self.int_bits, IntRank::Long => self.long_bits, IntRank::LongLong => 64 }
     }
 
     pub fn promote(self, ty: &CType) -> CType {
@@ -235,21 +235,26 @@ impl Target {
         Some(CType::Integer { rank, unsigned })
     }
 
-    /// C17 6.4.4.1 first-representable-type rule, within the supported
-    /// int/long LP64 or ILP32 target model. Unsupported long long is not
-    /// silently substituted, and decimal unsuffixed constants stay signed.
+    /// C17 6.4.4.1 first-representable-type rule.
+    /// LongLong has a *distinct rank* and a 64-bit representation even on
+    /// models with a narrower long (ILP32). This subset does not model
+    /// implementations where long long exceeds 64 bits.
     pub fn integer_literal(self, literal: IntegerLiteral) -> Option<CType> {
-        use IntRank::{Int, Long};
+        use IntRank::{Int, Long, LongLong as LL};
         let choices: &[(IntRank, bool)] = match (
-            literal.nondecimal, literal.unsigned, literal.long
+            literal.nondecimal, literal.unsigned, literal.long, literal.long_long
         ) {
-            (_, true, true) => &[(Long, true)],
-            (_, true, false) => &[(Int, true), (Long, true)],
-            (false, false, true) => &[(Long, false)],
-            (true, false, true) => &[(Long, false), (Long, true)],
-            (false, false, false) => &[(Int, false), (Long, false)],
-            (true, false, false) => &[
-                (Int, false), (Int, true), (Long, false), (Long, true)
+            (_, true, _, true) => &[(LL, true)],
+            (false, false, _, true) => &[(LL, false)],
+            (true, false, _, true) => &[(LL, false), (LL, true)],
+            (_, true, true, false) => &[(Long, true), (LL, true)],
+            (false, false, true, false) => &[(Long, false), (LL, false)],
+            (true, false, true, false) => &[(Long, false), (Long, true), (LL, false), (LL, true)],
+            (_, true, false, false) => &[(Int, true), (Long, true), (LL, true)],
+            (false, false, false, false) => &[(Int, false), (Long, false), (LL, false)],
+            (true, false, false, false) => &[
+                (Int, false), (Int, true), (Long, false), (Long, true),
+                (LL, false), (LL, true),
             ],
         };
         for &(rank, unsigned) in choices {
@@ -267,7 +272,7 @@ impl Target {
     }
 
     pub fn decimal_literal(self, value: u64) -> Option<CType> {
-        for rank in [IntRank::Int, IntRank::Long] {
+        for rank in [IntRank::Int, IntRank::Long, IntRank::LongLong] {
             let bits = self.bits(rank);
             let maximum = (1u128 << (bits - 1)) - 1;
             if u128::from(value) <= maximum {
@@ -276,6 +281,7 @@ impl Target {
         }
         None
     }
+
 }
 
 pub fn type_error(span: Span, message: impl Into<String>) -> Diagnostic {

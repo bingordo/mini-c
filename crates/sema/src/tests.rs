@@ -1266,7 +1266,7 @@ fn integer_constant_c_type_selection_and_unsigned_ranges() {
         "integer constant exceeds supported");
     reject("long f(void) { return 18446744073709551615; }",
         "decimal literal exceeds supported");
-    reject("int f(void) { return 7llu; }", "suffix");
+    check("int f(void) { return 7llu; }").unwrap();
 }
 
 #[test]
@@ -1280,7 +1280,7 @@ fn nondecimal_type_selection_respects_nondefault_target_widths() {
         ("0x10000", Some((IntRank::Long, false))),
         ("0x80000000", Some((IntRank::Long, true))),
         ("0xffffffff", Some((IntRank::Long, true))),
-        ("0x100000000", None),
+        ("0x100000000", Some((IntRank::LongLong, false))),
         ("65535", Some((IntRank::Long, false))),
         ("65535U", Some((IntRank::Int, true))),
         ("65536U", Some((IntRank::Long, true))),
@@ -1291,4 +1291,31 @@ fn nondecimal_type_selection_respects_nondefault_target_widths() {
         let expected = expected.map(|(rank, unsigned)| CType::Integer { rank, unsigned });
         assert_eq!(selected, expected, "{spelling}");
     }
+}
+
+#[test]
+fn long_long_distinct_rank_literal_and_usual_arithmetic_conversions() {
+    use mini_c_syntax::integer_literal::decode_integer_literal;
+    let model = Target { int_bits: 32, long_bits: 32, ..Target::default() };
+    let ll = CType::Integer { rank: IntRank::LongLong, unsigned: false };
+    let ull = CType::Integer { rank: IntRank::LongLong, unsigned: true };
+    let ul = CType::Integer { rank: IntRank::Long, unsigned: true };
+    assert_eq!(model.bits(IntRank::LongLong), 64);
+    assert_eq!(model.bits(IntRank::Long), 32);
+    for text in ["2147483648LL", "0x100000000LL", "9223372036854775807LL"] {
+        assert_eq!(model.integer_literal(decode_integer_literal(text).unwrap()), Some(ll.clone()));
+    }
+    for text in ["18446744073709551615ULL", "0xffffffffffffffffULL"] {
+        assert_eq!(model.integer_literal(decode_integer_literal(text).unwrap()), Some(ull.clone()));
+    }
+    assert_eq!(model.integer_literal(decode_integer_literal("4294967295UL").unwrap()), Some(ul.clone()));
+    assert_eq!(model.integer_literal(decode_integer_literal("4294967296UL").unwrap()), Some(ull.clone()));
+    assert_eq!(model.integer_literal(decode_integer_literal("0xffffffff").unwrap()), Some(CType::Integer { rank: IntRank::Int, unsigned: true }));
+    assert_eq!(model.common_integer(&ul, &ll), Some(ll.clone()));
+    assert_eq!(model.common_integer(&ull, &ll), Some(ull));
+    check("long long f(long long x) { return x + 1LL; }").unwrap();
+    check("unsigned long long f(unsigned long long x) { return x + 0xffffffffffffffffULL; }").unwrap();
+    check("long long f(void) { return 9223372036854775807LL; }").unwrap();
+    reject("long long f(void) { return 9223372036854775808LL; }", "integer constant exceeds");
+    reject("int f(void) { return 1LLL; }", "suffix");
 }

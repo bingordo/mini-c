@@ -874,17 +874,17 @@ impl<'a> Parser<'a> {
                 // C integer declaration specifiers are order-independent:
                 // glibc's standard typedef 'long unsigned int size_t' must
                 // mean exactly the same type as 'unsigned long int'.
-                // Fail closed on duplicates and unsupported long long rather
-                // than quietly treating a second specifier as a declarator.
+                // Accept one or two 'long' specifiers, retaining the distinct
+                // long long rank even if its representation equals long.
                 let mut is_char = false;
                 let mut is_int = false;
-                let mut is_long = false;
+                let mut long_count = 0u8;
                 let mut sign: Option<bool> = None;
                 while let Some(next) = self.peek()? {
                     match next.text {
-                        "char" if !is_char && !is_int && !is_long => is_char = true,
+                        "char" if !is_char && !is_int && long_count == 0 => is_char = true,
                         "int" if !is_int && !is_char => is_int = true,
-                        "long" if !is_long && !is_char => is_long = true,
+                        "long" if long_count < 2 && !is_char => long_count += 1,
                         "unsigned" if sign.is_none() => sign = Some(true),
                         "signed" if sign.is_none() => sign = Some(false),
                         "char" | "int" | "long" | "unsigned" | "signed" => {
@@ -897,7 +897,8 @@ impl<'a> Parser<'a> {
                     self.take()?;
                 }
                 let base = if is_char { Type::Char }
-                    else if is_long { Type::Long }
+                    else if long_count == 2 { Type::LongLong }
+                    else if long_count == 1 { Type::Long }
                     else { Type::Int };
                 match sign {
                     Some(true) => Type::Unsigned(Box::new(base)),

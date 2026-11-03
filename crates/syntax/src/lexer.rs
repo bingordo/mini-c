@@ -370,7 +370,7 @@ mod tests {
         assert_eq!(suffixes.iter().filter(|t| t.kind == TokenKind::Number)
             .map(|t| t.text).collect::<Vec<_>>(),
             ["12U", "0x80000000Lu", "077UL"]);
-        for bad in ["0x", "0X", "0xG", "0x1g", "123abc", "123ll", "0b101"] {
+        for bad in ["0x", "0X", "0xG", "0x1g", "123abc", "123lll", "123lul", "0b101"] {
             assert!(scan(bad).is_err(), "{bad}");
         }
     }
