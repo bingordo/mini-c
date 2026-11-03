@@ -88,6 +88,11 @@ pub enum Stmt {
         cond: Expr,
         body: Box<Stmt>,
     },
+    /// C post-test loop: execute the body at least once.
+    DoWhile {
+        body: Box<Stmt>,
+        cond: Expr,
+    },
     /// The initializer declaration has a scope spanning condition, step, and body.
     For {
         init: Option<Box<Stmt>>,
