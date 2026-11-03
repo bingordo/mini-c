@@ -245,7 +245,7 @@ impl Target {
             literal.nondecimal, literal.unsigned, literal.long, literal.long_long
         ) {
             (_, true, _, true) => &[(LL, true)],
-            (_, false, false, true) => &[(LL, false), (LL, true)],
+            (_, false, _, true) => &[(LL, false), (LL, true)],
             (_, true, true, false) => &[(Long, true), (LL, true)],
             (false, false, true, false) => &[(Long, false), (LL, false)],
             (true, false, true, false) => &[(Long, false), (Long, true), (LL, false), (LL, true)],
