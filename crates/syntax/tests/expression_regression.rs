@@ -169,3 +169,28 @@ fn arithmetic_compound_assignments_parse_with_right_associativity() {
             Box::new(Expr::CompoundAssign(BinOp::Mul,
                 Box::new(name("b")), Box::new(Expr::Int(3))))));
 }
+
+
+#[test]
+fn prefix_and_postfix_updates_have_correct_precedence() {
+    let parse = |s: &str| parse_expression(s).unwrap();
+    assert_eq!(parse("++a"), Expr::Update {
+        target: Box::new(name("a")), increment: true, postfix: false,
+    });
+    assert_eq!(parse("--a"), Expr::Update {
+        target: Box::new(name("a")), increment: false, postfix: false,
+    });
+    assert_eq!(parse("a++"), Expr::Update {
+        target: Box::new(name("a")), increment: true, postfix: true,
+    });
+    assert_eq!(parse("a--"), Expr::Update {
+        target: Box::new(name("a")), increment: false, postfix: true,
+    });
+    assert_eq!(parse("++a * b--"), Expr::Binary(BinOp::Mul,
+        Box::new(parse("++a")), Box::new(parse("b--"))));
+    assert_eq!(parse("*p++"), Expr::Unary(
+        mini_c_syntax::ast::UnOp::Deref, Box::new(parse("p++"))));
+    assert_eq!(parse("(*p)++"), Expr::Update {
+        target: Box::new(parse("*p")), increment: true, postfix: true,
+    });
+}
