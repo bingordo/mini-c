@@ -82,6 +82,104 @@ fn emit_pointer_update_case(source: &mut String, rng: &mut Rng) {
     ));
 }
 
+/// Add a conditional operation to the numeric trace. The threshold is
+/// chosen independently of C codegen so either arm can be selected, and the
+/// branch counters detect eager evaluation of the unselected expression.
+fn emit_conditional_step(
+    source: &mut String, rng: &mut Rng,
+    value: &mut i32, instructions: &mut Vec<Instruction>,
+) {
+    let choose_true = rng.range(2) == 0;
+    let nested = rng.range(3) == 0;
+    let choose_inner = rng.range(2) == 0;
+    let delta = (rng.range(5) + 1) as i32;
+    let instruction = Instruction {
+        op: if choose_true { Op::Add } else { Op::Sub },
+        rhs: delta,
+    };
+    let Some(next) = checked_step(*value, instruction)
+        .filter(|v| (-32767..=32767).contains(v))
+    else {
+        return;
+    };
+    // value+1 remains well inside the signed int range, even at 32767.
+    let threshold = *value + i32::from(!choose_true);
+    if nested {
+        let inner_threshold = *value + i32::from(!choose_inner);
+        let inner_yes = i32::from(choose_true && choose_inner);
+        let inner_no = i32::from(choose_true && !choose_inner);
+        let else_calls = i32::from(!choose_true);
+        source.push_str(&format!(
+            "/* conditional-nested outer={} inner={} */\n\
+             {{ int inner_yes=0; int inner_no=0; int else_calls=0; \
+             int observed=(x >= {threshold}) \
+             ? ((x >= {inner_threshold}) \
+                ? (inner_yes++,x+={delta}) : (inner_no++,x+={delta})) \
+             : (else_calls++,x-={delta}); \
+             if (observed!={next} || x!={next} || inner_yes!={inner_yes} \
+                 || inner_no!={inner_no} || else_calls!={else_calls}) return 0; }}\n",
+            i32::from(choose_true), i32::from(choose_inner),
+        ));
+    } else {
+        let yes_calls = i32::from(choose_true);
+        let no_calls = i32::from(!choose_true);
+        source.push_str(&format!(
+            "/* conditional-simple chosen={} */\n\
+             {{ int yes_calls=0; int no_calls=0; \
+             int observed=(x >= {threshold}) \
+                ? (yes_calls++,x+={delta}) : (no_calls++,x-={delta}); \
+             if (observed!={next} || x!={next} \
+                 || yes_calls!={yes_calls} || no_calls!={no_calls}) return 0; }}\n",
+            i32::from(choose_true),
+        ));
+    }
+    *value = next;
+    instructions.push(instruction);
+}
+
+/// Exercise conditional *types* without modifying x or the numeric trace.
+/// Expected values and selected pointers are determined by the Rust generator
+/// rather than by evaluating any Mini-C-generated IR. Both truth values are
+/// emitted on every nonempty program to avoid relying on seed luck for coverage.
+fn emit_conditional_type_cases(source: &mut String, rng: &mut Rng, value: i32) {
+    for choose_true in [true, false] {
+        let threshold = value + i32::from(!choose_true);
+        let narrow = 215 + rng.range(40) as i32;
+        let wide = -(20 + rng.range(70) as i32);
+        let expected_numeric = if choose_true { narrow } else { wide };
+        let first = 11 + rng.range(30) as i32;
+        let second = first + 13;
+        let expected_pointed = if choose_true { first } else { second };
+        let expected_pointer = if choose_true { "p" } else { "q" };
+        let expected_nullable = if choose_true { "p" } else { "0" };
+        let expected_void = if choose_true { "p" } else { "v" };
+        // The unused division expression must never execute. A local variable
+        // avoids compiler diagnostics for a literal '1/0' in the source.
+        let lazy_expr = if choose_true {
+            "(x >= threshold_placeholder) ? 13 : (1/zero)"
+        } else {
+            "(x >= threshold_placeholder) ? (1/zero) : 13"
+        }.replace("threshold_placeholder", &threshold.to_string());
+        source.push_str(&format!(
+            "/* conditional-types chosen={} */\n\
+             {{ unsigned char narrow={narrow}; long wide={wide}; \
+                long selected=(x >= {threshold}) ? narrow : wide; \
+                if (selected!={expected_numeric}) return 0; \
+                int data[2]; data[0]={first}; data[1]={second}; \
+                int *p=data; int *q=data+1; \
+                int *picked=(x >= {threshold}) ? p : q; \
+                if (picked!={expected_pointer} || *picked!={expected_pointed}) return 0; \
+                int *nullable=(x >= {threshold}) ? p : 0; \
+                if (nullable!={expected_nullable}) return 0; \
+                void *v=q; void *mixed=(x >= {threshold}) ? p : v; \
+                if (mixed!={expected_void}) return 0; \
+                int zero=0; int lazy={lazy_expr}; \
+                if (lazy!=13) return 0; }}\n",
+            i32::from(choose_true),
+        ));
+    }
+}
+
 /// Independent oracle: checked i32 operations on a compact instruction stream.
 /// Generated values stay within the portable C int range [-32767, 32767].
 pub fn generate(seed: u64, steps: usize) -> Case {
@@ -143,6 +241,13 @@ pub fn generate(seed: u64, steps: usize) -> Case {
             }
         }
 
+        // A randomly selected ternary arm mutates x. The independent trace
+        // includes only the executed arm; counters test that the other arm
+        // (and any unselected nested conditional) was not evaluated.
+        if iteration % 11 == 10 {
+            emit_conditional_step(&mut source, &mut rng, &mut value, &mut instructions);
+        }
+
         // Conditional that never leaves the portable C int interval.
         // The recorded trace contains the *executed* branch only.
         if iteration % 13 == 12 {
@@ -175,6 +280,7 @@ pub fn generate(seed: u64, steps: usize) -> Case {
     }
     if steps != 0 {
         emit_pointer_update_case(&mut source, &mut rng);
+        emit_conditional_type_cases(&mut source, &mut rng, value);
     }
     source.push_str(&format!("return x == {};\n}}\n", value));
     Case { seed, instructions, expected: value, source }
