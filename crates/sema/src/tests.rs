@@ -1182,3 +1182,17 @@ fn do_while_statements_are_post_test_loops_with_scoped_bodies() {
     reject("int f(void) { struct S { int x; }; struct S s; do { } while (s); return 0; }",
         "condition requires a scalar type");
 }
+
+#[test]
+fn explicit_integer_casts_handle_typedefs_and_unsigned_conversions() {
+    check("int isdigit(int c) { return (unsigned)c-'0' < 10; }").unwrap();
+    check("int isalpha(int c) { return ((unsigned)c|32)-'a' < 26; }").unwrap();
+    check("typedef unsigned int U; int f(int x) { return (U)x + (int)(unsigned char)x; }").unwrap();
+    check("int f(int x) { int y=(int)(unsigned)x; return y; }").unwrap();
+    check("int f(int x) { return (unsigned long)(unsigned)x > 0; }").unwrap();
+    check("int f(void) { int x=3; return (x) + 2; }").unwrap();
+    check("int f(void) { unsigned int x=0; return (unsigned)(x=5); }").unwrap();
+    reject("int f(int *p) { return (unsigned)p; }", "integer operand");
+    reject("int f(int x) { return (void)x; }", "unsupported cast type-name");
+    check("typedef int T; int f(void) { int T=3; return (T)+1; }").unwrap();
+}
