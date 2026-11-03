@@ -1421,4 +1421,18 @@ mod tests {
         assert!(!compile_source(source).unwrap().is_empty());
     }
 
+    #[test]
+    fn compiles_for_loops_with_continue_increment_and_nested_breaks() {
+        let sources = [
+            "int main(void) { int s=0; for(int i=0;i<5;i++) { if(i==2)continue; s+=i; } return s; }",
+            "int main(void) { int i=0; for(;;) { i++; if(i==3)break; } return i; }",
+            "int main(void) { int s=0; for(int i=0;i<3;i++) for(int j=0;j<4;j++) { if(j==2)continue; if(i==2)break; s+=i+j; } return s; }",
+            "int main(void) { int i=7; for(int i=0;i<4;i++) {} return i; }",
+        ];
+        for source in sources {
+            let obj = compile_source(source).unwrap();
+            assert_eq!(&obj[..4], b"\x7fELF");
+        }
+    }
+
 }
