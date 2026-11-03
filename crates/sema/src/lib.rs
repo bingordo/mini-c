@@ -1138,6 +1138,12 @@ impl Checker {
                 let ty = self.target.decimal_literal(*number).ok_or_else(|| type_error(span, "decimal literal exceeds supported signed integer types"))?;
                 Ok(CheckedExpr::value(ty, CheckedExprKind::Literal(*number)))
             }
+            Expr::IntegerConstant(literal) => {
+                let ty = self.target.integer_literal(*literal).ok_or_else(|| type_error(
+                    span, "integer constant exceeds supported int/long type range"
+                ))?;
+                Ok(CheckedExpr::value(ty, CheckedExprKind::Literal(literal.value)))
+            }
             Expr::Name(name) => {
                 let symbol = self.lookup(name).ok_or_else(|| Diagnostic::coded(span, DiagnosticCode::SemanticUndeclaredIdentifier, format!("undeclared identifier '{name}'")))?;
                 let category = match symbol.kind {

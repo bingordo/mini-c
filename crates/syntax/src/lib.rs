@@ -132,7 +132,10 @@ mod tests {
         ] {
             assert_eq!(parse_expression(source).unwrap(), Expr::Int(value), "{source}");
         }
-        for source in ["0x", "0xG", "08", "0x80000000", "0xFFFFFFFF"] {
+        for source in ["0x80000000", "0xFFFFFFFF", "077UL", "123u", "123L"] {
+            assert!(matches!(parse_expression(source).unwrap(), Expr::IntegerConstant(_)), "{source}");
+        }
+        for source in ["0x", "0xG", "08", "0b101", "123ll"] {
             assert!(parse_expression(source).is_err(), "{source}");
         }
     }

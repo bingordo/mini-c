@@ -195,27 +195,28 @@ impl<'a> Scanner<'a> {
                         offset += 1;
                     }
                 }
+                // Keep C U/L suffixes as part of the number token. Validate
+                // the entire suffix here, never split an invalid token into
+                // a valid integer and a stray identifier.
                 if offset < source.len()
                     && (source.as_bytes()[offset].is_ascii_alphabetic()
                         || source.as_bytes()[offset] == b'_')
                 {
-                    // Advance past the whole unsupported suffix. Recovery must
-                    // never encounter the same error at the same source offset.
                     while offset < source.len()
                         && (source.as_bytes()[offset].is_ascii_alphanumeric()
                             || source.as_bytes()[offset] == b'_')
                     {
                         offset += 1;
                     }
-                    self.offset = offset;
-                    return Err(Diagnostic::coded(
-                        Span {
-                            lo: start,
-                            hi: offset,
-                        },
-                        crate::diag::DiagnosticCode::LexicalNumericSuffix,
-                        "unsupported numeric literal or suffix",
-                    ));
+                    let token = &source[start..offset];
+                    if crate::integer_literal::decode_integer_literal(token).is_err() {
+                        self.offset = offset;
+                        return Err(Diagnostic::coded(
+                            Span { lo: start, hi: offset },
+                            crate::diag::DiagnosticCode::LexicalNumericSuffix,
+                            "unsupported numeric literal or suffix",
+                        ));
+                    }
                 }
                 TokenKind::Number
             } else {
@@ -365,7 +366,11 @@ mod tests {
         assert_eq!(numbers.iter().map(|t| t.text).collect::<Vec<_>>(),
             ["0x7f", "0X2A", "077"]);
         assert_eq!(numbers[0].span, Span { lo: 2, hi: 6 });
-        for bad in ["0x", "0X", "0xG", "0x1g", "123u", "0b101"] {
+        let suffixes = scan("x=12U; y=0x80000000Lu; z=077UL;").unwrap();
+        assert_eq!(suffixes.iter().filter(|t| t.kind == TokenKind::Number)
+            .map(|t| t.text).collect::<Vec<_>>(),
+            ["12U", "0x80000000Lu", "077UL"]);
+        for bad in ["0x", "0X", "0xG", "0x1g", "123abc", "123ll", "0b101"] {
             assert!(scan(bad).is_err(), "{bad}");
         }
     }

@@ -2,6 +2,7 @@
 //! No host sizeof() assumptions: a caller selects the integer model.
 use mini_c_syntax::ast::{Span, TagKind};
 use mini_c_syntax::diag::Diagnostic;
+use mini_c_syntax::integer_literal::IntegerLiteral;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum IntRank { Char, Int, Long }
@@ -232,6 +233,37 @@ impl Target {
             (sr, true)
         };
         Some(CType::Integer { rank, unsigned })
+    }
+
+    /// C17 6.4.4.1 first-representable-type rule, within the supported
+    /// int/long LP64 or ILP32 target model. Unsupported long long is not
+    /// silently substituted, and decimal unsuffixed constants stay signed.
+    pub fn integer_literal(self, literal: IntegerLiteral) -> Option<CType> {
+        use IntRank::{Int, Long};
+        let choices: &[(IntRank, bool)] = match (
+            literal.nondecimal, literal.unsigned, literal.long
+        ) {
+            (_, true, true) => &[(Long, true)],
+            (_, true, false) => &[(Int, true), (Long, true)],
+            (false, false, true) => &[(Long, false)],
+            (true, false, true) => &[(Long, false), (Long, true)],
+            (false, false, false) => &[(Int, false), (Long, false)],
+            (true, false, false) => &[
+                (Int, false), (Int, true), (Long, false), (Long, true)
+            ],
+        };
+        for &(rank, unsigned) in choices {
+            let bits = self.bits(rank);
+            let max = if unsigned {
+                (1u128 << bits) - 1
+            } else {
+                (1u128 << (bits - 1)) - 1
+            };
+            if u128::from(literal.value) <= max {
+                return Some(CType::Integer { rank, unsigned });
+            }
+        }
+        None
     }
 
     pub fn decimal_literal(self, value: u64) -> Option<CType> {

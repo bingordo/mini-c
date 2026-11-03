@@ -1229,6 +1229,66 @@ fn pinned_s9_hex_integer_functions_typecheck_unchanged() {
     check("int isgraph(int c) { return (unsigned)c-0x21 < 0x5e; }").unwrap();
     check("int isprint(int c) { return (unsigned)c-0x20 < 0x5f; }").unwrap();
     check("int toascii(int c) { return c & 0x7f; }").unwrap();
-    reject("int bad(void) { return 0xFFFFFFFF; }", "unsigned literal typing");
+    check("int ok(void) { return 0xFFFFFFFF > 0; }").unwrap();
     reject("int bad(void) { return 08; }", "integer constant");
+}
+
+#[test]
+fn integer_constant_c_type_selection_and_unsigned_ranges() {
+    use mini_c_syntax::integer_literal::decode_integer_literal;
+    let target = Target::default();
+    let cases = [
+        ("2147483647", IntRank::Int, false),
+        ("2147483648", IntRank::Long, false),
+        ("0x7fffffff", IntRank::Int, false),
+        ("0x80000000", IntRank::Int, true),
+        ("0xffffffff", IntRank::Int, true),
+        ("037777777777", IntRank::Int, true),
+        ("0x100000000", IntRank::Long, false),
+        ("0xffffffffffffffff", IntRank::Long, true),
+        ("123U", IntRank::Int, true),
+        ("123L", IntRank::Long, false),
+        ("123UL", IntRank::Long, true),
+        ("123Lu", IntRank::Long, true),
+        ("4294967296u", IntRank::Long, true),
+        ("18446744073709551615UL", IntRank::Long, true),
+    ];
+    for (source, rank, unsigned) in cases {
+        let literal = decode_integer_literal(source).unwrap();
+        assert_eq!(target.integer_literal(literal), Some(CType::Integer { rank, unsigned }), "{source}");
+        let code = format!("int f(void) {{ return ({source}) != 0; }}");
+        check(&code).unwrap();
+    }
+    check("int f(void) { return 0xffffffff < 0; }").unwrap();
+    check("int f(void) { return 0xffffffffu > 0; }").unwrap();
+    check("long f(void) { return 0xffffffffffffffffUL; }").unwrap();
+    reject("long f(void) { return 9223372036854775808L; }",
+        "integer constant exceeds supported");
+    reject("long f(void) { return 18446744073709551615; }",
+        "decimal literal exceeds supported");
+    reject("int f(void) { return 7llu; }", "suffix");
+}
+
+#[test]
+fn nondecimal_type_selection_respects_nondefault_target_widths() {
+    use mini_c_syntax::integer_literal::decode_integer_literal;
+    let model = Target { char_is_signed: true, int_bits: 16, long_bits: 32 };
+    let cases = [
+        ("0x7fff", Some((IntRank::Int, false))),
+        ("0x8000", Some((IntRank::Int, true))),
+        ("0xffff", Some((IntRank::Int, true))),
+        ("0x10000", Some((IntRank::Long, false))),
+        ("0x80000000", Some((IntRank::Long, true))),
+        ("0xffffffff", Some((IntRank::Long, true))),
+        ("0x100000000", None),
+        ("65535", Some((IntRank::Long, false))),
+        ("65535U", Some((IntRank::Int, true))),
+        ("65536U", Some((IntRank::Long, true))),
+    ];
+    for (spelling, expected) in cases {
+        let literal = decode_integer_literal(spelling).unwrap();
+        let selected = model.integer_literal(literal);
+        let expected = expected.map(|(rank, unsigned)| CType::Integer { rank, unsigned });
+        assert_eq!(selected, expected, "{spelling}");
+    }
 }

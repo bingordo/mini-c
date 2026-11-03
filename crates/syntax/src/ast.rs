@@ -109,6 +109,8 @@ pub enum Expr {
     /// The ordinary parser retains its historical expression variants.
     Located(Box<Expr>, Span),
     Int(u64),
+    /// C integer token with radix/suffix preserved for target type selection.
+    IntegerConstant(crate::integer_literal::IntegerLiteral),
     /// Decoded narrow string bytes, including the terminating NUL.
     StringLiteral(Vec<u8>),
     /// Braced initializer, valid only in an object declaration.
