@@ -14,6 +14,16 @@ import subprocess
 import sys
 
 PROGRAMS = {
+    "const_local_immutable": """int main(void) {
+        const int x=9; return x; }""",
+    "const_pointer_reads": """int main(void) {
+        int x=7; const int *p=&x; return *p; }""",
+    "restrict_parameters": """int read(const int *__restrict p) { return *p; }
+        int main(void) { int x=19; return read(&x); }""",
+    "const_pointer_object": """int main(void) {
+        int x=8; int *const p=&x; *p=5; return x; }""",
+    "const_typedef_pointer": """typedef int *Ptr; int main(void) {
+        int x=7; Ptr const p=&x; *p=3; return x; }""",
     "s10_hex_unsigned_comparison": """int main(void) {
         return (0xffffffff > 0) + (0x80000000 < 0)*2
             + ((unsigned long)0xffffffff == 4294967295UL)*4;
