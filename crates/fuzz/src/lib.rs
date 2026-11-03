@@ -56,6 +56,32 @@ fn symbol(op: Op) -> &'static str {
     }
 }
 
+/// Generate a side-effecting pointer/index exercise with a numerical oracle.
+/// All pointer values remain within the same array, and the index changes once.
+fn emit_pointer_update_case(source: &mut String, rng: &mut Rng) {
+    let first = 10 + rng.range(50) as i32;
+    let second = first + 7;
+    let third = second + 9;
+    let fourth = third + 11;
+    source.push_str(&format!(
+        "{{ int data[4]; data[0]={first}; data[1]={second}; \
+         data[2]={third}; data[3]={fourth}; \
+         int *p=data; int *old=p++; \
+         if (old!=data || p!=data+1) return 0; \
+         int *newp=++p; \
+         if (newp!=data+2 || *newp!={third}) return 0; \
+         int *prev=p--; \
+         if (prev!=data+2 || p!=data+1) return 0; \
+         int *firstp=--p; \
+         if (firstp!=data || p!=data) return 0; \
+         int k=0; int oldvalue=data[k++]++; \
+         if (k!=1 || oldvalue!={first} || data[0]!={}) return 0; \
+         int prefixvalue=++data[k]; \
+         if (prefixvalue!={} || data[1]!={}) return 0; }}\n",
+        first + 1, second + 1, second + 1,
+    ));
+}
+
 /// Independent oracle: checked i32 operations on a compact instruction stream.
 /// Generated values stay within the portable C int range [-32767, 32767].
 pub fn generate(seed: u64, steps: usize) -> Case {
@@ -90,6 +116,33 @@ pub fn generate(seed: u64, steps: usize) -> Case {
             instructions.push(ins);
         }
 
+        // Check the *value* of the update expression independently of its
+        // effect on x. This catches wrong prefix/postfix result selection even
+        // when the final x happens to match GCC.
+        if iteration % 7 == 6 {
+            let increment = rng.range(2) == 0;
+            let postfix = rng.range(2) == 0;
+            let ins = Instruction {
+                op: if increment { Op::Add } else { Op::Sub }, rhs: 1,
+            };
+            if let Some(next) = checked_step(value, ins)
+                .filter(|v| (-32767..=32767).contains(v))
+            {
+                let observed = if postfix { value } else { next };
+                let token = if increment { "++" } else { "--" };
+                let update = if postfix {
+                    format!("x{token}")
+                } else {
+                    format!("{token}x")
+                };
+                source.push_str(&format!(
+                    "{{ int observed = {update}; if (observed != {observed}) return 0; }}\n"
+                ));
+                value = next;
+                instructions.push(ins);
+            }
+        }
+
         // Conditional that never leaves the portable C int interval.
         // The recorded trace contains the *executed* branch only.
         if iteration % 13 == 12 {
@@ -119,6 +172,9 @@ pub fn generate(seed: u64, steps: usize) -> Case {
                 instructions.push(division);
             }
         }
+    }
+    if steps != 0 {
+        emit_pointer_update_case(&mut source, &mut rng);
     }
     source.push_str(&format!("return x == {};\n}}\n", value));
     Case { seed, instructions, expected: value, source }
@@ -211,6 +267,37 @@ mod tests {
             "missing generated ordinary arithmetic operator");
         assert!(compound_seen.into_iter().all(|seen| seen),
             "missing generated arithmetic compound operator");
+    }
+
+    #[test]
+    fn seeded_updates_cover_old_new_results_and_pointer_side_effects() {
+        let mut prefix_increment = false;
+        let mut postfix_increment = false;
+        let mut prefix_decrement = false;
+        let mut postfix_decrement = false;
+        for seed in 0..96 {
+            let case = generate(seed, 140);
+            parse_case(&case).unwrap_or_else(|err| panic!("seed {seed}: {err}"));
+            prefix_increment |= case.source.contains("observed = ++x;");
+            postfix_increment |= case.source.contains("observed = x++;");
+            prefix_decrement |= case.source.contains("observed = --x;");
+            postfix_decrement |= case.source.contains("observed = x--;");
+            assert!(case.source.contains("old=p++"));
+            assert!(case.source.contains("newp=++p"));
+            assert!(case.source.contains("prev=p--"));
+            assert!(case.source.contains("firstp=--p"));
+            assert!(case.source.contains("oldvalue=data[k++]++"));
+            assert!(case.source.contains("prefixvalue=++data[k]"));
+            let mut value = 1;
+            for instruction in &case.instructions {
+                value = checked_step(value, *instruction)
+                    .expect("generator emitted a defined update");
+            }
+            assert_eq!(value, case.expected, "seed {seed}");
+        }
+        assert!(prefix_increment && postfix_increment
+            && prefix_decrement && postfix_decrement,
+            "not all four update forms occurred across seeds");
     }
 
     #[test]
