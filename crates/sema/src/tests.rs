@@ -1200,8 +1200,8 @@ fn conditional_operator_types_lazy_branches_and_null_pointers() {
         "modifiable lvalue");
     reject("int main(void) { int x=0; int y=1; (1 ? x : y)++; return x; }",
         "modifiable");
-    reject("int main(void) { return 1 ? 2 : (void)0; }",
-        "expected expression");
+    reject("struct S { int n; }; int main(void) { struct S s; return s ? 1 : 2; }",
+        "condition requires a scalar type");
     reject("int main(void) { int x=0; int *p=&x; return 1 ? p : 3; }",
         "conditional operands require compatible types");
     reject("void mark(void) { return; } int main(void) { return 1 ? mark() : 3; }",
