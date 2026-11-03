@@ -90,8 +90,8 @@ same declaration:
 typedef long unsigned int size_t;
 ~~~
 
-The incremental Mini-C parser currently does not accept the fully valid
-C declaration-specifier ordering **long unsigned int**. Every rejection
+At this initial baseline, the incremental Mini-C parser did not accept the
+valid C declaration-specifier ordering **long unsigned int**. Every rejection
 occurs **before** the original musl function body is reached; 0/24 is
 therefore a full-header compatibility baseline, not a measurement that
 all 24 algorithms themselves are unsupported. The report retains the
@@ -102,6 +102,32 @@ function-body C feature gaps.
 The initial Mini-C acceptance floor stays at zero. Do not turn this
 coverage gate into an artificially green benchmark by dropping failures
 or editing the pinned function sources.
+
+## Second measurement: cleared stddef blocker, next header limitation
+
+Concurrent [PR #41](https://github.com/bingordo/mini-c/pull/41)
+implemented order-independent C integer declaration specifiers with
+syntax regressions for equivalent spellings and invalid duplicates.
+An independent [syntax CI #41703530648](https://github.com/bingordo/mini-c/actions/runs/41703530648)
+and [Cranelift/GCC CI #41703530700](https://github.com/bingordo/mini-c/actions/runs/41703530700)
+validated the same change on a concurrent branch (PR #42 was closed
+as redundant instead of force-merging a conflicting implementation).
+
+The S10 source fixtures remained **unchanged**. All 24 full translation
+units now parse beyond the previously universal stddef.h size_t typedef.
+The full-header acceptance rate remains **0/24**, but the first errors
+shifted to host string-header declarations:
+
+- **23/24** in /usr/include/string.h at the memcpy prototype
+  with `__restrict`-qualified pointer parameters
+- **1/24** in /usr/include/strings.h at the bcmp prototype
+  with `const void *` parameters
+
+The audit now proves that the first blocker was fixed and identifies the
+next family of problems: standard `const` and `restrict` qualifiers,
+and GNU header spellings/extensions. Treat header parsing independently
+from the actual string-body feature coverage. It would be misleading
+to report the function bodies as 24 proven frontend failures.
 
 ## Follow-up priority
 
