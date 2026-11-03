@@ -21,6 +21,18 @@ fn const_preserves_pointee_vs_pointer_level() {
         Type::Qualified(Box::new(Type::Pointer(Box::new(Type::Int))), cv));
     assert_eq!(declaration_type("int *p;"),
         Type::Pointer(Box::new(Type::Int)));
+    assert_eq!(declaration_type("int **const p;"),
+        Type::Qualified(Box::new(Type::Pointer(Box::new(Type::Pointer(
+            Box::new(Type::Int))))), cv));
+    assert_eq!(declaration_type("int *const *p;"),
+        Type::Pointer(Box::new(Type::Qualified(Box::new(Type::Pointer(
+            Box::new(Type::Int))), cv))));
+    assert_eq!(declaration_type("const int **p;"),
+        Type::Pointer(Box::new(Type::Pointer(Box::new(Type::Qualified(
+            Box::new(Type::Int), cv))))));
+    assert_eq!(declaration_type("struct S const *p;"),
+        Type::Pointer(Box::new(Type::Qualified(
+            Box::new(Type::TagRef(mini_c_syntax::ast::TagKind::Struct, "S".into())), cv))));
 }
 
 #[test]
