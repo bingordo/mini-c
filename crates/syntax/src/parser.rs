@@ -1319,4 +1319,20 @@ mod tests {
             if matches!(lhs.as_ref(), Expr::Member(_, field, false) if field == "i")));
     }
 
+    #[test]
+    fn integer_casts_preserve_type_names_and_precedence() {
+        let mut parser = Parser::new("typedef unsigned int U; int f(int c) { return (U)c + (unsigned char)'a'; }");
+        assert!(matches!(parser.next_item(), Ok(Some(ExternalItem::Typedef(..)))));
+        let ExternalItem::Function(fun) = parser.next_item().unwrap().unwrap() else { panic!("function expected"); };
+        let Stmt::Block(body) = fun.body else { panic!("body expected"); };
+        let Stmt::Return(Some(Expr::Binary(BinOp::Add, lhs, rhs))) = &body[0] else { panic!("sum expected"); };
+        assert!(matches!(lhs.as_ref(), Expr::Cast(Type::Alias(name), inner)
+            if name == "U" && matches!(inner.as_ref(), Expr::Name(name) if name == "c")));
+        assert!(matches!(rhs.as_ref(), Expr::Cast(Type::Unsigned(inner), _)
+            if **inner == Type::Char));
+        let mut parser = Parser::new("int f(int x) { return (x) + 1; }");
+        assert!(matches!(parser.next_item(), Ok(Some(ExternalItem::Function(_)))));
+        assert!(Parser::new("int f(int x) { return (unsigned *)x; }").next_item().is_err());
+    }
+
 }
