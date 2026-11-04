@@ -1332,6 +1332,34 @@ mod tests {
     }
 
     #[test]
+    fn m10_short_specifiers_parse_in_any_standard_order() {
+        for source in [
+            "typedef unsigned short int __u_short;",
+            "typedef signed short int __int16_t;",
+            "typedef short unsigned int U;",
+            "typedef int short signed S;",
+            "typedef short T;",
+            "typedef short int T;",
+            "typedef int short T;",
+            "short f(unsigned short x) { short y = x; return y; }",
+            "int main(void) { return (unsigned short)65537 == 1; }",
+        ] {
+            let mut parser = Parser::new(source);
+            assert!(parser.next_item().is_ok(), "failed to parse: {source}");
+        }
+        for source in [
+            "typedef short long Bad;",
+            "typedef long short Bad;",
+            "typedef char short Bad;",
+            "typedef short short Bad;",
+            "typedef unsigned signed short Bad;",
+        ] {
+            assert!(Parser::new(source).next_item().is_err(),
+                "incorrectly accepted {source}");
+        }
+    }
+
+    #[test]
     fn parses_typedefs_and_shadowing() {
         let mut parser = Parser::new("typedef int T; T global; int f(void) { T x; { int T; T = 2; } T y; return 0; }");
         assert!(matches!(parser.next_item().unwrap(), Some(ExternalItem::Typedef(_))));
