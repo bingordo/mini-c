@@ -1305,11 +1305,15 @@ impl Checker {
                     }
                     return Ok(CheckedExpr::value(CType::int(), CheckedExprKind::Binary(*op, Box::new(left), Box::new(right))));
                 }
+                // Equality permits compatible pointers and object-pointer/void-pointer
+                // pairs; ordering requires compatible object pointer types.
+                let equality = matches!(op, BinOp::Eq | BinOp::Ne);
                 if relation && (matches!((&left.ty, &right.ty), (CType::Pointer(a), CType::Pointer(b))
-                        if a.unqualified().same_type(b.unqualified())
-                            || *a.unqualified() == CType::Void
-                            || *b.unqualified() == CType::Void)
-                    || (matches!(op, BinOp::Eq | BinOp::Ne)
+                        if (a.unqualified().same_type(b.unqualified())
+                            && (equality || a.unqualified().is_object()))
+                            || (equality && ((*a.unqualified() == CType::Void && b.unqualified().is_object())
+                                || (*b.unqualified() == CType::Void && a.unqualified().is_object()))))
+                    || (equality
                         && ((matches!(left.ty, CType::Pointer(_)) && const_eval::evaluate(&right, self.target) == Ok(0))
                             || (matches!(right.ty, CType::Pointer(_)) && const_eval::evaluate(&left, self.target) == Ok(0))))) {
                     return Ok(CheckedExpr::value(CType::int(), CheckedExprKind::Binary(*op, Box::new(left), Box::new(right))));
