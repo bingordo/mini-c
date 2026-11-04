@@ -338,7 +338,6 @@ impl Checker {
             Type::Void => CType::Void,
             Type::Char => CType::Integer { rank: IntRank::Char, unsigned: !self.target.char_is_signed },
             Type::Short => CType::Integer { rank: IntRank::Short, unsigned: false },
-            Type::Short => CType::Integer { rank: IntRank::Short, unsigned: false },
             Type::Int => CType::int(),
             Type::Long => CType::Integer { rank: IntRank::Long, unsigned: false },
             Type::LongLong => CType::Integer { rank: IntRank::LongLong, unsigned: false },
