@@ -1601,6 +1601,43 @@ mod tests {
     }
 
     #[test]
+    fn m10_float_declarations_preserve_three_distinct_types() {
+        let src = concat!(
+            "typedef float float_t; typedef double double_t;",
+            "extern int __fpclassify(double __value) __attribute__((__nothrow__,__leaf__));",
+            "extern double nexttoward(double x, long double y);",
+            "extern long double sqrtl(long double x);",
+            "extern float nexttowardf(float x, double long y);",
+        );
+        let mut parser = Parser::new(src);
+        let ExternalItem::Typedef(f) = parser.next_item().unwrap().unwrap()
+            else { panic!("float typedef required") };
+        assert_eq!(f.ty, Type::Floating(FloatRank::Float));
+        let ExternalItem::Typedef(d) = parser.next_item().unwrap().unwrap()
+            else { panic!("double typedef required") };
+        assert_eq!(d.ty, Type::Floating(FloatRank::Double));
+        for _ in 0..4 {
+            assert!(matches!(parser.next_item(), Ok(Some(ExternalItem::Declaration(_)))));
+        }
+        assert!(parser.next_item().unwrap().is_none());
+    }
+
+    #[test]
+    fn m10_float_specifier_mixes_fail_closed() {
+        for src in [
+            "typedef unsigned float Invalid;",
+            "typedef signed double Invalid;",
+            "typedef long long double Invalid;",
+            "typedef short double Invalid;",
+            "typedef double int Invalid;",
+            "typedef float long Invalid;",
+        ] {
+            assert!(Parser::new(src).next_item().is_err(),
+                "incorrectly accepted {src}");
+        }
+    }
+
+    #[test]
     fn integer_casts_preserve_type_names_and_precedence() {
         let mut parser = Parser::new("typedef unsigned int U; int f(int c) { return (U)c + (unsigned char)'a'; }");
         assert!(matches!(parser.next_item(), Ok(Some(ExternalItem::Typedef(..)))));
