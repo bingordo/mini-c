@@ -1482,3 +1482,37 @@ fn const_aggregate_and_character_array_initializers() {
     reject("struct S { int a[2][2]; }; int f(void) { struct S s={{{1,2},{3,4}}}; const struct S *p=&s; int *q=p->a[0]; return q[0]; }",
         "incompatible assignment");
 }
+
+#[test]
+fn s12_variadic_printf_semantics_and_promotion() {
+    let source = r#"
+        extern int printf(const char *restrict fmt, ...);
+        int main(void) {
+            char c = 65;
+            short n = 17;
+            return printf("%s %d %d", "hello", c, n);
+        }
+    "#;
+    let items = check(source).unwrap();
+    let CheckedItem::Declaration(decl) = &items[0] else {
+        panic!("variadic printf declaration expected");
+    };
+    assert!(matches!(decl.ty, CType::VariadicFunction { .. }));
+    let CheckedItem::Function(main) = &items[1] else {
+        panic!("main definition expected");
+    };
+    let CheckedStmt::Block(stmts) = &main.body else { panic!("block expected") };
+    let CheckedStmt::Return(Some(call)) = &stmts[2] else { panic!("call return expected") };
+    let CheckedExprKind::Call(_, args) = &call.kind else { panic!("call expected") };
+    assert_eq!(args.len(), 4);
+    assert_eq!(args[2].ty, CType::int());
+    assert_eq!(args[3].ty, CType::int());
+
+    reject("extern int printf(const char *, ...); int main(void){return printf();}",
+        "at least 1");
+    reject("extern int printf(const char *, ...); int main(void){return printf(7, 9);}",
+        "incompatible");
+    reject("int f(int); int f(int, ...);", "conflicting declaration");
+    reject("int f(int, ...); int f(int);", "conflicting declaration");
+    check(r#"extern int printf(const char *, ...); int main(void){return printf("%s", "hi");}"#).unwrap();
+}
