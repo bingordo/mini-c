@@ -58,7 +58,9 @@ impl CType {
     pub fn compatible_pointee_assignment(dest: &Self, source: &Self) -> bool {
         if source.is_const() && !dest.is_const() { return false; }
         let (dest, source) = (dest.unqualified(), source.unqualified());
-        dest.same_type(source) || matches!(dest, Self::Void) || matches!(source, Self::Void)
+        dest.same_type(source)
+            || (matches!(dest, Self::Void) && source.is_object())
+            || (matches!(source, Self::Void) && dest.is_object())
     }
     /// Target-specific object alignment in bytes for x86-64 LP64.
     pub fn align_bytes(&self, target: Target) -> Option<u64> {
