@@ -112,7 +112,7 @@ impl<'a> Parser<'a> {
         if self.brace_depth == 0
             && error.message.starts_with("expected ';'")
             && self.peek().ok().flatten().is_some_and(|t| matches!(
-                t.text, "int" | "char" | "long" | "void" | "signed" |
+                t.text, "int" | "char" | "short" | "long" | "void" | "signed" |
                     "unsigned" | "static" | "extern" | "typedef" | "struct" | "union" | "enum"
             ) || t.kind == TokenKind::TypedefName)
         {
@@ -427,7 +427,7 @@ impl<'a> Parser<'a> {
                 // (x) without rewinding the incremental lexer. Only integer
                 // scalar type names are accepted in this first cast slice.
                 let cast_type = self.peek()?.is_some_and(|next| {
-                    matches!(next.text, "int" | "char" | "long" | "void" |
+                    matches!(next.text, "int" | "char" | "short" | "long" | "void" |
                         "signed" | "unsigned" | "struct" | "union" | "enum")
                         || next.kind == TokenKind::TypedefName
                 });
@@ -652,7 +652,7 @@ impl<'a> Parser<'a> {
             inner
         } else if let Some(token) = self.peek()?.filter(|token| {
             matches!(token.kind, TokenKind::Identifier | TokenKind::TypedefName)
-                && !matches!(token.text, "int" | "char" | "long" | "void"
+                && !matches!(token.text, "int" | "char" | "short" | "long" | "void"
                     | "unsigned" | "signed" | "const" | "restrict" | "__restrict" | "__restrict__"
                     | "typedef" | "static" | "extern"
                     | "struct" | "union" | "enum" | "if" | "else" | "while" | "do" | "for" | "return" | "break" | "continue")
@@ -914,7 +914,7 @@ impl<'a> Parser<'a> {
             "typedef" => { self.take()?; Ok(Stmt::Typedef(self.parse_decl(true)?)) },
             "static" | "extern" => Ok(Stmt::Decl(self.parse_decl(false)?)),
             "struct" | "union" | "enum" => self.parse_tag_or_decl(),
-            "int" | "char" | "long" | "void" | "unsigned" | "signed"
+            "int" | "char" | "short" | "long" | "void" | "unsigned" | "signed"
                 | "const" | "restrict" | "__restrict" | "__restrict__" => Ok(Stmt::Decl(self.parse_decl(false)?)),
             _ if token.kind == TokenKind::TypedefName => Ok(Stmt::Decl(self.parse_decl(false)?)),
             _ => { let expr = self.parse_expr()?; self.expect(";")?; Ok(Stmt::Expr(Some(expr))) }
@@ -1036,27 +1036,29 @@ impl<'a> Parser<'a> {
                 else { Type::Struct { tag, members } }
             }
             "void" => { self.take()?; Type::Void }
-            "char" | "int" | "long" | "unsigned" | "signed" => {
+            "char" | "short" | "int" | "long" | "unsigned" | "signed" => {
                 // C integer declaration specifiers are order-independent:
                 // glibc's standard typedef 'long unsigned int size_t' must
                 // mean exactly the same type as 'unsigned long int'.
                 // Fail closed on duplicates and unsupported long long rather
                 // than quietly treating a second specifier as a declarator.
                 let mut is_char = false;
+                let mut is_short = false;
                 let mut is_int = false;
                 let mut long_count = 0u8;
                 let mut sign: Option<bool> = None;
                 while let Some(next) = self.peek()? {
                     match next.text {
-                        "char" if !is_char && !is_int && long_count == 0 => is_char = true,
+                        "char" if !is_char && !is_int && !is_short && long_count == 0 => is_char = true,
+                        "short" if !is_short && !is_char && long_count == 0 => is_short = true,
                         "int" if !is_int && !is_char => is_int = true,
-                        "long" if long_count < 2 && !is_char => long_count += 1,
+                        "long" if long_count < 2 && !is_char && !is_short => long_count += 1,
                         "unsigned" if sign.is_none() => sign = Some(true),
                         "signed" if sign.is_none() => sign = Some(false),
                         "const" => qualifiers.is_const = true,
                         "restrict" | "__restrict" | "__restrict__" =>
                             qualifiers.is_restrict = true,
-                        "char" | "int" | "long" | "unsigned" | "signed" => {
+                        "char" | "short" | "int" | "long" | "unsigned" | "signed" => {
                             return Err(Diagnostic::coded(next.span,
                                 DiagnosticCode::SyntaxInvalidDeclaration,
                                 "invalid or unsupported integer type-specifier combination"));
@@ -1066,6 +1068,7 @@ impl<'a> Parser<'a> {
                     self.take()?;
                 }
                 let base = if is_char { Type::Char }
+                    else if is_short { Type::Short }
                     else if long_count == 2 { Type::LongLong }
                     else if long_count == 1 { Type::Long }
                     else { Type::Int };
@@ -1326,6 +1329,34 @@ mod tests {
         assert!(matches!(parser.next_item().unwrap(), Some(ExternalItem::Function(_))));
         assert_eq!(parser.scopes.lookup("y"), None);
         assert_eq!(parser.scopes.lookup("f"), Some(Binding::Ordinary));
+    }
+
+    #[test]
+    fn m10_short_specifiers_parse_in_any_standard_order() {
+        for source in [
+            "typedef unsigned short int __u_short;",
+            "typedef signed short int __int16_t;",
+            "typedef short unsigned int U;",
+            "typedef int short signed S;",
+            "typedef short T;",
+            "typedef short int T;",
+            "typedef int short T;",
+            "short f(unsigned short x) { short y = x; return y; }",
+            "int main(void) { return (unsigned short)65537 == 1; }",
+        ] {
+            let mut parser = Parser::new(source);
+            assert!(parser.next_item().is_ok(), "failed to parse: {source}");
+        }
+        for source in [
+            "typedef short long Bad;",
+            "typedef long short Bad;",
+            "typedef char short Bad;",
+            "typedef short short Bad;",
+            "typedef unsigned signed short Bad;",
+        ] {
+            assert!(Parser::new(source).next_item().is_err(),
+                "incorrectly accepted {source}");
+        }
     }
 
     #[test]
