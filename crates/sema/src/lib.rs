@@ -324,7 +324,7 @@ impl Checker {
                     return Err(type_error(span, "restrict requires a pointer object type"));
                 }
                 if qualifiers.is_const {
-                    if matches!(base.unqualified(), CType::Function { .. }) {
+                    if matches!(base.unqualified(), CType::Function { .. } | CType::VariadicFunction { .. }) {
                         return Err(type_error(span, "const cannot qualify a function type"));
                     }
                     // Qualifiers of typedef array types apply to their elements.
@@ -464,9 +464,9 @@ impl Checker {
                 complete
             }
             Type::Pointer(inner) => CType::Pointer(Box::new(self.resolve(inner, span)?)),
-            Type::Function { result, params } => {
+            Type::Function { result, params } | Type::VariadicFunction { result, params } => {
                 let result = self.resolve(result, span)?;
-                if matches!(result, CType::Function { .. }) {
+                if matches!(result, CType::Function { .. } | CType::VariadicFunction { .. }) {
                     return Err(type_error(span, "function cannot return a function"));
                 }
                 let mut converted = Vec::with_capacity(params.len());
@@ -478,7 +478,11 @@ impl Checker {
                     }
                     converted.push(ty);
                 }
-                CType::Function { result: Box::new(result), params: converted }
+                if matches!(ty, Type::VariadicFunction { .. }) {
+                    CType::VariadicFunction { result: Box::new(result), params: converted }
+                } else {
+                    CType::Function { result: Box::new(result), params: converted }
+                }
             }
             Type::Array(element, bound) => {
                 let element = self.resolve(element, span)?;
@@ -507,7 +511,7 @@ impl Checker {
     fn adjust_parameter(&self, ty: CType) -> CType {
         match ty {
             CType::Array(element, _) => CType::Pointer(element),
-            CType::Function { .. } => CType::Pointer(Box::new(ty)),
+            CType::Function { .. } | CType::VariadicFunction { .. } => CType::Pointer(Box::new(ty)),
             other => other,
         }
     }
@@ -741,7 +745,7 @@ impl Checker {
         let raw = self.resolve(&decl.ty, decl.span)?;
         let raw = self.try_complete_tag_type(raw)?;
         let ty = self.complete_string_array(raw, decl.init.as_ref(), decl.span)?;
-        let kind = if matches!(ty, CType::Function { .. }) { SymbolKind::Function } else { SymbolKind::Object };
+        let kind = if matches!(ty, CType::Function { .. } | CType::VariadicFunction { .. }) { SymbolKind::Function } else { SymbolKind::Object };
         if kind == SymbolKind::Object && !ty.is_object() {
             return Err(type_error(decl.span, "object cannot have void or function type"));
         }
@@ -773,7 +777,7 @@ impl Checker {
 
     fn check_function(&mut self, func: Function) -> Result<CheckedFunction, Diagnostic> {
         let result = self.resolve(&func.result, func.span)?;
-        if matches!(result, CType::Function { .. }) {
+        if matches!(result, CType::Function { .. } | CType::VariadicFunction { .. }) {
             return Err(type_error(func.span, "function cannot return a function"));
         }
         let mut params = Vec::new();
@@ -1027,7 +1031,7 @@ impl Checker {
                 Expr::Name(name) => self.globals.get(name).is_some_and(|s|
                     matches!(&s.ty, CType::Array(..)) ||
                     (s.kind == SymbolKind::Function && matches!(ty, CType::Pointer(inner)
-                        if matches!(inner.as_ref(), CType::Function { .. })))),
+                        if matches!(inner.as_ref(), CType::Function { .. } | CType::VariadicFunction { .. })))),
                 Expr::StringLiteral(_) => matches!(ty, CType::Pointer(element)
                     if matches!(element.as_ref(), CType::Integer { rank: IntRank::Char, .. } | CType::Void)),
                 _ => false,
@@ -1277,7 +1281,7 @@ impl Checker {
                             return Err(Diagnostic::coded(span, DiagnosticCode::SemanticInvalidOperatorOperands, "dereference requires a pointer"));
                         };
                         let ty = self.complete_tag_type((**inner_ty).clone(), span)?;
-                        let category = if matches!(ty, CType::Function { .. }) { Category::Function } else if ty == CType::Void {
+                        let category = if matches!(ty, CType::Function { .. } | CType::VariadicFunction { .. }) { Category::Function } else if ty == CType::Void {
                             return Err(type_error(span, "cannot dereference void pointer"));
                         } else { Category::LValue };
                         Ok(CheckedExpr { ty, category, kind: CheckedExprKind::Unary(*op, Box::new(typed)) })
@@ -1541,25 +1545,48 @@ impl Checker {
                     callee.rvalue()
                 };
                 let signature = match &callee.ty {
-                    CType::Function { result, params } => Some((result.as_ref(), params.as_slice())),
+                    CType::Function { result, params } => Some((result.as_ref(), params.as_slice(), false)),
+                    CType::VariadicFunction { result, params } => Some((result.as_ref(), params.as_slice(), true)),
                     CType::Pointer(inner) => match inner.as_ref() {
-                        CType::Function { result, params } => Some((result.as_ref(), params.as_slice())),
+                        CType::Function { result, params } => Some((result.as_ref(), params.as_slice(), false)),
+                        CType::VariadicFunction { result, params } => Some((result.as_ref(), params.as_slice(), true)),
                         _ => None,
                     },
                     _ => None,
                 };
-                let Some((result, params)) = signature else {
+                let Some((result, params, variadic)) = signature else {
                     return Err(Diagnostic::coded(callee_span, DiagnosticCode::SemanticNotCallable,
                         "called expression is not a function"));
                 };
-                if args.len() != params.len() {
-                    return Err(Diagnostic::coded(span, DiagnosticCode::SemanticWrongArgumentCount, format!("function expects {} arguments, got {}", params.len(), args.len())));
+                if (variadic && args.len() < params.len()) || (!variadic && args.len() != params.len()) {
+                    return Err(Diagnostic::coded(span, DiagnosticCode::SemanticWrongArgumentCount,
+                        if variadic {
+                            format!("variadic function requires at least {} arguments, got {}", params.len(), args.len())
+                        } else {
+                            format!("function expects {} arguments, got {}", params.len(), args.len())
+                        }));
                 }
                 let mut checked_args = Vec::with_capacity(args.len());
                 for (arg, ty) in args.iter().zip(params) {
                     let typed = self.check_expr(arg, span)?;
                     checked_args.push(self.convert_for_assignment(typed, ty, arg,
                         arg.location().unwrap_or(span))?);
+                }
+                // C default argument promotions apply only after the named
+                // parameters. At present integer scalars/pointers are supported;
+                // floating-point types are not yet represented by Mini-C.
+                for arg in args.iter().skip(params.len()) {
+                    let typed = self.check_expr(arg, span)?.rvalue();
+                    if !typed.ty.is_scalar() {
+                        return Err(type_error(arg.location().unwrap_or(span),
+                            "variadic argument requires a supported scalar type"));
+                    }
+                    let promoted = self.target.promote(&typed.ty);
+                    checked_args.push(if promoted == typed.ty {
+                        typed
+                    } else {
+                        CheckedExpr::value(promoted, CheckedExprKind::Convert(Box::new(typed)))
+                    });
                 }
                 let ty = result.clone();
                 Ok(CheckedExpr::value(ty, CheckedExprKind::Call(Box::new(callee), checked_args)))
