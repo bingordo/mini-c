@@ -82,3 +82,49 @@ fn reject_malformed_or_misplaced_advisory_annotations() {
         assert!(Parser::new(source).next_item().is_err(), "{source}");
     }
 }
+
+#[test]
+fn glibc_access_annotations_parse_without_erasing_pointer_types() {
+    let source = r#"
+        typedef long unsigned int size_t;
+        extern size_t strxfrm(char *__restrict __dest,
+            const char *__restrict __src, size_t __n)
+            __attribute__((__nothrow__, __leaf__))
+            __attribute__((__nonnull__(2)))
+            __attribute__((__access__(__write_only__, 1, 3)));
+        extern int inspect(const char *p, size_t n)
+            __attribute__((__access__(__read_only__, 1, 2)))
+            __attribute__((__access__(__none__, 1)));
+    "#;
+    let mut parser = Parser::new(source);
+    assert!(matches!(parser.next_item().unwrap(), Some(ExternalItem::Typedef(_))));
+    let Some(ExternalItem::Declaration(transform)) = parser.next_item().unwrap() else {
+        panic!("strxfrm declaration missing");
+    };
+    assert_eq!(transform.name, "strxfrm");
+    let Type::Function { params, .. } = transform.ty else { panic!("function expected"); };
+    assert_eq!(params.len(), 3);
+    let Some(ExternalItem::Declaration(inspect)) = parser.next_item().unwrap() else {
+        panic!("inspect declaration missing");
+    };
+    assert_eq!(inspect.name, "inspect");
+    assert!(parser.next_item().unwrap().is_none());
+}
+
+#[test]
+fn malformed_access_attributes_remain_fail_closed() {
+    for attribute in [
+        "__access__", "__access__()", "__access__(bad, 1)",
+        "__access__(__read_only__, 0)", "__access__(__write_only__, abc)",
+        "__access__(__write_only__, 1, 0)",
+        "__access__(__write_only__, 1, 2, 3)",
+        "__access__(__read_only__, 1,)",
+    ] {
+        let source = format!(
+            "extern int f(char *p, int n) __attribute__(({attribute}));"
+        );
+        let error = Parser::new(&source).next_item().unwrap_err();
+        assert_eq!(error.code, DiagnosticCode::SyntaxInvalidDeclaration,
+            "{attribute}: {error:?}");
+    }
+}
