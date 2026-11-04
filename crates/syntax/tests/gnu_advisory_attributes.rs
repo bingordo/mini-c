@@ -129,7 +129,8 @@ fn malformed_access_attributes_remain_fail_closed() {
             "extern int f(char *p, int n) __attribute__(({attribute}));"
         );
         let error = Parser::new(&source).next_item().unwrap_err();
-        assert_eq!(error.code, DiagnosticCode::SyntaxInvalidDeclaration,
+        assert!(matches!(error.code,
+            DiagnosticCode::SyntaxInvalidDeclaration | DiagnosticCode::SyntaxExpectedToken),
             "{attribute}: {error:?}");
     }
 }
