@@ -112,7 +112,7 @@ impl<'a> Parser<'a> {
         if self.brace_depth == 0
             && error.message.starts_with("expected ';'")
             && self.peek().ok().flatten().is_some_and(|t| matches!(
-                t.text, "int" | "char" | "long" | "void" | "signed" |
+                t.text, "int" | "char" | "short" | "long" | "void" | "signed" |
                     "unsigned" | "static" | "extern" | "typedef" | "struct" | "union" | "enum"
             ) || t.kind == TokenKind::TypedefName)
         {
@@ -427,7 +427,7 @@ impl<'a> Parser<'a> {
                 // (x) without rewinding the incremental lexer. Only integer
                 // scalar type names are accepted in this first cast slice.
                 let cast_type = self.peek()?.is_some_and(|next| {
-                    matches!(next.text, "int" | "char" | "long" | "void" |
+                    matches!(next.text, "int" | "char" | "short" | "long" | "void" |
                         "signed" | "unsigned" | "struct" | "union" | "enum")
                         || next.kind == TokenKind::TypedefName
                 });
@@ -914,7 +914,7 @@ impl<'a> Parser<'a> {
             "typedef" => { self.take()?; Ok(Stmt::Typedef(self.parse_decl(true)?)) },
             "static" | "extern" => Ok(Stmt::Decl(self.parse_decl(false)?)),
             "struct" | "union" | "enum" => self.parse_tag_or_decl(),
-            "int" | "char" | "long" | "void" | "unsigned" | "signed"
+            "int" | "char" | "short" | "long" | "void" | "unsigned" | "signed"
                 | "const" | "restrict" | "__restrict" | "__restrict__" => Ok(Stmt::Decl(self.parse_decl(false)?)),
             _ if token.kind == TokenKind::TypedefName => Ok(Stmt::Decl(self.parse_decl(false)?)),
             _ => { let expr = self.parse_expr()?; self.expect(";")?; Ok(Stmt::Expr(Some(expr))) }
