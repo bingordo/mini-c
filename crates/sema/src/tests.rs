@@ -1382,3 +1382,18 @@ fn function_redeclarations_ignore_only_top_level_parameter_const() {
     reject("int g(int *); int g(const int *p) { return *p; }",
         "conflicting declaration");
 }
+
+#[test]
+fn iso_c_void_pointer_conversion_and_relational_constraints() {
+    check("int f(void) { int x=3; void *p=&x; int *q=p; return p==q; }").unwrap();
+    reject("int g(void) { int (*fp)(void)=0; void *p=fp; return p!=0; }",
+        "incompatible assignment");
+    reject("int g(void) { void *p=0; int (*fp)(void)=p; return fp!=0; }",
+        "incompatible assignment");
+    check("int h(void) { int x=3; void *p=&x; int *q=&x; return p==q; }").unwrap();
+    reject("int h(void) { int x=3; void *p=&x; int *q=&x; return p<q; }",
+        "compatible integer operands");
+    reject("int h(void) { void *p=0; void *q=0; return p<q; }",
+        "compatible integer operands");
+    check("int h(int *a, int *b) { return a<b; }").unwrap();
+}
