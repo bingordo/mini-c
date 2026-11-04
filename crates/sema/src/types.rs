@@ -42,6 +42,7 @@ pub enum CType {
     /// Incomplete arrays use None; bound and full object layout are target-dependent.
     Array(Box<CType>, Option<u64>),
     Function { result: Box<CType>, params: Vec<CType> },
+    VariadicFunction { result: Box<CType>, params: Vec<CType> },
 }
 
 impl CType {
@@ -65,7 +66,7 @@ impl CType {
     /// Target-specific object alignment in bytes for x86-64 LP64.
     pub fn align_bytes(&self, target: Target) -> Option<u64> {
         match self {
-            Self::Void | Self::Function { .. } | Self::TagRef { .. } => None,
+            Self::Void | Self::Function { .. } | Self::VariadicFunction { .. } | Self::TagRef { .. } => None,
             Self::Qualified(inner) => inner.align_bytes(target),
             Self::Struct { align, .. } | Self::Union { align, .. } => Some(*align),
             Self::Array(element, _) => element.align_bytes(target),
@@ -123,6 +124,14 @@ impl CType {
                 };
                 Some(Self::Array(Box::new(a.composite(b)?), count))
             }
+            (Self::VariadicFunction { result: ar, params: ap },
+             Self::VariadicFunction { result: br, params: bp }) if ap.len() == bp.len() => {
+                let result = Box::new(ar.composite(br)?);
+                let params = ap.iter().zip(bp)
+                    .map(|(a,b)| a.unqualified().composite(b.unqualified()))
+                    .collect::<Option<Vec<_>>>()?;
+                Some(Self::VariadicFunction { result, params })
+            }
             (Self::Function { result: ar, params: ap },
              Self::Function { result: br, params: bp }) if ap.len() == bp.len() => {
                 let result = Box::new(ar.composite(br)?);
@@ -151,14 +160,14 @@ impl CType {
         matches!(self.unqualified(), Self::Integer { .. } | Self::Pointer(_))
     }
     pub fn is_object(&self) -> bool {
-        !matches!(self.unqualified(), Self::Void | Self::Function { .. })
+        !matches!(self.unqualified(), Self::Void | Self::Function { .. } | Self::VariadicFunction { .. })
     }
 
     /// Known object size in bytes for the currently supported LP64 model.
     /// Incomplete arrays, void/function types and overflowing extents have no size.
     pub fn size_bytes(&self, target: Target) -> Option<u64> {
         match self {
-            Self::Void | Self::Function { .. } | Self::TagRef { .. } => None,
+            Self::Void | Self::Function { .. } | Self::VariadicFunction { .. } | Self::TagRef { .. } => None,
             Self::Qualified(inner) => inner.size_bytes(target),
             Self::Struct { size, .. } | Self::Union { size, .. } => Some(*size),
             Self::Integer { rank, .. } => Some(u64::from(target.bits(*rank) / 8)),
