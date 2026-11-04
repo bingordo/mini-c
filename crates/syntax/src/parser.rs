@@ -652,7 +652,7 @@ impl<'a> Parser<'a> {
             inner
         } else if let Some(token) = self.peek()?.filter(|token| {
             matches!(token.kind, TokenKind::Identifier | TokenKind::TypedefName)
-                && !matches!(token.text, "int" | "char" | "long" | "void"
+                && !matches!(token.text, "int" | "char" | "short" | "long" | "void"
                     | "unsigned" | "signed" | "const" | "restrict" | "__restrict" | "__restrict__"
                     | "typedef" | "static" | "extern"
                     | "struct" | "union" | "enum" | "if" | "else" | "while" | "do" | "for" | "return" | "break" | "continue")
@@ -1036,27 +1036,29 @@ impl<'a> Parser<'a> {
                 else { Type::Struct { tag, members } }
             }
             "void" => { self.take()?; Type::Void }
-            "char" | "int" | "long" | "unsigned" | "signed" => {
+            "char" | "short" | "int" | "long" | "unsigned" | "signed" => {
                 // C integer declaration specifiers are order-independent:
                 // glibc's standard typedef 'long unsigned int size_t' must
                 // mean exactly the same type as 'unsigned long int'.
                 // Fail closed on duplicates and unsupported long long rather
                 // than quietly treating a second specifier as a declarator.
                 let mut is_char = false;
+                let mut is_short = false;
                 let mut is_int = false;
                 let mut long_count = 0u8;
                 let mut sign: Option<bool> = None;
                 while let Some(next) = self.peek()? {
                     match next.text {
-                        "char" if !is_char && !is_int && long_count == 0 => is_char = true,
+                        "char" if !is_char && !is_int && !is_short && long_count == 0 => is_char = true,
+                        "short" if !is_short && !is_char && long_count == 0 => is_short = true,
                         "int" if !is_int && !is_char => is_int = true,
-                        "long" if long_count < 2 && !is_char => long_count += 1,
+                        "long" if long_count < 2 && !is_char && !is_short => long_count += 1,
                         "unsigned" if sign.is_none() => sign = Some(true),
                         "signed" if sign.is_none() => sign = Some(false),
                         "const" => qualifiers.is_const = true,
                         "restrict" | "__restrict" | "__restrict__" =>
                             qualifiers.is_restrict = true,
-                        "char" | "int" | "long" | "unsigned" | "signed" => {
+                        "char" | "short" | "int" | "long" | "unsigned" | "signed" => {
                             return Err(Diagnostic::coded(next.span,
                                 DiagnosticCode::SyntaxInvalidDeclaration,
                                 "invalid or unsupported integer type-specifier combination"));
@@ -1066,6 +1068,7 @@ impl<'a> Parser<'a> {
                     self.take()?;
                 }
                 let base = if is_char { Type::Char }
+                    else if is_short { Type::Short }
                     else if long_count == 2 { Type::LongLong }
                     else if long_count == 1 { Type::Long }
                     else { Type::Int };
