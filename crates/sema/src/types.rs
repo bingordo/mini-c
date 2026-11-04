@@ -86,6 +86,7 @@ impl CType {
             Self::Floating(rank) => Some(match rank {
                 FloatRank::Float => 4, FloatRank::Double => 8,
                 FloatRank::LongDouble => 16, // x86-64 SysV padded x87 format
+                FloatRank::Float128 => 16,  // IEEE binary128, distinct from x87
             }),
         }
     }
