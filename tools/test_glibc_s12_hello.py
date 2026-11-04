@@ -129,7 +129,7 @@ def main() -> int:
         if diagnostic:
             # Bounded log summary; exact full diagnostics remain in JSON.
             print("S12 first blocker diagnostic (max 12 lines):")
-            print("\\n".join(str(diagnostic).splitlines()[:12]))
+            print("\n".join(str(diagnostic).splitlines()[:12]))
     print("Report:", args.report)
     # Until milestone completion, keep the CI diagnostic rather than require
     # success from a compiler that cannot yet parse all of glibc stdio.h.
