@@ -116,7 +116,12 @@ impl CType {
             (Self::Function { result: ar, params: ap },
              Self::Function { result: br, params: bp }) if ap.len() == bp.len() => {
                 let result = Box::new(ar.composite(br)?);
-                let params = ap.iter().zip(bp).map(|(a,b)| a.composite(b))
+                // Top-level qualifiers on C function parameter types are ignored
+                // when determining compatibility (C17 6.7.6.3p15). Keep
+                // qualifiers nested under pointers: const int * differs
+                // from int *, but int *const does not differ from int *.
+                let params = ap.iter().zip(bp)
+                    .map(|(a,b)| a.unqualified().composite(b.unqualified()))
                     .collect::<Option<Vec<_>>>()?;
                 Some(Self::Function { result, params })
             }
