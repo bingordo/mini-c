@@ -90,6 +90,10 @@ pub enum Type {
         result: Box<Type>,
         params: Vec<Type>,
     },
+    VariadicFunction {
+        result: Box<Type>,
+        params: Vec<Type>,
+    },
 }
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
