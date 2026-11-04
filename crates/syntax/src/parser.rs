@@ -14,7 +14,7 @@ enum Declarator {
     Name(String, Option<Span>),
     Pointer(Box<Self>, Qualifiers),
     Array(Box<Self>, Option<Expr>),
-    Function(Box<Self>, Vec<Decl>),
+    Function(Box<Self>, Vec<Decl>, bool),
 }
 
 impl Declarator {
@@ -30,15 +30,17 @@ impl Declarator {
                 })
             },
             Self::Array(inner, bound) => inner.finish(Type::Array(Box::new(base), bound.map(Box::new))),
-            Self::Function(inner, params) => {
+            Self::Function(inner, params, variadic) => {
                 let param_types = params.iter().map(|param| param.ty.clone()).collect();
-                let (name, ty, inner_params, name_span) = inner.finish(Type::Function {
-                    result: Box::new(base),
-                    params: param_types,
-                });
+                let function_type = if variadic {
+                    Type::VariadicFunction { result: Box::new(base), params: param_types }
+                } else {
+                    Type::Function { result: Box::new(base), params: param_types }
+                };
+                let (name, ty, inner_params, name_span) = inner.finish(function_type);
                 // The parameter names for a definition belong to the resulting
                 // function, not to a function nested inside a pointer type.
-                let definition_params = if matches!(&ty, Type::Function { .. }) {
+                let definition_params = if matches!(&ty, Type::Function { .. } | Type::VariadicFunction { .. }) {
                     Some(params)
                 } else {
                     inner_params
@@ -679,9 +681,9 @@ impl<'a> Parser<'a> {
                 direct = Declarator::Array(Box::new(direct), bound);
             } else if self.peek()?.is_some_and(|token| token.text == "(") {
                 self.take()?;
-                let params = self.parse_parameter_list()?;
+                let (params, variadic) = self.parse_parameter_list()?;
                 self.expect(")")?;
-                direct = Declarator::Function(Box::new(direct), params);
+                direct = Declarator::Function(Box::new(direct), params, variadic);
             } else if self.peek()?.is_some_and(|token|
                 token.text == "__attribute__" || token.text == "__attribute")
             {
@@ -701,10 +703,10 @@ impl<'a> Parser<'a> {
         Ok(direct)
     }
 
-    fn parse_parameter_list(&mut self) -> Result<Vec<Decl>, Diagnostic> {
+    fn parse_parameter_list(&mut self) -> Result<(Vec<Decl>, bool), Diagnostic> {
         let mut params = Vec::new();
         if self.peek()?.is_some_and(|token| token.text == ")") {
-            return Ok(params);
+            return Ok((params, false));
         }
         loop {
             let token_span = self.peek()?.map_or(self.eof_span(), |token| token.span);
@@ -718,7 +720,7 @@ impl<'a> Parser<'a> {
             // The entire parameter list (void) denotes no parameters.
             if base == Type::Void && params.is_empty() {
                 if self.peek()?.is_some_and(|token| token.text == ")") {
-                    return Ok(params);
+                    return Ok((params, false));
                 }
                 // An incomplete (void at EOF is a missing ')', not an
                 // invalid void parameter with an absent declarator.
@@ -743,8 +745,13 @@ impl<'a> Parser<'a> {
                 break;
             }
             self.take()?;
+            if self.peek()?.is_some_and(|token| token.text == "...") {
+                // C requires at least one named fixed parameter before ellipsis.
+                self.take()?;
+                return Ok((params, true));
+            }
         }
-        Ok(params)
+        Ok((params, false))
     }
 
     /// Parse C braced initializers recursively without enabling comma
@@ -1018,7 +1025,7 @@ impl<'a> Parser<'a> {
                     let (base, start) = self.parse_type()?.ok_or_else(||
                         Diagnostic::new(self.eof_span(), "unterminated struct definition"))?;
                     let (name, ty, params, name_span) = self.parse_declarator_shape(false)?.finish(base);
-                    if params.is_some() || matches!(ty, Type::Function { .. }) {
+                    if params.is_some() || matches!(ty, Type::Function { .. } | Type::VariadicFunction { .. }) {
                         return Err(Diagnostic::new(Span { lo: start, hi: start },
                             "struct member cannot have function type"));
                     }
