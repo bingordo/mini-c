@@ -1401,3 +1401,18 @@ fn iso_c_void_pointer_conversion_and_relational_constraints() {
         "compatible types");
     check("int choose(int c) { int x=1; int *p=&x; void *v=p; return (c ? p : v)!=0; }").unwrap();
 }
+
+#[test]
+fn compatible_function_pointer_parameter_qualification() {
+    // Top-level parameter qualifiers do not distinguish function types,
+    // including when the function type is referenced through a pointer.
+    check("int id(int x){return x;} int f(void){int (*p)(const int)=id; return p(3); }").unwrap();
+    check("int id(const int x){return x;} int f(void){int (*p)(int)=id; return p(3); }").unwrap();
+    check("int id(int *const p){return *p;} int f(void){int (*q)(int *)=id; int x=4; return q(&x); }").unwrap();
+    // Qualifiers on a pointer's target, unlike on the parameter
+    // variable itself, remain part of the function signature.
+    reject("int id(const int *p){return *p;} int f(void){int (*q)(int *)=id; return 0; }",
+        "incompatible assignment");
+    reject("int id(int *p){return *p;} int f(void){int (*q)(const int *)=id; return 0; }",
+        "incompatible assignment");
+}
