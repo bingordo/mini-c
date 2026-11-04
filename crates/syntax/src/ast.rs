@@ -60,7 +60,7 @@ impl Qualifiers {
 /// IEEE floating formats in hosted C declarations. The native compiler
 /// currently retains these types for checked prototypes, not FP codegen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FloatRank { Float, Double, LongDouble }
+pub enum FloatRank { Float, Double, LongDouble, Float128 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Type {
