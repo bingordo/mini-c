@@ -90,6 +90,14 @@ impl CType {
             (TagRef { kind: TagKind::Union, identity: a, .. }, Union { identity: b, .. }) =>
                 a == b,
             (CType::Pointer(a), CType::Pointer(b)) => a.same_type(b),
+            // C17 6.7.6.3p15 ignores a function parameter's top-level
+            // qualifiers when determining compatibility, including through
+            // pointers to functions.
+            (CType::Function { result: ar, params: ap },
+             CType::Function { result: br, params: bp }) =>
+                ar.same_type(br) && ap.len() == bp.len()
+                && ap.iter().zip(bp).all(|(a, b)|
+                    a.unqualified().same_type(b.unqualified())),
             (CType::Array(a, na), CType::Array(b, nb)) =>
                 na == nb && a.same_type(b),
             _ => self == other,
