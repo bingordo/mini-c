@@ -1448,5 +1448,5 @@ fn s12_variadic_printf_semantics_and_promotion() {
         "incompatible");
     reject("int f(int); int f(int, ...);", "conflicting declaration");
     reject("int f(int, ...); int f(int);", "conflicting declaration");
-    check("extern int printf(const char *, ...); int main(void){return printf("%s", "hi");}").unwrap();
+    check(r#"extern int printf(const char *, ...); int main(void){return printf("%s", "hi");}"#).unwrap();
 }
