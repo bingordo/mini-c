@@ -399,6 +399,23 @@ mod tests {
         ), Some(4))), None);
     }
     #[test]
+    fn m10_short_16bit_layout_and_integer_promotions() {
+        let lp64 = Target::default();
+        let signed = CType::Integer {rank:IntRank::Short,unsigned:false};
+        let unsigned = CType::Integer {rank:IntRank::Short,unsigned:true};
+        assert_eq!(lp64.bits(IntRank::Short),16);
+        assert_eq!(signed.size_bytes(lp64),Some(2));
+        assert_eq!(unsigned.align_bytes(lp64),Some(2));
+        assert_eq!(lp64.promote(&signed),CType::int());
+        assert_eq!(lp64.promote(&unsigned),CType::int());
+        assert_eq!(lp64.common_integer(&signed,&unsigned),Some(CType::int()));
+        let int16 = Target{int_bits:16,long_bits:32,..lp64};
+        assert_eq!(int16.promote(&signed),CType::int());
+        assert_eq!(int16.promote(&unsigned),
+            CType::Integer{rank:IntRank::Int,unsigned:true});
+    }
+
+    #[test]
     fn invalid_target_is_diagnostic() {
         assert!(Target { int_bits: 8, ..Target::default() }.validate().is_err());
     }
