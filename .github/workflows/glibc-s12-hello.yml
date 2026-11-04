@@ -4,12 +4,18 @@ on:
   pull_request:
     branches: [main]
     paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/**'
       - 'tests/fixtures/glibc-s12/**'
       - 'tools/test_glibc_s12_hello.py'
       - '.github/workflows/glibc-s12-hello.yml'
   push:
     branches: [main]
     paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/**'
       - 'tests/fixtures/glibc-s12/**'
       - 'tools/test_glibc_s12_hello.py'
       - '.github/workflows/glibc-s12-hello.yml'

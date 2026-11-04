@@ -123,6 +123,13 @@ def main() -> int:
     args.report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
     print("S12 glibc stdio Hello World:", "PASS" if report["mini_c_hello_ok"]
           else f"not yet accepted (first blocker: {report['first_blocker']})")
+    blocked = report["first_blocker"]
+    if blocked and blocked in stages:
+        diagnostic = stages[blocked].get("stderr") or stages[blocked].get("error") or ""
+        if diagnostic:
+            # Bounded log summary; exact full diagnostics remain in JSON.
+            print("S12 first blocker diagnostic (max 12 lines):")
+            print("\n".join(str(diagnostic).splitlines()[:12]))
     print("Report:", args.report)
     # Until milestone completion, keep the CI diagnostic rather than require
     # success from a compiler that cannot yet parse all of glibc stdio.h.
