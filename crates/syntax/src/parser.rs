@@ -1,6 +1,6 @@
 //! Incremental parser for the first supported subset of external declarations.
 //! Each complete function body is returned separately; earlier bodies are not retained.
-use crate::ast::{BinOp, Decl, Expr, Function, Qualifiers, Span, Stmt, StorageClass, TagKind, Type, UnOp};
+use crate::ast::{BinOp, Decl, Expr, FloatRank, Function, Qualifiers, Span, Stmt, StorageClass, TagKind, Type, UnOp};
 use crate::diag::{Diagnostic, DiagnosticCode};
 use crate::lexer::{Scanner, Token, TokenKind};
 use crate::stream::{ExternalItem, ItemSource};
@@ -112,7 +112,7 @@ impl<'a> Parser<'a> {
         if self.brace_depth == 0
             && error.message.starts_with("expected ';'")
             && self.peek().ok().flatten().is_some_and(|t| matches!(
-                t.text, "int" | "char" | "short" | "long" | "void" | "signed" |
+                t.text, "int" | "char" | "short" | "long" | "float" | "double" | "void" | "signed" |
                     "unsigned" | "static" | "extern" | "typedef" | "struct" | "union" | "enum"
             ) || t.kind == TokenKind::TypedefName)
         {
@@ -427,7 +427,7 @@ impl<'a> Parser<'a> {
                 // (x) without rewinding the incremental lexer. Only integer
                 // scalar type names are accepted in this first cast slice.
                 let cast_type = self.peek()?.is_some_and(|next| {
-                    matches!(next.text, "int" | "char" | "short" | "long" | "void" |
+                    matches!(next.text, "int" | "char" | "short" | "long" | "float" | "double" | "void" |
                         "signed" | "unsigned" | "struct" | "union" | "enum")
                         || next.kind == TokenKind::TypedefName
                 });
@@ -652,7 +652,7 @@ impl<'a> Parser<'a> {
             inner
         } else if let Some(token) = self.peek()?.filter(|token| {
             matches!(token.kind, TokenKind::Identifier | TokenKind::TypedefName)
-                && !matches!(token.text, "int" | "char" | "short" | "long" | "void"
+                && !matches!(token.text, "int" | "char" | "short" | "long" | "float" | "double" | "void"
                     | "unsigned" | "signed" | "const" | "restrict" | "__restrict" | "__restrict__"
                     | "typedef" | "static" | "extern"
                     | "struct" | "union" | "enum" | "if" | "else" | "while" | "do" | "for" | "return" | "break" | "continue")
@@ -914,7 +914,7 @@ impl<'a> Parser<'a> {
             "typedef" => { self.take()?; Ok(Stmt::Typedef(self.parse_decl(true)?)) },
             "static" | "extern" => Ok(Stmt::Decl(self.parse_decl(false)?)),
             "struct" | "union" | "enum" => self.parse_tag_or_decl(),
-            "int" | "char" | "short" | "long" | "void" | "unsigned" | "signed"
+            "int" | "char" | "short" | "long" | "float" | "double" | "void" | "unsigned" | "signed"
                 | "const" | "restrict" | "__restrict" | "__restrict__" => Ok(Stmt::Decl(self.parse_decl(false)?)),
             _ if token.kind == TokenKind::TypedefName => Ok(Stmt::Decl(self.parse_decl(false)?)),
             _ => { let expr = self.parse_expr()?; self.expect(";")?; Ok(Stmt::Expr(Some(expr))) }
@@ -1036,6 +1036,14 @@ impl<'a> Parser<'a> {
                 else { Type::Struct { tag, members } }
             }
             "void" => { self.take()?; Type::Void }
+            "float" => { self.take()?; Type::Floating(FloatRank::Float) }
+            "double" => {
+                self.take()?;
+                if self.peek()?.is_some_and(|t| t.text == "long") {
+                    self.take()?;
+                    Type::Floating(FloatRank::LongDouble)
+                } else { Type::Floating(FloatRank::Double) }
+            }
             "char" | "short" | "int" | "long" | "unsigned" | "signed" => {
                 // C integer declaration specifiers are order-independent:
                 // glibc's standard typedef 'long unsigned int size_t' must
@@ -1045,6 +1053,7 @@ impl<'a> Parser<'a> {
                 let mut is_char = false;
                 let mut is_short = false;
                 let mut is_int = false;
+                let mut is_long_double = false;
                 let mut long_count = 0u8;
                 let mut sign: Option<bool> = None;
                 while let Some(next) = self.peek()? {
@@ -1053,6 +1062,12 @@ impl<'a> Parser<'a> {
                         "short" if !is_short && !is_char && long_count == 0 => is_short = true,
                         "int" if !is_int && !is_char => is_int = true,
                         "long" if long_count < 2 && !is_char && !is_short => long_count += 1,
+                        // C17 permits either 'long double' or 'double long'.
+                        "double" if long_count == 1 && !is_int && sign.is_none() => {
+                            is_long_double = true;
+                            self.take()?;
+                            break;
+                        }
                         "unsigned" if sign.is_none() => sign = Some(true),
                         "signed" if sign.is_none() => sign = Some(false),
                         "const" => qualifiers.is_const = true,
@@ -1067,7 +1082,8 @@ impl<'a> Parser<'a> {
                     }
                     self.take()?;
                 }
-                let base = if is_char { Type::Char }
+                let base = if is_long_double { Type::Floating(FloatRank::LongDouble) }
+                    else if is_char { Type::Char }
                     else if is_short { Type::Short }
                     else if long_count == 2 { Type::LongLong }
                     else if long_count == 1 { Type::Long }
