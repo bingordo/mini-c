@@ -51,7 +51,15 @@ impl CType {
     }
     pub fn is_const(&self) -> bool { matches!(self, Self::Qualified(_)) }
     pub fn with_const(self) -> Self {
-        if self.is_const() { self } else { Self::Qualified(Box::new(self)) }
+        // C array qualification applies recursively to the element type.
+        // In particular, a const multidimensional array must decay to a
+        // pointer to an array of const elements, not to mutable elements.
+        match self {
+            Self::Array(element, count) =>
+                Self::Array(Box::new((*element).with_const()), count),
+            Self::Qualified(_) => self,
+            other => Self::Qualified(Box::new(other)),
+        }
     }
     /// C pointer assignment may add, but not discard, immediate pointee const.
     /// Nested pointer targets must be exactly compatible (not T** -> const T**).
