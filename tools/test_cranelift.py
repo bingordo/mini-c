@@ -14,6 +14,15 @@ import subprocess
 import sys
 
 PROGRAMS = {
+    "gnu_attribute_pure_nothrow_prototype": """int twice(int x)
+        __attribute__((__pure__, __nothrow__));
+        int twice(int x) { return x*2; }
+        int main(void) { return twice(12); }""",
+    "gnu_attribute_nonnull_pointer_prototype": """int read(const int *p)
+        __attribute__((__pure__))
+        __attribute__((__nonnull__(1)));
+        int read(const int *p) { return *p; }
+        int main(void) { int x=17; return read(&x); }""",
     "const_global_integer": """const int value=11;
         int main(void) { return value; }""",
     "const_global_pointer_relocation": """int value=17; int *const p=&value;
