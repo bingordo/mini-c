@@ -1658,6 +1658,25 @@ mod tests {
     }
 
     #[test]
+    fn m10_float128_glibc_prototype_is_not_long_double() {
+        let src = "extern int __fpclassifyf128 (_Float128 __value) __attribute__ ((__nothrow__,__leaf__));";
+        let mut parser = Parser::new(src);
+        let ExternalItem::Declaration(prototype) = parser.next_item().unwrap().unwrap()
+            else { panic!("expected declaration") };
+        let Type::Function { result, params } = prototype.ty else {
+            panic!("expected function prototype");
+        };
+        assert_eq!(*result, Type::Int);
+        assert_eq!(params, vec![Type::Floating(FloatRank::Float128)]);
+        assert!(parser.next_item().unwrap().is_none());
+        for invalid in ["typedef unsigned _Float128 T;", "typedef _Float128 long T;",
+                        "typedef double _Float128 T;"] {
+            assert!(Parser::new(invalid).next_item().is_err(),
+                "invalid mixed floating specifiers must fail: {invalid}");
+        }
+    }
+
+    #[test]
     fn m10_float_declarations_preserve_three_distinct_types() {
         let src = concat!(
             "typedef float float_t; typedef double double_t;",
