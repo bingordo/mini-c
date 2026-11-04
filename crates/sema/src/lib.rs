@@ -659,7 +659,7 @@ impl Checker {
     ) -> Result<CType, Diagnostic> {
         if let (CType::Array(element, bound), Some(Expr::StringLiteral(bytes))) =
             (&ty, initializer.map(Expr::without_location)) {
-            if matches!(element.as_ref(), CType::Integer { rank: IntRank::Char, .. }) {
+            if matches!(element.unqualified(), CType::Integer { rank: IntRank::Char, .. }) {
                 let len = u64::try_from(bytes.len())
                     .map_err(|_| type_error(span, "string literal exceeds supported array size"))?;
                 if bound.as_ref().is_some_and(|&count| count < len.saturating_sub(1)) {
@@ -685,7 +685,9 @@ impl Checker {
         let span = original.location().unwrap_or(span);
         let original = original.without_location();
         if let Expr::Initializer(values) = original {
-            let elements: Vec<&CType> = match ty {
+            // Braced initialization follows the aggregate shape even when
+            // the destination object itself is const-qualified.
+            let elements: Vec<&CType> = match ty.unqualified() {
                 CType::Struct { members, .. } => {
                     if values.len() > members.len() {
                         return Err(type_error(span, "too many struct initializers"));
@@ -725,9 +727,9 @@ impl Checker {
         if is_static {
             self.validate_static_initializer(&expression, original, ty, span)?;
         }
-        if matches!((ty, original),
+        if matches!((ty.unqualified(), original),
             (CType::Array(element, Some(_)), Expr::StringLiteral(_))
-            if matches!(element.as_ref(), CType::Integer { rank: IntRank::Char, .. }))
+            if matches!(element.unqualified(), CType::Integer { rank: IntRank::Char, .. }))
         {
             // Retain literal bytes in checked IR; generic array-to-pointer
             // decay would lose the value needed to initialize the array.
@@ -1005,7 +1007,7 @@ impl Checker {
         let ty = ty.unqualified();
         if let CType::Array(element, Some(_)) = ty {
             if matches!(original, Expr::StringLiteral(_))
-                && matches!(element.as_ref(), CType::Integer { rank: IntRank::Char, .. })
+                && matches!(element.unqualified(), CType::Integer { rank: IntRank::Char, .. })
             {
                 return Ok(());
             }
@@ -1097,7 +1099,7 @@ impl Checker {
         let value_ty = ty.unqualified();
         let compatible = match (value_ty, &expr.ty) {
             (CType::Struct { .. }, CType::Struct { .. }) |
-            (CType::Union { .. }, CType::Union { .. }) => ty.same_type(&expr.ty),
+            (CType::Union { .. }, CType::Union { .. }) => value_ty.same_type(&expr.ty),
             (CType::Integer { .. }, CType::Integer { .. }) => true,
             (CType::Pointer(lhs), CType::Pointer(rhs)) =>
                 CType::compatible_pointee_assignment(lhs, rhs),
