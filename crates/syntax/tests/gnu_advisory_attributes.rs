@@ -134,3 +134,25 @@ fn malformed_access_attributes_remain_fail_closed() {
             "{attribute}: {error:?}");
     }
 }
+
+#[test]
+fn only_exact_gnu_attribute_spelling_variants_are_recognized() {
+    // Both forms are GNU-defined; arbitrary underscore variants are not.
+    for name in ["pure", "__pure__", "access(read_only,1)",
+                 "__access__(__read_only__,1)"] {
+        let source = format!(
+            "extern int f(const int *p) __attribute__(({name}));"
+        );
+        assert!(Parser::new(&source).next_item().is_ok(), "{source}");
+    }
+
+    for name in ["_pure", "pure_", "___pure___", "__pure_",
+                 "_access(read_only,1)", "access(_read_only,1)",
+                 "__access__(__read_only_,1)",
+                 "access(read_only_,1)"] {
+        let source = format!(
+            "extern int f(const int *p) __attribute__(({name}));"
+        );
+        assert!(Parser::new(&source).next_item().is_err(), "{source}");
+    }
+}
