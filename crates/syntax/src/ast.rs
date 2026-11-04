@@ -61,6 +61,7 @@ impl Qualifiers {
 pub enum Type {
     Void,
     Char,
+    Short,
     Int,
     Long,
     LongLong,
