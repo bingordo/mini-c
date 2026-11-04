@@ -84,6 +84,12 @@ pub enum Type {
         result: Box<Type>,
         params: Vec<Type>,
     },
+    /// A prototype ending in C ellipsis; unlike Function, extra arguments
+    /// undergo default argument promotions and the ABI is variadic.
+    VariadicFunction {
+        result: Box<Type>,
+        params: Vec<Type>,
+    },
 }
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
