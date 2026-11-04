@@ -1416,3 +1416,22 @@ fn compatible_function_pointer_parameter_qualification() {
     reject("int id(int *p){return *p;} int f(void){int (*q)(const int *)=id; return 0; }",
         "incompatible assignment");
 }
+
+#[test]
+fn const_aggregate_and_character_array_initializers() {
+    // Braces describe the aggregate even when its object type is const.
+    check("struct S { int x; long y; }; const struct S s={3,4}; int f(void) { return s.x; }").unwrap();
+    check("struct S { int x; }; int f(void) { struct S s={3}; const struct S q=s; return q.x; }").unwrap();
+    check("const int values[2]={1,2}; int f(void) { return values[1]; }").unwrap();
+
+    // Qualifying char-array elements must not disable string literal sizing
+    // or the string literal's special array initialization handling.
+    check("const char text[]=\"abc\"; int f(void) { return text[1]; }").unwrap();
+    check("int f(void) { const char text[3]=\"hi\"; return text[0]; }").unwrap();
+    reject("const char text[2]=\"abcd\";", "string literal is too long");
+
+    // Array element qualifiers propagate through each dimension.
+    check("struct S { int a[2][2]; }; int f(void) { struct S s={{{1,2},{3,4}}}; const struct S *p=&s; const int *q=p->a[0]; return q[0]; }").unwrap();
+    reject("struct S { int a[2][2]; }; int f(void) { struct S s={{{1,2},{3,4}}}; const struct S *p=&s; int *q=p->a[0]; return q[0]; }",
+        "incompatible assignment");
+}
