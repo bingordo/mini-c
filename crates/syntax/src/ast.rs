@@ -57,6 +57,11 @@ impl Qualifiers {
     pub fn any(self) -> bool { self.is_const || self.is_restrict }
 }
 
+/// IEEE floating formats in hosted C declarations. The native compiler
+/// currently retains these types for checked prototypes, not FP codegen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FloatRank { Float, Double, LongDouble }
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Type {
     Void,
@@ -65,6 +70,7 @@ pub enum Type {
     Int,
     Long,
     LongLong,
+    Floating(FloatRank),
     Alias(Ident),
     /// Qualifiers bind to this type, not to the nearest pointer's pointee.
     Qualified(Box<Type>, Qualifiers),

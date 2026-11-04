@@ -1,6 +1,6 @@
 //! Target-dependent C integer types and the conversions used by the supported subset.
 //! No host sizeof() assumptions: a caller selects the integer model.
-use mini_c_syntax::ast::{Span, TagKind};
+use mini_c_syntax::ast::{FloatRank, Span, TagKind};
 use mini_c_syntax::diag::Diagnostic;
 use mini_c_syntax::integer_literal::IntegerLiteral;
 
@@ -38,6 +38,9 @@ pub enum CType {
     /// Retain top-level const independently from runtime representation.
     Qualified(Box<CType>),
     Integer { rank: IntRank, unsigned: bool },
+    /// Checked hosted FP type identity is retained in declarations. Native FP
+    /// ABI/code generation is not yet implemented; never alias these to int.
+    Floating(FloatRank),
     Pointer(Box<CType>),
     /// Incomplete arrays use None; bound and full object layout are target-dependent.
     Array(Box<CType>, Option<u64>),
@@ -79,6 +82,10 @@ impl CType {
             Self::Array(element, _) => element.align_bytes(target),
             Self::Pointer(_) => Some(8),
             Self::Integer { rank, .. } => Some(u64::from(target.bits(*rank) / 8)),
+            Self::Floating(rank) => Some(match rank {
+                FloatRank::Float => 4, FloatRank::Double => 8,
+                FloatRank::LongDouble => 16, // x86-64 SysV padded x87 format
+            }),
         }
     }
 
@@ -156,7 +163,7 @@ impl CType {
         matches!(self.unqualified(), Self::Integer { .. })
     }
     pub fn is_scalar(&self) -> bool {
-        matches!(self.unqualified(), Self::Integer { .. } | Self::Pointer(_))
+        matches!(self.unqualified(), Self::Integer { .. } | Self::Floating(_) | Self::Pointer(_))
     }
     pub fn is_object(&self) -> bool {
         !matches!(self.unqualified(), Self::Void | Self::Function { .. })
@@ -170,6 +177,10 @@ impl CType {
             Self::Qualified(inner) => inner.size_bytes(target),
             Self::Struct { size, .. } | Self::Union { size, .. } => Some(*size),
             Self::Integer { rank, .. } => Some(u64::from(target.bits(*rank) / 8)),
+            Self::Floating(rank) => Some(match rank {
+                FloatRank::Float => 4, FloatRank::Double => 8,
+                FloatRank::LongDouble => 16, // x86-64 SysV padded x87 format
+            }),
             Self::Pointer(_) => Some(8), // Current target model is LP64.
             Self::Array(element, Some(count)) => element.size_bytes(target)?.checked_mul(*count),
             Self::Array(_, None) => None,
