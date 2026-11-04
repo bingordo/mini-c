@@ -1361,6 +1361,53 @@ fn const_aggregate_members_and_pointer_conditional_qualifiers() {
 
 
 #[test]
+fn m10_float_prototypes_retain_types_and_target_layout() {
+    use mini_c_syntax::ast::FloatRank;
+    let src = concat!(
+        "typedef float float_t;typedef double double_t;",
+        "extern int __fpclassify(double __value) __attribute__((__nothrow__,__leaf__));",
+        "extern double nexttoward(double x, long double y);",
+        "extern long double sqrtl(long double x);",
+        "extern float nexttowardf(float x, double long y);",
+        "typedef float_t another_float;"
+    );
+    let checked = check(src).unwrap();
+    let CheckedItem::Typedef { ty: float_ty, .. } = &checked[0] else {
+        panic!("missing float typedef");
+    };
+    let CheckedItem::Typedef { ty: double_ty, .. } = &checked[1] else {
+        panic!("missing double typedef");
+    };
+    assert_eq!(float_ty, &CType::Floating(FloatRank::Float));
+    assert_eq!(double_ty, &CType::Floating(FloatRank::Double));
+    assert!(!float_ty.same_type(double_ty));
+    let CheckedItem::Declaration(proto) = &checked[3] else {
+        panic!("missing prototype");
+    };
+    assert_eq!(proto.ty, CType::Function {
+        result: Box::new(CType::Floating(FloatRank::Double)),
+        params: vec![
+            CType::Floating(FloatRank::Double),
+            CType::Floating(FloatRank::LongDouble),
+        ],
+    });
+    let target = Target::default();
+    for (kind, bytes) in [
+        (FloatRank::Float, 4),
+        (FloatRank::Double, 8),
+        (FloatRank::LongDouble, 16),
+    ] {
+        let ty = CType::Floating(kind);
+        assert_eq!(ty.size_bytes(target), Some(bytes));
+        assert_eq!(ty.align_bytes(target), Some(bytes));
+        assert!(ty.is_scalar());
+        assert!(!ty.is_integer());
+    }
+    reject("extern double x; extern int x;", "conflicting declaration");
+    reject("int f(void){double x;return x;}", "incompatible");
+}
+
+#[test]
 fn gnu_function_hints_preserve_checked_signatures() {
     check("int add(int x) __attribute__((__nothrow__,__leaf__)); int add(int x){return x+1;}").unwrap();
     check("int read(const int *p) __attribute__((__pure__,__nonnull__(1))); int read(const int *p){return *p;}").unwrap();
