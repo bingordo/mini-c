@@ -1376,6 +1376,29 @@ fn m10_gnu_extension_suppresses_warnings_not_types_or_redeclaration_checks() {
 }
 
 #[test]
+fn m10_float128_hosted_signature_preserves_distinct_abi_identity() {
+    use mini_c_syntax::ast::FloatRank;
+    let checked = check(concat!(
+        "extern int __fpclassifyf128 (_Float128 __value) ",
+        "__attribute__((__nothrow__,__leaf__));",
+        "extern int __isnanf128(_Float128 __value);"
+    )).unwrap();
+    let CheckedItem::Declaration(proto) = &checked[0] else {
+        panic!("expected checked prototype");
+    };
+    assert_eq!(proto.ty, CType::Function {
+        result: Box::new(CType::int()),
+        params: vec![CType::Floating(FloatRank::Float128)],
+    });
+    let quad = CType::Floating(FloatRank::Float128);
+    assert_eq!(quad.size_bytes(Target::default()), Some(16));
+    assert_eq!(quad.align_bytes(Target::default()), Some(16));
+    assert!(!quad.same_type(&CType::Floating(FloatRank::LongDouble)));
+    reject("extern int f(_Float128); extern int f(long double);",
+        "conflicting declaration");
+}
+
+#[test]
 fn m10_float_prototypes_retain_types_and_target_layout() {
     use mini_c_syntax::ast::FloatRank;
     let src = concat!(
