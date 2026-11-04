@@ -567,6 +567,45 @@ impl<'a> Parser<'a> {
                         self.expect(")")?;
                     }
                 }
+                "access" => {
+                    // GCC access(mode, pointer-parameter[, size-parameter])
+                    // annotates diagnostics and optional optimization; it
+                    // does not change function calling convention, layout or
+                    // runtime behavior. Ignore only this *validated* form,
+                    // preserving the normal checked parameter types. Do not
+                    // generalize this to arbitrary GNU attributes.
+                    self.expect("(")?;
+                    let mode = self.take()?.ok_or_else(|| Diagnostic::coded(
+                        self.eof_span(), DiagnosticCode::SyntaxInvalidDeclaration,
+                        "expected access mode"
+                    ))?;
+                    if !matches!(mode.text.trim_matches('_'),
+                        "read_only" | "write_only" | "read_write" | "none")
+                    {
+                        return Err(Diagnostic::coded(mode.span,
+                            DiagnosticCode::SyntaxInvalidDeclaration,
+                            "unsupported access attribute mode"));
+                    }
+                    self.expect(",")?;
+                    for position in 0..2 {
+                        let argument = self.take()?.ok_or_else(|| Diagnostic::coded(
+                            self.eof_span(), DiagnosticCode::SyntaxInvalidDeclaration,
+                            "expected access attribute parameter index"
+                        ))?;
+                        let valid = argument.kind == TokenKind::Number &&
+                            argument.text.parse::<usize>().ok().is_some_and(|n| n != 0);
+                        if !valid {
+                            return Err(Diagnostic::coded(argument.span,
+                                DiagnosticCode::SyntaxInvalidDeclaration,
+                                "access attribute requires positive integer parameter indexes"));
+                        }
+                        if position == 1 || !self.peek()?.is_some_and(|t| t.text == ",") {
+                            break;
+                        }
+                        self.take()?;
+                    }
+                    self.expect(")")?;
+                }
                 // In particular, do not discard 'noreturn', 'returns_twice',
                 // 'packed', 'aligned', 'vector_size', 'mode', 'section',
                 // 'ms_abi', 'sysv_abi' or unknown ABI-affecting extensions.
