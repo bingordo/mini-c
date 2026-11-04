@@ -1382,7 +1382,9 @@ impl Checker {
                     let base_b = b.unqualified();
                     let unified = if base_a.same_type(base_b) {
                         base_a.clone()
-                    } else if *base_a == CType::Void || *base_b == CType::Void {
+                    } else if (*base_a == CType::Void && base_b.is_object())
+                        || (*base_b == CType::Void && base_a.is_object())
+                    {
                         CType::Void
                     } else {
                         return Err(Diagnostic::coded(span,
