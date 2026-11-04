@@ -122,7 +122,7 @@ impl<'a> Parser<'a> {
         if self.brace_depth == 0
             && error.message.starts_with("expected ';'")
             && self.peek().ok().flatten().is_some_and(|t| matches!(
-                t.text, "int" | "char" | "short" | "long" | "float" | "double" | "void" | "signed" |
+                t.text, "int" | "char" | "short" | "long" | "_Float128" | "float" | "double" | "void" | "signed" |
                     "unsigned" | "static" | "extern" | "typedef" | "struct" | "union" | "enum"
             ) || t.kind == TokenKind::TypedefName)
         {
@@ -437,7 +437,7 @@ impl<'a> Parser<'a> {
                 // (x) without rewinding the incremental lexer. Only integer
                 // scalar type names are accepted in this first cast slice.
                 let cast_type = self.peek()?.is_some_and(|next| {
-                    matches!(next.text, "int" | "char" | "short" | "long" | "float" | "double" | "void" |
+                    matches!(next.text, "int" | "char" | "short" | "long" | "_Float128" | "float" | "double" | "void" |
                         "signed" | "unsigned" | "struct" | "union" | "enum")
                         || next.kind == TokenKind::TypedefName
                 });
@@ -662,7 +662,7 @@ impl<'a> Parser<'a> {
             inner
         } else if let Some(token) = self.peek()?.filter(|token| {
             matches!(token.kind, TokenKind::Identifier | TokenKind::TypedefName)
-                && !matches!(token.text, "int" | "char" | "short" | "long" | "float" | "double" | "void"
+                && !matches!(token.text, "int" | "char" | "short" | "long" | "_Float128" | "float" | "double" | "void"
                     | "unsigned" | "signed" | "const" | "restrict" | "__restrict" | "__restrict__"
                     | "typedef" | "static" | "extern"
                     | "struct" | "union" | "enum" | "if" | "else" | "while" | "do" | "for" | "return" | "break" | "continue")
@@ -928,7 +928,7 @@ impl<'a> Parser<'a> {
             "typedef" => { self.take()?; Ok(Stmt::Typedef(self.parse_decl(true)?)) },
             "static" | "extern" => Ok(Stmt::Decl(self.parse_decl(false)?)),
             "struct" | "union" | "enum" => self.parse_tag_or_decl(),
-            "int" | "char" | "short" | "long" | "float" | "double" | "void" | "unsigned" | "signed"
+            "int" | "char" | "short" | "long" | "_Float128" | "float" | "double" | "void" | "unsigned" | "signed"
                 | "const" | "restrict" | "__restrict" | "__restrict__" => Ok(Stmt::Decl(self.parse_decl(false)?)),
             _ if token.kind == TokenKind::TypedefName => Ok(Stmt::Decl(self.parse_decl(false)?)),
             _ => { let expr = self.parse_expr()?; self.expect(";")?; Ok(Stmt::Expr(Some(expr))) }
@@ -1051,6 +1051,7 @@ impl<'a> Parser<'a> {
             }
             "void" => { self.take()?; Type::Void }
             "float" => { self.take()?; Type::Floating(FloatRank::Float) }
+            "_Float128" => { self.take()?; Type::Floating(FloatRank::Float128) }
             "double" => {
                 self.take()?;
                 if self.peek()?.is_some_and(|t| t.text == "long") {
