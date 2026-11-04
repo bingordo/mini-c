@@ -502,6 +502,101 @@ impl<'a> Parser<'a> {
         Ok(expr)
     }
 
+    /// Parse GNU declarator attributes as a bounded, structured list.
+    ///
+    /// Only annotations that are safe to *not* exploit for optimization or
+    /// diagnostics are accepted. Layout, ABI, control-flow and unknown
+    /// attributes fail closed; they must not disappear silently.
+    fn parse_gnu_declarator_attributes(&mut self, function: bool)
+        -> Result<(), Diagnostic>
+    {
+        let start = self.take()?.expect("peeked GNU attribute").span;
+        self.expect("(")?;
+        self.expect("(")?;
+        let mut count = 0usize;
+        loop {
+            let token = self.peek()?.ok_or_else(|| Diagnostic::coded(
+                self.eof_span(), DiagnosticCode::SyntaxInvalidDeclaration,
+                "unterminated GNU attribute list"
+            ))?;
+            if token.text == ")" {
+                self.take()?;
+                break;
+            }
+            if !matches!(token.kind, TokenKind::Identifier | TokenKind::TypedefName) {
+                return Err(Diagnostic::coded(token.span,
+                    DiagnosticCode::SyntaxInvalidDeclaration,
+                    "expected GNU attribute identifier"));
+            }
+            self.take()?;
+            count += 1;
+            let name = token.text.trim_matches('_');
+            match name {
+                // These are optional compiler optimization or diagnostic
+                // promises. Ignoring them is conservative for generated code.
+                "nothrow" | "leaf" | "pure" | "const" | "malloc"
+                | "warn_unused_result" | "unused" | "deprecated"
+                | "returns_nonnull" => {
+                    if self.peek()?.is_some_and(|t| t.text == "(") {
+                        return Err(Diagnostic::coded(token.span,
+                            DiagnosticCode::SyntaxInvalidDeclaration,
+                            format!("unsupported arguments to GNU attribute '{}'", token.text)));
+                    }
+                }
+                "nonnull" => {
+                    if self.peek()?.is_some_and(|t| t.text == "(") {
+                        self.take()?;
+                        // No arguments denotes all pointer parameters.
+                        if !self.peek()?.is_some_and(|t| t.text == ")") {
+                            loop {
+                                let argument = self.take()?.ok_or_else(|| Diagnostic::coded(
+                                    self.eof_span(), DiagnosticCode::SyntaxInvalidDeclaration,
+                                    "expected nonnull parameter position"
+                                ))?;
+                                let position = argument.text.parse::<usize>().ok()
+                                    .filter(|position| *position != 0);
+                                if argument.kind != TokenKind::Number || position.is_none() {
+                                    return Err(Diagnostic::coded(argument.span,
+                                        DiagnosticCode::SyntaxInvalidDeclaration,
+                                        "nonnull attribute requires positive integer parameter positions"));
+                                }
+                                if !self.peek()?.is_some_and(|t| t.text == ",") { break; }
+                                self.take()?;
+                            }
+                        }
+                        self.expect(")")?;
+                    }
+                }
+                // In particular, do not discard 'noreturn', 'returns_twice',
+                // 'packed', 'aligned', 'vector_size', 'mode', 'section',
+                // 'ms_abi', 'sysv_abi' or unknown ABI-affecting extensions.
+                _ => return Err(Diagnostic::coded(token.span,
+                    DiagnosticCode::SyntaxInvalidDeclaration,
+                    format!("unsupported GNU attribute '{}' (possible ABI or semantic effect)",
+                        token.text))),
+            }
+            if !function {
+                return Err(Diagnostic::coded(token.span,
+                    DiagnosticCode::SyntaxInvalidDeclaration,
+                    "GNU function attribute requires a function declarator"));
+            }
+            if self.peek()?.is_some_and(|t| t.text == ",") {
+                self.take()?;
+            } else if !self.peek()?.is_some_and(|t| t.text == ")") {
+                let span = self.peek()?.map_or(self.eof_span(), |t| t.span);
+                return Err(Diagnostic::coded(span,
+                    DiagnosticCode::SyntaxInvalidDeclaration,
+                    "expected ',' or ')' in GNU attribute list"));
+            }
+        }
+        if count == 0 {
+            return Err(Diagnostic::coded(start, DiagnosticCode::SyntaxInvalidDeclaration,
+                "empty GNU attribute list is unsupported"));
+        }
+        self.expect(")")?;
+        Ok(())
+    }
+
     /// Parse C declarator binding order independently of the base type.
     /// Named declarators are required for ordinary definitions and declarations;
     /// parameter declarators may omit their name.
@@ -548,6 +643,12 @@ impl<'a> Parser<'a> {
                 let params = self.parse_parameter_list()?;
                 self.expect(")")?;
                 direct = Declarator::Function(Box::new(direct), params);
+            } else if self.peek()?.is_some_and(|token|
+                token.text == "__attribute__" || token.text == "__attribute")
+            {
+                self.parse_gnu_declarator_attributes(
+                    matches!(&direct, Declarator::Function(..))
+                )?;
             } else {
                 break;
             }
