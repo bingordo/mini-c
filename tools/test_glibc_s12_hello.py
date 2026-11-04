@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""S12: measure actual glibc stdio.h Hello World through GCC and Mini-C.
+"""S12: measure variadic glibc printf Hello World through GCC and Mini-C.
 
 This is a *staged acceptance probe*, not a green Mini-C conformance claim.
 Always retain failures. Only GCC host reference execution is required for
@@ -20,7 +20,7 @@ SOURCE = ROOT / "tests/fixtures/glibc-s12/hello_stdio.c"
 EXPECTED_SOURCE = (
     '#include <stdio.h>\n\n'
     'int main(void) {\n'
-    '    puts("Hello, world!");\n'
+    '    printf("Hello, %s!\\n", "world");\n'
     '    return 0;\n'
     '}\n'
 )
@@ -58,6 +58,8 @@ def main() -> int:
     report: dict = {
         "fixture": str(SOURCE.relative_to(ROOT)),
         "system_header": "stdio.h, unmodified from host glibc development package",
+        "required_call": "printf(const char *, ...) with one string pointer vararg",
+        "abi_requirement": "x86-64 SysV variadic call; AL=0 when no vector registers are used",
         "stages": {},
         "first_preprocessed_markers": [],
     }
