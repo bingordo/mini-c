@@ -5,7 +5,7 @@ use mini_c_syntax::diag::Diagnostic;
 use mini_c_syntax::integer_literal::IntegerLiteral;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum IntRank { Char, Int, Long, LongLong }
+pub enum IntRank { Char, Short, Int, Long, LongLong }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructMember {
@@ -232,12 +232,19 @@ impl Target {
     }
 
     pub fn bits(self, rank: IntRank) -> u16 {
-        match rank { IntRank::Char => 8, IntRank::Int => self.int_bits, IntRank::Long => self.long_bits, IntRank::LongLong => 64 }
+        match rank { IntRank::Char => 8, IntRank::Short => 16, IntRank::Int => self.int_bits, IntRank::Long => self.long_bits, IntRank::LongLong => 64 }
     }
 
     pub fn promote(self, ty: &CType) -> CType {
         match ty.unqualified() {
             CType::Integer { rank: IntRank::Char, .. } => CType::int(),
+            CType::Integer { rank: IntRank::Short, unsigned } => {
+                // C integer promotions: int can represent every short value
+                // on normal ILP32/LP64, but unsigned short requires unsigned
+                // int on a 16-bit-int target.
+                CType::Integer { rank: IntRank::Int,
+                    unsigned: *unsigned && self.int_bits <= 16 }
+            },
             other => other.clone(),
         }
     }
