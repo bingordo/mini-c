@@ -6,6 +6,14 @@ use crate::lexer::{Scanner, Token, TokenKind};
 use crate::stream::{ExternalItem, ItemSource};
 use crate::scopes::{Binding, Scopes};
 
+/// Accept an unadorned GNU attribute identifier or its exactly double-
+/// underscored spelling; arbitrary single/triple underscores are not aliases.
+fn gnu_attribute_spelling(name: &str) -> &str {
+    name.strip_prefix("__")
+        .and_then(|inner| inner.strip_suffix("__"))
+        .unwrap_or(name)
+}
+
 /// Syntactic declarator operators, stored inside-out until the base type is known.
 /// Applying them from the outside inward gives the C binding order:
 /// `int *a[3]` is an array of pointers; `int (*a)[3]` is a pointer to an array.
@@ -530,7 +538,7 @@ impl<'a> Parser<'a> {
             }
             self.take()?;
             count += 1;
-            let name = token.text.trim_matches('_');
+            let name = gnu_attribute_spelling(token.text);
             match name {
                 // These are optional compiler optimization or diagnostic
                 // promises. Ignoring them is conservative for generated code.
@@ -579,7 +587,7 @@ impl<'a> Parser<'a> {
                         self.eof_span(), DiagnosticCode::SyntaxInvalidDeclaration,
                         "expected access mode"
                     ))?;
-                    if !matches!(mode.text.trim_matches('_'),
+                    if !matches!(gnu_attribute_spelling(mode.text),
                         "read_only" | "write_only" | "read_write" | "none")
                     {
                         return Err(Diagnostic::coded(mode.span,
