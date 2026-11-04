@@ -1629,7 +1629,7 @@ mod tests {
     #[test]
     fn m10_gnu_extension_prefix_only_on_valid_external_declarations() {
         let mut p = Parser::new(concat!(
-            "__extension__\\n",
+            "__extension__\n",
             "extern long long int llrint (double x) ",
             "__attribute__((__nothrow__,__leaf__));",
             "__extension__ typedef unsigned long long wide_t;",
