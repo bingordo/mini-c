@@ -1358,3 +1358,11 @@ fn const_aggregate_members_and_pointer_conditional_qualifiers() {
     reject("int f(void) { int x=1; const int *q=&x; void *p=q; return 0; }", "incompatible assignment");
     reject("int f(void) { int x=1; int *p=&x; const int *q=p; int *r=(1?p:q); return 0; }", "incompatible assignment");
 }
+
+
+#[test]
+fn gnu_function_hints_preserve_checked_signatures() {
+    check("int add(int x) __attribute__((__nothrow__,__leaf__)); int add(int x){return x+1;}").unwrap();
+    check("int read(const int *p) __attribute__((__pure__,__nonnull__(1))); int read(const int *p){return *p;}").unwrap();
+    check("typedef unsigned long size_t; extern void *copy(void *__restrict a, const void *__restrict b, size_t n) __attribute__((__nothrow__,__leaf__)) __attribute__((__nonnull__(1,2)));").unwrap();
+}

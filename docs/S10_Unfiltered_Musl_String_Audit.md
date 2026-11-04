@@ -159,6 +159,42 @@ unimplemented ones instead of indiscriminately deleting attributes.
 `volatile` remains unsupported because it affects observable access
 behavior; it must not be silently erased.
 
+## Fourth measurement: parsed advisory GNU attributes, next access/extension gaps
+
+[PR #50](https://github.com/bingordo/mini-c/pull/50) adds a **bounded,
+structured parser** for trailing GNU function-declaration attributes.
+It recognizes no-argument optimization/diagnostic hints such as
+`__nothrow__`, `__leaf__`, and `__pure__`, plus a checked
+`__nonnull__(1,2)` integer-parameter-position list. Accepted hints are
+not exploited by Mini-C's optimizer or codegen; not acting on these
+optional promises is conservative. Unknown annotations and ones that
+could affect ABI, object layout, or control flow (`ms_abi`,
+`aligned`, `packed`, `noreturn`, etc.) are **rejected rather than
+silently dropped**.
+
+[Syntax CI #41747609765](https://github.com/bingordo/mini-c/actions/runs/41747609765)
+and [Cranelift/GCC differential CI #41747609819](https://github.com/bingordo/mini-c/actions/runs/41747609819)
+both passed.
+
+All **24 upstream S10 C files remain unchanged**, and the full
+preprocessed-translation-unit frontend acceptance rate remains **0/24**.
+The first reported rejection has moved past the formerly universal
+`__attribute__((__nothrow__,__leaf__))` and
+`__attribute__((__nonnull__(1,2)))` declarations:
+
+- **23/24** now encounter GNU `__access__(__write_only__,1,4)`
+  on a `string.h` prototype. Unlike the accepted harmless hints,
+  this requires its own explicit policy for access/size contracts.
+- **1/24**, `strcasecmp.c`, now encounters `__extension__`
+  on an external declaration in `strings.h`. This C extension
+  marker remains unimplemented.
+
+The next step is an explicit representation or conservative treatment
+of access-size annotations, together with scoped GNU `__extension__`
+syntax, before measuring the next host-header or actual function-body
+barrier. Do not quietly strip these constructs or report any untested
+musl function as executable.
+
 ## Follow-up priority
 
 Use the report's rejected/total counts to rank concrete parser and semantic
