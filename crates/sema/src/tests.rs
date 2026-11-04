@@ -1361,6 +1361,21 @@ fn const_aggregate_members_and_pointer_conditional_qualifiers() {
 
 
 #[test]
+fn m10_gnu_extension_suppresses_warnings_not_types_or_redeclaration_checks() {
+    check(concat!(
+        "__extension__ extern long long int llrint(double x) ",
+        "__attribute__((__nothrow__,__leaf__));",
+        "__extension__ extern long long int llrint(double x);",
+        "int main(void){return 0;}"
+    )).unwrap();
+    reject(concat!(
+        "__extension__ extern long long int llrint(double x);",
+        "extern int llrint(double x);"
+    ), "conflicting declaration");
+    reject("__extension__ int x=1;int x=2;", "multiple definitions");
+}
+
+#[test]
 fn m10_float_prototypes_retain_types_and_target_layout() {
     use mini_c_syntax::ast::FloatRank;
     let src = concat!(

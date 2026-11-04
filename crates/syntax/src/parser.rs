@@ -1144,6 +1144,18 @@ impl ItemSource for Parser<'_> {
 
     fn next_item(&mut self) -> Result<Option<ExternalItem>, Self::Error> {
         self.pending_file_binding = None;
+        // GNU __extension__ only suppresses pedantic diagnostics for the
+        // following declaration; it changes neither type nor ABI. Admit
+        // precisely this file-scope prefix, without dropping the declaration
+        // or interpreting arbitrary GNU extensions as harmless.
+        if self.peek()?.is_some_and(|t| t.text == "__extension__") {
+            let marker = self.take()?.expect("peeked __extension__");
+            if self.peek()?.is_none() {
+                return Err(Diagnostic::coded(marker.span,
+                    DiagnosticCode::SyntaxInvalidDeclaration,
+                    "GNU __extension__ requires a following declaration"));
+            }
+        }
         let is_typedef = self.peek()?.is_some_and(|t| t.text == "typedef");
         if is_typedef { self.take()?; }
         let storage_span = self.peek()?.map_or(self.eof_span(), |t| t.span);
@@ -1612,6 +1624,36 @@ mod tests {
         let Stmt::Block(body) = fun.body else { panic!("block expected") };
         assert!(matches!(&body[1], Stmt::Expr(Some(Expr::Assign(lhs, _)))
             if matches!(lhs.as_ref(), Expr::Member(_, field, false) if field == "i")));
+    }
+
+    #[test]
+    fn m10_gnu_extension_prefix_only_on_valid_external_declarations() {
+        let mut p = Parser::new(concat!(
+            "__extension__\n",
+            "extern long long int llrint (double x) ",
+            "__attribute__((__nothrow__,__leaf__));",
+            "__extension__ typedef unsigned long long wide_t;",
+            "int main(void){return 0;}"
+        ));
+        assert!(matches!(p.next_item(), Ok(Some(ExternalItem::Declaration(_)))));
+        assert!(matches!(p.next_item(), Ok(Some(ExternalItem::Typedef(_)))));
+        assert!(matches!(p.next_item(), Ok(Some(ExternalItem::Function(_)))));
+        assert!(p.next_item().unwrap().is_none());
+
+        for invalid in [
+            "__extension__",
+            "__extension__ ;",
+            "__extension__ bogus;",
+            "__extension__ int x = ;",
+        ] {
+            assert!(Parser::new(invalid).next_item().is_err(),
+                "must not erase malformed declarations: {invalid}");
+        }
+        // This slice explicitly does not enable statement or expression
+        // extensions, nor suppress semantic checks on declared C types.
+        assert!(Parser::new(
+            "int main(void){__extension__ int x=2;return x;}"
+        ).next_item().is_err());
     }
 
     #[test]
