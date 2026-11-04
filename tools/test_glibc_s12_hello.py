@@ -1,0 +1,131 @@
+#!/usr/bin/env python3
+"""S12: measure actual glibc stdio.h Hello World through GCC and Mini-C.
+
+This is a *staged acceptance probe*, not a green Mini-C conformance claim.
+Always retain failures. Only GCC host reference execution is required for
+success until Mini-C can parse the full, unmodified system headers.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+import re
+import subprocess
+import sys
+import tempfile
+
+ROOT = Path(__file__).resolve().parents[1]
+SOURCE = ROOT / "tests/fixtures/glibc-s12/hello_stdio.c"
+EXPECTED_SOURCE = (
+    '#include <stdio.h>\n\n'
+    'int main(void) {\n'
+    '    puts("Hello, world!");\n'
+    '    return 0;\n'
+    '}\n'
+)
+EXPECTED_OUTPUT = "Hello, world!\n"
+FIRST_MARKER = re.compile(r'^#\s*\d+\s+"([^"]+)"')
+
+
+def invoke(command: list[str], timeout: int = 35) -> dict:
+    try:
+        proc = subprocess.run(command, text=True, capture_output=True,
+                              timeout=timeout, check=False)
+        return {
+            "argv": command,
+            "exit": proc.returncode,
+            "stdout": proc.stdout[-8192:],
+            "stderr": proc.stderr[-8192:],
+        }
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"argv": command, "error": str(exc)}
+
+
+def passed(item: dict | None) -> bool:
+    return item is not None and item.get("exit") == 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--checker", type=Path, default=ROOT / "target/debug/mini-c")
+    parser.add_argument("--backend", type=Path, default=ROOT / "target/debug/mini-c-cranelift")
+    parser.add_argument("--report", type=Path,
+                        default=ROOT / "target/s12-glibc-hello-report.json")
+    args = parser.parse_args()
+    if SOURCE.read_text(encoding="utf-8") != EXPECTED_SOURCE:
+        raise RuntimeError("S12 test source changed; review milestone acceptance contract")
+    report: dict = {
+        "fixture": str(SOURCE.relative_to(ROOT)),
+        "system_header": "stdio.h, unmodified from host glibc development package",
+        "stages": {},
+        "first_preprocessed_markers": [],
+    }
+    stages = report["stages"]
+    with tempfile.TemporaryDirectory(prefix="mini-c-glibc-s12-") as temp:
+        base = Path(temp)
+        preprocessed = base / "stdio.i"
+        gcc_exe = base / "gcc-hello"
+        object_file = base / "mini-hello.o"
+        mini_exe = base / "mini-hello"
+
+        stages["host_cc_version"] = invoke(["cc", "--version"], timeout=8)
+        stages["glibc_version"] = invoke(["getconf", "GNU_LIBC_VERSION"], timeout=8)
+        stages["gcc_compile_link"] = invoke([
+            "cc", "-std=gnu11", "-D_GNU_SOURCE", str(SOURCE),
+            "-o", str(gcc_exe)
+        ])
+        if passed(stages["gcc_compile_link"]):
+            stages["gcc_execute"] = invoke([str(gcc_exe)])
+        stages["preprocess"] = invoke([
+            "cc", "-E", "-std=gnu11", "-D_GNU_SOURCE",
+            str(SOURCE), "-o", str(preprocessed)
+        ])
+        if passed(stages["preprocess"]) and preprocessed.is_file():
+            lines = preprocessed.read_text(encoding="utf-8").splitlines()
+            report["preprocessed_lines"] = len(lines)
+            report["first_preprocessed_markers"] = [
+                line for line in lines if FIRST_MARKER.match(line)
+            ][:24]
+            stages["mini_c_check"] = invoke([
+                str(args.checker), "check", "--cpp=none", str(preprocessed)
+            ])
+            if passed(stages["mini_c_check"]):
+                stages["mini_c_object"] = invoke([
+                    str(args.backend), "--emit-obj", str(object_file),
+                    "--cpp=none", str(preprocessed)
+                ])
+                if passed(stages["mini_c_object"]) and object_file.is_file():
+                    stages["mini_c_link"] = invoke([
+                        "cc", str(object_file), "-o", str(mini_exe)
+                    ])
+                    if passed(stages["mini_c_link"]):
+                        stages["mini_c_execute"] = invoke([str(mini_exe)])
+
+    report["gcc_reference_ok"] = (
+        passed(stages.get("gcc_execute"))
+        and stages["gcc_execute"].get("stdout") == EXPECTED_OUTPUT
+        and stages["gcc_execute"].get("stderr") == ""
+    )
+    report["mini_c_hello_ok"] = (
+        passed(stages.get("mini_c_execute"))
+        and stages["mini_c_execute"].get("stdout") == EXPECTED_OUTPUT
+        and stages["mini_c_execute"].get("stderr") == ""
+    )
+    report["first_blocker"] = next(
+        (stage for stage in ("preprocess", "mini_c_check",
+                             "mini_c_object", "mini_c_link", "mini_c_execute")
+         if not passed(stages.get(stage))), None
+    )
+    args.report.parent.mkdir(parents=True, exist_ok=True)
+    args.report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+    print("S12 glibc stdio Hello World:", "PASS" if report["mini_c_hello_ok"]
+          else f"not yet accepted (first blocker: {report['first_blocker']})")
+    print("Report:", args.report)
+    # Until milestone completion, keep the CI diagnostic rather than require
+    # success from a compiler that cannot yet parse all of glibc stdio.h.
+    return 0 if report["gcc_reference_ok"] and passed(stages.get("preprocess")) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
