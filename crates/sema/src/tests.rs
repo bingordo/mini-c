@@ -1366,3 +1366,19 @@ fn gnu_function_hints_preserve_checked_signatures() {
     check("int read(const int *p) __attribute__((__pure__,__nonnull__(1))); int read(const int *p){return *p;}").unwrap();
     check("typedef unsigned long size_t; extern void *copy(void *__restrict a, const void *__restrict b, size_t n) __attribute__((__nothrow__,__leaf__)) __attribute__((__nonnull__(1,2)));").unwrap();
 }
+
+#[test]
+fn function_redeclarations_ignore_only_top_level_parameter_const() {
+    // C17 6.7.6.3p15: qualifiers on the parameter object itself do
+    // not distinguish function types across declarations.
+    check("int f(const int); int f(int x) { return x; }").unwrap();
+    check("int f(int *const); int f(int *p) { return *p; }").unwrap();
+    check("int f(int *); int f(int *const p) { return *p; }").unwrap();
+
+    // A qualifier on the pointee remains part of parameter type
+    // compatibility, and must not be discarded with the top level.
+    reject("int g(const int *); int g(int *p) { return *p; }",
+        "conflicting declaration");
+    reject("int g(int *); int g(const int *p) { return *p; }",
+        "conflicting declaration");
+}
