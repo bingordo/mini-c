@@ -93,7 +93,8 @@ fn glibc_access_annotations_parse_without_erasing_pointer_types() {
             __attribute__((__nonnull__(2)))
             __attribute__((__access__(__write_only__, 1, 3)));
         extern int inspect(const char *p, size_t n)
-            __attribute__((__access__(__read_only__, 1, 2)))
+            __attribute__((__access__(__read_only__, 1, 2)));
+        extern int no_access(void *p)
             __attribute__((__access__(__none__, 1)));
     "#;
     let mut parser = Parser::new(source);
@@ -108,6 +109,10 @@ fn glibc_access_annotations_parse_without_erasing_pointer_types() {
         panic!("inspect declaration missing");
     };
     assert_eq!(inspect.name, "inspect");
+    let Some(ExternalItem::Declaration(no_access)) = parser.next_item().unwrap() else {
+        panic!("no_access declaration missing");
+    };
+    assert_eq!(no_access.name, "no_access");
     assert!(parser.next_item().unwrap().is_none());
 }
 
