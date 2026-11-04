@@ -1366,3 +1366,22 @@ fn gnu_function_hints_preserve_checked_signatures() {
     check("int read(const int *p) __attribute__((__pure__,__nonnull__(1))); int read(const int *p){return *p;}").unwrap();
     check("typedef unsigned long size_t; extern void *copy(void *__restrict a, const void *__restrict b, size_t n) __attribute__((__nothrow__,__leaf__)) __attribute__((__nonnull__(1,2)));").unwrap();
 }
+
+#[test]
+fn iso_c_void_pointer_conversion_and_relational_constraints() {
+    // void * is compatible with object pointers, not function pointers.
+    check("int f(void) { int x=3; void *p=&x; int *q=p; return p==q; }").unwrap();
+    reject("int g(void) { int (*fp)(void)=0; void *p=fp; return p!=0; }",
+        "incompatible assignment");
+    reject("int g(void) { void *p=0; int (*fp)(void)=p; return fp!=0; }",
+        "incompatible assignment");
+
+    // Equality allows void*/object-pointer operands; pointer ordering does not.
+    check("int h(void) { int x=3; void *p=&x; int *q=&x; return p==q; }").unwrap();
+    reject("int h(void) { int x=3; void *p=&x; int *q=&x; return p<q; }",
+        "compatible integer operands");
+    reject("int h(void) { void *p=0; void *q=0; return p<q; }",
+        "compatible integer operands");
+    // Ordering on compatible object pointers remains accepted.
+    check("int h(int *a, int *b) { return a<b; }").unwrap();
+}
