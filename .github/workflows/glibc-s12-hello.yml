@@ -1,0 +1,43 @@
+name: S12 full glibc stdio Hello World acceptance
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'tests/fixtures/glibc-s12/**'
+      - 'tools/test_glibc_s12_hello.py'
+      - '.github/workflows/glibc-s12-hello.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'tests/fixtures/glibc-s12/**'
+      - 'tools/test_glibc_s12_hello.py'
+      - '.github/workflows/glibc-s12-hello.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  host-glibc-stdio:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Report toolchain and glibc headers
+        run: |
+          cc --version | head -n 1
+          getconf GNU_LIBC_VERSION
+          test -f /usr/include/stdio.h
+          ls -l /usr/include/stdio.h
+      - name: Build Mini-C checker and Cranelift object backend
+        run: cargo build -p mini-c -p mini-c-cranelift
+      - name: Probe unmodified full stdio.h Hello World
+        run: python3 tools/test_glibc_s12_hello.py --report target/s12-glibc-hello-report.json
+      - name: Retain all staged acceptance and rejection data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mini-c-s12-glibc-stdio-hello
+          path: target/s12-glibc-hello-report.json
+          if-no-files-found: warn
+          retention-days: 14
