@@ -1396,4 +1396,8 @@ fn iso_c_void_pointer_conversion_and_relational_constraints() {
     reject("int h(void) { void *p=0; void *q=0; return p<q; }",
         "compatible integer operands");
     check("int h(int *a, int *b) { return a<b; }").unwrap();
+    // ?: follows the same object-pointer/void-pointer restriction.
+    reject("int choose(int c) { int (*fp)(void)=0; void *vp=0; return (c ? fp : vp)!=0; }",
+        "compatible types");
+    check("int choose(int c) { int x=1; int *p=&x; void *v=p; return (c ? p : v)!=0; }").unwrap();
 }
