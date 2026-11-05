@@ -58,6 +58,15 @@ struct KnownFunction {
     defined: bool,
 }
 
+/// Fully checked external function prototype waiting for its first
+/// code-generation boundary. This permits later GNU asm declarations to
+/// finalize the actual ELF symbol name before registration with Cranelift.
+struct PendingFunction {
+    ty: CType,
+    link_name: String,
+    linkage: Linkage,
+}
+
 #[derive(Clone)]
 enum RelocationSource {
     Object(String),
@@ -214,6 +223,7 @@ fn intern_string(
 pub struct Compiler {
     module: ObjectModule,
     functions: HashMap<String, KnownFunction>,
+    pending_functions: HashMap<String, PendingFunction>,
     data: HashMap<String, KnownData>,
     strings: HashMap<Vec<u8>, DataId>,
 }
@@ -231,7 +241,11 @@ impl Compiler {
             .map_err(|e| e.to_string())?;
         let object = ObjectBuilder::new(isa, "mini-c", default_libcall_names())
             .map_err(|e| e.to_string())?;
-        Ok(Self { module: ObjectModule::new(object), functions: HashMap::new(), data: HashMap::new(), strings: HashMap::new() })
+        Ok(Self {
+            module: ObjectModule::new(object),
+            functions: HashMap::new(), pending_functions: HashMap::new(),
+            data: HashMap::new(), strings: HashMap::new(),
+        })
     }
 
     fn declare(&mut self, name: &str, ty: &CType, linkage: Linkage, definition: bool,
@@ -407,6 +421,21 @@ impl Compiler {
         Ok(())
     }
 
+    /// Imported prototypes are semantically checked as they stream in, but
+    /// an external ELF name is committed only before code emission. In glibc
+    /// a compatible later declaration may attach GNU __asm__("symbol"), and
+    /// registering the earlier source name immediately would mislink calls.
+    fn flush_pending_imports(&mut self) -> Result<()> {
+        let mut names = self.pending_functions.keys().cloned().collect::<Vec<_>>();
+        names.sort();
+        for name in names {
+            let pending = self.pending_functions.remove(&name).expect("pending import");
+            self.declare(&name, &pending.ty, pending.linkage, false,
+                Some(pending.link_name.as_str()))?;
+        }
+        Ok(())
+    }
+
     /// Register declarations and compile one complete checked function.
     pub fn add(&mut self, item: CheckedItem) -> Result<()> {
         match item {
@@ -429,7 +458,23 @@ impl Compiler {
                             || reason.starts_with("unsupported scalar type") => return Ok(()),
                         Err(reason) => return Err(reason),
                     }
-                    self.declare(&decl.name, &decl.ty, decl.linkage, false, decl.asm_label.as_deref())?;
+                    let name = decl.name.clone();
+                    let link_name = decl.asm_label.unwrap_or_else(|| name.clone());
+                    if self.functions.contains_key(&name) {
+                        // Previously used or defined imports cannot be renamed;
+                        // the backend refuses an incompatible late label.
+                        self.declare(&name, &decl.ty, decl.linkage, false,
+                            Some(link_name.as_str()))?;
+                    } else if let Some(pending) = self.pending_functions.get_mut(&name) {
+                        pending.ty = pending.ty.composite(&decl.ty)
+                            .ok_or_else(|| format!("conflicting function prototype for '{name}'"))?;
+                        pending.link_name = link_name;
+                        pending.linkage = decl.linkage;
+                    } else {
+                        self.pending_functions.insert(name, PendingFunction {
+                            ty: decl.ty, link_name, linkage: decl.linkage,
+                        });
+                    }
                     Ok(())
                 } else { self.declare_object(decl) }
             }
@@ -438,6 +483,7 @@ impl Compiler {
     }
 
     fn define(&mut self, function: CheckedFunction) -> Result<()> {
+        self.flush_pending_imports()?;
         let id = self.declare(&function.name, &function.signature, function.linkage, true, None)?;
         let mut ctx = self.module.make_context();
         ctx.func.signature = signature(&self.module, &function.signature)?;
@@ -500,6 +546,7 @@ impl Compiler {
     }
 
     pub fn finish(mut self) -> Result<Vec<u8>> {
+        self.flush_pending_imports()?;
         for (name, data) in &self.data {
             if data.initialized.is_none() && !data.tentative { continue; }
             let mut desc = DataDescription::new();
@@ -1310,6 +1357,42 @@ impl Lower<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn glibc_late_asm_label_precedes_first_elf_import() {
+        use object::{Object, ObjectSection, ObjectSymbol};
+        let source = concat!(
+            "extern int localput(const char *); ",
+            "extern int localput(const char *) __asm__(\"puts\"); ",
+            "int main(void) { return localput(\"hello\") < 0; }"
+        );
+        let obj = compile_source(source).expect("compatible late asm label");
+        let elf = object::File::parse(obj.as_slice()).expect("valid ELF");
+        let names = elf.symbols().filter_map(|symbol| symbol.name().ok())
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"puts"), "expected actual extern link name");
+        assert!(!names.contains(&"localput"), "source name is not an ELF symbol");
+        assert!(elf.sections().flat_map(|s| s.relocations()).any(|(_, relocation)|
+            match relocation.target() {
+                object::RelocationTarget::Symbol(index) =>
+                    elf.symbol_by_index(index).ok()
+                        .and_then(|symbol| symbol.name().ok()) == Some("puts"),
+                _ => false,
+            }
+        ), "direct call must relocate to renamed imported symbol");
+    }
+
+    #[test]
+    fn glibc_late_asm_label_before_definition_is_used() {
+        // The import is registered only once all prototypes preceding the
+        // function body have been seen, not at the first unlabelled prototype.
+        let source = concat!(
+            "extern int alias(const char *); ",
+            "extern int alias(const char *) __asm__(\"puts\"); ",
+            "int main(void) { alias(\"ok\"); return 0; }"
+        );
+        assert!(!compile_source(source).unwrap().is_empty());
+    }
 
     #[test]
     fn external_assembler_alias_is_the_actual_elf_symbol() {
