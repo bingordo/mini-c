@@ -604,7 +604,7 @@ impl<'a> Parser<'a> {
                 // Ignoring that optional optimization is conservative even
                 // when the declaration is later called. Unlike
                 // returns_twice, it cannot invalidate normal call lowering.
-                "nothrow" | "leaf" | "pure" | "const" | "noreturn"
+                "nothrow" | "leaf" | "pure" | "const" | "noreturn" | "cold"
                 | "warn_unused_result" | "unused" | "deprecated"
                 | "returns_nonnull" => {
                     if self.peek()?.is_some_and(|t| t.text == "(") {
