@@ -123,7 +123,7 @@ impl<'a> Parser<'a> {
             && error.message.starts_with("expected ';'")
             && self.peek().ok().flatten().is_some_and(|t| matches!(
                 t.text, "int" | "char" | "short" | "long" | "_Float128" | "float" | "double" | "void" | "signed" |
-                    "unsigned" | "static" | "extern" | "typedef" | "struct" | "union" | "enum"
+                    "unsigned" | "static" | "extern" | "register" | "typedef" | "struct" | "union" | "enum"
             ) || t.kind == TokenKind::TypedefName)
         {
             return true;
@@ -785,7 +785,7 @@ impl<'a> Parser<'a> {
             matches!(token.kind, TokenKind::Identifier | TokenKind::TypedefName)
                 && !matches!(token.text, "int" | "char" | "short" | "long" | "_Float128" | "float" | "double" | "void"
                     | "unsigned" | "signed" | "const" | "restrict" | "__restrict" | "__restrict__"
-                    | "typedef" | "static" | "extern"
+                    | "typedef" | "static" | "extern" | "register"
                     | "struct" | "union" | "enum" | "if" | "else" | "while" | "do" | "for" | "return" | "break" | "continue")
         }) {
             self.take()?;
@@ -882,11 +882,17 @@ impl<'a> Parser<'a> {
                 return Err(Diagnostic::coded(token_span, DiagnosticCode::SyntaxExpectedParameter,
                     "expected parameter type"));
             }
+            let storage = if self.peek()?.is_some_and(|t| t.text == "register") {
+                self.take()?;
+                StorageClass::Register
+            } else {
+                StorageClass::Default
+            };
             let (base, lo) = self.parse_type()?
                 .ok_or_else(|| Diagnostic::coded(self.eof_span(),
                     DiagnosticCode::SyntaxExpectedParameter, "expected parameter type"))?;
             // The entire parameter list (void) denotes no parameters.
-            if base == Type::Void && params.is_empty() {
+            if base == Type::Void && params.is_empty() && storage == StorageClass::Default {
                 if self.peek()?.is_some_and(|token| token.text == ")") {
                     return Ok((params, false));
                 }
@@ -902,7 +908,7 @@ impl<'a> Parser<'a> {
                     "parameter cannot have void type"));
             }
             params.push(Decl {
-                storage: StorageClass::Default,
+                storage,
                 name,
                 name_span,
                 ty,
@@ -950,6 +956,7 @@ impl<'a> Parser<'a> {
         let storage = match self.peek()?.map(|t| t.text) {
             Some("static") => { self.take()?; StorageClass::Static },
             Some("extern") => { self.take()?; StorageClass::Extern },
+            Some("register") => { self.take()?; StorageClass::Register },
             _ => StorageClass::Default,
         };
         if is_typedef && storage != StorageClass::Default {
@@ -1043,7 +1050,7 @@ impl<'a> Parser<'a> {
                                 Stmt::Typedef(self.parse_decl(true)?)
                             }
                             "struct" | "union" | "enum" => self.parse_tag_or_decl()?,
-                            "static" | "extern" | "int" | "char" | "long"
+                            "static" | "extern" | "register" | "int" | "char" | "long"
                                 | "void" | "unsigned" | "signed" | "const" | "restrict" | "__restrict" | "__restrict__" =>
                                 Stmt::Decl(self.parse_decl(false)?),
                             _ if token.kind == TokenKind::TypedefName =>
@@ -1087,7 +1094,7 @@ impl<'a> Parser<'a> {
             "break" => { self.take()?; self.expect(";")?; Ok(Stmt::Break) }
             "continue" => { self.take()?; self.expect(";")?; Ok(Stmt::Continue) }
             "typedef" => { self.take()?; Ok(Stmt::Typedef(self.parse_decl(true)?)) },
-            "static" | "extern" => Ok(Stmt::Decl(self.parse_decl(false)?)),
+            "static" | "extern" | "register" => Ok(Stmt::Decl(self.parse_decl(false)?)),
             "struct" | "union" | "enum" => self.parse_tag_or_decl(),
             "int" | "char" | "short" | "long" | "_Float128" | "float" | "double" | "void" | "unsigned" | "signed"
                 | "const" | "restrict" | "__restrict" | "__restrict__" => Ok(Stmt::Decl(self.parse_decl(false)?)),
@@ -1325,11 +1332,16 @@ impl ItemSource for Parser<'_> {
         let storage = match self.peek()?.map(|t| t.text) {
             Some("static") => { self.take()?; StorageClass::Static },
             Some("extern") => { self.take()?; StorageClass::Extern },
+            Some("register") => { self.take()?; StorageClass::Register },
             _ => StorageClass::Default,
         };
         if is_typedef && storage != StorageClass::Default {
             return Err(Diagnostic::coded(storage_span, DiagnosticCode::SyntaxInvalidDeclaration,
                 "typedef cannot combine with storage class"));
+        }
+        if storage == StorageClass::Register {
+            return Err(Diagnostic::coded(storage_span, DiagnosticCode::SyntaxInvalidDeclaration,
+                "register storage class is not allowed at file scope"));
         }
         let Some((base, start)) = self.parse_type()? else {
             // EOF only succeeds when no declaration specifiers were consumed.
