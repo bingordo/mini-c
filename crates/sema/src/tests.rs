@@ -1631,3 +1631,23 @@ fn variadic_function_pointer_parameters_ignore_only_top_level_qualifiers() {
     reject("extern int sink(const int *, ...); int f(void) { int (*p)(int *, ...) = sink; return 0; }",
         "incompatible assignment");
 }
+
+#[test]
+fn s12_gnu_assembler_alias_survives_semantics_and_redeclarations() {
+    let items = check(concat!(
+        "extern int localputs(const char *) __asm__(\"puts\");",
+        "extern int localputs(const char *);",
+        "int main(void) { return localputs(\"hello\"); }"
+    )).unwrap();
+    let CheckedItem::Declaration(first) = &items[0] else { panic!("declaration"); };
+    let CheckedItem::Declaration(second) = &items[1] else { panic!("redeclaration"); };
+    assert_eq!(first.name, "localputs");
+    assert_eq!(first.asm_label.as_deref(), Some("puts"));
+    assert_eq!(second.asm_label.as_deref(), Some("puts"));
+
+    reject(concat!(
+        "extern int f(void) __asm__(\"one\");",
+        "extern int f(void) __asm__(\"two\");"
+    ), "conflicting asm linkage");
+    check("extern int f(void) __asm__(\"impl\");").unwrap();
+}

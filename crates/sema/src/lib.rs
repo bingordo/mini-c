@@ -93,6 +93,8 @@ pub struct CheckedDecl {
     pub name: String,
     pub ty: CType,
     pub linkage: Linkage,
+    /// External ELF linkage symbol, distinct from C source identifier.
+    pub asm_label: Option<String>,
     pub initializer: Option<CheckedExpr>,
     pub span: Span,
 }
@@ -149,6 +151,7 @@ pub struct Symbol {
     pub kind: SymbolKind,
     pub linkage: Linkage,
     pub defined: bool,
+    pub asm_label: Option<String>,
     pub enum_value: Option<i64>,
 }
 
@@ -553,7 +556,7 @@ impl Checker {
             return Err(Diagnostic::coded(span, DiagnosticCode::SemanticDuplicateDeclaration, format!("duplicate declaration of '{name}'")));
         }
         scope.insert(name.to_owned(), Symbol {
-            ty, kind, linkage, defined: true, enum_value: None,
+            ty, kind, linkage, defined: true, asm_label: None, enum_value: None,
         });
         Ok(())
     }
@@ -597,7 +600,7 @@ impl Checker {
             prior.defined |= defining;
         } else {
             self.globals.insert(name.to_owned(), Symbol {
-                ty, kind, linkage: requested, defined: defining, enum_value: None,
+                ty, kind, linkage: requested, defined: defining, asm_label: None, enum_value: None,
             });
         }
         Ok(())
@@ -798,14 +801,32 @@ impl Checker {
         let defining = decl.init.is_some();
         self.declare_global(&decl.name, ty.clone(), kind, defining, decl.storage,
             decl.name_span.unwrap_or(decl.span))?;
+        if let Some(label) = &decl.asm_label {
+            if kind != SymbolKind::Function || decl.storage == StorageClass::Static {
+                return Err(type_error(decl.span,
+                    "external asm linkage label requires an externally linked function"));
+            }
+            let global = self.globals.get_mut(&decl.name).expect("declared global");
+            if global.asm_label.as_ref().is_some_and(|prior| prior != label) {
+                return Err(Diagnostic::coded(decl.span,
+                    DiagnosticCode::SemanticConflictingDeclaration,
+                    format!("conflicting asm linkage symbol for '{}'", decl.name)));
+            }
+            global.asm_label = Some(label.clone());
+        }
         // A prior incomplete array declaration can be completed here; publish
         // the composite type to both the checked item and later references.
         let ty = self.global(&decl.name).expect("registered global").ty.clone();
         let initializer = decl.init.as_ref()
             .map(|value| self.check_object_initializer(value, &ty, decl.span, true))
             .transpose()?;
-        let linkage = self.global(&decl.name).expect("registered global").linkage;
-        Ok(CheckedDecl { storage: decl.storage, name: decl.name, ty, linkage, initializer, span: decl.span })
+        let global = self.global(&decl.name).expect("registered global");
+        let linkage = global.linkage;
+        let asm_label = global.asm_label.clone();
+        Ok(CheckedDecl {
+            storage: decl.storage, name: decl.name, ty, linkage, asm_label,
+            initializer, span: decl.span,
+        })
     }
 
     fn check_function(&mut self, func: Function) -> Result<CheckedFunction, Diagnostic> {
@@ -822,7 +843,7 @@ impl Checker {
             }
             params.push(CheckedDecl {
                 storage: StorageClass::Default, name: param.name.clone(), ty,
-                linkage: Linkage::None, initializer: None, span: param.span,
+                linkage: Linkage::None, asm_label: None, initializer: None, span: param.span,
             });
         }
         let signature = CType::Function {
@@ -938,7 +959,7 @@ impl Checker {
                     .transpose()?;
                 CheckedStmt::Decl(CheckedDecl {
                     storage: decl.storage, name: decl.name.clone(), ty,
-                    linkage,
+                    linkage, asm_label: None,
                     initializer, span: decl.span,
                 })
             }
