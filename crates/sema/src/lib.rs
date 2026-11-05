@@ -1152,8 +1152,15 @@ impl Checker {
         // Initializing a const-qualified object is permitted. Only the
         // stored value type loses top-level const; nested pointer qualifiers
         // remain intact and cannot be discarded.
-        let value_ty = ty.unqualified();
-        let compatible = match (value_ty, &expr.ty) {
+        // A parameter declared using a tag reference can be completed by a
+        // later definition of that tag. At the call site a by-value argument
+        // must have the completed aggregate type, not the prototype's
+        // earlier TagRef representation.
+        let value_ty = match ty.unqualified() {
+            CType::TagRef { .. } => self.complete_tag_type(ty.unqualified().clone(), span)?,
+            other => other.clone(),
+        };
+        let compatible = match (&value_ty, &expr.ty) {
             (CType::Struct { .. }, CType::Struct { .. }) |
             (CType::Union { .. }, CType::Union { .. }) => value_ty.same_type(&expr.ty),
             (CType::Integer { .. }, CType::Integer { .. }) => true,
