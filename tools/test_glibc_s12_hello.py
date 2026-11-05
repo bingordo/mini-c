@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """S12: measure variadic glibc printf Hello World through GCC and Mini-C.
 
-This is a *staged acceptance probe*, not a green Mini-C conformance claim.
-Always retain failures. Only GCC host reference execution is required for
-success until Mini-C can parse the full, unmodified system headers.
+This is the full S12 glibc stdio printf(%s) compile/link/execute acceptance.
+Retain every stage in JSON. Require the GCC reference AND the Mini-C
+execution to produce exact stdout, empty stderr, and zero exit status.
 """
 from __future__ import annotations
 
