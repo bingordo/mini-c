@@ -125,6 +125,41 @@ def main() -> int:
                     if passed(stages["mini_c_link"]):
                         stages["mini_c_execute"] = invoke([str(mini_exe)])
 
+        # Additional SysV ABI regression: two varargs spill to the stack
+        # after all six integer/pointer registers are occupied. Keep the
+        # canonical Hello World fixture unchanged.
+        stack_source = ROOT / "tests/fixtures/glibc-s12/stack_gp_printf.c"
+        stack_preprocessed = base / "stack_gp.i"
+        stack_object = base / "stack_gp.o"
+        stack_exe = base / "stack_gp"
+        stack_gcc_exe = base / "stack_gp_gcc"
+        stack = report["stack_gp_varargs"] = {}
+        stack["reference_build"] = invoke([
+            "cc", "-std=gnu11", "-D_GNU_SOURCE", str(stack_source),
+            "-o", str(stack_gcc_exe)
+        ])
+        if passed(stack["reference_build"]):
+            stack["reference_execute"] = invoke([str(stack_gcc_exe)])
+        stack["preprocess"] = invoke([
+            "cc", "-E", "-std=gnu11", "-D_GNU_SOURCE",
+            str(stack_source), "-o", str(stack_preprocessed)
+        ])
+        if passed(stack["preprocess"]):
+            stack["mini_c_check"] = invoke([
+                str(args.checker), "check", "--cpp=none", str(stack_preprocessed)
+            ])
+            if passed(stack["mini_c_check"]):
+                stack["mini_c_object"] = invoke([
+                    str(args.backend), "--emit-obj", str(stack_object),
+                    "--cpp=none", str(stack_preprocessed)
+                ])
+                if passed(stack["mini_c_object"]) and stack_object.is_file():
+                    stack["mini_c_link"] = invoke([
+                        "cc", str(stack_object), "-o", str(stack_exe)
+                    ])
+                    if passed(stack["mini_c_link"]):
+                        stack["mini_c_execute"] = invoke([str(stack_exe)])
+
     report["gcc_reference_ok"] = (
         passed(stages.get("gcc_execute"))
         and stages["gcc_execute"].get("stdout") == EXPECTED_OUTPUT
@@ -139,6 +174,16 @@ def main() -> int:
         (stage for stage in ("preprocess", "mini_c_check",
                              "mini_c_object", "mini_c_link", "mini_c_execute")
          if not passed(stages.get(stage))), None
+    )
+    stack = report["stack_gp_varargs"]
+    stack_expected = "x 1 2 3 4 5 6\n"
+    report["stack_gp_varargs_ok"] = (
+        passed(stack.get("reference_execute"))
+        and passed(stack.get("mini_c_execute"))
+        and stack["reference_execute"]["stdout"] == stack_expected
+        and stack["reference_execute"]["stderr"] == ""
+        and stack["mini_c_execute"]["stdout"] == stack_expected
+        and stack["mini_c_execute"]["stderr"] == ""
     )
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
@@ -156,11 +201,13 @@ def main() -> int:
         print("  origin:", report["first_error_context"]["origin_marker"])
         for line in report["first_error_context"]["source_lines"]:
             print(" ", line)
+    print("S12 SysV GP stack varargs:", "PASS" if report["stack_gp_varargs_ok"] else "FAIL")
     print("Report:", args.report)
     # S12 P3 acceptance is now mandatory, not a diagnostic-only baseline:
     # the unmodified glibc header must pass Mini-C, compile into an ELF object,
     # link with system libc, and run with exact stdout/stderr and exit status.
-    return 0 if report["gcc_reference_ok"] and report["mini_c_hello_ok"] else 1
+    return 0 if (report["gcc_reference_ok"] and report["mini_c_hello_ok"]
+                 and report["stack_gp_varargs_ok"]) else 1
 
 
 if __name__ == "__main__":
