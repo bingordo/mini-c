@@ -1354,6 +1354,17 @@ impl ItemSource for Parser<'_> {
         }
         let (name, ty, definition_params, name_span) = self.parse_declarator_shape(false)?.finish(base);
         let asm_label = self.parse_asm_linkage_label()?;
+        // GNU permits advisory function attributes following the asm label.
+        while self.peek()?.is_some_and(|t|
+            matches!(t.text, "__attribute__" | "__attribute"))
+        {
+            let signature = match &ty {
+                Type::Function { params, .. } => Some((params.len(), false)),
+                Type::VariadicFunction { params, .. } => Some((params.len(), true)),
+                _ => None,
+            };
+            self.parse_gnu_declarator_attributes(signature)?;
+        }
         if asm_label.is_some() &&
             (!matches!(ty, Type::Function { .. } | Type::VariadicFunction { .. }) || is_typedef)
         {
