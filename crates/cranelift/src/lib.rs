@@ -1301,7 +1301,7 @@ impl Lower<'_> {
             }
             CheckedStmt::Typedef { .. } | CheckedStmt::Tag => Ok(true),
             CheckedStmt::Decl(CheckedDecl { name, ty, storage, initializer, .. }) => {
-                if *storage != StorageClass::Default {
+                if !matches!(storage, StorageClass::Default | StorageClass::Register) {
                     return Err(format!("M2.5 does not emit storage-class local '{name}'"));
                 }
                 self.bind(b, name, ty, None)?;
