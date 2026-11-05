@@ -1591,3 +1591,31 @@ fn s12_gcc_builtin_va_list_layout_typedef_and_parameter_decay() {
     reject("typedef __builtin_va_list va_list; typedef void *va_list;",
         "conflicting");
 }
+
+#[test]
+fn s12_sizeof_type_folds_in_glibc_array_bounds() {
+    let items = check(
+        "typedef unsigned long size_t; "
+        .to_owned().as_str()
+    ).unwrap();
+    assert_eq!(items.len(), 1);
+    let items = check(concat!(
+        "typedef unsigned long size_t; ",
+        "struct FILE_like { ",
+        "char unused[15 * sizeof(int) - 4 * sizeof(void *) - sizeof(size_t)]; ",
+        "}; ",
+        "int a[sizeof(int)]; ",
+        "int b[sizeof(void *)]; ",
+        "int c[sizeof(size_t)]; ",
+        "int f(void) { return sizeof(int) == 4 && sizeof(void *) == 8; }"
+    )).unwrap();
+    let CheckedItem::Declaration(a) = &items[2] else { panic!("a declaration"); };
+    let CheckedItem::Declaration(b) = &items[3] else { panic!("b declaration"); };
+    let CheckedItem::Declaration(c) = &items[4] else { panic!("c declaration"); };
+    assert!(matches!(a.ty, CType::Array(_, Some(4))));
+    assert!(matches!(b.ty, CType::Array(_, Some(8))));
+    assert!(matches!(c.ty, CType::Array(_, Some(8))));
+    reject("int a[sizeof(void)];", "complete object type");
+    reject("int a[sizeof(int[])];", "complete object type");
+    reject("int a[sizeof(missing)];", "expected");
+}

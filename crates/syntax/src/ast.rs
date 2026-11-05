@@ -144,6 +144,8 @@ pub enum Expr {
     /// Braced initializer, valid only in an object declaration.
     Initializer(Vec<Expr>),
     Name(Ident),
+    /// C sizeof(type-name): operand is a type, never evaluated at runtime.
+    SizeofType(Type),
     Unary(UnOp, Box<Expr>),
     Binary(BinOp, Box<Expr>, Box<Expr>),
     Call(Box<Expr>, Vec<Expr>),
