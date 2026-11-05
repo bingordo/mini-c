@@ -561,7 +561,43 @@ impl<'a> Parser<'a> {
             match name {
                 // These are optional compiler optimization or diagnostic
                 // promises. Ignoring them is conservative for generated code.
-                "nothrow" | "leaf" | "pure" | "const" | "malloc"
+                "malloc" => {
+                    // GNU malloc(deallocator, ptr-index) is a declaration-only
+                    // allocation/deallocation annotation, not an ABI change.
+                    // Accept only its documented, explicitly validated form.
+                    if !function {
+                        return Err(Diagnostic::coded(token.span,
+                            DiagnosticCode::SyntaxInvalidDeclaration,
+                            "malloc attribute requires a function declaration"));
+                    }
+                    if self.peek()?.is_some_and(|t| t.text == "(") {
+                        self.take()?;
+                        let deallocator = self.take()?.ok_or_else(|| Diagnostic::coded(
+                            self.eof_span(), DiagnosticCode::SyntaxInvalidDeclaration,
+                            "expected malloc deallocator function identifier"
+                        ))?;
+                        if !matches!(deallocator.kind, TokenKind::Identifier | TokenKind::TypedefName) {
+                            return Err(Diagnostic::coded(deallocator.span,
+                                DiagnosticCode::SyntaxInvalidDeclaration,
+                                "malloc deallocator must be a function identifier"));
+                        }
+                        self.expect(",")?;
+                        let arg = self.take()?.ok_or_else(|| Diagnostic::coded(
+                            self.eof_span(), DiagnosticCode::SyntaxInvalidDeclaration,
+                            "expected malloc deallocator argument position"
+                        ))?;
+                        if arg.kind != TokenKind::Number ||
+                            !arg.text.bytes().all(|b| b.is_ascii_digit()) ||
+                            arg.text.parse::<usize>().ok().filter(|p| *p > 0).is_none()
+                        {
+                            return Err(Diagnostic::coded(arg.span,
+                                DiagnosticCode::SyntaxInvalidDeclaration,
+                                "malloc deallocator position must be a positive decimal integer"));
+                        }
+                        self.expect(")")?;
+                    }
+                }
+                "nothrow" | "leaf" | "pure" | "const"
                 | "warn_unused_result" | "unused" | "deprecated"
                 | "returns_nonnull" => {
                     if self.peek()?.is_some_and(|t| t.text == "(") {
