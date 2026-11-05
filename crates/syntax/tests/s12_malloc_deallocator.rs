@@ -2,7 +2,7 @@ use mini_c_syntax::{parser::Parser, stream::{ExternalItem, ItemSource}};
 
 fn valid(source: &str) {
     let mut parser = Parser::new(source);
-    while let Some(_) = parser.next_item().unwrap() {}
+    while parser.next_item().unwrap().is_some() {}
 }
 
 fn invalid(source: &str) {
