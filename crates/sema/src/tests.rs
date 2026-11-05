@@ -1666,3 +1666,22 @@ fn completed_aggregate_tagref_parameter_accepts_compatible_by_value_argument() {
     reject("struct S { long a; }; union U { long a; }; extern int consume(struct S); int main(void) { union U u={1}; return consume(u); }",
         "incompatible assignment");
 }
+
+#[test]
+fn s21_register_storage_is_automatic_and_nonaddressable() {
+    let items = check("int f(register int x) { register int y=x; for(register int i=0;i<3;i++) y+=i; return y; }").unwrap();
+    let CheckedItem::Function(func) = &items[0] else { panic!("expected function"); };
+    assert_eq!(func.params[0].storage, StorageClass::Register);
+    let CheckedStmt::Block(body) = &func.body else { panic!("expected function body"); };
+    let CheckedStmt::Decl(y) = &body[0] else { panic!("expected local"); };
+    assert_eq!(y.storage, StorageClass::Register);
+    assert_eq!(y.linkage, Linkage::None);
+
+    check("int f(void) { int x=1; { register int x=2; } int *p=&x; return *p; }").unwrap();
+    check("int f(int *p) { register int *q=p; return *q; }").unwrap();
+    reject("int f(register int n) { return *(&n); }", "cannot take address of register");
+    reject("int f(void) { register int n=1; int *p=&n; return *p; }", "cannot take address of register");
+    reject("int f(void) { register int a[2]; return 0; }", "register local currently requires");
+    reject("register int object;", "register storage class is not allowed at file scope");
+    reject("register int f(void) { return 0; }", "register storage class is not allowed at file scope");
+}

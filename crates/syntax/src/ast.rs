@@ -6,6 +6,8 @@ pub enum StorageClass {
     Default,
     Extern,
     Static,
+    /// Block-scope or parameter automatic object; its address cannot be taken.
+    Register,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

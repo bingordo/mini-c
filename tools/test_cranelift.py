@@ -14,6 +14,14 @@ import subprocess
 import sys
 
 PROGRAMS = {
+    # S21: GCC/libiberty sources use register on scalar parameters.
+    # It is an automatic object hint, never a different calling convention.
+    "s21_register_parameter_local_and_for_index": """int ffs_style(register int n) {
+        register int copy=n;
+        for (register int i=0; i<3; i++) copy+=i;
+        return copy;
+    }
+    int main(void) { return ffs_style(11)-14; }""",
     # GP-only variadic ABI: check actual libc formatting, not merely emitted
     # ELF symbols or return codes. GCC is the independently compiled oracle.
     "sysv_varargs_mixed_width_register_and_stack": """extern int printf(const char *, ...);

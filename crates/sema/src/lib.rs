@@ -153,6 +153,8 @@ pub struct Symbol {
     pub defined: bool,
     pub asm_label: Option<String>,
     pub enum_value: Option<i64>,
+    /// C register object: the address of this object cannot be computed.
+    pub is_register: bool,
 }
 
 #[derive(Clone)]
@@ -312,7 +314,7 @@ impl Checker {
             self.globals.get_mut(name).expect("registered enumerator").enum_value = Some(value);
         } else {
             self.define_local(name, CType::int(), SymbolKind::Enumerator,
-                Linkage::None, span)?;
+                Linkage::None, false, span)?;
             self.locals.last_mut().expect("local scope")
                 .get_mut(name).expect("registered enumerator").enum_value = Some(value);
         }
@@ -550,13 +552,13 @@ impl Checker {
         }
     }
 
-    fn define_local(&mut self, name: &str, ty: CType, kind: SymbolKind, linkage: Linkage, span: Span) -> Result<(), Diagnostic> {
+    fn define_local(&mut self, name: &str, ty: CType, kind: SymbolKind, linkage: Linkage, is_register: bool, span: Span) -> Result<(), Diagnostic> {
         let scope = self.locals.last_mut().expect("local declaration outside a function");
         if scope.contains_key(name) {
             return Err(Diagnostic::coded(span, DiagnosticCode::SemanticDuplicateDeclaration, format!("duplicate declaration of '{name}'")));
         }
         scope.insert(name.to_owned(), Symbol {
-            ty, kind, linkage, defined: true, asm_label: None, enum_value: None,
+            ty, kind, linkage, defined: true, asm_label: None, enum_value: None, is_register,
         });
         Ok(())
     }
@@ -600,7 +602,7 @@ impl Checker {
             prior.defined |= defining;
         } else {
             self.globals.insert(name.to_owned(), Symbol {
-                ty, kind, linkage: requested, defined: defining, asm_label: None, enum_value: None,
+                ty, kind, linkage: requested, defined: defining, asm_label: None, enum_value: None, is_register: false,
             });
         }
         Ok(())
@@ -778,6 +780,9 @@ impl Checker {
     }
 
     fn check_global(&mut self, decl: Decl) -> Result<CheckedDecl, Diagnostic> {
+        if decl.storage == StorageClass::Register {
+            return Err(type_error(decl.span, "register storage class is not allowed at file scope"));
+        }
         let raw = self.resolve(&decl.ty, decl.span)?;
         let raw = self.try_complete_tag_type(raw)?;
         let ty = self.complete_string_array(raw, decl.init.as_ref(), decl.span)?;
@@ -830,19 +835,30 @@ impl Checker {
     }
 
     fn check_function(&mut self, func: Function) -> Result<CheckedFunction, Diagnostic> {
+        if func.storage == StorageClass::Register {
+            return Err(type_error(func.span, "function cannot have register storage class"));
+        }
         let result = self.resolve(&func.result, func.span)?;
         if matches!(result, CType::Function { .. } | CType::VariadicFunction { .. }) {
             return Err(type_error(func.span, "function cannot return a function"));
         }
         let mut params = Vec::new();
         for param in &func.params {
+            if !matches!(param.storage, StorageClass::Default | StorageClass::Register) {
+                return Err(type_error(param.span, "function parameter requires automatic or register storage"));
+            }
             let resolved = self.resolve(&param.ty, param.span)?;
             let ty = self.adjust_parameter(resolved);
             if !ty.is_object() {
                 return Err(type_error(param.span, "function parameter cannot have void or function type"));
             }
+            if param.storage == StorageClass::Register && !ty.is_integer()
+                && !matches!(ty.unqualified(), CType::Pointer(_))
+            {
+                return Err(type_error(param.span, "register parameter currently requires an integer or pointer type"));
+            }
             params.push(CheckedDecl {
-                storage: StorageClass::Default, name: param.name.clone(), ty,
+                storage: param.storage, name: param.name.clone(), ty,
                 linkage: Linkage::None, asm_label: None, initializer: None, span: param.span,
             });
         }
@@ -859,6 +875,7 @@ impl Checker {
         for (parsed_param, param) in func.params.iter().zip(&params) {
             if let Err(err) = self.define_local(&param.name, param.ty.clone(),
                 SymbolKind::Object, Linkage::None,
+                parsed_param.storage == StorageClass::Register,
                 parsed_param.name_span.unwrap_or(param.span)) {
                 self.pop_tag_scope();
                 self.locals.pop();
@@ -941,6 +958,14 @@ impl Checker {
                 if !ty.is_object() {
                     return Err(type_error(decl.span, "local variable cannot have void or function type"));
                 }
+                // Register is a storage-duration hint, not permission to take
+                // the address of an object. Until aggregate handling can
+                // enforce this recursively, limit it to integer/pointer scalars.
+                if decl.storage == StorageClass::Register && !ty.is_integer()
+                    && !matches!(ty.unqualified(), CType::Pointer(_))
+                {
+                    return Err(type_error(decl.span, "register local currently requires an integer or pointer type"));
+                }
                 if decl.storage == StorageClass::Extern {
                     if decl.init.is_some() {
                         return Err(type_error(decl.span, "block-scope extern cannot have an initializer"));
@@ -952,6 +977,7 @@ impl Checker {
                     self.global(&decl.name).expect("registered extern").linkage
                 } else { Linkage::None };
                 self.define_local(&decl.name, ty.clone(), SymbolKind::Object, linkage,
+                    decl.storage == StorageClass::Register,
                     decl.name_span.unwrap_or(decl.span))?;
                 let initializer = decl.init.as_ref()
                     .map(|value| self.check_object_initializer(value, &ty, decl.span,
@@ -966,7 +992,7 @@ impl Checker {
             Stmt::Typedef(decl) => {
                 let ty = self.resolve(&decl.ty, decl.span)?;
                 self.define_local(&decl.name, ty.clone(), SymbolKind::Typedef, Linkage::None,
-                    decl.name_span.unwrap_or(decl.span))?;
+                    false, decl.name_span.unwrap_or(decl.span))?;
                 CheckedStmt::Typedef { name: decl.name.clone(), ty }
             }
             Stmt::Expr(expr) => {
@@ -1385,6 +1411,15 @@ impl Checker {
                 let typed = self.check_expr(inner, span)?;
                 match op {
                     UnOp::Address => {
+                        // The constraint applies even if the backend would
+                        // otherwise spill the local to memory.
+                        if let Expr::Name(name) = inner.without_location() {
+                            if self.lookup(name).is_some_and(|symbol| symbol.is_register) {
+                                return Err(Diagnostic::coded(span,
+                                    DiagnosticCode::SemanticInvalidOperatorOperands,
+                                    "cannot take address of register object"));
+                            }
+                        }
                         if typed.category == Category::Value {
                             return Err(Diagnostic::coded(span, DiagnosticCode::SemanticInvalidOperatorOperands, "address-of requires an lvalue or function"));
                         }
