@@ -22,6 +22,43 @@ PROGRAMS = {
         return copy;
     }
     int main(void) { return ffs_style(11)-14; }""",
+    # GP-only variadic ABI: check actual libc formatting, not merely emitted
+    # ELF symbols or return codes. GCC is the independently compiled oracle.
+    "sysv_varargs_mixed_width_register_and_stack": """extern int printf(const char *, ...);
+        int main(void) {
+            printf("%d|%ld|%u|%s|%d|%ld|%u\\n",
+                -7, 4294967301L, 4000000000U, "ok", -3, -9L, 65535U);
+            return 0;
+        }""",
+    "sysv_varargs_promoted_char_and_ushort": """extern int printf(const char *, ...);
+        int main(void) {
+            char c=-3; unsigned short u=65000;
+            printf("%d:%d\\n", c, u); return 0;
+        }""",
+    "sysv_varargs_multiple_callsite_thunks": """extern int printf(const char *, ...);
+        int main(void) {
+            printf("first:%d\\n", 12);
+            printf("second:%ld|%s\\n", 1234567890123L, "ok");
+            return 0;
+        }""",
+    "sysv_varargs_snprintf_buffer_and_result": """extern int snprintf(char *, unsigned long, const char *, ...);
+        int main(void) {
+            char buffer[32];
+            int n=snprintf(buffer, 32, "%s=%d", "ab", -17);
+            return n==6 && buffer[0]=='a' && buffer[5]=='7';
+        }""",
+    "sysv_varargs_snprintf_stack_args": """extern int snprintf(char *, unsigned long, const char *, ...);
+        int main(void) {
+            char buffer[128];
+            snprintf(buffer, 128, "%d:%d:%d:%d:%d:%d:%d",
+                1, 2, 3, 4, 5, 6, 7);
+            return buffer[0]+buffer[12]-'1'-'7';
+        }""",
+    "sysv_varargs_unsigned_longlong_max": """extern int printf(const char *, ...);
+        int main(void) {
+            printf("%llu %ld\\n", 18446744073709551615ULL, -1L);
+            return 0;
+        }""",
     # Recent semantic/codegen changes must agree with GCC at execution,
     # not merely emit a syntactically valid ELF object.
     "const_global_struct_native": """struct Pair { int x; long y; };
