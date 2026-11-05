@@ -835,6 +835,42 @@ impl<'a> Parser<'a> {
         Ok(direct)
     }
 
+    /// GNU declaration symbol alias. This changes the ELF symbol, so unlike
+    /// advisory GNU attributes it must be preserved through native lowering.
+    /// GCC accepts adjacent string literals, including an empty prefix.
+    fn parse_asm_linkage_label(&mut self) -> Result<Option<String>, Diagnostic> {
+        if !self.peek()?.is_some_and(|t| matches!(t.text, "__asm__" | "__asm")) {
+            return Ok(None);
+        }
+        let keyword = self.take()?.expect("peeked asm");
+        self.expect("(")?;
+        let mut bytes = Vec::new();
+        let mut fragments = 0usize;
+        while self.peek()?.is_some_and(|t| t.kind == TokenKind::String) {
+            let token = self.take()?.expect("peeked string");
+            let decoded = crate::string_literal::decode_narrow_string(token.text)
+                .map_err(|reason| Diagnostic::coded(token.span,
+                    DiagnosticCode::LexicalInvalidCharacter, reason))?;
+            if decoded[..decoded.len().saturating_sub(1)].contains(&0) {
+                return Err(Diagnostic::coded(token.span,
+                    DiagnosticCode::SyntaxInvalidDeclaration,
+                    "GNU asm linker symbol cannot contain NUL"));
+            }
+            bytes.extend_from_slice(&decoded[..decoded.len()-1]);
+            fragments += 1;
+        }
+        if fragments == 0 || bytes.is_empty() || bytes.len() > 4096 {
+            return Err(Diagnostic::coded(keyword.span,
+                DiagnosticCode::SyntaxInvalidDeclaration,
+                "GNU asm linker label requires a nonempty bounded string literal"));
+        }
+        self.expect(")")?;
+        let name = String::from_utf8(bytes).map_err(|_| Diagnostic::coded(
+            keyword.span, DiagnosticCode::SyntaxInvalidDeclaration,
+            "GNU asm linker label must be UTF-8"))?;
+        Ok(Some(name))
+    }
+
     fn parse_parameter_list(&mut self) -> Result<(Vec<Decl>, bool), Diagnostic> {
         let mut params = Vec::new();
         if self.peek()?.is_some_and(|token| token.text == ")") {
@@ -870,6 +906,7 @@ impl<'a> Parser<'a> {
                 name,
                 name_span,
                 ty,
+                asm_label: None,
                 init: None,
                 span: Span { lo, hi: lo },
             });
@@ -937,7 +974,7 @@ impl<'a> Parser<'a> {
             }
         }
         let end = self.expect(";")?.span.hi;
-        Ok(Decl { storage, name, name_span, ty, init, span: Span { lo: start, hi: end } })
+        Ok(Decl { storage, name, name_span, ty, asm_label: None, init, span: Span { lo: start, hi: end } })
     }
 
     fn parse_tag_or_decl(&mut self) -> Result<Stmt, Diagnostic> {
@@ -955,7 +992,7 @@ impl<'a> Parser<'a> {
         } else { None };
         let end = self.expect(";")?.span.hi;
         Ok(Stmt::Decl(Decl {
-            storage: StorageClass::Default, name, name_span, ty, init,
+            storage: StorageClass::Default, name, name_span, ty, asm_label: None, init,
             span: Span { lo: start, hi: end },
         }))
     }
@@ -1162,7 +1199,7 @@ impl<'a> Parser<'a> {
                     }
                     let end = self.expect(";")?.span.hi;
                     members.push(Decl {
-                        storage: StorageClass::Default, name, name_span, ty, init: None,
+                        storage: StorageClass::Default, name, name_span, ty, asm_label: None, init: None,
                         span: Span { lo: start, hi: end },
                     });
                 }
@@ -1316,6 +1353,14 @@ impl ItemSource for Parser<'_> {
             return Ok(Some(ExternalItem::Tag(base)));
         }
         let (name, ty, definition_params, name_span) = self.parse_declarator_shape(false)?.finish(base);
+        let asm_label = self.parse_asm_linkage_label()?;
+        if asm_label.is_some() &&
+            (!matches!(ty, Type::Function { .. } | Type::VariadicFunction { .. }) || is_typedef)
+        {
+            return Err(Diagnostic::coded(name_span.unwrap_or(Span { lo: start, hi: start }),
+                DiagnosticCode::SyntaxInvalidDeclaration,
+                "GNU asm linker label requires a non-typedef function declaration"));
+        }
         self.pending_file_binding = Some((name.clone(), self.scopes.lookup(&name)));
         self.scopes.declare(&name, if is_typedef { Binding::Typedef } else { Binding::Ordinary });
 
@@ -1360,7 +1405,7 @@ impl ItemSource for Parser<'_> {
             }
         }
         let end = self.expect(";")?.span.hi;
-        let decl = Decl { storage, name, name_span, ty, init, span: Span { lo: start, hi: end } };
+        let decl = Decl { storage, name, name_span, ty, asm_label, init, span: Span { lo: start, hi: end } };
         Ok(Some(if is_typedef { ExternalItem::Typedef(decl) } else { ExternalItem::Declaration(decl) }))
     }
 }
