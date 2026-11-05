@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """S12: measure variadic glibc printf Hello World through GCC and Mini-C.
 
-This is a *staged acceptance probe*, not a green Mini-C conformance claim.
-Always retain failures. Only GCC host reference execution is required for
-success until Mini-C can parse the full, unmodified system headers.
+This is the full S12 glibc stdio printf(%s) compile/link/execute acceptance.
+Retain every stage in JSON. Require the GCC reference AND the Mini-C
+execution to produce exact stdout, empty stderr, and zero exit status.
 """
 from __future__ import annotations
 
@@ -157,9 +157,10 @@ def main() -> int:
         for line in report["first_error_context"]["source_lines"]:
             print(" ", line)
     print("Report:", args.report)
-    # Until milestone completion, keep the CI diagnostic rather than require
-    # success from a compiler that cannot yet parse all of glibc stdio.h.
-    return 0 if report["gcc_reference_ok"] and passed(stages.get("preprocess")) else 1
+    # S12 P3 acceptance is now mandatory, not a diagnostic-only baseline:
+    # the unmodified glibc header must pass Mini-C, compile into an ELF object,
+    # link with system libc, and run with exact stdout/stderr and exit status.
+    return 0 if report["gcc_reference_ok"] and report["mini_c_hello_ok"] else 1
 
 
 if __name__ == "__main__":

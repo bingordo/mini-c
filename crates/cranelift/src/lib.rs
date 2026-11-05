@@ -9,6 +9,8 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{default_libcall_names, DataId, FuncId, Linkage as ClLinkage, Module};
 use cranelift_module::DataDescription;
 use cranelift_object::{ObjectBuilder, ObjectModule};
+use object::{RelocationEncoding, RelocationFlags, RelocationKind, SymbolScope};
+use object::write::{Relocation, StandardSection};
 use mini_c_sema::{
     CType, CheckedDecl, CheckedExpr, CheckedExprKind, CheckedFunction,
     CheckedItem, CheckedStmt, Checker, IntRank, Linkage, Target,
@@ -56,6 +58,14 @@ struct KnownFunction {
     /// Linker-facing symbol; lookup in this map still uses the C identifier.
     link_name: String,
     defined: bool,
+}
+
+/// A callsite-specific fixed-ABI wrapper, emitted as a tiny x86-64 tail jump.
+/// Its entry sees the normal SysV GP/stack arguments and sets AL=0 before
+/// jumping into the real C variadic function. No SSE arguments are supported.
+struct SysvGpVarargThunk {
+    wrapper: FuncId,
+    target: FuncId,
 }
 
 /// Fully checked external function prototype waiting for its first
@@ -224,6 +234,7 @@ pub struct Compiler {
     module: ObjectModule,
     functions: HashMap<String, KnownFunction>,
     pending_functions: HashMap<String, PendingFunction>,
+    gp_vararg_thunks: Vec<SysvGpVarargThunk>,
     data: HashMap<String, KnownData>,
     strings: HashMap<Vec<u8>, DataId>,
 }
@@ -244,6 +255,7 @@ impl Compiler {
         Ok(Self {
             module: ObjectModule::new(object),
             functions: HashMap::new(), pending_functions: HashMap::new(),
+            gp_vararg_thunks: Vec::new(),
             data: HashMap::new(), strings: HashMap::new(),
         })
     }
@@ -493,7 +505,9 @@ impl Compiler {
             let mut fb_ctx = FunctionBuilderContext::new();
             let mut builder = FunctionBuilder::new(&mut ctx.func, &mut fb_ctx);
             let mut lower = Lower {
-                module: &mut self.module, functions: &self.functions, data: &self.data,
+                module: &mut self.module, functions: &self.functions,
+                gp_vararg_thunks: &mut self.gp_vararg_thunks,
+                data: &self.data,
                 strings: &mut self.strings,
                 scopes: vec![HashMap::new()], loops: Vec::new(),
                 result_ty: match &function.signature {
@@ -605,7 +619,35 @@ impl Compiler {
             self.module.define_data(data.id, &desc)
                 .map_err(|e| format!("defining global '{name}': {e}"))?;
         }
-        self.module.finish().emit().map_err(|e| e.to_string())
+        let mut product = self.module.finish();
+        if !self.gp_vararg_thunks.is_empty() {
+            let text = product.object.section_id(StandardSection::Text);
+            for thunk in self.gp_vararg_thunks {
+                let wrapper = product.function_symbol(thunk.wrapper);
+                let destination = product.function_symbol(thunk.target);
+                // x86-64: xor eax,eax ; jmp rel32. The tail jump preserves
+                // every incoming GP register, stack argument, return address,
+                // and alignment while setting the SysV SSE-register count AL=0.
+                // An undefined Cranelift import has Unknown scope in the
+                // object writer. Set a concrete local scope before defining
+                // the code bytes, as required by object::write.
+                product.object.symbol_mut(wrapper).scope = SymbolScope::Compilation;
+                let start = product.object.add_symbol_data(
+                    wrapper, text, &[0x31, 0xc0, 0xe9, 0, 0, 0, 0], 16
+                );
+                product.object.add_relocation(text, Relocation {
+                    offset: start + 3,
+                    symbol: destination,
+                    addend: -4,
+                    flags: RelocationFlags::Generic {
+                        kind: RelocationKind::PltRelative,
+                        encoding: RelocationEncoding::X86Branch,
+                        size: 32,
+                    },
+                }).map_err(|e| format!("SysV varargs thunk relocation: {e}"))?;
+            }
+        }
+        product.emit().map_err(|e| e.to_string())
     }
 }
 
@@ -657,6 +699,7 @@ struct Local {
 struct Lower<'a> {
     module: &'a mut ObjectModule,
     functions: &'a HashMap<String, KnownFunction>,
+    gp_vararg_thunks: &'a mut Vec<SysvGpVarargThunk>,
     data: &'a HashMap<String, KnownData>,
     strings: &'a mut HashMap<Vec<u8>, DataId>,
     scopes: Vec<HashMap<String, Local>>,
@@ -1165,27 +1208,54 @@ impl Lower<'_> {
                 Ok(value)
             }
             CheckedExprKind::Call(callee, args) => {
-                // A variadic call is not an ordinary fixed-arity Cranelift
-                // call. In SysV x86-64 the call-site signature includes all
-                // promoted arguments and %al must report the vector-register
-                // count (zero for the S12 pointer-only printf example).
-                // Do not accidentally lower a variadic callee as an
-                // indirect fixed-arity function pointer call.
+                // Cranelift 0.136 has fixed-arity SystemV signatures but no
+                // variadic AL operand. Direct calls with only GP-class integer
+                // and pointer arguments can use a tiny per-callsite tail thunk:
+                // Cranelift places every actual argument normally, the thunk
+                // zeroes EAX (AL=0 SSE arguments), then jumps to libc without
+                // disturbing the caller's GP registers or stack arguments.
                 let variadic = match &callee.ty {
                     CType::VariadicFunction { .. } => true,
                     CType::Pointer(inner) =>
                         matches!(inner.as_ref(), CType::VariadicFunction { .. }),
                     _ => false,
                 };
-                if variadic {
-                    return Err("native x86-64 SysV variadic calls are not yet supported (requires all call-site arguments and ABI-correct %al)".into());
+                if variadic && !matches!(
+                    (&callee.kind, &callee.ty),
+                    (CheckedExprKind::Name(_), CType::VariadicFunction { .. })
+                ) {
+                    return Err("indirect SysV variadic calls are unsupported".into());
                 }
                 let mut values = Vec::with_capacity(args.len());
                 for arg in args { values.push(self.expression(b, arg)?); }
-                // Ordinary named functions use a direct call. Every other
-                // callable expression is a function pointer and must use the
-                // checked function signature for its indirect ABI.
-                let inst = if let (CheckedExprKind::Name(name), CType::Function { .. }) =
+                let inst = if let (CheckedExprKind::Name(name),
+                    CType::VariadicFunction { result, .. }) = (&callee.kind, &callee.ty)
+                {
+                    let target = self.functions.get(name)
+                        .map(|known| known.id)
+                        .ok_or_else(|| format!("missing variadic function declaration for '{name}'"))?;
+                    let mut sig = self.module.make_signature();
+                    for arg in args {
+                        if !matches!(arg.ty.unqualified(),
+                            CType::Integer { .. } | CType::Pointer(_))
+                        {
+                            return Err(format!(
+                                "SysV variadic call '{name}' requires GP-class arguments only; SSE and aggregate ABI unsupported"
+                            ));
+                        }
+                        sig.params.push(AbiParam::new(scalar_type(&arg.ty)?));
+                    }
+                    if result.unqualified() != &CType::Void {
+                        sig.returns.push(AbiParam::new(scalar_type(result)?));
+                    }
+                    let wrapper_name = format!("__mini_c_sysv_gpvar_{}", self.gp_vararg_thunks.len());
+                    let wrapper = self.module.declare_function(
+                        &wrapper_name, ClLinkage::Import, &sig
+                    ).map_err(|e| format!("declaring SysV variadic thunk: {e}"))?;
+                    self.gp_vararg_thunks.push(SysvGpVarargThunk { wrapper, target });
+                    let reference = self.module.declare_func_in_func(wrapper, b.func);
+                    b.ins().call(reference, &values)
+                } else if let (CheckedExprKind::Name(name), CType::Function { .. }) =
                     (&callee.kind, &callee.ty)
                 {
                     let id = self.functions.get(name)
@@ -1374,6 +1444,49 @@ mod tests {
     use super::*;
 
     #[test]
+    fn sysv_gp_only_variadic_printf_emits_zero_al_tail_thunk() {
+        use object::{Object, ObjectSymbol};
+        let source = concat!(
+            "extern int printf(const char *fmt, ...); ",
+            "int main(void) { printf(\"Hello, %s!\\n\", \"world\"); return 0; }"
+        );
+        let bytes = compile_source(source).expect("GP-only SysV printf call");
+        let elf = object::File::parse(bytes.as_slice()).expect("ELF");
+        let names = elf.symbols().filter_map(|symbol| symbol.name().ok())
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"printf"), "must retain real libc relocation target");
+        assert!(names.iter().any(|name| name.starts_with("__mini_c_sysv_gpvar_")),
+            "missing local varargs thunk symbol");
+        assert!(bytes.windows(3).any(|w| w == [0x31, 0xc0, 0xe9]),
+            "expected xor eax,eax; jmp rel32 ABI tail thunk");
+    }
+
+    #[test]
+    fn sysv_gp_variadic_callers_can_pass_stack_arguments() {
+        let source = concat!(
+            "extern int printf(const char *fmt, ...); ",
+            "int main(void) { ",
+            "printf(\"%s %d %d %d %d %d %d\\n\", \"x\", 1, 2, 3, 4, 5, 6); ",
+            "return 0; }"
+        );
+        assert!(!compile_source(source).unwrap().is_empty());
+    }
+
+    #[test]
+    fn indirect_sysv_variadic_call_fails_closed() {
+        let source = concat!(
+            "extern int printf(const char *, ...); ",
+            "int main(void) { int (*p)(const char *, ...) = printf; ",
+            "return p(\"%s\", \"word\"); }"
+        );
+        let err = compile_source(source).unwrap_err();
+        // Until function-designator decay is supported in all initializer
+        // contexts, the front-end may reject the function-pointer assignment.
+        assert!(err.contains("indirect SysV variadic")
+                || err.contains("unresolved variable"), "{err}");
+    }
+
+    #[test]
     fn glibc_late_asm_label_precedes_first_elf_import() {
         use object::{Object, ObjectSection, ObjectSymbol};
         let source = concat!(
@@ -1411,16 +1524,15 @@ mod tests {
 
     #[test]
     fn variadic_calls_fail_with_explicit_sysv_abi_diagnostic() {
-        for src in [
-            "extern int printf(const char *, ...); int main(void) { return printf(\"%s\", \"hi\"); }",
-            "int main(void) { int (*callback)(const char *, ...) = 0; return callback(\"%s\", \"hi\"); }",
-        ] {
-            let error = compile_source(src).unwrap_err();
-            assert!(error.contains("native x86-64 SysV variadic calls"), "{error}");
-            assert!(error.contains("%al"), "{error}");
-        }
-
-        // Preserve the supported fixed-arity external call path.
+        // GP-class direct variadic calls are supported. Indirect calls must
+        // still fail explicitly rather than lowering with a wrong ABI.
+        assert!(compile_source(
+            "extern int printf(const char *, ...); int main(void) { return printf(\"%s\", \"hi\"); }"
+        ).is_ok());
+        let error = compile_source(
+            "int main(void) { int (*callback)(const char *, ...) = 0; return callback(\"%s\", \"hi\"); }"
+        ).unwrap_err();
+        assert!(error.contains("indirect SysV variadic"), "{error}");
         assert!(compile_source(
             "extern int puts(const char *); int main(void) { return puts(\"hello\"); }"
         ).is_ok());
