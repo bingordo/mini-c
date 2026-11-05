@@ -1651,3 +1651,18 @@ fn s12_gnu_assembler_alias_survives_semantics_and_redeclarations() {
     ), "conflicting asm linkage");
     check("extern int f(void) __asm__(\"impl\");").unwrap();
 }
+
+#[test]
+fn completed_aggregate_tagref_parameter_accepts_compatible_by_value_argument() {
+    // The prototype can retain a TagRef even after the struct body becomes
+    // complete. Argument compatibility must compare the same nominal tag.
+    check("struct Cookie { long a; long b; }; extern int consume(struct Cookie); int main(void) { struct Cookie c={3,4}; return consume(c); }").unwrap();
+    check("struct Cookie; extern int consume(struct Cookie); struct Cookie { long a; long b; }; int main(void) { struct Cookie c={3,4}; return consume(c); }").unwrap();
+    check("union Value { long a; int b; }; extern int consume(union Value); int main(void) { union Value v={3}; return consume(v); }").unwrap();
+
+    // Same layout is not sufficient: struct/union tags carry identity.
+    reject("struct S { long a; }; struct T { long a; }; extern int consume(struct S); int main(void) { struct T t={1}; return consume(t); }",
+        "incompatible assignment");
+    reject("struct S { long a; }; union U { long a; }; extern int consume(struct S); int main(void) { union U u={1}; return consume(u); }",
+        "incompatible assignment");
+}
