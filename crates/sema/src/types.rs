@@ -111,7 +111,9 @@ impl CType {
             // qualifiers when determining compatibility, including through
             // pointers to functions.
             (CType::Function { result: ar, params: ap },
-             CType::Function { result: br, params: bp }) =>
+             CType::Function { result: br, params: bp }) |
+            (CType::VariadicFunction { result: ar, params: ap },
+             CType::VariadicFunction { result: br, params: bp }) =>
                 ar.same_type(br) && ap.len() == bp.len()
                 && ap.iter().zip(bp).all(|(a, b)|
                     a.unqualified().same_type(b.unqualified())),
