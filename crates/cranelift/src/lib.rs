@@ -1347,8 +1347,8 @@ mod tests {
     fn used_hosted_prototype_does_not_get_an_incorrect_native_signature() {
         let src = concat!(
             "struct Cookie { long first; long second; }; ",
-            "extern int cookie_consume(struct Cookie); ",
-            "int main(void) { struct Cookie c={3,4}; return cookie_consume(c); }"
+            "extern struct Cookie cookie_open(void); ",
+            "int main(void) { cookie_open(); return 0; }"
         );
         let error = compile_source(src).unwrap_err();
         assert!(error.contains("missing function declaration"), "{error}");
