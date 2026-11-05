@@ -22,6 +22,7 @@ fn scalar_type(ty: &CType) -> Result<ir::Type> {
     // Object qualifiers affect modifiability, not physical ABI storage.
     match ty.unqualified() {
         CType::Integer { rank: IntRank::Char, .. } => Ok(types::I8),
+        CType::Integer { rank: IntRank::Short, .. } => Ok(types::I16),
         CType::Integer { rank: IntRank::Int, .. } => Ok(types::I32),
         CType::Integer { rank: IntRank::Long | IntRank::LongLong, .. } | CType::Pointer(_) => Ok(types::I64),
         CType::Struct { .. } | CType::Union { .. } | CType::TagRef { .. } |
@@ -88,7 +89,7 @@ fn char_array_initializer_bytes(
     let (CType::Array(element, Some(bound)), CheckedExprKind::StringLiteral(source)) =
         (ty, &initializer.kind)
     else { return Ok(None); };
-    if !matches!(element.as_ref(), CType::Integer { rank: IntRank::Char, .. }) {
+    if !matches!(element.unqualified(), CType::Integer { rank: IntRank::Char, .. }) {
         return Err("string initializer requires an array of character type".into());
     }
     let count = usize::try_from(*bound).map_err(|_| "character array exceeds host size")?;
@@ -127,7 +128,7 @@ fn static_initializer_bytes(
             .map_err(|_| "oversized initialized object")?;
         let end = offset.checked_add(size).ok_or("initializer byte offset overflow")?;
         if end > out.len() { return Err("initializer extends beyond object bounds".into()); }
-        match (&init.kind, ty) {
+        match (&init.kind, ty.unqualified()) {
             (CheckedExprKind::Initializer(values), CType::Struct { members, .. }) |
             (CheckedExprKind::Initializer(values), CType::Union { members, .. }) => {
                 for (value, member) in values.iter().zip(members) {
@@ -153,7 +154,7 @@ fn static_initializer_bytes(
                     let value = mini_c_sema::const_eval::evaluate(init, Target::default())
                         .map_err(|e| format!("nonconstant aggregate initializer: {e}"))?;
                     out[offset..end].copy_from_slice(&value.to_le_bytes()[..size]);
-                } else if matches!(ty, CType::Pointer(_)) {
+                } else if matches!(ty.unqualified(), CType::Pointer(_)) {
                     let mut source = init;
                     while let CheckedExprKind::Convert(inner) = &source.kind { source = inner; }
                     if mini_c_sema::const_eval::evaluate(source, Target::default()) == Ok(0) {
@@ -571,6 +572,7 @@ impl Lower<'_> {
                 u8::try_from(align.trailing_zeros()).unwrap_or(3),
             CType::Array(element, _) => Self::alignment(element),
             CType::Integer { rank: IntRank::Char, .. } => 0,
+            CType::Integer { rank: IntRank::Short, .. } => 1,
             CType::Integer { rank: IntRank::Int, .. } => 2,
             _ => 3,
         }
@@ -589,7 +591,7 @@ impl Lower<'_> {
         self.scopes.last_mut().expect("scope exists").insert(name.to_owned(), Local { address });
         if let Some(value) = value {
             b.ins().store(ir::MemFlagsData::new(), value, address, 0);
-        } else if !matches!(ty, CType::Array(..) | CType::Struct { .. } | CType::Union { .. }) {
+        } else if !matches!(ty.unqualified(), CType::Array(..) | CType::Struct { .. } | CType::Union { .. }) {
             // Deterministic choice for otherwise-indeterminate scalar locals,
             // not a promise about C uninitialized reads.
             let zero = b.ins().iconst(scalar_type(ty)?, 0);
@@ -640,7 +642,7 @@ impl Lower<'_> {
                 return Err("aggregate initializer exceeds 1 MiB codegen limit".into());
             }
             Self::store_array_bytes(b, address, &vec![0u8; size])?;
-            match ty {
+            match ty.unqualified() {
                 CType::Struct { members, .. } | CType::Union { members, .. } => {
                     for (value, member) in values.iter().zip(members) {
                         let offset = i64::try_from(member.offset)
@@ -665,7 +667,7 @@ impl Lower<'_> {
             return Ok(());
         }
         let value = self.expression(b, initializer)?;
-        if matches!(ty, CType::Struct { .. } | CType::Union { .. }) {
+        if matches!(ty.unqualified(), CType::Struct { .. } | CType::Union { .. }) {
             let size = ty.size_bytes(Target::default())
                 .ok_or("incomplete struct initializer")?;
             Self::copy_bytes(b, address, value, size)
@@ -1276,6 +1278,51 @@ mod tests {
                    x = x + 1; if (x == 2) continue; if (x == 8) break; \
                    } return x; } int main(void) { return f(10); }";
         assert!(!compile_source(src).unwrap().is_empty());
+    }
+
+    #[test]
+    fn emits_qualified_aggregate_initializers_and_copy() {
+        let sources = [
+            "struct Pair { int x; int y; }; const struct Pair global = {3,4}; int main(void) { return global.x + global.y - 7; }",
+            "struct Pair { int x; int y; }; int main(void) { struct Pair src={3,4}; const struct Pair dst=src; return dst.x + dst.y - 7; }",
+            "struct S { int matrix[2][2]; }; const struct S global = {{{1,2},{3,4}}}; int main(void) { return global.matrix[1][1] - 4; }",
+            "struct S { int matrix[2][2]; }; int main(void) { const struct S local = {{{1,2},{3,4}}}; return local.matrix[1][1] - 4; }",
+            "const int numbers[3] = {4,5,6}; int main(void) { return numbers[1] - 5; }",
+        ];
+        for source in sources {
+            let object = compile_source(source).unwrap_or_else(|e|
+                panic!("qualified aggregate lowering failed: {source}: {e}"));
+            assert_eq!(&object[..4], b"\x7fELF");
+        }
+    }
+
+    #[test]
+    fn emits_const_character_array_initializers() {
+        let sources = [
+            "const char global[] = \"abc\"; int main(void) { return global[1] - 98; }",
+            "int main(void) { const char local[3] = \"hi\"; return local[0] - 104; }",
+            "struct Record { const char text[5]; }; struct Record global = {\"test\"}; int main(void) { return global.text[1] - 101; }",
+            "struct Record { const char text[5]; }; int main(void) { struct Record local = {\"test\"}; return local.text[1] - 101; }",
+        ];
+        for source in sources {
+            let object = compile_source(source).unwrap_or_else(|e|
+                panic!("qualified character array lowering failed: {source}: {e}"));
+            assert_eq!(&object[..4], b"\x7fELF");
+        }
+    }
+
+    #[test]
+    fn emits_short_local_global_and_parameter_types() {
+        let sources = [
+            "short global = 7; int main(void) { short local = global; return local - 7; }",
+            "int add(short x, unsigned short y) { return x + y; } int main(void) { return add(-3, 9) - 6; }",
+            "int main(void) { short x = -3; unsigned short y = 4; x += y; return x - 1; }",
+        ];
+        for source in sources {
+            let object = compile_source(source).unwrap_or_else(|e|
+                panic!("short codegen failed: {source}: {e}"));
+            assert_eq!(&object[..4], b"\x7fELF");
+        }
     }
 
     #[test]
