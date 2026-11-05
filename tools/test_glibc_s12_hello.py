@@ -96,7 +96,7 @@ def main() -> int:
                 diagnostic = stages["mini_c_check"].get("stderr", "")
                 # The checker reports offsets in the .i file; preserve the
                 # adjacent real glibc text and its nearest #line source marker.
-                match = re.search(r":(\\d+):(\\d+): error:", diagnostic)
+                match = re.search(r":(\d+):(\d+): error:", diagnostic)
                 if match:
                     line_no = int(match.group(1))
                     if 1 <= line_no <= len(lines):
