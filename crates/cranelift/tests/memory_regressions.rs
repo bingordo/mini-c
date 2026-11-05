@@ -220,12 +220,16 @@ fn aggregate_pointer_fields_emit_multiple_relocations() {
 }
 
 #[test]
-fn by_value_aggregate_abi_is_explicitly_rejected() {
-    let err=compile_source("struct T { int x; }; struct T copy(struct T x);")
-        .unwrap_err();
+fn unused_aggregate_abi_imports_do_not_block_elf_but_references_fail_closed() {
+    emits_elf("struct T { int x; }; struct T copy(struct T x);");
+    emits_elf("union U { int x; long y; }; union U make(void);");
+    let err = compile_source(
+        "struct T { int x; }; struct T copy(struct T x); int main(void) { return &copy != 0; }"
+    ).unwrap_err();
     assert!(err.contains("unsupported SysV aggregate-by-value ABI"), "{err}");
-    let err=compile_source("union U { int x; long y; }; union U make(void);")
-        .unwrap_err();
+    let err = compile_source(
+        "union U { int x; long y; }; union U make(void); int main(void) { return &make != 0; }"
+    ).unwrap_err();
     assert!(err.contains("unsupported SysV aggregate-by-value ABI"), "{err}");
 }
 
