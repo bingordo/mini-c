@@ -64,6 +64,7 @@ struct KnownFunction {
 struct DeferredImport {
     ty: CType,
     link_name: String,
+    linkage: Linkage,
     reason: String,
 }
 
@@ -392,31 +393,52 @@ impl Compiler {
         Ok(())
     }
 
+    /// Materialize supported imports only at the function-codegen boundary.
+    /// This permits later compatible declarations to supply GNU asm aliases
+    /// before any ELF symbol is committed, and retains all incompatible
+    /// prototypes in checked metadata with explicit errors on actual use.
+    fn flush_supported_imports(&mut self) -> Result<()> {
+        let mut supported = self.deferred_imports.iter()
+            .filter(|(_, import)| signature(&self.module, &import.ty).is_ok())
+            .map(|(name, _)| name.clone())
+            .collect::<Vec<_>>();
+        supported.sort();
+        for name in supported {
+            let import = self.deferred_imports.remove(&name).expect("pending import");
+            self.declare(&name, &import.ty, import.linkage, false,
+                Some(import.link_name.as_str()))?;
+        }
+        Ok(())
+    }
+
     /// Register declarations and compile one complete checked function.
     pub fn add(&mut self, item: CheckedItem) -> Result<()> {
         match item {
             CheckedItem::Typedef { .. } | CheckedItem::Tag => Ok(()),
             CheckedItem::Declaration(decl) => {
                 if matches!(decl.ty, CType::Function { .. } | CType::VariadicFunction { .. }) {
-                    if let Err(reason) = signature(&self.module, &decl.ty) {
-                        let name = decl.name.clone();
-                        let link_name = decl.asm_label.unwrap_or_else(|| name.clone());
+                    let name = decl.name.clone();
+                    let link_name = decl.asm_label.unwrap_or_else(|| name.clone());
+                    if self.functions.contains_key(&name) {
+                        self.declare(&name, &decl.ty, decl.linkage, false,
+                            Some(link_name.as_str()))?;
+                    } else {
+                        let reason = signature(&self.module, &decl.ty).err().unwrap_or_default();
                         if let Some(prior) = self.deferred_imports.get_mut(&name) {
                             prior.ty = prior.ty.composite(&decl.ty)
                                 .ok_or_else(|| format!("conflicting deferred ABI for '{name}'"))?;
-                            if prior.link_name != link_name {
-                                return Err(format!("conflicting deferred link name for '{name}'"));
-                            }
+                            // C semantic redeclaration checking already validates
+                            // GNU linkage labels. Keep the latest composite label
+                            // until the first emission boundary.
+                            prior.link_name = link_name;
+                            prior.linkage = decl.linkage;
+                            prior.reason = reason;
                         } else {
                             self.deferred_imports.insert(name, DeferredImport {
-                                ty: decl.ty, link_name, reason,
+                                ty: decl.ty, link_name, linkage: decl.linkage, reason,
                             });
                         }
-                        // Do not emit an unused import whose ABI is unsupported;
-                        // semantic validation of the declaration already ran.
-                        return Ok(());
                     }
-                    self.declare(&decl.name, &decl.ty, decl.linkage, false, decl.asm_label.as_deref())?;
                     Ok(())
                 } else { self.declare_object(decl) }
             }
@@ -425,6 +447,7 @@ impl Compiler {
     }
 
     fn define(&mut self, function: CheckedFunction) -> Result<()> {
+        self.flush_supported_imports()?;
         let id = self.declare(&function.name, &function.signature, function.linkage, true, None)?;
         let mut ctx = self.module.make_context();
         ctx.func.signature = signature(&self.module, &function.signature)?;
@@ -488,6 +511,7 @@ impl Compiler {
     }
 
     pub fn finish(mut self) -> Result<Vec<u8>> {
+        self.flush_supported_imports()?;
         for (name, data) in &self.data {
             if data.initialized.is_none() && !data.tentative { continue; }
             let mut desc = DataDescription::new();
