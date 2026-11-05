@@ -176,7 +176,7 @@ def main() -> int:
          if not passed(stages.get(stage))), None
     )
     stack = report["stack_gp_varargs"]
-    stack_expected = "x 1 2 3 4 5 6\\n"
+    stack_expected = "x 1 2 3 4 5 6\n"
     report["stack_gp_varargs_ok"] = (
         passed(stack.get("reference_execute"))
         and passed(stack.get("mini_c_execute"))
