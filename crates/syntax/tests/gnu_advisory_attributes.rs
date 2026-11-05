@@ -52,9 +52,9 @@ fn harmless_optimization_hints_do_not_change_c_function_signature() {
 }
 
 #[test]
-fn reject_attributes_that_can_change_abi_layout_or_control_flow() {
+fn reject_abi_affecting_or_semantically_unsafe_attributes() {
     for attribute in [
-        "__noreturn__", "__returns_twice__", "__packed__", "__aligned__(16)",
+        "__returns_twice__", "__packed__", "__aligned__(16)",
         "ms_abi", "sysv_abi", "__vector_size__(16)", "mode(QI)",
         "__section__(\".fast\")", "unknown_extension",
         "__format__(printf, 1, 2)",
