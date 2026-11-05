@@ -597,7 +597,13 @@ impl<'a> Parser<'a> {
                         self.expect(")")?;
                     }
                 }
-                "nothrow" | "leaf" | "pure" | "const"
+                // noreturn is a promise about control flow, not an ABI or
+                // layout change. This frontend deliberately does NOT infer
+                // unreachable successors or omit return edges from it.
+                // Ignoring that optional optimization is conservative even
+                // when the declaration is later called. Unlike
+                // returns_twice, it cannot invalidate normal call lowering.
+                "nothrow" | "leaf" | "pure" | "const" | "noreturn"
                 | "warn_unused_result" | "unused" | "deprecated"
                 | "returns_nonnull" => {
                     if self.peek()?.is_some_and(|t| t.text == "(") {
@@ -669,7 +675,9 @@ impl<'a> Parser<'a> {
                     }
                     self.expect(")")?;
                 }
-                // In particular, do not discard 'noreturn', 'returns_twice',
+                // Keep returns_twice, packed/aligned/vector_size, mode/section
+                // and calling-convention annotations fail-closed: unlike
+                // noreturn, these may change observable semantics or ABI.
                 // 'packed', 'aligned', 'vector_size', 'mode', 'section',
                 // 'ms_abi', 'sysv_abi' or unknown ABI-affecting extensions.
                 _ => return Err(Diagnostic::coded(token.span,
