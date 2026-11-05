@@ -1441,6 +1441,46 @@ mod tests {
     use super::*;
 
     #[test]
+    fn sysv_gp_only_variadic_printf_emits_zero_al_tail_thunk() {
+        use object::{Object, ObjectSymbol};
+        let source = concat!(
+            "extern int printf(const char *fmt, ...); ",
+            "int main(void) { printf(\"Hello, %s!\\n\", \"world\"); return 0; }"
+        );
+        let bytes = compile_source(source).expect("GP-only SysV printf call");
+        let elf = object::File::parse(bytes.as_slice()).expect("ELF");
+        let names = elf.symbols().filter_map(|symbol| symbol.name().ok())
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"printf"), "must retain real libc relocation target");
+        assert!(names.iter().any(|name| name.starts_with("__mini_c_sysv_gpvar_")),
+            "missing local varargs thunk symbol");
+        assert!(bytes.windows(3).any(|w| w == [0x31, 0xc0, 0xe9]),
+            "expected xor eax,eax; jmp rel32 ABI tail thunk");
+    }
+
+    #[test]
+    fn sysv_gp_variadic_callers_can_pass_stack_arguments() {
+        let source = concat!(
+            "extern int printf(const char *fmt, ...); ",
+            "int main(void) { ",
+            "printf(\"%s %d %d %d %d %d %d\\n\", \"x\", 1, 2, 3, 4, 5, 6); ",
+            "return 0; }"
+        );
+        assert!(!compile_source(source).unwrap().is_empty());
+    }
+
+    #[test]
+    fn indirect_sysv_variadic_call_fails_closed() {
+        let source = concat!(
+            "extern int printf(const char *, ...); ",
+            "int main(void) { int (*p)(const char *, ...) = printf; ",
+            "return p(\"%s\", \"word\"); }"
+        );
+        let err = compile_source(source).unwrap_err();
+        assert!(err.contains("indirect SysV variadic"), "{err}");
+    }
+
+    #[test]
     fn glibc_late_asm_label_precedes_first_elf_import() {
         use object::{Object, ObjectSection, ObjectSymbol};
         let source = concat!(
