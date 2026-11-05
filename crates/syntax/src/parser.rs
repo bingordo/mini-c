@@ -1051,6 +1051,7 @@ impl<'a> Parser<'a> {
             }
             "void" => { self.take()?; Type::Void }
             "float" => { self.take()?; Type::Floating(FloatRank::Float) }
+            "__builtin_va_list" => { self.take()?; Type::BuiltinVaList }
             "_Float128" => { self.take()?; Type::Floating(FloatRank::Float128) }
             "double" => {
                 self.take()?;
