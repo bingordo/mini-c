@@ -92,6 +92,27 @@ def main() -> int:
             stages["mini_c_check"] = invoke([
                 str(args.checker), "check", "--cpp=none", str(preprocessed)
             ])
+            if not passed(stages["mini_c_check"]):
+                diagnostic = stages["mini_c_check"].get("stderr", "")
+                # The checker reports offsets in the .i file; preserve the
+                # adjacent real glibc text and its nearest #line source marker.
+                match = re.search(r":(\d+):(\d+): error:", diagnostic)
+                if match:
+                    line_no = int(match.group(1))
+                    if 1 <= line_no <= len(lines):
+                        report["first_error_context"] = {
+                            "line": line_no,
+                            "column": int(match.group(2)),
+                            "origin_marker": next(
+                                (line for line in reversed(lines[:line_no])
+                                 if FIRST_MARKER.match(line)), None
+                            ),
+                            "source_lines": [
+                                f"{i + 1}: {lines[i]}"
+                                for i in range(max(0, line_no - 4),
+                                               min(len(lines), line_no + 2))
+                            ],
+                        }
             if passed(stages["mini_c_check"]):
                 stages["mini_c_object"] = invoke([
                     str(args.backend), "--emit-obj", str(object_file),
@@ -130,6 +151,11 @@ def main() -> int:
             # Bounded log summary; exact full diagnostics remain in JSON.
             print("S12 first blocker diagnostic (max 12 lines):")
             print("\n".join(str(diagnostic).splitlines()[:12]))
+    if "first_error_context" in report:
+        print("S12 error source context:")
+        print("  origin:", report["first_error_context"]["origin_marker"])
+        for line in report["first_error_context"]["source_lines"]:
+            print(" ", line)
     print("Report:", args.report)
     # Until milestone completion, keep the CI diagnostic rather than require
     # success from a compiler that cannot yet parse all of glibc stdio.h.

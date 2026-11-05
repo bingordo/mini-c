@@ -335,6 +335,36 @@ impl Checker {
                     }
                 } else { base }
             }
+            Type::BuiltinVaList => {
+                // x86-64 SysV GCC: typedef struct __va_list_tag {
+                //   unsigned int gp_offset, fp_offset;
+                //   void *overflow_arg_area, *reg_save_area;
+                // } __builtin_va_list[1];
+                // This must remain an array and decay to a tag pointer in
+                // function parameters, not be modeled as an ordinary void*.
+                if self.target.int_bits != 32 || self.target.long_bits != 64 {
+                    return Err(type_error(span,
+                        "__builtin_va_list requires the x86-64 SysV LP64 data model"));
+                }
+                let u32_ty = CType::Integer { rank: IntRank::Int, unsigned: true };
+                let void_ptr = CType::Pointer(Box::new(CType::Void));
+                let mut tag = types::layout_struct(
+                    Some("__va_list_tag".to_owned()),
+                    vec![
+                        ("gp_offset".to_owned(), u32_ty.clone()),
+                        ("fp_offset".to_owned(), u32_ty),
+                        ("overflow_arg_area".to_owned(), void_ptr.clone()),
+                        ("reg_save_area".to_owned(), void_ptr),
+                    ],
+                    self.target,
+                ).map_err(|reason| type_error(span, reason))?;
+                // Reserved nominal identity, identical across GCC builtin uses
+                // but disjoint from user-written structure declarations.
+                if let CType::Struct { identity, .. } = &mut tag {
+                    *identity = u64::MAX;
+                }
+                CType::Array(Box::new(tag), Some(1))
+            }
             Type::Void => CType::Void,
             Type::Char => CType::Integer { rank: IntRank::Char, unsigned: !self.target.char_is_signed },
             Type::Short => CType::Integer { rank: IntRank::Short, unsigned: false },

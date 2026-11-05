@@ -70,6 +70,9 @@ pub enum Type {
     Int,
     Long,
     LongLong,
+    /// GCC x86-64 builtin va_list (array of one ABI __va_list_tag).
+    /// Its target-specific layout is resolved in semantic analysis.
+    BuiltinVaList,
     Floating(FloatRank),
     Alias(Ident),
     /// Qualifiers bind to this type, not to the nearest pointer's pointee.
