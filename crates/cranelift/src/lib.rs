@@ -9,6 +9,8 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{default_libcall_names, DataId, FuncId, Linkage as ClLinkage, Module};
 use cranelift_module::DataDescription;
 use cranelift_object::{ObjectBuilder, ObjectModule};
+use object::{RelocationEncoding, RelocationFlags, RelocationKind, SymbolScope};
+use object::write::{Relocation, StandardSection};
 use mini_c_sema::{
     CType, CheckedDecl, CheckedExpr, CheckedExprKind, CheckedFunction,
     CheckedItem, CheckedStmt, Checker, IntRank, Linkage, Target,
@@ -56,6 +58,14 @@ struct KnownFunction {
     /// Linker-facing symbol; lookup in this map still uses the C identifier.
     link_name: String,
     defined: bool,
+}
+
+/// A callsite-specific fixed-ABI wrapper, emitted as a tiny x86-64 tail jump.
+/// Its entry sees the normal SysV GP/stack arguments and sets AL=0 before
+/// jumping into the real C variadic function. No SSE arguments are supported.
+struct SysvGpVarargThunk {
+    wrapper: FuncId,
+    target: FuncId,
 }
 
 /// Fully checked external function prototype waiting for its first
@@ -224,6 +234,7 @@ pub struct Compiler {
     module: ObjectModule,
     functions: HashMap<String, KnownFunction>,
     pending_functions: HashMap<String, PendingFunction>,
+    gp_vararg_thunks: Vec<SysvGpVarargThunk>,
     data: HashMap<String, KnownData>,
     strings: HashMap<Vec<u8>, DataId>,
 }
@@ -244,6 +255,7 @@ impl Compiler {
         Ok(Self {
             module: ObjectModule::new(object),
             functions: HashMap::new(), pending_functions: HashMap::new(),
+            gp_vararg_thunks: Vec::new(),
             data: HashMap::new(), strings: HashMap::new(),
         })
     }
@@ -493,7 +505,9 @@ impl Compiler {
             let mut fb_ctx = FunctionBuilderContext::new();
             let mut builder = FunctionBuilder::new(&mut ctx.func, &mut fb_ctx);
             let mut lower = Lower {
-                module: &mut self.module, functions: &self.functions, data: &self.data,
+                module: &mut self.module, functions: &self.functions,
+                gp_vararg_thunks: &mut self.gp_vararg_thunks,
+                data: &self.data,
                 strings: &mut self.strings,
                 scopes: vec![HashMap::new()], loops: Vec::new(),
                 result_ty: match &function.signature {
@@ -657,6 +671,7 @@ struct Local {
 struct Lower<'a> {
     module: &'a mut ObjectModule,
     functions: &'a HashMap<String, KnownFunction>,
+    gp_vararg_thunks: &'a mut Vec<SysvGpVarargThunk>,
     data: &'a HashMap<String, KnownData>,
     strings: &'a mut HashMap<Vec<u8>, DataId>,
     scopes: Vec<HashMap<String, Local>>,
