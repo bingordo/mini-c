@@ -14,6 +14,34 @@ import subprocess
 import sys
 
 PROGRAMS = {
+    # Recent semantic/codegen changes must agree with GCC at execution,
+    # not merely emit a syntactically valid ELF object.
+    "const_global_struct_native": """struct Pair { int x; long y; };
+        const struct Pair p={5,13};
+        int main(void) { return p.x*2 + p.y; }""",
+    "const_local_struct_copy_native": """struct Pair { int x; long y; };
+        int main(void) { struct Pair a={7,11}; const struct Pair b=a;
+            a.x=1; return b.x+b.y; }""",
+    "const_nested_arrays_native": """struct Grid { int data[2][2]; };
+        const struct Grid g={{{1,2},{3,4}}};
+        int main(void) { return g.data[1][0]*10 + g.data[0][1]; }""",
+    "const_global_char_array_native": """const char text[]="abc";
+        int main(void) { return text[1]-'a'; }""",
+    "const_local_char_member_native": """struct Text { const char chars[5]; };
+        int main(void) { struct Text text={"test"};
+            return text.chars[1]-'a'; }""",
+    "signed_short_sign_extend_native": """short dec(short x) { return x-1; }
+        int main(void) { return dec(-123) == -124; }""",
+    "unsigned_short_zero_extend_native": """unsigned short identity(unsigned short x) { return x; }
+        int main(void) { return identity(65535) == 65535; }""",
+    "short_assignment_narrow_native": """int main(void) { short a=-1;
+        unsigned short b=(unsigned short)a; return b == 65535; }""",
+    "short_arithmetic_promotion_native": """int main(void) {
+        short signed_value=-101; unsigned short unsigned_value=65000;
+        return signed_value+unsigned_value-64800; }""",
+    "short_struct_fields_native": """struct Values { short a; unsigned short b; int c; };
+        struct Values values={-11,65531,7};
+        int main(void) { return values.a+values.b+values.c-65500; }""",
     "gnu_attribute_pure_nothrow_prototype": """int twice(int x)
         __attribute__((__pure__, __nothrow__));
         int twice(int x) { return x*2; }
@@ -584,6 +612,26 @@ def main() -> int:
             print(f"Failure reproducer retained: {args.artifacts / name}", file=sys.stderr)
             return 1
     mixed = [
+        # Verify both directions of the native SysV ABI, not only whole-TU
+        # Mini-C compilation (which can hide symmetric ABI mistakes).
+        ("gcc_calls_mini_short_params",
+         "int combine(short a, unsigned short b) { return a+b; }",
+         "extern int combine(short,unsigned short); int main(void) { return combine(-5,65000)==64995; }"),
+        ("mini_calls_gcc_short_params",
+         "extern int combine(short,unsigned short); int main(void) { return combine(-12,65000)==64988; }",
+         "int combine(short a,unsigned short b) { return a+b; }"),
+        ("gcc_reads_mini_const_struct_init",
+         "struct Pair { int x; long y; }; const struct Pair shared={7,13};",
+         "extern const struct Pair { int x; long y; } shared; int main(void) { return shared.x*2+shared.y; }"),
+        ("gcc_reads_mini_const_string",
+         'const char text[]="abc";',
+         "extern const char text[]; int main(void) { return text[1]; }"),
+        ("gcc_reads_mini_unsigned_short",
+         "unsigned short shared=65530;",
+         "extern unsigned short shared; int main(void) { return shared-65400; }"),
+        ("mini_reads_gcc_signed_short",
+         "extern short shared; int main(void) { return shared+200; }",
+         "short shared=-101;"),
         ("gcc_calls_mini", "int kernel(int x, int y) { return x * y + y; }",
          "int kernel(int,int); int main(void) { return kernel(6,7); }"),
         ("mini_calls_gcc", "int supply(int); int main(void) { return supply(20); }",
