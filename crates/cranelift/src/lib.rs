@@ -1410,6 +1410,23 @@ mod tests {
     }
 
     #[test]
+    fn variadic_calls_fail_with_explicit_sysv_abi_diagnostic() {
+        for src in [
+            "extern int printf(const char *, ...); int main(void) { return printf(\"%s\", \"hi\"); }",
+            "int main(void) { int (*callback)(const char *, ...) = 0; return callback(\"%s\", \"hi\"); }",
+        ] {
+            let error = compile_source(src).unwrap_err();
+            assert!(error.contains("native x86-64 SysV variadic calls"), "{error}");
+            assert!(error.contains("%al"), "{error}");
+        }
+
+        // Preserve the supported fixed-arity external call path.
+        assert!(compile_source(
+            "extern int puts(const char *); int main(void) { return puts(\"hello\"); }"
+        ).is_ok());
+    }
+
+    #[test]
     fn external_assembler_alias_is_the_actual_elf_symbol() {
         use object::{Object, ObjectSection, ObjectSymbol};
         let source = concat!(
