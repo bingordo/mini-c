@@ -58,6 +58,15 @@ struct KnownFunction {
     defined: bool,
 }
 
+/// A fully checked C declaration whose ABI cannot yet be emitted by Cranelift.
+/// Keep source and assembler names and the precise ABI blocker, and reject any
+/// actual use instead of preventing unrelated TUs from building.
+struct DeferredImport {
+    ty: CType,
+    link_name: String,
+    reason: String,
+}
+
 #[derive(Clone)]
 enum RelocationSource {
     Object(String),
@@ -214,6 +223,7 @@ fn intern_string(
 pub struct Compiler {
     module: ObjectModule,
     functions: HashMap<String, KnownFunction>,
+    deferred_imports: HashMap<String, DeferredImport>,
     data: HashMap<String, KnownData>,
     strings: HashMap<Vec<u8>, DataId>,
 }
@@ -231,7 +241,11 @@ impl Compiler {
             .map_err(|e| e.to_string())?;
         let object = ObjectBuilder::new(isa, "mini-c", default_libcall_names())
             .map_err(|e| e.to_string())?;
-        Ok(Self { module: ObjectModule::new(object), functions: HashMap::new(), data: HashMap::new(), strings: HashMap::new() })
+        Ok(Self {
+            module: ObjectModule::new(object), functions: HashMap::new(),
+            deferred_imports: HashMap::new(),
+            data: HashMap::new(), strings: HashMap::new(),
+        })
     }
 
     fn declare(&mut self, name: &str, ty: &CType, linkage: Linkage, definition: bool,
@@ -384,6 +398,24 @@ impl Compiler {
             CheckedItem::Typedef { .. } | CheckedItem::Tag => Ok(()),
             CheckedItem::Declaration(decl) => {
                 if matches!(decl.ty, CType::Function { .. } | CType::VariadicFunction { .. }) {
+                    if let Err(reason) = signature(&self.module, &decl.ty) {
+                        let name = decl.name.clone();
+                        let link_name = decl.asm_label.unwrap_or_else(|| name.clone());
+                        if let Some(prior) = self.deferred_imports.get_mut(&name) {
+                            prior.ty = prior.ty.composite(&decl.ty)
+                                .ok_or_else(|| format!("conflicting deferred ABI for '{name}'"))?;
+                            if prior.link_name != link_name {
+                                return Err(format!("conflicting deferred link name for '{name}'"));
+                            }
+                        } else {
+                            self.deferred_imports.insert(name, DeferredImport {
+                                ty: decl.ty, link_name, reason,
+                            });
+                        }
+                        // Do not emit an unused import whose ABI is unsupported;
+                        // semantic validation of the declaration already ran.
+                        return Ok(());
+                    }
                     self.declare(&decl.name, &decl.ty, decl.linkage, false, decl.asm_label.as_deref())?;
                     Ok(())
                 } else { self.declare_object(decl) }
@@ -402,7 +434,8 @@ impl Compiler {
             let mut fb_ctx = FunctionBuilderContext::new();
             let mut builder = FunctionBuilder::new(&mut ctx.func, &mut fb_ctx);
             let mut lower = Lower {
-                module: &mut self.module, functions: &self.functions, data: &self.data,
+                module: &mut self.module, functions: &self.functions,
+                deferred_imports: &self.deferred_imports, data: &self.data,
                 strings: &mut self.strings,
                 scopes: vec![HashMap::new()], loops: Vec::new(),
                 result_ty: match &function.signature {
@@ -565,6 +598,7 @@ struct Local {
 struct Lower<'a> {
     module: &'a mut ObjectModule,
     functions: &'a HashMap<String, KnownFunction>,
+    deferred_imports: &'a HashMap<String, DeferredImport>,
     data: &'a HashMap<String, KnownData>,
     strings: &'a mut HashMap<Vec<u8>, DataId>,
     scopes: Vec<HashMap<String, Local>>,
@@ -862,7 +896,15 @@ impl Lower<'_> {
                     {
                         let id = self.functions.get(name)
                             .map(|known| known.id)
-                            .ok_or_else(|| format!("missing function declaration for '{name}'"))?;
+                            .ok_or_else(|| {
+                                self.deferred_imports.get(name).map_or_else(
+                                    || format!("missing function declaration for '{name}'"),
+                                    |import| format!(
+                                        "cannot take address of '{name}' (ELF '{}'): {}",
+                                        import.link_name, import.reason
+                                    )
+                                )
+                            })?;
                         let reference = self.module.declare_func_in_func(id, b.func);
                         return Ok(b.ins().func_addr(types::I64, reference));
                     }
@@ -1083,7 +1125,15 @@ impl Lower<'_> {
                 {
                     let id = self.functions.get(name)
                         .map(|known| known.id)
-                        .ok_or_else(|| format!("missing function declaration for '{name}'"))?;
+                        .ok_or_else(|| {
+                            self.deferred_imports.get(name).map_or_else(
+                                || format!("missing function declaration for '{name}'"),
+                                |import| format!(
+                                    "cannot call '{name}' (ELF '{}'): {}",
+                                    import.link_name, import.reason
+                                )
+                            )
+                        })?;
                     let refid = self.module.declare_func_in_func(id, b.func);
                     b.ins().call(refid, &values)
                 } else {
