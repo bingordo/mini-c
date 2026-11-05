@@ -1172,7 +1172,7 @@ impl Checker {
         if !compatible {
             return Err(Diagnostic::coded(span, DiagnosticCode::SemanticIncompatibleAssignment, format!("incompatible assignment: {:?} to {:?}", expr.ty, ty)));
         }
-        Ok(self.convert(expr, value_ty))
+        Ok(self.convert(expr, &value_ty))
     }
 
     /// Form a checked pointer + integer or pointer - integer expression.
