@@ -534,9 +534,10 @@ impl<'a> Parser<'a> {
     /// Only annotations that are safe to *not* exploit for optimization or
     /// diagnostics are accepted. Layout, ABI, control-flow and unknown
     /// attributes fail closed; they must not disappear silently.
-    fn parse_gnu_declarator_attributes(&mut self, function: bool)
+    fn parse_gnu_declarator_attributes(&mut self, function_params: Option<(usize, bool)>)
         -> Result<(), Diagnostic>
     {
+        let function = function_params.is_some();
         let start = self.take()?.expect("peeked GNU attribute").span;
         self.expect("(")?;
         self.expect("(")?;
@@ -605,6 +606,65 @@ impl<'a> Parser<'a> {
                             DiagnosticCode::SyntaxInvalidDeclaration,
                             format!("unsupported arguments to GNU attribute '{}'", token.text)));
                     }
+                }
+                "format" => {
+                    // GNU format(archetype, format-argument, first-to-check)
+                    // describes compile-time format diagnostics, not the ABI.
+                    // Validate the prototype and all operands before dropping
+                    // this advisory annotation. Unknown kinds fail closed.
+                    let Some((fixed, variadic)) = function_params else {
+                        return Err(Diagnostic::coded(token.span,
+                            DiagnosticCode::SyntaxInvalidDeclaration,
+                            "format attribute requires a function prototype"));
+                    };
+                    self.expect("(")?;
+                    let kind = self.take()?.ok_or_else(|| Diagnostic::coded(
+                        self.eof_span(), DiagnosticCode::SyntaxInvalidDeclaration,
+                        "expected GNU format archetype"
+                    ))?;
+                    if !matches!(gnu_attribute_spelling(kind.text),
+                        "printf" | "gnu_printf" | "scanf" | "gnu_scanf")
+                    {
+                        return Err(Diagnostic::coded(kind.span,
+                            DiagnosticCode::SyntaxInvalidDeclaration,
+                            "unsupported GNU format archetype"));
+                    }
+                    self.expect(",")?;
+                    let position = self.take()?.ok_or_else(|| Diagnostic::coded(
+                        self.eof_span(), DiagnosticCode::SyntaxInvalidDeclaration,
+                        "expected format string parameter index"
+                    ))?;
+                    let format_index = if position.kind == TokenKind::Number &&
+                        position.text.bytes().all(|b| b.is_ascii_digit())
+                    {
+                        position.text.parse::<usize>().ok().filter(|n| *n > 0 && *n <= fixed)
+                    } else { None };
+                    let Some(format_index) = format_index else {
+                        return Err(Diagnostic::coded(position.span,
+                            DiagnosticCode::SyntaxInvalidDeclaration,
+                            "format string index must name a fixed parameter"));
+                    };
+                    self.expect(",")?;
+                    let argument = self.take()?.ok_or_else(|| Diagnostic::coded(
+                        self.eof_span(), DiagnosticCode::SyntaxInvalidDeclaration,
+                        "expected first format argument position"
+                    ))?;
+                    let first_index = if argument.kind == TokenKind::Number &&
+                        argument.text.bytes().all(|b| b.is_ascii_digit())
+                    {
+                        argument.text.parse::<usize>().ok()
+                    } else { None };
+                    let valid = first_index.is_some_and(|n|
+                        if n == 0 { true } else {
+                            variadic && n == fixed.saturating_add(1) && n > format_index
+                        }
+                    );
+                    if !valid {
+                        return Err(Diagnostic::coded(argument.span,
+                            DiagnosticCode::SyntaxInvalidDeclaration,
+                            "format first-to-check index must be zero or the first ellipsis argument"));
+                    }
+                    self.expect(")")?;
                 }
                 "nonnull" => {
                     if self.peek()?.is_some_and(|t| t.text == "(") {
@@ -749,7 +809,10 @@ impl<'a> Parser<'a> {
                 token.text == "__attribute__" || token.text == "__attribute")
             {
                 self.parse_gnu_declarator_attributes(
-                    matches!(&direct, Declarator::Function(..))
+                    match &direct {
+                        Declarator::Function(_, params, variadic) => Some((params.len(), *variadic)),
+                        _ => None,
+                    }
                 )?;
             } else {
                 break;
