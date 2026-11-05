@@ -1165,6 +1165,21 @@ impl Lower<'_> {
                 Ok(value)
             }
             CheckedExprKind::Call(callee, args) => {
+                // A variadic call is not an ordinary fixed-arity Cranelift
+                // call. In SysV x86-64 the call-site signature includes all
+                // promoted arguments and %al must report the vector-register
+                // count (zero for the S12 pointer-only printf example).
+                // Do not accidentally lower a variadic callee as an
+                // indirect fixed-arity function pointer call.
+                let variadic = match &callee.ty {
+                    CType::VariadicFunction { .. } => true,
+                    CType::Pointer(inner) =>
+                        matches!(inner.as_ref(), CType::VariadicFunction { .. }),
+                    _ => false,
+                };
+                if variadic {
+                    return Err("native x86-64 SysV variadic calls are not yet supported (requires all call-site arguments and ABI-correct %al)".into());
+                }
                 let mut values = Vec::with_capacity(args.len());
                 for arg in args { values.push(self.expression(b, arg)?); }
                 // Ordinary named functions use a direct call. Every other
@@ -1392,6 +1407,23 @@ mod tests {
             "int main(void) { alias(\"ok\"); return 0; }"
         );
         assert!(!compile_source(source).unwrap().is_empty());
+    }
+
+    #[test]
+    fn variadic_calls_fail_with_explicit_sysv_abi_diagnostic() {
+        for src in [
+            "extern int printf(const char *, ...); int main(void) { return printf(\"%s\", \"hi\"); }",
+            "int main(void) { int (*callback)(const char *, ...) = 0; return callback(\"%s\", \"hi\"); }",
+        ] {
+            let error = compile_source(src).unwrap_err();
+            assert!(error.contains("native x86-64 SysV variadic calls"), "{error}");
+            assert!(error.contains("%al"), "{error}");
+        }
+
+        // Preserve the supported fixed-arity external call path.
+        assert!(compile_source(
+            "extern int puts(const char *); int main(void) { return puts(\"hello\"); }"
+        ).is_ok());
     }
 
     #[test]
