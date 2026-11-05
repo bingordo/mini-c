@@ -1324,6 +1324,50 @@ mod tests {
     }
 
     #[test]
+    fn unused_hosted_prototypes_do_not_require_unimplemented_native_abis() {
+        let src = concat!(
+            "struct Cookie { long first; long second; }; ",
+            "extern struct Cookie cookie_open(struct Cookie); ",
+            "extern int cookie_consume(struct Cookie); ",
+            "extern double hosted_math(double); ",
+            "extern _Float128 hosted_quad(_Float128); ",
+            "int main(void) { return 0; }"
+        );
+        let object = compile_source(src).expect("unused hosted prototypes are type-checked only");
+        assert_eq!(&object[..4], b"\x7fELF");
+
+        // The supported subset of unrelated external calls still emits
+        // real relocations and must not be skipped.
+        assert!(compile_source(
+            "extern int puts(const char *); int main(void) { return puts(\"hi\"); }"
+        ).is_ok());
+    }
+
+    #[test]
+    fn used_hosted_prototype_does_not_get_an_incorrect_native_signature() {
+        let src = concat!(
+            "struct Cookie { long first; long second; }; ",
+            "extern int cookie_consume(struct Cookie); ",
+            "int main(void) { struct Cookie c={3,4}; return cookie_consume(c); }"
+        );
+        let error = compile_source(src).unwrap_err();
+        assert!(error.contains("missing function declaration"), "{error}");
+
+        let src = concat!(
+            "struct Cookie { long first; long second; }; ",
+            "extern int cookie_consume(struct Cookie); ",
+            "int main(void) { return &cookie_consume != 0; }"
+        );
+        assert!(compile_source(src).is_err(), "function address must not become an invalid relocation");
+
+        // Declarations must still agree semantically even if Cranelift
+        // cannot materialize their signatures.
+        assert!(compile_source(
+            "extern double hosted(double); extern double hosted(int); int main(void) { return 0; }"
+        ).is_err());
+    }
+
+    #[test]
     fn compiles_simple_arithmetic_to_native_object() {
         let obj = compile_source("int main(void) { int x = 2; x = x * 3 + 1; return x; }").unwrap();
         assert!(obj.len() > 128, "expected nontrivial ELF object");
