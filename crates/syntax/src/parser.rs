@@ -597,7 +597,13 @@ impl<'a> Parser<'a> {
                         self.expect(")")?;
                     }
                 }
-                "nothrow" | "leaf" | "pure" | "const"
+                // noreturn is a promise about control flow, not an ABI or
+                // layout change. This frontend deliberately does NOT infer
+                // unreachable successors or omit return edges from it.
+                // Ignoring that optional optimization is conservative even
+                // when the declaration is later called. Unlike
+                // returns_twice, it cannot invalidate normal call lowering.
+                "nothrow" | "leaf" | "pure" | "const" | "noreturn"
                 | "warn_unused_result" | "unused" | "deprecated"
                 | "returns_nonnull" => {
                     if self.peek()?.is_some_and(|t| t.text == "(") {
@@ -669,7 +675,9 @@ impl<'a> Parser<'a> {
                     }
                     self.expect(")")?;
                 }
-                // In particular, do not discard 'noreturn', 'returns_twice',
+                // Keep returns_twice, packed/aligned/vector_size, mode/section
+                // and calling-convention annotations fail-closed: unlike
+                // noreturn, these may change observable semantics or ABI.
                 // 'packed', 'aligned', 'vector_size', 'mode', 'section',
                 // 'ms_abi', 'sysv_abi' or unknown ABI-affecting extensions.
                 _ => return Err(Diagnostic::coded(token.span,
@@ -1727,6 +1735,32 @@ mod tests {
                         "typedef double _Float128 T;"] {
             assert!(Parser::new(invalid).next_item().is_err(),
                 "invalid mixed floating specifiers must fail: {invalid}");
+        }
+    }
+
+    #[test]
+    fn m10_glibc_noreturn_advisory_is_not_an_abi_or_control_flow_assumption() {
+        // The exact GNU spelling in the Csmith-preprocessed glibc assert.h.
+        // We accept the attribute as advisory and deliberately do not rewrite
+        // function signatures or infer that callsites are unreachable.
+        for source in [
+            "extern void __assert_fail (const char *__assertion) __attribute__ ((__nothrow__,__leaf__)) __attribute__ ((__noreturn__));",
+            "extern void fatal(void) __attribute__((noreturn));",
+            "extern int x(int n) __attribute__((__noreturn__,__unused__));",
+        ] {
+            let mut parser = Parser::new(source);
+            assert!(parser.next_item().is_ok(), "valid GNU declaration: {source}");
+        }
+        // No arguments, never on a data object; unsafe call/ABI-changing
+        // attributes remain unsupported rather than silently discarded.
+        for source in [
+            "extern void bad(void) __attribute__((__noreturn__(1)));",
+            "int object __attribute__((__noreturn__));",
+            "extern void bad(void) __attribute__((__returns_twice__));",
+            "extern void bad(void) __attribute__((__ms_abi__));",
+        ] {
+            let mut parser = Parser::new(source);
+            assert!(parser.next_item().is_err(), "invalid GNU declaration: {source}");
         }
     }
 
