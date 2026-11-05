@@ -384,6 +384,22 @@ impl Compiler {
             CheckedItem::Typedef { .. } | CheckedItem::Tag => Ok(()),
             CheckedItem::Declaration(decl) => {
                 if matches!(decl.ty, CType::Function { .. } | CType::VariadicFunction { .. }) {
+                    // Header prototypes do not need an emitted ABI signature
+                    // until they are used. In particular, glibc stdio.h
+                    // declares unused functions with by-value aggregate or
+                    // floating-point parameters that this backend cannot yet
+                    // lower. The semantic checker has already validated them.
+                    //
+                    // Do not register a fake signature: an actual call or
+                    // function-address reference will fail explicitly because
+                    // there is no native declaration. Definitions still go
+                    // through define() and must have a supported ABI.
+                    match signature(&self.module, &decl.ty) {
+                        Ok(_) => {}
+                        Err(reason) if reason.starts_with("unsupported SysV aggregate-by-value ABI")
+                            || reason.starts_with("unsupported scalar type") => return Ok(()),
+                        Err(reason) => return Err(reason),
+                    }
                     self.declare(&decl.name, &decl.ty, decl.linkage, false, decl.asm_label.as_deref())?;
                     Ok(())
                 } else { self.declare_object(decl) }
