@@ -57,7 +57,6 @@ fn reject_abi_affecting_or_semantically_unsafe_attributes() {
         "__returns_twice__", "__packed__", "__aligned__(16)",
         "ms_abi", "sysv_abi", "__vector_size__(16)", "mode(QI)",
         "__section__(\".fast\")", "unknown_extension",
-        "__format__(printf, 1, 2)",
     ] {
         let source = format!("extern int f(int x) __attribute__(({attribute}));");
         let error = Parser::new(&source).next_item().unwrap_err();
@@ -155,4 +154,14 @@ fn only_exact_gnu_attribute_spelling_variants_are_recognized() {
         );
         assert!(Parser::new(&source).next_item().is_err(), "{source}");
     }
+}
+
+#[test]
+fn format_is_not_an_abi_extension_but_requires_consistent_indexes() {
+    // A format annotation is an advisory diagnostic contract. On this fixed
+    // signature, the nonzero first-to-check index must still be rejected.
+    let src = "extern int f(int x) __attribute__((__format__(printf, 1, 2)));";
+    let err = Parser::new(src).next_item().unwrap_err();
+    assert_eq!(err.code, DiagnosticCode::SyntaxInvalidDeclaration);
+    assert!(err.message.contains("format first-to-check"), "{err:?}");
 }
