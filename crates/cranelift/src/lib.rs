@@ -1281,6 +1281,51 @@ mod tests {
     }
 
     #[test]
+    fn emits_qualified_aggregate_initializers_and_copy() {
+        let sources = [
+            "struct Pair { int x; int y; }; const struct Pair global = {3,4}; int main(void) { return global.x + global.y - 7; }",
+            "struct Pair { int x; int y; }; int main(void) { struct Pair src={3,4}; const struct Pair dst=src; return dst.x + dst.y - 7; }",
+            "struct S { int matrix[2][2]; }; const struct S global = {{{1,2},{3,4}}}; int main(void) { return global.matrix[1][1] - 4; }",
+            "struct S { int matrix[2][2]; }; int main(void) { const struct S local = {{{1,2},{3,4}}}; return local.matrix[1][1] - 4; }",
+            "const int numbers[3] = {4,5,6}; int main(void) { return numbers[1] - 5; }",
+        ];
+        for source in sources {
+            let object = compile_source(source).unwrap_or_else(|e|
+                panic!("qualified aggregate lowering failed: {source}: {e}"));
+            assert_eq!(&object[..4], b"\\x7fELF");
+        }
+    }
+
+    #[test]
+    fn emits_const_character_array_initializers() {
+        let sources = [
+            "const char global[] = \\"abc\\"; int main(void) { return global[1] - 98; }",
+            "int main(void) { const char local[3] = \\"hi\\"; return local[0] - 104; }",
+            "struct Record { const char text[5]; }; struct Record global = {\\"test\\"}; int main(void) { return global.text[1] - 101; }",
+            "struct Record { const char text[5]; }; int main(void) { struct Record local = {\\"test\\"}; return local.text[1] - 101; }",
+        ];
+        for source in sources {
+            let object = compile_source(source).unwrap_or_else(|e|
+                panic!("qualified character array lowering failed: {source}: {e}"));
+            assert_eq!(&object[..4], b"\\x7fELF");
+        }
+    }
+
+    #[test]
+    fn emits_short_local_global_and_parameter_types() {
+        let sources = [
+            "short global = 7; int main(void) { short local = global; return local - 7; }",
+            "int add(short x, unsigned short y) { return x + y; } int main(void) { return add(-3, 9) - 6; }",
+            "int main(void) { short x = -3; unsigned short y = 4; x += y; return x - 1; }",
+        ];
+        for source in sources {
+            let object = compile_source(source).unwrap_or_else(|e|
+                panic!("short codegen failed: {source}: {e}"));
+            assert_eq!(&object[..4], b"\\x7fELF");
+        }
+    }
+
+    #[test]
     fn handles_unsigned_and_long_conversions() {
         let src = "unsigned long a(unsigned long x, unsigned int y) { \
                    return x + y * 2; } int main(void) { return a(50,3) == 56; }";
