@@ -1619,3 +1619,15 @@ fn s12_sizeof_type_folds_in_glibc_array_bounds() {
     reject("int a[sizeof(int[])];", "complete object type");
     reject("int a[sizeof(missing)];", "expected");
 }
+
+#[test]
+fn variadic_function_pointer_parameters_ignore_only_top_level_qualifiers() {
+    check("extern int sink(int, ...); int f(void) { int (*p)(const int, ...) = sink; return p(1, 2); }").unwrap();
+    check("extern int sink(int *const, ...); int f(void) { int (*p)(int *, ...) = sink; int n=7; return p(&n, 2); }").unwrap();
+    // Fixed-arity and variadic signatures remain distinct.
+    reject("extern int sink(int, ...); int f(void) { int (*p)(int) = sink; return 0; }",
+        "incompatible assignment");
+    // Const on the pointee remains part of a variadic function parameter type.
+    reject("extern int sink(const int *, ...); int f(void) { int (*p)(int *, ...) = sink; return 0; }",
+        "incompatible assignment");
+}
