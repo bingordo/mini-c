@@ -378,6 +378,23 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_unary(&mut self) -> Result<Expr, Diagnostic> {
+        if self.peek()?.is_some_and(|token| token.text == "sizeof") {
+            let keyword = self.take()?.expect("peeked sizeof");
+            self.expect("(")?;
+            let (base, _) = self.parse_type()?.ok_or_else(|| Diagnostic::coded(
+                keyword.span, DiagnosticCode::SyntaxExpectedExpression,
+                "sizeof expression operands are not yet supported; expected a type name"
+            ))?;
+            let (name, ty, nested, _) = self.parse_declarator_shape(true)?.finish(base);
+            if !name.is_empty() || nested.is_some() {
+                return Err(Diagnostic::coded(keyword.span,
+                    DiagnosticCode::SyntaxExpectedExpression,
+                    "sizeof requires an abstract type-name declarator"));
+            }
+            let close = self.expect(")")?;
+            return Ok(self.located(Expr::SizeofType(ty),
+                Span { lo: keyword.span.lo, hi: close.span.hi }));
+        }
         if let Some(increment) = self.peek()?.and_then(|t| match t.text {
             "++" => Some(true),
             "--" => Some(false),
