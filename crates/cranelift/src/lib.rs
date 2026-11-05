@@ -619,7 +619,32 @@ impl Compiler {
             self.module.define_data(data.id, &desc)
                 .map_err(|e| format!("defining global '{name}': {e}"))?;
         }
-        self.module.finish().emit().map_err(|e| e.to_string())
+        let mut product = self.module.finish();
+        if !self.gp_vararg_thunks.is_empty() {
+            let text = product.object.section_id(StandardSection::Text);
+            for thunk in self.gp_vararg_thunks {
+                let wrapper = product.function_symbol(thunk.wrapper);
+                let destination = product.function_symbol(thunk.target);
+                // x86-64: xor eax,eax ; jmp rel32. The tail jump preserves
+                // every incoming GP register, stack argument, return address,
+                // and alignment while setting the SysV SSE-register count AL=0.
+                let start = product.object.add_symbol_data(
+                    wrapper, text, &[0x31, 0xc0, 0xe9, 0, 0, 0, 0], 16
+                );
+                product.object.symbol_mut(wrapper).scope = SymbolScope::Compilation;
+                product.object.add_relocation(text, Relocation {
+                    offset: start + 3,
+                    symbol: destination,
+                    addend: -4,
+                    flags: RelocationFlags::Generic {
+                        kind: RelocationKind::PltRelative,
+                        encoding: RelocationEncoding::X86Branch,
+                        size: 32,
+                    },
+                }).map_err(|e| format!("SysV varargs thunk relocation: {e}"))?;
+            }
+        }
+        product.emit().map_err(|e| e.to_string())
     }
 }
 
