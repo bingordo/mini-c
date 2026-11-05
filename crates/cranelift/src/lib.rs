@@ -384,6 +384,22 @@ impl Compiler {
             CheckedItem::Typedef { .. } | CheckedItem::Tag => Ok(()),
             CheckedItem::Declaration(decl) => {
                 if matches!(decl.ty, CType::Function { .. } | CType::VariadicFunction { .. }) {
+                    // Header prototypes do not need an emitted ABI signature
+                    // until they are used. In particular, glibc stdio.h
+                    // declares unused functions with by-value aggregate or
+                    // floating-point parameters that this backend cannot yet
+                    // lower. The semantic checker has already validated them.
+                    //
+                    // Do not register a fake signature: an actual call or
+                    // function-address reference will fail explicitly because
+                    // there is no native declaration. Definitions still go
+                    // through define() and must have a supported ABI.
+                    match signature(&self.module, &decl.ty) {
+                        Ok(_) => {}
+                        Err(reason) if reason.starts_with("unsupported SysV aggregate-by-value ABI")
+                            || reason.starts_with("unsupported scalar type") => return Ok(()),
+                        Err(reason) => return Err(reason),
+                    }
                     self.declare(&decl.name, &decl.ty, decl.linkage, false, decl.asm_label.as_deref())?;
                     Ok(())
                 } else { self.declare_object(decl) }
@@ -1305,6 +1321,50 @@ mod tests {
                         .and_then(|symbol| symbol.name().ok()) == Some("puts"),
                 _ => false,
             }), "function pointer initializer should use the alias link-name");
+    }
+
+    #[test]
+    fn unused_hosted_prototypes_do_not_require_unimplemented_native_abis() {
+        let src = concat!(
+            "struct Cookie { long first; long second; }; ",
+            "extern struct Cookie cookie_open(struct Cookie); ",
+            "extern int cookie_consume(struct Cookie); ",
+            "extern double hosted_math(double); ",
+            "extern _Float128 hosted_quad(_Float128); ",
+            "int main(void) { return 0; }"
+        );
+        let object = compile_source(src).expect("unused hosted prototypes are type-checked only");
+        assert_eq!(&object[..4], b"\x7fELF");
+
+        // The supported subset of unrelated external calls still emits
+        // real relocations and must not be skipped.
+        assert!(compile_source(
+            "extern int puts(const char *); int main(void) { return puts(\"hi\"); }"
+        ).is_ok());
+    }
+
+    #[test]
+    fn used_hosted_prototype_does_not_get_an_incorrect_native_signature() {
+        let src = concat!(
+            "struct Cookie { long first; long second; }; ",
+            "extern struct Cookie cookie_open(void); ",
+            "int main(void) { cookie_open(); return 0; }"
+        );
+        let error = compile_source(src).unwrap_err();
+        assert!(error.contains("missing function declaration"), "{error}");
+
+        let src = concat!(
+            "struct Cookie { long first; long second; }; ",
+            "extern int cookie_consume(struct Cookie); ",
+            "int main(void) { return &cookie_consume != 0; }"
+        );
+        assert!(compile_source(src).is_err(), "function address must not become an invalid relocation");
+
+        // Declarations must still agree semantically even if Cranelift
+        // cannot materialize their signatures.
+        assert!(compile_source(
+            "extern double hosted(double); extern double hosted(int); int main(void) { return 0; }"
+        ).is_err());
     }
 
     #[test]
