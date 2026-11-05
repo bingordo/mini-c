@@ -165,3 +165,25 @@ fn format_is_not_an_abi_extension_but_requires_consistent_indexes() {
     assert_eq!(err.code, DiagnosticCode::SyntaxInvalidDeclaration);
     assert!(err.message.contains("format first-to-check"), "{err:?}");
 }
+
+#[test]
+fn s12_glibc_perror_cold_advisory_is_argument_free_and_function_only() {
+    use mini_c_syntax::stream::ItemSource;
+    let mut parser = mini_c_syntax::parser::Parser::new(
+        "extern void perror(const char *__s) __attribute__((__cold__));"
+    );
+    let Some(mini_c_syntax::stream::ExternalItem::Declaration(decl)) =
+        parser.next_item().unwrap()
+    else { panic!("expected checked declaration"); };
+    assert_eq!(decl.name, "perror");
+    assert!(matches!(decl.ty, Type::Function { .. }));
+    for src in [
+        "extern void perror(const char *) __attribute__((cold(1)));",
+        "extern void perror(const char *) __attribute__((cold()));",
+        "extern int obj __attribute__((cold));",
+        "extern void f(void) __attribute__((cold, unknown_abi_modifier));",
+    ] {
+        assert!(mini_c_syntax::parser::Parser::new(src).next_item().is_err(),
+            "must reject malformed attribute: {src}");
+    }
+}
