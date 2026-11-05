@@ -1267,6 +1267,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn external_assembler_alias_is_the_actual_elf_symbol() {
+        use object::{Object, ObjectSection, ObjectSymbol};
+        let source = concat!(
+            "extern int localput(const char *) __asm__(\"\" \"puts\"); ",
+            "int main(void) { localput(\"hello from alias\"); return 0; }"
+        );
+        let obj = compile_source(source).expect("compile source-level alias");
+        let elf = object::File::parse(obj.as_slice()).expect("valid ELF object");
+        let symbols = elf.symbols().filter_map(|s| s.name().ok().map(str::to_owned))
+            .collect::<Vec<_>>();
+        assert!(symbols.iter().any(|s| s == "puts"), "{symbols:?}");
+        assert!(!symbols.iter().any(|s| s == "localput"), "{symbols:?}");
+        assert!(elf.sections().flat_map(|section| section.relocations())
+            .any(|(_, relocation)| match relocation.target() {
+                object::RelocationTarget::Symbol(index) =>
+                    elf.symbol_by_index(index).ok()
+                        .and_then(|symbol| symbol.name().ok()) == Some("puts"),
+                _ => false,
+            }), "expected call relocation targeting true external symbol 'puts'");
+    }
+
+    #[test]
+    fn external_assembler_alias_keeps_function_pointer_relocations() {
+        use object::{Object, ObjectSection, ObjectSymbol};
+        let source = concat!(
+            "extern int c_library_name(const char *) __asm__(\"puts\"); ",
+            "int (*callback)(const char *) = c_library_name; ",
+            "int main(void) { return callback(\"alias\") < 0; }"
+        );
+        let obj = compile_source(source).expect("compile alias address relocation");
+        let elf = object::File::parse(obj.as_slice()).expect("valid ELF object");
+        assert!(elf.sections().flat_map(|section| section.relocations())
+            .any(|(_, relocation)| match relocation.target() {
+                object::RelocationTarget::Symbol(index) =>
+                    elf.symbol_by_index(index).ok()
+                        .and_then(|symbol| symbol.name().ok()) == Some("puts"),
+                _ => false,
+            }), "function pointer initializer should use the alias link-name");
+    }
+
+    #[test]
     fn compiles_simple_arithmetic_to_native_object() {
         let obj = compile_source("int main(void) { int x = 2; x = x * 3 + 1; return x; }").unwrap();
         assert!(obj.len() > 128, "expected nontrivial ELF object");
