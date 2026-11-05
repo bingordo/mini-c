@@ -1330,6 +1330,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn glibc_late_asm_label_precedes_first_elf_import() {
+        use object::{Object, ObjectSection, ObjectSymbol};
+        let source = concat!(
+            "extern int localput(const char *); ",
+            "extern int localput(const char *) __asm__(\"puts\"); ",
+            "int main(void) { return localput(\"hello\") < 0; }"
+        );
+        let obj = compile_source(source).expect("compatible late asm label");
+        let elf = object::File::parse(obj.as_slice()).expect("valid ELF");
+        let names = elf.symbols().filter_map(|symbol| symbol.name().ok())
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"puts"), "expected actual extern link name");
+        assert!(!names.contains(&"localput"), "source name is not an ELF symbol");
+        assert!(elf.sections().flat_map(|s| s.relocations()).any(|(_, relocation)|
+            match relocation.target() {
+                object::RelocationTarget::Symbol(index) =>
+                    elf.symbol_by_index(index).ok()
+                        .and_then(|symbol| symbol.name().ok()) == Some("puts"),
+                _ => false,
+            }
+        ), "direct call must relocate to renamed imported symbol");
+    }
+
+    #[test]
+    fn glibc_late_asm_label_before_definition_is_used() {
+        // The import is registered only once all prototypes preceding the
+        // function body have been seen, not at the first unlabelled prototype.
+        let source = concat!(
+            "extern int alias(const char *); ",
+            "extern int alias(const char *) __asm__(\"puts\"); ",
+            "int main(void) { alias(\"ok\"); return 0; }"
+        );
+        assert!(!compile_source(source).unwrap().is_empty());
+    }
+
+    #[test]
     fn external_assembler_alias_is_the_actual_elf_symbol() {
         use object::{Object, ObjectSection, ObjectSymbol};
         let source = concat!(
