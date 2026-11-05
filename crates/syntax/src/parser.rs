@@ -598,13 +598,13 @@ impl<'a> Parser<'a> {
                         self.expect(")")?;
                     }
                 }
-                // noreturn is a promise about control flow, not an ABI or
-                // layout change. This frontend deliberately does NOT infer
-                // unreachable successors or omit return edges from it.
-                // Ignoring that optional optimization is conservative even
-                // when the declaration is later called. Unlike
-                // returns_twice, it cannot invalidate normal call lowering.
-                "nothrow" | "leaf" | "pure" | "const" | "noreturn"
+                // noreturn is a promise about control flow; cold only
+                // suggests unlikely execution and size-oriented optimization.
+                // Neither changes the calling convention or object layout.
+                // The frontend does not exploit either annotation, keeping
+                // ordinary call and return lowering conservative. Unlike
+                // returns_twice, these need no special control-flow edges.
+                "nothrow" | "leaf" | "pure" | "const" | "noreturn" | "cold"
                 | "warn_unused_result" | "unused" | "deprecated"
                 | "returns_nonnull" => {
                     if self.peek()?.is_some_and(|t| t.text == "(") {

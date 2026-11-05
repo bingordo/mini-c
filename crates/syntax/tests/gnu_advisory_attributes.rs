@@ -165,3 +165,38 @@ fn format_is_not_an_abi_extension_but_requires_consistent_indexes() {
     assert_eq!(err.code, DiagnosticCode::SyntaxInvalidDeclaration);
     assert!(err.message.contains("format first-to-check"), "{err:?}");
 }
+
+#[test]
+fn glibc_perror_cold_attribute_preserves_function_type() {
+    for annotation in ["cold", "__cold__"] {
+        let source = format!(
+            "extern void perror(const char *__s) __attribute__(({annotation}));"
+        );
+        let mut parser = Parser::new(&source);
+        let Some(ExternalItem::Declaration(decl)) = parser.next_item().unwrap()
+        else { panic!("expected glibc perror prototype") };
+        assert_eq!(decl.name, "perror");
+        assert!(matches!(decl.ty, Type::Function { .. }));
+        assert!(parser.next_item().unwrap().is_none());
+    }
+    let mut parser = Parser::new(
+        "extern int log_error(const char *fmt, ...) __attribute__((__cold__, __format__(__printf__, 1, 2)));"
+    );
+    let Some(ExternalItem::Declaration(decl)) = parser.next_item().unwrap()
+    else { panic!("expected variadic function prototype") };
+    assert!(matches!(decl.ty, Type::VariadicFunction { params, .. } if params.len() == 1));
+}
+
+#[test]
+fn malformed_or_misplaced_gnu_cold_remains_rejected() {
+    for src in [
+        "extern void perror(const char *) __attribute__((__cold__(1)));",
+        "extern void perror(const char *) __attribute__((cold()));",
+        "extern void perror(const char *) __attribute__((_cold));",
+        "extern void perror(const char *) __attribute__((cold_));",
+        "extern int flag __attribute__((__cold__));",
+        "extern void perror(const char *) __attribute__((__cold__, __ms_abi__));",
+    ] {
+        assert!(Parser::new(src).next_item().is_err(), "{src}");
+    }
+}
