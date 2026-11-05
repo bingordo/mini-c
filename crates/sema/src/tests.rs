@@ -1554,3 +1554,42 @@ fn s12_variadic_printf_semantics_and_promotion() {
     reject("int f(int, ...); int f(int);", "conflicting declaration");
     check(r#"extern int printf(const char *, ...); int main(void){return printf("%s", "hi");}"#).unwrap();
 }
+
+#[test]
+fn s12_gcc_builtin_va_list_layout_typedef_and_parameter_decay() {
+    let items = check(
+        "typedef __builtin_va_list __gnuc_va_list; "
+    ).unwrap();
+    let CheckedItem::Typedef { ty, .. } = &items[0] else {
+        panic!("expected builtin typedef");
+    };
+    assert_eq!(ty.size_bytes(Target::default()), Some(24));
+    assert_eq!(ty.align_bytes(Target::default()), Some(8));
+    let CType::Array(element, Some(1)) = ty else {
+        panic!("GCC SysV va_list is one-element tag array, not void*");
+    };
+    let CType::Struct { members, size, align, .. } = element.as_ref() else {
+        panic!("GCC va_list contains struct tag");
+    };
+    assert_eq!((*size, *align), (24, 8));
+    assert_eq!(
+        members.iter().map(|m| (m.name.as_str(), m.offset)).collect::<Vec<_>>(),
+        vec![("gp_offset", 0), ("fp_offset", 4),
+             ("overflow_arg_area", 8), ("reg_save_area", 16)]
+    );
+    let items = check(
+        "typedef __builtin_va_list __gnuc_va_list; "
+        "typedef __gnuc_va_list va_list; "
+        "extern int vprintf(const char *restrict fmt, va_list ap);"
+    ).unwrap();
+    let CheckedItem::Declaration(vprintf) = &items[2] else {
+        panic!("expected vprintf prototype");
+    };
+    let CType::Function { params, .. } = &vprintf.ty else {
+        panic!("expected fixed vprintf prototype");
+    };
+    assert!(matches!(&params[1], CType::Pointer(inner)
+        if matches!(inner.as_ref(), CType::Struct { size: 24, .. })));
+    reject("typedef __builtin_va_list va_list; typedef void *va_list;",
+        "conflicting");
+}
