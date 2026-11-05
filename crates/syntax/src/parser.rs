@@ -1739,6 +1739,32 @@ mod tests {
     }
 
     #[test]
+    fn m10_glibc_noreturn_advisory_is_not_an_abi_or_control_flow_assumption() {
+        // The exact GNU spelling in the Csmith-preprocessed glibc assert.h.
+        // We accept the attribute as advisory and deliberately do not rewrite
+        // function signatures or infer that callsites are unreachable.
+        for source in [
+            "extern void __assert_fail (const char *__assertion) __attribute__ ((__nothrow__,__leaf__)) __attribute__ ((__noreturn__));",
+            "extern void fatal(void) __attribute__((noreturn));",
+            "extern int x(int n) __attribute__((__noreturn__,__unused__));",
+        ] {
+            let mut parser = Parser::new(source);
+            assert!(parser.next_item().is_ok(), "valid GNU declaration: {source}");
+        }
+        // No arguments, never on a data object; unsafe call/ABI-changing
+        // attributes remain unsupported rather than silently discarded.
+        for source in [
+            "extern void bad(void) __attribute__((__noreturn__(1)));",
+            "int object __attribute__((__noreturn__));",
+            "extern void bad(void) __attribute__((__returns_twice__));",
+            "extern void bad(void) __attribute__((__ms_abi__));",
+        ] {
+            let mut parser = Parser::new(source);
+            assert!(parser.next_item().is_err(), "invalid GNU declaration: {source}");
+        }
+    }
+
+    #[test]
     fn m10_float_declarations_preserve_three_distinct_types() {
         let src = concat!(
             "typedef float float_t; typedef double double_t;",
