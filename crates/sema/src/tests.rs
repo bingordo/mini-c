@@ -1578,9 +1578,7 @@ fn s12_gcc_builtin_va_list_layout_typedef_and_parameter_decay() {
              ("overflow_arg_area", 8), ("reg_save_area", 16)]
     );
     let items = check(
-        "typedef __builtin_va_list __gnuc_va_list; "
-        "typedef __gnuc_va_list va_list; "
-        "extern int vprintf(const char *restrict fmt, va_list ap);"
+        "typedef __builtin_va_list __gnuc_va_list; typedef __gnuc_va_list va_list; extern int vprintf(const char *restrict fmt, va_list ap);"
     ).unwrap();
     let CheckedItem::Declaration(vprintf) = &items[2] else {
         panic!("expected vprintf prototype");
