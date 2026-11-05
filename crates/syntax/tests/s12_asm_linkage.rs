@@ -10,13 +10,9 @@ fn parse_decl(src: &str) -> mini_c_syntax::ast::Decl {
 
 #[test]
 fn glibc_fscanf_alias_uses_concatenated_string_fragments() {
-    let d = parse_decl(
-        "extern int fscanf(void *stream, const char *fmt, ...) "
-            .to_owned()
-            .as_str()
-    );
-    assert!(matches!(d.ty, Type::VariadicFunction { .. }));
-    assert!(d.asm_label.is_none());
+    let plain = parse_decl("extern int fscanf(void *stream, const char *fmt, ...);");
+    assert!(matches!(plain.ty, Type::VariadicFunction { .. }));
+    assert!(plain.asm_label.is_none());
     let d = parse_decl(concat!(
         "extern int fscanf(void *stream, const char *fmt, ...) ",
         "__asm__(\"\" \"__isoc23_fscanf\") __attribute__((__nonnull__(1)));"
