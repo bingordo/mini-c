@@ -1208,6 +1208,17 @@ impl Checker {
                     kind: CheckedExprKind::StringLiteral(bytes.clone()),
                 })
             },
+            Expr::SizeofType(type_name) => {
+                let operand_ty = self.resolve(type_name, span)?;
+                let operand_ty = self.complete_tag_type(operand_ty, span)?;
+                let size = operand_ty.size_bytes(self.target).ok_or_else(|| type_error(
+                    span, "sizeof requires a complete object type (not void or function)"
+                ))?;
+                // C sizeof has size_t type. The hosted x86-64 LP64 target
+                // uses unsigned long, not the type of an ordinary decimal literal.
+                let size_ty = CType::Integer { rank: IntRank::Long, unsigned: true };
+                Ok(CheckedExpr::value(size_ty, CheckedExprKind::Literal(size)))
+            }
             Expr::Int(number) => {
                 let ty = self.target.decimal_literal(*number).ok_or_else(|| type_error(span, "decimal literal exceeds supported signed integer types"))?;
                 Ok(CheckedExpr::value(ty, CheckedExprKind::Literal(*number)))
