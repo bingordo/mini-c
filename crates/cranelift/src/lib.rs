@@ -1334,6 +1334,64 @@ mod tests {
     }
 
     #[test]
+    fn later_glibc_asm_link_name_rebinds_unreferenced_prototype() {
+        use object::{Object, ObjectSection, ObjectSymbol};
+        let src = concat!(
+            "extern int localput(const char *); ",
+            "extern int localput(const char *) __asm__(\"puts\"); ",
+            "int main(void) { return localput(\"alias override\"); }"
+        );
+        let bytes = compile_source(src).expect("late asm label should retarget unused prototype");
+        let elf = object::File::parse(bytes.as_slice()).expect("valid ELF");
+        assert!(elf.sections().flat_map(|section| section.relocations())
+            .any(|(_, relocation)| match relocation.target() {
+                object::RelocationTarget::Symbol(index) =>
+                    elf.symbol_by_index(index).ok()
+                        .and_then(|symbol| symbol.name().ok()) == Some("puts"),
+                _ => false,
+            }), "call relocation must use the later assembler alias");
+
+        // The real glibc scanf prototypes use a variadic asm alias.
+        let src = concat!(
+            "extern int fscanf(void *, const char *, ...); ",
+            "extern int fscanf(void *, const char *, ...) __asm__(\"__isoc23_fscanf\"); ",
+            "int main(void) { return 0; }"
+        );
+        assert!(compile_source(src).is_ok());
+    }
+
+    #[test]
+    fn late_asm_alias_rebinds_deferred_function_pointer_relocations() {
+        use object::{Object, ObjectSection, ObjectSymbol};
+        let src = concat!(
+            "extern int localput(const char *); ",
+            "int (*callback)(const char *) = localput; ",
+            "extern int localput(const char *) __asm__(\"puts\"); ",
+            "int main(void) { return callback(\"hello\"); }"
+        );
+        let bytes = compile_source(src).expect("late alias in global pointer initializer");
+        let elf = object::File::parse(bytes.as_slice()).expect("valid ELF");
+        assert!(elf.sections().flat_map(|section| section.relocations())
+            .any(|(_, relocation)| match relocation.target() {
+                object::RelocationTarget::Symbol(index) =>
+                    elf.symbol_by_index(index).ok()
+                        .and_then(|symbol| symbol.name().ok()) == Some("puts"),
+                _ => false,
+            }), "deferred pointer relocation must use the actual ELF alias");
+    }
+
+    #[test]
+    fn late_asm_alias_after_native_body_is_rejected() {
+        let src = concat!(
+            "extern int f(void); ",
+            "int use(void) { return f(); } ",
+            "extern int f(void) __asm__(\"other\");"
+        );
+        let error = compile_source(src).unwrap_err();
+        assert!(error.contains("conflicting assembler linkage name"), "{error}");
+    }
+
+    #[test]
     fn external_assembler_alias_keeps_function_pointer_relocations() {
         use object::{Object, ObjectSection, ObjectSymbol};
         let source = concat!(
