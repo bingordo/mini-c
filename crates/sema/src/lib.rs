@@ -1175,6 +1175,52 @@ impl Checker {
         )))
     }
 
+    /// Read-only resolution for sizeof type-names. Unlike an ordinary
+    /// declaration, this cannot create tags or enumerators as a side effect.
+    fn resolve_sizeof_type(&self, ty: &Type, span: Span) -> Result<CType, Diagnostic> {
+        Ok(match ty {
+            Type::Void => CType::Void,
+            Type::Char => CType::Integer {
+                rank: IntRank::Char, unsigned: !self.target.char_is_signed,
+            },
+            Type::Short => CType::Integer { rank: IntRank::Short, unsigned: false },
+            Type::Int => CType::int(),
+            Type::Long => CType::Integer { rank: IntRank::Long, unsigned: false },
+            Type::LongLong => CType::Integer { rank: IntRank::LongLong, unsigned: false },
+            Type::Floating(rank) => CType::Floating(*rank),
+            Type::Alias(name) => {
+                let symbol = self.lookup(name).ok_or_else(|| type_error(span,
+                    format!("unknown typedef '{name}' in sizeof")))?;
+                if symbol.kind != SymbolKind::Typedef {
+                    return Err(type_error(span, "sizeof type-name requires a typedef"));
+                }
+                symbol.ty.clone()
+            }
+            Type::Pointer(inner) => CType::Pointer(Box::new(
+                self.resolve_sizeof_type(inner, span)?)),
+            Type::Qualified(inner, qualifiers) => {
+                let inner = self.resolve_sizeof_type(inner, span)?;
+                if qualifiers.is_restrict && !matches!(inner.unqualified(), CType::Pointer(_)) {
+                    return Err(type_error(span, "restrict requires pointer type"));
+                }
+                if qualifiers.is_const { inner.with_const() } else { inner }
+            }
+            Type::Signed(inner) | Type::Unsigned(inner) => {
+                let unsigned = matches!(ty, Type::Unsigned(_));
+                let CType::Integer { rank, .. } = self.resolve_sizeof_type(inner, span)? else {
+                    return Err(type_error(span, "signed/unsigned requires integer type"));
+                };
+                CType::Integer { rank, unsigned }
+            }
+            Type::Array(inner, None) => CType::Array(Box::new(
+                self.resolve_sizeof_type(inner, span)?), None),
+            // Constant-bounded abstract arrays are deferred until ordinary
+            // type resolution can be shared without mutating symbol scopes.
+            _ => return Err(type_error(span,
+                "unsupported sizeof type-name; requires a non-defining complete type")),
+        })
+    }
+
     fn check_expr(&self, expr: &Expr, span: Span) -> Result<CheckedExpr, Diagnostic> {
         match expr {
             Expr::Located(inner, located_span) => {
@@ -1209,7 +1255,7 @@ impl Checker {
                 })
             },
             Expr::SizeofType(type_name) => {
-                let operand_ty = self.resolve(type_name, span)?;
+                let operand_ty = self.resolve_sizeof_type(type_name, span)?;
                 let operand_ty = self.complete_tag_type(operand_ty, span)?;
                 let size = operand_ty.size_bytes(self.target).ok_or_else(|| type_error(
                     span, "sizeof requires a complete object type (not void or function)"
