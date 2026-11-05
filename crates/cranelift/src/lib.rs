@@ -1292,22 +1292,22 @@ mod tests {
         for source in sources {
             let object = compile_source(source).unwrap_or_else(|e|
                 panic!("qualified aggregate lowering failed: {source}: {e}"));
-            assert_eq!(&object[..4], b"\\x7fELF");
+            assert_eq!(&object[..4], b"\x7fELF");
         }
     }
 
     #[test]
     fn emits_const_character_array_initializers() {
         let sources = [
-            "const char global[] = \\"abc\\"; int main(void) { return global[1] - 98; }",
-            "int main(void) { const char local[3] = \\"hi\\"; return local[0] - 104; }",
-            "struct Record { const char text[5]; }; struct Record global = {\\"test\\"}; int main(void) { return global.text[1] - 101; }",
-            "struct Record { const char text[5]; }; int main(void) { struct Record local = {\\"test\\"}; return local.text[1] - 101; }",
+            "const char global[] = \"abc\"; int main(void) { return global[1] - 98; }",
+            "int main(void) { const char local[3] = \"hi\"; return local[0] - 104; }",
+            "struct Record { const char text[5]; }; struct Record global = {\"test\"}; int main(void) { return global.text[1] - 101; }",
+            "struct Record { const char text[5]; }; int main(void) { struct Record local = {\"test\"}; return local.text[1] - 101; }",
         ];
         for source in sources {
             let object = compile_source(source).unwrap_or_else(|e|
                 panic!("qualified character array lowering failed: {source}: {e}"));
-            assert_eq!(&object[..4], b"\\x7fELF");
+            assert_eq!(&object[..4], b"\x7fELF");
         }
     }
 
@@ -1321,7 +1321,7 @@ mod tests {
         for source in sources {
             let object = compile_source(source).unwrap_or_else(|e|
                 panic!("short codegen failed: {source}: {e}"));
-            assert_eq!(&object[..4], b"\\x7fELF");
+            assert_eq!(&object[..4], b"\x7fELF");
         }
     }
 
