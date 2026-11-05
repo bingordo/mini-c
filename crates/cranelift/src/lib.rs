@@ -34,8 +34,10 @@ fn scalar_type(ty: &CType) -> Result<ir::Type> {
 }
 
 fn signature(module: &ObjectModule, ty: &CType) -> Result<ir::Signature> {
-    let CType::Function { params, result } = ty else {
-        return Err("function declaration requires a function type".into());
+    let (params, result) = match ty {
+        CType::Function { params, result } |
+        CType::VariadicFunction { params, result } => (params, result),
+        _ => return Err("function declaration requires a function type".into()),
     };
     let mut sig = module.make_signature();
     for param in params {
@@ -51,6 +53,8 @@ fn signature(module: &ObjectModule, ty: &CType) -> Result<ir::Signature> {
 struct KnownFunction {
     id: FuncId,
     ty: CType,
+    /// Linker-facing symbol; lookup in this map still uses the C identifier.
+    link_name: String,
     defined: bool,
 }
 
@@ -230,8 +234,12 @@ impl Compiler {
         Ok(Self { module: ObjectModule::new(object), functions: HashMap::new(), data: HashMap::new(), strings: HashMap::new() })
     }
 
-    fn declare(&mut self, name: &str, ty: &CType, linkage: Linkage, definition: bool) -> Result<FuncId> {
+    fn declare(&mut self, name: &str, ty: &CType, linkage: Linkage, definition: bool,
+        asm_label: Option<&str>) -> Result<FuncId> {
         let composite = if let Some(known) = self.functions.get_mut(name) {
+            if asm_label.is_some_and(|label| label != known.link_name) {
+                return Err(format!("conflicting assembler linkage name for '{name}'"));
+            }
             let composite = known.ty.composite(ty)
                 .ok_or_else(|| format!("conflicting backend signature for '{name}'"))?;
             if definition && known.defined {
@@ -251,10 +259,11 @@ impl Compiler {
             (_, false) => ClLinkage::Import,
         };
         let sig = signature(&self.module, &composite)?;
-        let id = self.module.declare_function(name, linkage, &sig)
-            .map_err(|e| format!("declaring '{name}': {e}"))?;
+        let link_name = asm_label.unwrap_or(name);
+        let id = self.module.declare_function(link_name, linkage, &sig)
+            .map_err(|e| format!("declaring '{name}' as '{link_name}': {e}"))?;
         self.functions.insert(name.to_owned(), KnownFunction {
-            id, ty: composite, defined: definition,
+            id, ty: composite, link_name: link_name.to_owned(), defined: definition,
         });
         Ok(id)
     }
@@ -374,8 +383,8 @@ impl Compiler {
         match item {
             CheckedItem::Typedef { .. } | CheckedItem::Tag => Ok(()),
             CheckedItem::Declaration(decl) => {
-                if matches!(decl.ty, CType::Function { .. }) {
-                    self.declare(&decl.name, &decl.ty, decl.linkage, false)?;
+                if matches!(decl.ty, CType::Function { .. } | CType::VariadicFunction { .. }) {
+                    self.declare(&decl.name, &decl.ty, decl.linkage, false, decl.asm_label.as_deref())?;
                     Ok(())
                 } else { self.declare_object(decl) }
             }
@@ -384,7 +393,7 @@ impl Compiler {
     }
 
     fn define(&mut self, function: CheckedFunction) -> Result<()> {
-        let id = self.declare(&function.name, &function.signature, function.linkage, true)?;
+        let id = self.declare(&function.name, &function.signature, function.linkage, true, None)?;
         let mut ctx = self.module.make_context();
         ctx.func.signature = signature(&self.module, &function.signature)?;
         ctx.func.name = ir::UserFuncName::user(0, id.as_u32());
