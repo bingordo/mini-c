@@ -236,6 +236,35 @@ impl Compiler {
 
     fn declare(&mut self, name: &str, ty: &CType, linkage: Linkage, definition: bool,
         asm_label: Option<&str>) -> Result<FuncId> {
+        // glibc can first declare an ordinary function and later attach a
+        // GNU assembler linkage label to a compatible redeclaration. Before
+        // any function bodies have been emitted, the old imported symbol has
+        // no code references, so it is safe to bind the source identifier to
+        // a new FuncId with the actual ELF symbol name. Deferred global data
+        // relocations resolve through this map at finish().
+        //
+        // Once any body has been emitted, do not silently retarget previously
+        // generated call relocations. That uncommon ordering fails closed.
+        if let (Some(label), Some(prior)) = (asm_label, self.functions.get(name)) {
+            if label != prior.link_name {
+                if definition || prior.link_name != name || prior.defined
+                    || self.functions.values().any(|entry| entry.defined)
+                {
+                    return Err(format!(
+                        "conflicting assembler linkage name for '{name}' after native code emission"
+                    ));
+                }
+                let composite = prior.ty.composite(ty)
+                    .ok_or_else(|| format!("conflicting backend signature for '{name}'"))?;
+                let sig = signature(&self.module, &composite)?;
+                let id = self.module.declare_function(label, ClLinkage::Import, &sig)
+                    .map_err(|e| format!("declaring '{name}' as '{label}': {e}"))?;
+                self.functions.insert(name.to_owned(), KnownFunction {
+                    id, ty: composite, link_name: label.to_owned(), defined: false,
+                });
+                return Ok(id);
+            }
+        }
         let composite = if let Some(known) = self.functions.get_mut(name) {
             if asm_label.is_some_and(|label| label != known.link_name) {
                 return Err(format!("conflicting assembler linkage name for '{name}'"));
@@ -1302,6 +1331,64 @@ mod tests {
                         .and_then(|symbol| symbol.name().ok()) == Some("puts"),
                 _ => false,
             }), "expected call relocation targeting true external symbol 'puts'");
+    }
+
+    #[test]
+    fn later_glibc_asm_link_name_rebinds_unreferenced_prototype() {
+        use object::{Object, ObjectSection, ObjectSymbol};
+        let src = concat!(
+            "extern int localput(const char *); ",
+            "extern int localput(const char *) __asm__(\"puts\"); ",
+            "int main(void) { return localput(\"alias override\"); }"
+        );
+        let bytes = compile_source(src).expect("late asm label should retarget unused prototype");
+        let elf = object::File::parse(bytes.as_slice()).expect("valid ELF");
+        assert!(elf.sections().flat_map(|section| section.relocations())
+            .any(|(_, relocation)| match relocation.target() {
+                object::RelocationTarget::Symbol(index) =>
+                    elf.symbol_by_index(index).ok()
+                        .and_then(|symbol| symbol.name().ok()) == Some("puts"),
+                _ => false,
+            }), "call relocation must use the later assembler alias");
+
+        // The real glibc scanf prototypes use a variadic asm alias.
+        let src = concat!(
+            "extern int fscanf(void *, const char *, ...); ",
+            "extern int fscanf(void *, const char *, ...) __asm__(\"__isoc23_fscanf\"); ",
+            "int main(void) { return 0; }"
+        );
+        assert!(compile_source(src).is_ok());
+    }
+
+    #[test]
+    fn late_asm_alias_rebinds_deferred_function_pointer_relocations() {
+        use object::{Object, ObjectSection, ObjectSymbol};
+        let src = concat!(
+            "extern int localput(const char *); ",
+            "int (*callback)(const char *) = localput; ",
+            "extern int localput(const char *) __asm__(\"puts\"); ",
+            "int main(void) { return callback(\"hello\"); }"
+        );
+        let bytes = compile_source(src).expect("late alias in global pointer initializer");
+        let elf = object::File::parse(bytes.as_slice()).expect("valid ELF");
+        assert!(elf.sections().flat_map(|section| section.relocations())
+            .any(|(_, relocation)| match relocation.target() {
+                object::RelocationTarget::Symbol(index) =>
+                    elf.symbol_by_index(index).ok()
+                        .and_then(|symbol| symbol.name().ok()) == Some("puts"),
+                _ => false,
+            }), "deferred pointer relocation must use the actual ELF alias");
+    }
+
+    #[test]
+    fn late_asm_alias_after_native_body_is_rejected() {
+        let src = concat!(
+            "extern int f(void); ",
+            "int use(void) { return f(); } ",
+            "extern int f(void) __asm__(\"other\");"
+        );
+        let error = compile_source(src).unwrap_err();
+        assert!(error.contains("conflicting assembler linkage name"), "{error}");
     }
 
     #[test]
