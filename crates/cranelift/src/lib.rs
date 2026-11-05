@@ -1358,14 +1358,30 @@ mod tests {
     }
 
     #[test]
-    fn actually_calling_unsupported_aggregate_import_still_fails_closed() {
+    fn taking_address_of_unsupported_aggregate_import_still_fails_closed() {
         let source = concat!(
             "struct CookieIO { int (*read)(void *); int (*write)(void *); }; ",
             "extern int cookie_open(struct CookieIO callbacks); ",
-            "int main(void) { struct CookieIO callbacks; return cookie_open(callbacks); }"
+            "int main(void) { return &cookie_open != 0; }"
         );
         let error = compile_source(source).unwrap_err();
         assert!(error.contains("unsupported SysV aggregate-by-value ABI"), "{error}");
+    }
+
+    #[test]
+    fn late_glibc_assembler_alias_is_resolved_before_object_registration() {
+        use object::{Object, ObjectSymbol};
+        let source = concat!(
+            "extern int localput(const char *); ",
+            "extern int localput(const char *) __asm__(\"puts\"); ",
+            "int main(void) { return localput(\"hello\") < 0; }"
+        );
+        let obj = compile_source(source).expect("compatible late GNU asm alias");
+        let elf = object::File::parse(obj.as_slice()).expect("ELF object");
+        let names = elf.symbols().filter_map(|symbol| symbol.name().ok())
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"puts"), "expected true ELF import 'puts'");
+        assert!(!names.contains(&"localput"), "must not import the C source identifier");
     }
 
     #[test]
