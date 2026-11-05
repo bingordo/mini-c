@@ -220,13 +220,22 @@ fn aggregate_pointer_fields_emit_multiple_relocations() {
 }
 
 #[test]
-fn by_value_aggregate_abi_is_explicitly_rejected() {
-    let err=compile_source("struct T { int x; }; struct T copy(struct T x);")
-        .unwrap_err();
-    assert!(err.contains("unsupported SysV aggregate-by-value ABI"), "{err}");
-    let err=compile_source("union U { int x; long y; }; union U make(void);")
-        .unwrap_err();
-    assert!(err.contains("unsupported SysV aggregate-by-value ABI"), "{err}");
+fn by_value_aggregate_abi_is_deferred_until_a_use() {
+    // Unused hosted prototypes may contain by-value aggregate signatures
+    // beyond the current SysV backend. Their declarations are harmless.
+    emits_elf("struct T { int x; }; struct T copy(struct T x);");
+    emits_elf("union U { int x; long y; }; union U make(void);");
+
+    // Taking the address or calling one must still fail rather than
+    // emitting a native signature with incorrect argument passing.
+    let err = compile_source(
+        "struct T { int x; }; struct T copy(struct T x); int main(void) { return &copy != 0; }"
+    ).unwrap_err();
+    assert!(err.contains("missing function declaration"), "{err}");
+    let err = compile_source(
+        "union U { int x; long y; }; union U make(void); int main(void) { make(); return 0; }"
+    ).unwrap_err();
+    assert!(err.contains("missing function declaration"), "{err}");
 }
 
 #[test]
