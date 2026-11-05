@@ -1180,27 +1180,54 @@ impl Lower<'_> {
                 Ok(value)
             }
             CheckedExprKind::Call(callee, args) => {
-                // A variadic call is not an ordinary fixed-arity Cranelift
-                // call. In SysV x86-64 the call-site signature includes all
-                // promoted arguments and %al must report the vector-register
-                // count (zero for the S12 pointer-only printf example).
-                // Do not accidentally lower a variadic callee as an
-                // indirect fixed-arity function pointer call.
+                // Cranelift 0.136 has fixed-arity SystemV signatures but no
+                // variadic AL operand. Direct calls with only GP-class integer
+                // and pointer arguments can use a tiny per-callsite tail thunk:
+                // Cranelift places every actual argument normally, the thunk
+                // zeroes EAX (AL=0 SSE arguments), then jumps to libc without
+                // disturbing the caller's GP registers or stack arguments.
                 let variadic = match &callee.ty {
                     CType::VariadicFunction { .. } => true,
                     CType::Pointer(inner) =>
                         matches!(inner.as_ref(), CType::VariadicFunction { .. }),
                     _ => false,
                 };
-                if variadic {
-                    return Err("native x86-64 SysV variadic calls are not yet supported (requires all call-site arguments and ABI-correct %al)".into());
+                if variadic && !matches!(
+                    (&callee.kind, &callee.ty),
+                    (CheckedExprKind::Name(_), CType::VariadicFunction { .. })
+                ) {
+                    return Err("indirect SysV variadic calls are unsupported".into());
                 }
                 let mut values = Vec::with_capacity(args.len());
                 for arg in args { values.push(self.expression(b, arg)?); }
-                // Ordinary named functions use a direct call. Every other
-                // callable expression is a function pointer and must use the
-                // checked function signature for its indirect ABI.
-                let inst = if let (CheckedExprKind::Name(name), CType::Function { .. }) =
+                let inst = if let (CheckedExprKind::Name(name),
+                    CType::VariadicFunction { result, .. }) = (&callee.kind, &callee.ty)
+                {
+                    let target = self.functions.get(name)
+                        .map(|known| known.id)
+                        .ok_or_else(|| format!("missing variadic function declaration for '{name}'"))?;
+                    let mut sig = self.module.make_signature();
+                    for arg in args {
+                        if !matches!(arg.ty.unqualified(),
+                            CType::Integer { .. } | CType::Pointer(_))
+                        {
+                            return Err(format!(
+                                "SysV variadic call '{name}' requires GP-class arguments only; SSE and aggregate ABI unsupported"
+                            ));
+                        }
+                        sig.params.push(AbiParam::new(scalar_type(&arg.ty)?));
+                    }
+                    if result.unqualified() != &CType::Void {
+                        sig.returns.push(AbiParam::new(scalar_type(result)?));
+                    }
+                    let wrapper_name = format!("__mini_c_sysv_gpvar_{}", self.gp_vararg_thunks.len());
+                    let wrapper = self.module.declare_function(
+                        &wrapper_name, ClLinkage::Import, &sig
+                    ).map_err(|e| format!("declaring SysV variadic thunk: {e}"))?;
+                    self.gp_vararg_thunks.push(SysvGpVarargThunk { wrapper, target });
+                    let reference = self.module.declare_func_in_func(wrapper, b.func);
+                    b.ins().call(reference, &values)
+                } else if let (CheckedExprKind::Name(name), CType::Function { .. }) =
                     (&callee.kind, &callee.ty)
                 {
                     let id = self.functions.get(name)
