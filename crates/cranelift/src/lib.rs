@@ -1317,6 +1317,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn unused_unsupported_aggregate_function_import_does_not_block_object_emission() {
+        use object::{Object, ObjectSymbol};
+        let source = concat!(
+            "struct CookieIO { int (*read)(void *); int (*write)(void *); ",
+            "int (*seek)(void *); int (*close)(void *); }; ",
+            "extern int cookie_open(struct CookieIO callbacks); ",
+            "int main(void) { return 0; }"
+        );
+        let obj = compile_source(source).expect("unused checked extern should stay metadata-only");
+        let elf = object::File::parse(obj.as_slice()).expect("ELF object");
+        let names = elf.symbols().filter_map(|symbol| symbol.name().ok())
+            .collect::<Vec<_>>();
+        assert!(!names.contains(&"cookie_open"), "unused ABI-incompatible extern emitted");
+        assert!(names.contains(&"main"), "defined main must still be emitted");
+    }
+
+    #[test]
+    fn actually_calling_unsupported_aggregate_import_still_fails_closed() {
+        let source = concat!(
+            "struct CookieIO { int (*read)(void *); int (*write)(void *); }; ",
+            "extern int cookie_open(struct CookieIO callbacks); ",
+            "int main(void) { struct CookieIO callbacks; return cookie_open(callbacks); }"
+        );
+        let error = compile_source(source).unwrap_err();
+        assert!(error.contains("unsupported SysV aggregate-by-value ABI"), "{error}");
+    }
+
+    #[test]
     fn external_assembler_alias_is_the_actual_elf_symbol() {
         use object::{Object, ObjectSection, ObjectSymbol};
         let source = concat!(
