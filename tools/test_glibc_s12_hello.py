@@ -157,9 +157,10 @@ def main() -> int:
         for line in report["first_error_context"]["source_lines"]:
             print(" ", line)
     print("Report:", args.report)
-    # Until milestone completion, keep the CI diagnostic rather than require
-    # success from a compiler that cannot yet parse all of glibc stdio.h.
-    return 0 if report["gcc_reference_ok"] and passed(stages.get("preprocess")) else 1
+    # S12 P3 acceptance is now mandatory, not a diagnostic-only baseline:
+    # the unmodified glibc header must pass Mini-C, compile into an ELF object,
+    # link with system libc, and run with exact stdout/stderr and exit status.
+    return 0 if report["gcc_reference_ok"] and report["mini_c_hello_ok"] else 1
 
 
 if __name__ == "__main__":
