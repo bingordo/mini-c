@@ -236,6 +236,35 @@ impl Compiler {
 
     fn declare(&mut self, name: &str, ty: &CType, linkage: Linkage, definition: bool,
         asm_label: Option<&str>) -> Result<FuncId> {
+        // glibc can first declare an ordinary function and later attach a
+        // GNU assembler linkage label to a compatible redeclaration. Before
+        // any function bodies have been emitted, the old imported symbol has
+        // no code references, so it is safe to bind the source identifier to
+        // a new FuncId with the actual ELF symbol name. Deferred global data
+        // relocations resolve through this map at finish().
+        //
+        // Once any body has been emitted, do not silently retarget previously
+        // generated call relocations. That uncommon ordering fails closed.
+        if let (Some(label), Some(prior)) = (asm_label, self.functions.get(name)) {
+            if label != prior.link_name {
+                if definition || prior.link_name != name || prior.defined
+                    || self.functions.values().any(|entry| entry.defined)
+                {
+                    return Err(format!(
+                        "conflicting assembler linkage name for '{name}' after native code emission"
+                    ));
+                }
+                let composite = prior.ty.composite(ty)
+                    .ok_or_else(|| format!("conflicting backend signature for '{name}'"))?;
+                let sig = signature(&self.module, &composite)?;
+                let id = self.module.declare_function(label, ClLinkage::Import, &sig)
+                    .map_err(|e| format!("declaring '{name}' as '{label}': {e}"))?;
+                self.functions.insert(name.to_owned(), KnownFunction {
+                    id, ty: composite, link_name: label.to_owned(), defined: false,
+                });
+                return Ok(id);
+            }
+        }
         let composite = if let Some(known) = self.functions.get_mut(name) {
             if asm_label.is_some_and(|label| label != known.link_name) {
                 return Err(format!("conflicting assembler linkage name for '{name}'"));
