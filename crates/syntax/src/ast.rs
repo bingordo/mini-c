@@ -40,6 +40,9 @@ pub struct Decl {
     /// Name token range; `span` continues to cover the full declaration.
     pub name_span: Option<Span>,
     pub ty: Type,
+    /// GNU __asm__("link-name") annotation on a file-scope declaration.
+    /// The source identifier is still used for C name lookup.
+    pub asm_label: Option<String>,
     pub init: Option<Expr>,
     pub span: Span,
 }
