@@ -41,6 +41,9 @@ pub enum CheckedExprKind {
     /// Prefix/postfix ++/--, preserving a single lvalue and its computation type.
     Update { target: Box<CheckedExpr>, increment: bool, postfix: bool, computation_ty: CType },
     Call(Box<CheckedExpr>, Vec<CheckedExpr>),
+    /// GCC __builtin_ctz(unsigned int): the argument is evaluated exactly once.
+    /// As in GCC, a zero operand has undefined behavior; callers must guard it.
+    BuiltinCtz(Box<CheckedExpr>),
     Convert(Box<CheckedExpr>),
     Load(Box<CheckedExpr>),
     /// Array lvalue conversion yields a pointer to the first element,
@@ -1688,6 +1691,34 @@ impl Checker {
                 }))
             }
             Expr::Call(callee, args) => {
+                // Recognize only the source-pinned GCC integer builtin required
+                // by FreeBSD ffs. Do not invent prototypes for other builtins,
+                // or steal a visible user declaration of the same name.
+                if let Expr::Name(name) = callee.without_location() {
+                    if name == "__builtin_ctz" && self.lookup(name).is_none() {
+                        if args.len() != 1 {
+                            return Err(Diagnostic::coded(span,
+                                DiagnosticCode::SemanticWrongArgumentCount,
+                                "__builtin_ctz expects exactly one argument"));
+                        }
+                        let argument = &args[0];
+                        let argument_span = argument.location().unwrap_or(span);
+                        let typed = self.check_expr(argument, argument_span)?.rvalue();
+                        if !typed.ty.is_integer() {
+                            return Err(Diagnostic::coded(argument_span,
+                                DiagnosticCode::SemanticInvalidOperatorOperands,
+                                "__builtin_ctz requires an integer argument"));
+                        }
+                        // GCC's signature is int __builtin_ctz(unsigned int).
+                        // Conversion, including signed-negative inputs, happens
+                        // before counting zero bits. The zero case is GCC UB;
+                        // do not silently define a special return value here.
+                        let uint = CType::Integer { rank: IntRank::Int, unsigned: true };
+                        let argument = self.convert(typed, &uint);
+                        return Ok(CheckedExpr::value(CType::int(),
+                            CheckedExprKind::BuiltinCtz(Box::new(argument))));
+                    }
+                }
                 let callee_span = callee.location().unwrap_or(span);
                 let callee = self.check_expr(callee, span)?;
                 // Keep direct named function calls in their existing IR form;

@@ -1685,3 +1685,36 @@ fn s21_register_storage_is_automatic_and_nonaddressable() {
     reject("register int object;", "register storage class is not allowed at file scope");
     reject("register int f(void) { return 0; }", "register storage class is not allowed at file scope");
 }
+
+#[test]
+fn s21_gcc_ctz_builtin_preserves_type_and_single_operand() {
+    let items = check("int f(int x) { return __builtin_ctz(x); }").unwrap();
+    let CheckedItem::Function(fun) = &items[0] else { panic!("function"); };
+    let CheckedStmt::Block(stmts) = &fun.body else { panic!("body"); };
+    let CheckedStmt::Return(Some(result)) = &stmts[0] else { panic!("return"); };
+    assert_eq!(result.ty, CType::int());
+    let CheckedExprKind::BuiltinCtz(arg) = &result.kind else { panic!("builtin expected"); };
+    assert_eq!(arg.ty, CType::Integer { rank: IntRank::Int, unsigned: true });
+
+    check("int f(int x) { return x == 0 ? 0 : __builtin_ctz(x) + 1; }").unwrap();
+    check("int f(void) { return __builtin_ctz(-1); }").unwrap();
+    check("int f(void) { return __builtin_ctz(0x80000000UL); }").unwrap();
+    // If a real declaration is in scope, ordinary C function checking wins.
+    let items = check("extern int __builtin_ctz(int); int f(int x) { return __builtin_ctz(x); }").unwrap();
+    let CheckedItem::Function(fun) = &items[1] else { panic!("function"); };
+    let CheckedStmt::Block(stmts) = &fun.body else { panic!("body"); };
+    let CheckedStmt::Return(Some(result)) = &stmts[0] else { panic!("return"); };
+    assert!(matches!(result.kind, CheckedExprKind::Call(..)));
+}
+
+#[test]
+fn s21_gcc_ctz_builtin_rejects_malformed_uses() {
+    reject("int f(void) { return __builtin_ctz(); }", "expects exactly one argument");
+    reject("int f(void) { return __builtin_ctz(1, 2); }", "expects exactly one argument");
+    reject("int f(void) { int x=7; return __builtin_ctz(&x); }", "requires an integer argument");
+    reject("int f(void) { return __builtin_ctzll(1); }", "undeclared identifier");
+    reject("int __builtin_ctz; int f(void) { return __builtin_ctz(8); }", "not a function");
+    // A builtin evaluation is not a C integer constant expression (even if
+    // the backend might fold its bits); don't add GNU constant-folding here.
+    reject("int value = __builtin_ctz(8);", "not an integer constant expression");
+}

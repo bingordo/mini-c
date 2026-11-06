@@ -990,6 +990,19 @@ impl Lower<'_> {
                 let v = self.expression(b, inner)?;
                 Self::convert(b, v, &inner.ty, &expr.ty)
             }
+            CheckedExprKind::BuiltinCtz(inner) => {
+                // GCC defines __builtin_ctz(0) as undefined behavior. The
+                // source must guard zero; CLIF ctz is permitted to produce
+                // an arbitrary value for that case. Never promise ctz(0)=32.
+                if inner.ty != (CType::Integer { rank: IntRank::Int, unsigned: true }) {
+                    return Err("__builtin_ctz requires an unsigned int operand".into());
+                }
+                let value = self.integer_value(b, inner)?;
+                if b.func.dfg.value_type(value) != types::I32 {
+                    return Err("__builtin_ctz requires 32-bit int on this backend".into());
+                }
+                Ok(b.ins().ctz(value))
+            }
             CheckedExprKind::Unary(op, inner) => {
                 if *op == UnOp::Address {
                     if let (CType::Function { .. }, CheckedExprKind::Name(name)) =

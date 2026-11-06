@@ -14,6 +14,22 @@ import subprocess
 import sys
 
 PROGRAMS = {
+    # FreeBSD ffs uses a zero guard around GCC __builtin_ctz(mask).
+    # Compare defined negative/nonzero inputs and zero through the guard.
+    "s21_ctz_guarded_ffs": """int ffs_like(int mask) {
+        return mask == 0 ? 0 : __builtin_ctz(mask) + 1;
+    }
+    int main(void) {
+        return ffs_like(0) != 0 || ffs_like(1) != 1
+            || ffs_like(8) != 4 || ffs_like(-1) != 1
+            || ffs_like(-2147483647-1) != 32;
+    }""",
+    "s21_ctz_argument_evaluated_once": """int calls;
+    int next(void) { calls++; return 16; }
+    int main(void) {
+        int bits = __builtin_ctz(next());
+        return (bits == 4 && calls == 1) ? 0 : 1;
+    }""",
     # S21: GCC/libiberty sources use register on scalar parameters.
     # It is an automatic object hint, never a different calling convention.
     "s21_register_parameter_local_and_for_index": """int ffs_style(register int n) {
