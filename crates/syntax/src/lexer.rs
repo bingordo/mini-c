@@ -175,51 +175,48 @@ impl<'a> Scanner<'a> {
                     ));
                 }
                 TokenKind::String
-            } else if ch.is_ascii_digit() {
-                if rest.starts_with("0x") || rest.starts_with("0X") {
-                    offset += 2;
-                    let digit_start = offset;
-                    while offset < source.len() && source.as_bytes()[offset].is_ascii_hexdigit() {
-                        offset += 1;
-                    }
-                    if offset == digit_start {
-                        self.offset = offset;
-                        return Err(Diagnostic::coded(
-                            Span { lo: start, hi: offset },
-                            crate::diag::DiagnosticCode::LexicalNumericSuffix,
-                            "hexadecimal integer constant requires at least one digit",
-                        ));
-                    }
-                } else {
-                    offset += 1;
-                    while offset < source.len() && source.as_bytes()[offset].is_ascii_digit() {
-                        offset += 1;
-                    }
-                }
-                // Keep C U/L suffixes as part of the number token. Validate
-                // the entire suffix here, never split an invalid token into
-                // a valid integer and a stray identifier.
-                if offset < source.len()
-                    && (source.as_bytes()[offset].is_ascii_alphabetic()
-                        || source.as_bytes()[offset] == b'_')
-                {
-                    while offset < source.len()
-                        && (source.as_bytes()[offset].is_ascii_alphanumeric()
-                            || source.as_bytes()[offset] == b'_')
+            } else if ch.is_ascii_digit()
+                || (ch == '.' && source.as_bytes().get(offset + 1)
+                    .is_some_and(u8::is_ascii_digit))
+            {
+                // Maximal C preprocessing-number scan: keep a decimal point,
+                // exponent sign and suffix in the same token. In particular
+                // 0.5f and 1e+12 must not become integer + punctuation.
+                // Malformed pp-numbers are rejected as a whole, not split.
+                offset += 1;
+                while offset < source.len() {
+                    let byte = source.as_bytes()[offset];
+                    let exponent_sign = matches!(byte, b'+' | b'-')
+                        && matches!(source.as_bytes()[offset - 1], b'e' | b'E' | b'p' | b'P');
+                    if byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'.'
+                        || exponent_sign
                     {
                         offset += 1;
-                    }
-                    let token = &source[start..offset];
-                    if crate::integer_literal::decode_integer_literal(token).is_err() {
-                        self.offset = offset;
-                        return Err(Diagnostic::coded(
-                            Span { lo: start, hi: offset },
-                            crate::diag::DiagnosticCode::LexicalNumericSuffix,
-                            "unsupported numeric literal or suffix",
-                        ));
+                    } else {
+                        break;
                     }
                 }
-                TokenKind::Number
+                let literal = &source[start..offset];
+                if matches!(literal, "0x" | "0X") {
+                    self.offset = offset;
+                    return Err(Diagnostic::coded(
+                        Span { lo: start, hi: offset },
+                        crate::diag::DiagnosticCode::LexicalNumericSuffix,
+                        "hexadecimal integer constant requires at least one digit",
+                    ));
+                }
+                if crate::integer_literal::decode_integer_literal(literal).is_ok() {
+                    TokenKind::Number
+                } else if crate::floating_literal::decimal_float_rank(literal).is_ok() {
+                    TokenKind::FloatingNumber
+                } else {
+                    self.offset = offset;
+                    return Err(Diagnostic::coded(
+                        Span { lo: start, hi: offset },
+                        crate::diag::DiagnosticCode::LexicalNumericSuffix,
+                        "unsupported numeric literal or suffix",
+                    ));
+                }
             } else {
                 let op = [
                     "<<=", ">>=", "...", "==", "!=", "<=", ">=", "&&", "||", "++", "--", "->",
