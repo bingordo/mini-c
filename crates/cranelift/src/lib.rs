@@ -972,6 +972,8 @@ impl Lower<'_> {
             CheckedExprKind::Initializer(_) =>
                 Err("braced initializer cannot be evaluated as an expression".into()),
             CheckedExprKind::Literal(n) => Ok(b.ins().iconst(scalar_type(&expr.ty)?, *n as i64)),
+            CheckedExprKind::FloatLiteral(_) =>
+                Err("native floating-point literal code generation is unsupported".into()),
             CheckedExprKind::EnumConstant(n) => Ok(b.ins().iconst(scalar_type(&expr.ty)?, *n)),
             CheckedExprKind::StringLiteral(_) | CheckedExprKind::Member(..) => self.place(b, expr),
             CheckedExprKind::Name(name) => self.object_address(b, name),
