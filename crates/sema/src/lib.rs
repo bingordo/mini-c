@@ -1328,6 +1328,13 @@ impl Checker {
                 let ty = self.target.decimal_literal(*number).ok_or_else(|| type_error(span, "decimal literal exceeds supported signed integer types"))?;
                 Ok(CheckedExpr::value(ty, CheckedExprKind::Literal(*number)))
             }
+            Expr::FloatLiteral(text, rank) => {
+                // The frontend retains the exact token and its C rank without
+                // rounding to the host f32/f64. Any native use is explicitly
+                // rejected until target-format floating emission is supported.
+                Ok(CheckedExpr::value(CType::Floating(*rank),
+                    CheckedExprKind::FloatLiteral(text.clone())))
+            }
             Expr::IntegerConstant(literal) => {
                 let ty = self.target.integer_literal(*literal).ok_or_else(|| type_error(
                     span, "integer constant exceeds supported int/long type range"
