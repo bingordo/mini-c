@@ -9,6 +9,7 @@ pub enum TokenKind {
     Identifier,
     TypedefName,
     Number,
+    FloatingNumber,
     Character,
     String,
     Punctuation,
