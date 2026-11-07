@@ -1195,6 +1195,9 @@ impl Checker {
             (CType::Struct { .. }, CType::Struct { .. }) |
             (CType::Union { .. }, CType::Union { .. }) => value_ty.same_type(&expr.ty),
             (CType::Integer { .. }, CType::Integer { .. }) => true,
+            // Preserve exact-rank floating values in checked code. Implicit
+            // FP conversions and native emission remain separately gated.
+            (CType::Floating(a), CType::Floating(b)) => a == b,
             (CType::Pointer(lhs), CType::Pointer(rhs)) =>
                 CType::compatible_pointee_assignment(lhs, rhs),
             (CType::Pointer(_), CType::Integer { .. }) => const_eval::evaluate(&expr, self.target) == Ok(0),
