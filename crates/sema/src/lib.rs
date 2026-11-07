@@ -1556,10 +1556,10 @@ impl Checker {
                 // Both are value contexts, including array/function decay.
                 let yes = self.check_expr(yes, span)?.rvalue();
                 let no = self.check_expr(no, span)?.rvalue();
-                let ty = if let Some(integer) =
-                    self.target.common_integer(&yes.ty, &no.ty)
+                let ty = if let Some(arithmetic) =
+                    self.target.common_arithmetic(&yes.ty, &no.ty)
                 {
-                    integer
+                    arithmetic
                 } else if yes.ty == CType::Void && no.ty == CType::Void {
                     CType::Void
                 } else if matches!((&yes.ty, &no.ty),
