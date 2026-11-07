@@ -373,4 +373,25 @@ mod tests {
         }
     }
 
+
+    #[test]
+    fn m10_decimal_floats_are_single_pp_number_tokens_with_exact_spans() {
+        let src = "a=0.5f; b=1e+12; c=.25L; d=0x1f;";
+        let tokens = scan(src).unwrap();
+        let float_tokens: Vec<_> = tokens.iter()
+            .filter(|t| t.kind == TokenKind::FloatingNumber).collect();
+        assert_eq!(float_tokens.iter().map(|t| t.text).collect::<Vec<_>>(),
+            ["0.5f", "1e+12", ".25L"]);
+        assert_eq!(float_tokens[0].span, Span { lo: 2, hi: 6 });
+        assert_eq!(float_tokens[1].span, Span { lo: 10, hi: 15 });
+        assert_eq!(float_tokens[2].span, Span { lo: 19, hi: 23 });
+        assert_eq!(tokens.iter().filter(|t| t.kind == TokenKind::Number)
+            .map(|t| t.text).collect::<Vec<_>>(), ["0x1f"]);
+        for invalid in ["1e+", "1.2.3", "0.5ff", "1e+_2", "0x1p+2"] {
+            let error = scan(invalid).expect_err("must reject malformed pp-number");
+            assert_eq!(error.code, crate::diag::DiagnosticCode::LexicalNumericSuffix);
+            assert_eq!(error.span, Span { lo: 0, hi: invalid.len() });
+        }
+    }
+
 }
