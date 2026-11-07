@@ -318,6 +318,29 @@ impl Target {
         Some(CType::Integer { rank, unsigned })
     }
 
+    /// Usual arithmetic conversions for real integer/floating operands.
+    /// Preserve the floating result rank in checked IR; native code generation
+    /// must independently reject unsupported FP operations and ABI classes.
+    pub fn common_arithmetic(self, lhs: &CType, rhs: &CType) -> Option<CType> {
+        let lhs = lhs.unqualified();
+        let rhs = rhs.unqualified();
+        if !(lhs.is_integer() || matches!(lhs, CType::Floating(_)))
+            || !(rhs.is_integer() || matches!(rhs, CType::Floating(_)))
+        {
+            return None;
+        }
+        use FloatRank::{Float, Double, LongDouble, Float128};
+        let floating = [Float128, LongDouble, Double, Float]
+            .into_iter().find(|rank|
+                matches!(lhs, CType::Floating(r) if r == rank)
+                || matches!(rhs, CType::Floating(r) if r == rank));
+        if let Some(rank) = floating {
+            Some(CType::Floating(rank))
+        } else {
+            self.common_integer(lhs, rhs)
+        }
+    }
+
     /// C17 6.4.4.1 first-representable-type rule.
     /// LongLong has a *distinct rank* and a 64-bit representation even on
     /// models with a narrower long (ILP32). This subset does not model

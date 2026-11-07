@@ -1459,8 +1459,20 @@ impl Checker {
                         Ok(CheckedExpr::value(CType::int(), CheckedExprKind::Unary(*op, Box::new(typed.rvalue()))))
                     }
                     UnOp::Plus | UnOp::Neg | UnOp::BitNot => {
-                        if !typed.ty.is_integer() { return Err(Diagnostic::coded(span, DiagnosticCode::SemanticInvalidOperatorOperands, "arithmetic unary operator requires integer")); }
-                        let ty = self.target.promote(&typed.ty);
+                        let floating = matches!(typed.ty.unqualified(), CType::Floating(_));
+                        if !typed.ty.is_integer()
+                            && !(floating && !matches!(op, UnOp::BitNot))
+                        {
+                            let reason = if floating {
+                                "bitwise not requires integer"
+                            } else {
+                                "arithmetic unary operator requires integer"
+                            };
+                            return Err(Diagnostic::coded(span,
+                                DiagnosticCode::SemanticInvalidOperatorOperands, reason));
+                        }
+                        let ty = if floating { typed.ty.unqualified().clone() }
+                            else { self.target.promote(&typed.ty) };
                         Ok(CheckedExpr::value(ty.clone(), CheckedExprKind::Unary(*op, Box::new(self.convert(typed, &ty)))))
                     }
                 }
@@ -1522,8 +1534,17 @@ impl Checker {
                     return Err(Diagnostic::coded(span, DiagnosticCode::SemanticInvalidOperatorOperands,
                         "bitwise operator requires integer operands"));
                 }
-                let common = self.target.common_integer(&left.ty, &right.ty)
-                    .ok_or_else(|| Diagnostic::coded(span, DiagnosticCode::SemanticInvalidOperatorOperands, "operator requires compatible integer operands"))?;
+                let common = if matches!(op, BinOp::Mod) || bitwise {
+                    self.target.common_integer(&left.ty, &right.ty)
+                } else {
+                    self.target.common_arithmetic(&left.ty, &right.ty)
+                }.ok_or_else(|| {
+                    let has_float = matches!(left.ty.unqualified(), CType::Floating(_))
+                        || matches!(right.ty.unqualified(), CType::Floating(_));
+                    Diagnostic::coded(span, DiagnosticCode::SemanticInvalidOperatorOperands,
+                        if has_float { "operator requires compatible arithmetic operands" }
+                        else { "operator requires compatible integer operands" })
+                })?;
                 let left = self.convert(left, &common);
                 let right = self.convert(right, &common);
                 let result = if relation { CType::int() } else { common };
@@ -1535,10 +1556,10 @@ impl Checker {
                 // Both are value contexts, including array/function decay.
                 let yes = self.check_expr(yes, span)?.rvalue();
                 let no = self.check_expr(no, span)?.rvalue();
-                let ty = if let Some(integer) =
-                    self.target.common_integer(&yes.ty, &no.ty)
+                let ty = if let Some(arithmetic) =
+                    self.target.common_arithmetic(&yes.ty, &no.ty)
                 {
-                    integer
+                    arithmetic
                 } else if yes.ty == CType::Void && no.ty == CType::Void {
                     CType::Void
                 } else if matches!((&yes.ty, &no.ty),
