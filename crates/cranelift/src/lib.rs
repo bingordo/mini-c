@@ -2021,4 +2021,15 @@ mod tests {
         }
     }
 
+
+    #[test]
+    fn m10_native_float_literal_is_explicitly_unsupported() {
+        // Parse and check the source, but never misemit its FP value as an
+        // integer or use a fabricated SysV return convention.
+        assert!(compile_source("float f(void) { return 0.5f; }").is_err());
+        assert!(compile_source(
+            "double f(void) { return 3.40282346638528859811704183484516925e+38; }"
+        ).is_err());
+    }
+
 }
