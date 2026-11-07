@@ -144,6 +144,9 @@ pub enum Expr {
     Int(u64),
     /// C integer token with radix/suffix preserved for target type selection.
     IntegerConstant(crate::integer_literal::IntegerLiteral),
+    /// Source-preserved C decimal floating constant, with its exact rank.
+    /// Native floating-point arithmetic/codegen is separately gated.
+    FloatLiteral(String, FloatRank),
     /// Decoded narrow string bytes, including the terminating NUL.
     StringLiteral(Vec<u8>),
     /// Braced initializer, valid only in an object declaration.
