@@ -972,6 +972,8 @@ impl Lower<'_> {
             CheckedExprKind::Initializer(_) =>
                 Err("braced initializer cannot be evaluated as an expression".into()),
             CheckedExprKind::Literal(n) => Ok(b.ins().iconst(scalar_type(&expr.ty)?, *n as i64)),
+            CheckedExprKind::FloatLiteral(_) =>
+                Err("native floating-point literal code generation is unsupported".into()),
             CheckedExprKind::EnumConstant(n) => Ok(b.ins().iconst(scalar_type(&expr.ty)?, *n)),
             CheckedExprKind::StringLiteral(_) | CheckedExprKind::Member(..) => self.place(b, expr),
             CheckedExprKind::Name(name) => self.object_address(b, name),
@@ -2017,6 +2019,17 @@ mod tests {
             let object = compile_source(source).unwrap();
             assert_eq!(&object[..4], b"\x7fELF");
         }
+    }
+
+
+    #[test]
+    fn m10_native_float_literal_is_explicitly_unsupported() {
+        // Parse and check the source, but never misemit its FP value as an
+        // integer or use a fabricated SysV return convention.
+        assert!(compile_source("float f(void) { return 0.5f; }").is_err());
+        assert!(compile_source(
+            "double f(void) { return 3.40282346638528859811704183484516925e+38; }"
+        ).is_err());
     }
 
 }

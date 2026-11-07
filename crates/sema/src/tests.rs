@@ -1718,3 +1718,23 @@ fn s21_gcc_ctz_builtin_rejects_malformed_uses() {
     // the backend might fold its bits); don't add GNU constant-folding here.
     reject("int value = __builtin_ctz(8);", "not an integer constant expression");
 }
+
+#[test]
+fn m10_decimal_floating_constant_semantics_are_type_preserving() {
+    for (source, ty, token) in [
+        ("float f(void) { return 0.5f; }",
+            CType::Floating(mini_c_syntax::ast::FloatRank::Float), "0.5f"),
+        ("double f(void) { return 1e+12; }",
+            CType::Floating(mini_c_syntax::ast::FloatRank::Double), "1e+12"),
+        ("long double f(void) { return 1.5L; }",
+            CType::Floating(mini_c_syntax::ast::FloatRank::LongDouble), "1.5L"),
+    ] {
+        let items = check(source).unwrap();
+        let CheckedItem::Function(fun) = &items[0] else { panic!("function"); };
+        let CheckedStmt::Block(stmts) = &fun.body else { panic!("body"); };
+        let CheckedStmt::Return(Some(result)) = &stmts[0] else { panic!("return"); };
+        assert_eq!(result.ty, ty);
+        assert!(matches!(&result.kind, CheckedExprKind::FloatLiteral(s) if s == token));
+    }
+    reject("enum E { A=1.5f };", "integer constant expression");
+}

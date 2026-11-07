@@ -22,6 +22,8 @@ pub enum Category { Value, LValue, Function }
 #[derive(Debug, Clone, PartialEq)]
 pub enum CheckedExprKind {
     Literal(u64),
+    /// Exact token retained until target-specific floating rounding is supported.
+    FloatLiteral(String),
     EnumConstant(i64),
     /// Narrow C string including its trailing NUL; storage is emitted by the backend.
     StringLiteral(Vec<u8>),
@@ -1193,6 +1195,9 @@ impl Checker {
             (CType::Struct { .. }, CType::Struct { .. }) |
             (CType::Union { .. }, CType::Union { .. }) => value_ty.same_type(&expr.ty),
             (CType::Integer { .. }, CType::Integer { .. }) => true,
+            // Preserve exact-rank floating values in checked code. Implicit
+            // FP conversions and native emission remain separately gated.
+            (CType::Floating(a), CType::Floating(b)) => a == b,
             (CType::Pointer(lhs), CType::Pointer(rhs)) =>
                 CType::compatible_pointee_assignment(lhs, rhs),
             (CType::Pointer(_), CType::Integer { .. }) => const_eval::evaluate(&expr, self.target) == Ok(0),
@@ -1325,6 +1330,13 @@ impl Checker {
             Expr::Int(number) => {
                 let ty = self.target.decimal_literal(*number).ok_or_else(|| type_error(span, "decimal literal exceeds supported signed integer types"))?;
                 Ok(CheckedExpr::value(ty, CheckedExprKind::Literal(*number)))
+            }
+            Expr::FloatLiteral(text, rank) => {
+                // The frontend retains the exact token and its C rank without
+                // rounding to the host f32/f64. Any native use is explicitly
+                // rejected until target-format floating emission is supported.
+                Ok(CheckedExpr::value(CType::Floating(*rank),
+                    CheckedExprKind::FloatLiteral(text.clone())))
             }
             Expr::IntegerConstant(literal) => {
                 let ty = self.target.integer_literal(*literal).ok_or_else(|| type_error(

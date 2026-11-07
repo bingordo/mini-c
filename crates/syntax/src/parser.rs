@@ -441,6 +441,12 @@ impl<'a> Parser<'a> {
                         t.span, DiagnosticCode::LexicalInvalidCharacter, reason))?;
                 self.located(Expr::Int(value), t.span)
             }
+            Some(t) if t.kind == TokenKind::FloatingNumber => {
+                let rank = crate::floating_literal::decimal_float_rank(t.text)
+                    .map_err(|reason| Diagnostic::coded(
+                        t.span, DiagnosticCode::LexicalNumericSuffix, reason))?;
+                self.located(Expr::FloatLiteral(t.text.to_owned(), rank), t.span)
+            }
             Some(t) if t.kind == TokenKind::Number => {
                 let expr = crate::integer_literal::parse_integer_expression(t.text)
                     .map_err(|reason| Diagnostic::coded(
@@ -1946,6 +1952,32 @@ mod tests {
         let mut parser = Parser::new("int f(int x) { return (x) + 1; }");
         assert!(matches!(parser.next_item(), Ok(Some(ExternalItem::Function(_)))));
         assert!(Parser::new("int f(int x) { return (unsigned *)x; }").next_item().is_err());
+    }
+
+
+    #[test]
+    fn m10_decimal_float_literals_keep_type_rank_and_full_lexeme() {
+        for (literal, rank) in [
+            ("0.5f", FloatRank::Float),
+            ("1e+3", FloatRank::Double),
+            ("1.25L", FloatRank::LongDouble),
+            (".125F", FloatRank::Float),
+        ] {
+            let src = format!("double value(void) {{ return {literal}; }}");
+            let mut parser = Parser::new(&src);
+            let item = parser.next_item().unwrap().unwrap();
+            let ExternalItem::Function(fun) = item else { panic!("function"); };
+            let Stmt::Block(stmts) = fun.body else { panic!("body"); };
+            let Stmt::Return(Some(Expr::FloatLiteral(text, actual))) = &stmts[0] else {
+                panic!("float literal expected");
+            };
+            assert_eq!(text, literal);
+            assert_eq!(*actual, rank);
+        }
+        for malformed in ["1e+", "0.5ff", "0x1p+2"] {
+            let src = format!("double value(void) {{ return {malformed}; }}");
+            assert!(Parser::new(&src).next_item().is_err(), "{malformed}");
+        }
     }
 
 }

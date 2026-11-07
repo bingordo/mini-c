@@ -9,6 +9,7 @@ pub enum TokenKind {
     Identifier,
     TypedefName,
     Number,
+    FloatingNumber,
     Character,
     String,
     Punctuation,
@@ -174,51 +175,52 @@ impl<'a> Scanner<'a> {
                     ));
                 }
                 TokenKind::String
-            } else if ch.is_ascii_digit() {
-                if rest.starts_with("0x") || rest.starts_with("0X") {
-                    offset += 2;
-                    let digit_start = offset;
-                    while offset < source.len() && source.as_bytes()[offset].is_ascii_hexdigit() {
-                        offset += 1;
-                    }
-                    if offset == digit_start {
-                        self.offset = offset;
-                        return Err(Diagnostic::coded(
-                            Span { lo: start, hi: offset },
-                            crate::diag::DiagnosticCode::LexicalNumericSuffix,
-                            "hexadecimal integer constant requires at least one digit",
-                        ));
-                    }
-                } else {
-                    offset += 1;
-                    while offset < source.len() && source.as_bytes()[offset].is_ascii_digit() {
-                        offset += 1;
-                    }
-                }
-                // Keep C U/L suffixes as part of the number token. Validate
-                // the entire suffix here, never split an invalid token into
-                // a valid integer and a stray identifier.
-                if offset < source.len()
-                    && (source.as_bytes()[offset].is_ascii_alphabetic()
-                        || source.as_bytes()[offset] == b'_')
-                {
-                    while offset < source.len()
-                        && (source.as_bytes()[offset].is_ascii_alphanumeric()
-                            || source.as_bytes()[offset] == b'_')
+            } else if ch.is_ascii_digit()
+                || (ch == '.' && source.as_bytes().get(offset + 1)
+                    .is_some_and(u8::is_ascii_digit))
+            {
+                // Maximal C preprocessing-number scan: keep a decimal point,
+                // exponent sign and suffix in the same token. In particular
+                // 0.5f and 1e+12 must not become integer + punctuation.
+                // Malformed pp-numbers are rejected as a whole, not split.
+                offset += 1;
+                while offset < source.len() {
+                    let byte = source.as_bytes()[offset];
+                    let exponent_sign = matches!(byte, b'+' | b'-')
+                        && matches!(source.as_bytes()[offset - 1], b'e' | b'E' | b'p' | b'P');
+                    if byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'.'
+                        || exponent_sign
                     {
                         offset += 1;
-                    }
-                    let token = &source[start..offset];
-                    if crate::integer_literal::decode_integer_literal(token).is_err() {
-                        self.offset = offset;
-                        return Err(Diagnostic::coded(
-                            Span { lo: start, hi: offset },
-                            crate::diag::DiagnosticCode::LexicalNumericSuffix,
-                            "unsupported numeric literal or suffix",
-                        ));
+                    } else {
+                        break;
                     }
                 }
-                TokenKind::Number
+                let literal = &source[start..offset];
+                if matches!(literal, "0x" | "0X") {
+                    self.offset = offset;
+                    return Err(Diagnostic::coded(
+                        Span { lo: start, hi: offset },
+                        crate::diag::DiagnosticCode::LexicalNumericSuffix,
+                        "hexadecimal integer constant requires at least one digit",
+                    ));
+                }
+                if literal.bytes().all(|c| c.is_ascii_digit())
+                    || crate::integer_literal::decode_integer_literal(literal).is_ok()
+                {
+                    // Preserve the parser's precise invalid-octal diagnostic
+                    // for digit-only tokens like 08 instead of a suffix error.
+                    TokenKind::Number
+                } else if crate::floating_literal::decimal_float_rank(literal).is_ok() {
+                    TokenKind::FloatingNumber
+                } else {
+                    self.offset = offset;
+                    return Err(Diagnostic::coded(
+                        Span { lo: start, hi: offset },
+                        crate::diag::DiagnosticCode::LexicalNumericSuffix,
+                        "unsupported numeric literal or suffix",
+                    ));
+                }
             } else {
                 let op = [
                     "<<=", ">>=", "...", "==", "!=", "<=", ">=", "&&", "||", "++", "--", "->",
@@ -372,6 +374,27 @@ mod tests {
             ["12U", "0x80000000Lu", "077UL"]);
         for bad in ["0x", "0X", "0xG", "0x1g", "123abc", "123lll", "123lul", "0b101"] {
             assert!(scan(bad).is_err(), "{bad}");
+        }
+    }
+
+
+    #[test]
+    fn m10_decimal_floats_are_single_pp_number_tokens_with_exact_spans() {
+        let src = "a=0.5f; b=1e+12; c=.25L; d=0x1f;";
+        let tokens = scan(src).unwrap();
+        let float_tokens: Vec<_> = tokens.iter()
+            .filter(|t| t.kind == TokenKind::FloatingNumber).collect();
+        assert_eq!(float_tokens.iter().map(|t| t.text).collect::<Vec<_>>(),
+            ["0.5f", "1e+12", ".25L"]);
+        assert_eq!(float_tokens[0].span, Span { lo: 2, hi: 6 });
+        assert_eq!(float_tokens[1].span, Span { lo: 10, hi: 15 });
+        assert_eq!(float_tokens[2].span, Span { lo: 19, hi: 23 });
+        assert_eq!(tokens.iter().filter(|t| t.kind == TokenKind::Number)
+            .map(|t| t.text).collect::<Vec<_>>(), ["0x1f"]);
+        for invalid in ["1e+", "1.2.3", "0.5ff", "1e+_2", "0x1p+2"] {
+            let error = scan(invalid).expect_err("must reject malformed pp-number");
+            assert_eq!(error.code, crate::diag::DiagnosticCode::LexicalNumericSuffix);
+            assert_eq!(error.span, Span { lo: 0, hi: invalid.len() });
         }
     }
 

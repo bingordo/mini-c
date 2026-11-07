@@ -64,6 +64,9 @@ pub fn tokenize(source: &str) -> Result<Vec<(usize, ExprToken<'_>, usize)>, Diag
     while let Some(token) = scanner.next_token(None)? {
         let kind = match token.kind {
             TokenKind::Number => ExprToken::Number(token.text),
+            // This legacy standalone expression grammar has no floating AST
+            // terminals yet. Reject explicitly; the full C parser handles it.
+            TokenKind::FloatingNumber => ExprToken::Invalid(token.text),
             TokenKind::Character => ExprToken::Character(token.text),
             // Until expression grammar and semantic storage support strings,
             // preserve them as invalid tokens rather than silently accepting them.

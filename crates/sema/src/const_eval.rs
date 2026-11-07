@@ -41,6 +41,7 @@ fn bounded_arithmetic(value: i128, ty: &CType, target: Target) -> Result<i128, &
 pub fn evaluate(expr: &CheckedExpr, target: Target) -> Result<i128, &'static str> {
     match &expr.kind {
         CheckedExprKind::Literal(value) => Ok(i128::from(*value)),
+        CheckedExprKind::FloatLiteral(_) => Err("not an integer constant expression"),
         CheckedExprKind::EnumConstant(value) => Ok(i128::from(*value)),
         CheckedExprKind::Convert(inner) => normalize(evaluate(inner, target)?, &expr.ty, target),
         CheckedExprKind::Unary(op, inner) => {

@@ -3,6 +3,7 @@ pub mod ast;
 pub mod char_literal;
 pub mod diag;
 pub mod expr_lexer;
+pub mod floating_literal;
 pub mod lexer;
 pub mod integer_literal;
 pub mod parser;
