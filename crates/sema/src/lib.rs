@@ -1463,9 +1463,13 @@ impl Checker {
                         if !typed.ty.is_integer()
                             && !(floating && !matches!(op, UnOp::BitNot))
                         {
+                            let reason = if floating {
+                                "bitwise not requires integer"
+                            } else {
+                                "arithmetic unary operator requires integer"
+                            };
                             return Err(Diagnostic::coded(span,
-                                DiagnosticCode::SemanticInvalidOperatorOperands,
-                                "arithmetic unary operator requires arithmetic operands (bitwise not requires integer)"));
+                                DiagnosticCode::SemanticInvalidOperatorOperands, reason));
                         }
                         let ty = if floating { typed.ty.unqualified().clone() }
                             else { self.target.promote(&typed.ty) };
@@ -1534,9 +1538,13 @@ impl Checker {
                     self.target.common_integer(&left.ty, &right.ty)
                 } else {
                     self.target.common_arithmetic(&left.ty, &right.ty)
-                }.ok_or_else(|| Diagnostic::coded(span,
-                    DiagnosticCode::SemanticInvalidOperatorOperands,
-                    "operator requires compatible arithmetic operands"))?;
+                }.ok_or_else(|| {
+                    let has_float = matches!(left.ty.unqualified(), CType::Floating(_))
+                        || matches!(right.ty.unqualified(), CType::Floating(_));
+                    Diagnostic::coded(span, DiagnosticCode::SemanticInvalidOperatorOperands,
+                        if has_float { "operator requires compatible arithmetic operands" }
+                        else { "operator requires compatible integer operands" })
+                })?;
                 let left = self.convert(left, &common);
                 let right = self.convert(right, &common);
                 let result = if relation { CType::int() } else { common };
