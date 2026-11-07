@@ -1223,6 +1223,22 @@ fn explicit_integer_casts_handle_typedefs_and_unsigned_conversions() {
 }
 
 #[test]
+fn m10_pointer_casts_preserve_c_types_and_null_semantics() {
+    check("int f(void) { int *p = (void*)0; return p == (void*)0; }").unwrap();
+    check("int f(void) { int x=9; void *q=(void*)&x; int *p=(int*)q; return *p; }")
+        .unwrap();
+    check("typedef int *Ptr; int f(void) { Ptr p=(Ptr)0; return p==0; }")
+        .unwrap();
+    check("int f(void) { int **p=(int **)0; return p == (void*)0; }").unwrap();
+    reject("int f(int x) { int *p = (int*)x; return p==0; }",
+        "pointer cast requires a pointer or null integer constant");
+    reject("int f(void) { int *p=(int*)1; return p==0; }",
+        "pointer cast requires a pointer or null integer constant");
+    reject("int f(void) { int *p=(int*)0.5f; return p==0; }",
+        "pointer cast requires a pointer or null integer constant");
+}
+
+#[test]
 fn pinned_s9_hex_integer_functions_typecheck_unchanged() {
     check("int isascii(int c) { return !(c&~0x7f); }").unwrap();
     check("int iscntrl(int c) { return (unsigned)c < 0x20 || c == 0x7f; }").unwrap();
