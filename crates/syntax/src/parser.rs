@@ -442,7 +442,7 @@ impl<'a> Parser<'a> {
                 self.located(Expr::Int(value), t.span)
             }
             Some(t) if t.kind == TokenKind::FloatingNumber => {
-                let rank = crate::floating_literal::decimal_float_rank(t.text)
+                let rank = crate::floating_literal::floating_rank(t.text)
                     .map_err(|reason| Diagnostic::coded(
                         t.span, DiagnosticCode::LexicalNumericSuffix, reason))?;
                 self.located(Expr::FloatLiteral(t.text.to_owned(), rank), t.span)
@@ -1962,6 +1962,7 @@ mod tests {
             ("1e+3", FloatRank::Double),
             ("1.25L", FloatRank::LongDouble),
             (".125F", FloatRank::Float),
+            ("0x1.0p-100f", FloatRank::Float),
         ] {
             let src = format!("double value(void) {{ return {literal}; }}");
             let mut parser = Parser::new(&src);
@@ -1974,7 +1975,7 @@ mod tests {
             assert_eq!(text, literal);
             assert_eq!(*actual, rank);
         }
-        for malformed in ["1e+", "0.5ff", "0x1p+2"] {
+        for malformed in ["1e+", "0.5ff", "0x1p+"] {
             let src = format!("double value(void) {{ return {malformed}; }}");
             assert!(Parser::new(&src).next_item().is_err(), "{malformed}");
         }
