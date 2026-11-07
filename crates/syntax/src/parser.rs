@@ -2039,23 +2039,22 @@ mod tests {
 
     #[test]
     fn m10_block_declaration_lists_share_one_scope_and_keep_shapes() {
-        let source = "typedef int Word, Other; int use(void) { \
+        let source = "int use(void) { typedef int Word, Other; \
             Word i=3, j=i+4; int *p=&i, k=2; return *p+j+k; }";
         let mut parser = Parser::new(source);
-        assert!(matches!(parser.next_item().unwrap(), Some(ExternalItem::Typedef(_))));
-        assert!(matches!(parser.next_item().unwrap(), Some(ExternalItem::Typedef(_))));
         let Some(ExternalItem::Function(fun)) = parser.next_item().unwrap() else {
             panic!("function required");
         };
         let Stmt::Block(stmts) = fun.body else { panic!("block required") };
-        assert_eq!(stmts.len(), 6);
+        assert_eq!(stmts.len(), 7);
         let names = stmts.iter().filter_map(|stmt| match stmt {
             Stmt::Decl(d) => Some(d.name.as_str()),
             _ => None,
         }).collect::<Vec<_>>();
         assert_eq!(names, ["i", "j", "p", "k"]);
-        assert!(matches!(stmts[0], Stmt::Decl(_)));
-        assert!(matches!(stmts[4], Stmt::Return(_)));
+        assert!(matches!(stmts[0], Stmt::Typedef(_)));
+        assert!(matches!(stmts[1], Stmt::Typedef(_)));
+        assert!(matches!(stmts[6], Stmt::Return(_)));
         assert!(parser.next_item().unwrap().is_none());
     }
 
