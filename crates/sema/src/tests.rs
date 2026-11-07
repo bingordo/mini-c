@@ -1792,3 +1792,14 @@ fn m10_floating_conditional_common_type_is_not_integer() {
         assert!(matches!(result.kind, CheckedExprKind::Conditional(..)), "{source}");
     }
 }
+
+#[test]
+fn m10_checked_block_declaration_groups_preserve_scope_and_order() {
+    check("int f(void){ int i=2, j=i+3; return j; }").unwrap();
+    check("int f(void){ int i=4, *p=&i, k=*p+2; return k; }").unwrap();
+    check("int f(void){ typedef int Word, Other; Word a=1, b=a+2; Other c=3; return b+c; }").unwrap();
+    check("int f(void){ register int i=2, j=3; return i+j; }").unwrap();
+    reject("int f(void){ int a=1, a=2; return a; }", "duplicate declaration");
+    reject("int f(void){ int a=1,b=unknown; return a; }", "undeclared identifier");
+    reject("int f(void){ const int a=1,b=a+2; b=3; return a; }", "modifiable lvalue");
+}
