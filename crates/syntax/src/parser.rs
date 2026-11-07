@@ -462,7 +462,8 @@ impl<'a> Parser<'a> {
                 // like (void*)0 is not mistaken for (void) followed by *.
                 let cast_type = self.peek()?.is_some_and(|next| {
                     matches!(next.text, "int" | "char" | "short" | "long" | "_Float128" | "float" | "double" | "void" |
-                        "signed" | "unsigned" | "struct" | "union" | "enum")
+                        "signed" | "unsigned" | "struct" | "union" | "enum" |
+                        "const" | "restrict" | "__restrict" | "__restrict__")
                         || next.kind == TokenKind::TypedefName
                 });
                 if cast_type {
@@ -2013,6 +2014,8 @@ mod tests {
             if **inner == Type::Char));
         let mut parser = Parser::new("int f(int x) { return (x) + 1; }");
         assert!(matches!(parser.next_item(), Ok(Some(ExternalItem::Function(_)))));
+        assert!(matches!(Parser::new("int f(int x) { return (const int)x; }")
+            .next_item(), Ok(Some(ExternalItem::Function(_)))));
         let ExternalItem::Function(fun) = Parser::new(
             "int f(void) { return (void*)0 == (unsigned *)0; }"
         ).next_item().unwrap().unwrap() else { panic!("function expected"); };
