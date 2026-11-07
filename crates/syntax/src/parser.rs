@@ -441,6 +441,12 @@ impl<'a> Parser<'a> {
                         t.span, DiagnosticCode::LexicalInvalidCharacter, reason))?;
                 self.located(Expr::Int(value), t.span)
             }
+            Some(t) if t.kind == TokenKind::FloatingNumber => {
+                let rank = crate::floating_literal::decimal_float_rank(t.text)
+                    .map_err(|reason| Diagnostic::coded(
+                        t.span, DiagnosticCode::LexicalNumericSuffix, reason))?;
+                self.located(Expr::FloatLiteral(t.text.to_owned(), rank), t.span)
+            }
             Some(t) if t.kind == TokenKind::Number => {
                 let expr = crate::integer_literal::parse_integer_expression(t.text)
                     .map_err(|reason| Diagnostic::coded(
