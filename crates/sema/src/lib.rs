@@ -1620,6 +1620,9 @@ impl Checker {
                 } else {
                     self.cast_integer_type(ty, span)?
                 };
+                // C cast results are rvalues: top-level qualifiers on the
+                // type name do not qualify the resulting scalar value.
+                let dest = dest.unqualified().clone();
                 let value = self.check_expr(operand, span)?.rvalue();
                 match &dest {
                     CType::Integer { .. } if value.ty.is_integer() => {},
