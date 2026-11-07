@@ -47,9 +47,68 @@ pub fn decimal_float_rank(text: &str) -> Result<FloatRank, &'static str> {
     Ok(rank)
 }
 
+/// Full C99 hexadecimal float spelling (not decimal FP arithmetic).
+/// The original lexeme is retained for target-specific rounding later.
+pub fn floating_rank(text: &str) -> Result<FloatRank, &'static str> {
+    if text.starts_with("0x") || text.starts_with("0X") {
+        return hex_float_rank(text);
+    }
+    decimal_float_rank(text)
+}
+
+fn hex_float_rank(text: &str) -> Result<FloatRank, &'static str> {
+    let bytes = text.as_bytes();
+    let (limit, rank) = match bytes.last().copied() {
+        Some(b'f' | b'F') => (bytes.len() - 1, FloatRank::Float),
+        Some(b'l' | b'L') => (bytes.len() - 1, FloatRank::LongDouble),
+        _ => (bytes.len(), FloatRank::Double),
+    };
+    let mut i = 2; // required 0x or 0X prefix, already checked above
+    let start = i;
+    while i < limit && bytes[i].is_ascii_hexdigit() { i += 1; }
+    let mut digits = i - start;
+    if i < limit && bytes[i] == b'.' {
+        i += 1;
+        let begin = i;
+        while i < limit && bytes[i].is_ascii_hexdigit() { i += 1; }
+        digits += i - begin;
+    }
+    if digits == 0 || i >= limit || !matches!(bytes[i], b'p' | b'P') {
+        return Err("hexadecimal floating constant requires a significand and p exponent");
+    }
+    i += 1;
+    if i < limit && matches!(bytes[i], b'+' | b'-') { i += 1; }
+    let begin = i;
+    while i < limit && bytes[i].is_ascii_digit() { i += 1; }
+    if begin == i || i != limit {
+        return Err("hexadecimal floating exponent requires decimal digits");
+    }
+    Ok(rank)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn csmith_hex_floating_tokens_parse_without_numeric_rounding() {
+        for (text, rank) in [
+            ("0x1.0p-100f", FloatRank::Float),
+            ("0x1.0p-28f", FloatRank::Float),
+            ("0x1.0p100f", FloatRank::Float),
+            ("0x1p+2", FloatRank::Double),
+            ("0X.8P+3L", FloatRank::LongDouble),
+            ("0x1.fp-2", FloatRank::Double),
+        ] {
+            assert_eq!(floating_rank(text), Ok(rank), "{text}");
+        }
+        for invalid in ["0x1.0", "0x.p1", "0x1p", "0x1p+", "0x1p-2ff",
+                        "0x1p+3u", "0x1p+1.0", "0x1p+1e2"] {
+            assert!(floating_rank(invalid).is_err(), "{invalid}");
+        }
+        // Integer constants must remain integer tokens (the lexer tests this).
+        assert!(floating_rank("0x1f").is_err());
+    }
 
     #[test]
     fn accepts_complete_decimal_float_spelling_and_retains_rank() {
@@ -70,7 +129,7 @@ mod tests {
         for literal in [
             "1f", "1L", ".f", "1e", "1e+", "1e-",
             "0.5ff", "0.5u", "1.2.3", "1e++3", "1e-+2",
-            "0x1p+2", "0x1.8p3", "1._2", "0.5f_suffix",
+            "1._2", "0.5f_suffix",
         ] {
             assert!(decimal_float_rank(literal).is_err(), "{literal}");
         }
