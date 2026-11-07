@@ -205,7 +205,11 @@ impl<'a> Scanner<'a> {
                         "hexadecimal integer constant requires at least one digit",
                     ));
                 }
-                if crate::integer_literal::decode_integer_literal(literal).is_ok() {
+                if literal.bytes().all(|c| c.is_ascii_digit())
+                    || crate::integer_literal::decode_integer_literal(literal).is_ok()
+                {
+                    // Preserve the parser's precise invalid-octal diagnostic
+                    // for digit-only tokens like 08 instead of a suffix error.
                     TokenKind::Number
                 } else if crate::floating_literal::decimal_float_rank(literal).is_ok() {
                     TokenKind::FloatingNumber
