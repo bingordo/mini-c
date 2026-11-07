@@ -22,6 +22,8 @@ pub enum Category { Value, LValue, Function }
 #[derive(Debug, Clone, PartialEq)]
 pub enum CheckedExprKind {
     Literal(u64),
+    /// Exact token retained until target-specific floating rounding is supported.
+    FloatLiteral(String),
     EnumConstant(i64),
     /// Narrow C string including its trailing NUL; storage is emitted by the backend.
     StringLiteral(Vec<u8>),
