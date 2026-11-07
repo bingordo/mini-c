@@ -958,6 +958,23 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_decl(&mut self, is_typedef: bool) -> Result<Decl, Diagnostic> {
+        let mut declarations = self.parse_decl_group(is_typedef)?;
+        if declarations.len() != 1 {
+            return Err(Diagnostic::coded(
+                declarations[1].name_span.unwrap_or(declarations[1].span),
+                DiagnosticCode::SyntaxInvalidDeclaration,
+                "multiple declarators are supported only inside a block",
+            ));
+        }
+        Ok(declarations.pop().expect("nonempty declaration group"))
+    }
+
+    /// ISO C declarations share one type specifier and storage class, but
+    /// each comma-separated declarator has its *own* pointer/array shape and
+    /// initializer. Register every name before its own initializer; this
+    /// preserves typedef shadowing and ordinary C declaration scope.
+    /// Callers inside blocks flatten these into statements in the same scope.
+    fn parse_decl_group(&mut self, is_typedef: bool) -> Result<Vec<Decl>, Diagnostic> {
         let storage_span = self.peek()?.map_or(self.eof_span(), |t| t.span);
         let storage = match self.peek()?.map(|t| t.text) {
             Some("static") => { self.take()?; StorageClass::Static },
@@ -971,23 +988,39 @@ impl<'a> Parser<'a> {
         }
         let (base, start) = self.parse_type()?
             .ok_or_else(|| Diagnostic::new(self.eof_span(), "expected type"))?;
-        let (name, ty, _, name_span) = self.parse_declarator_shape(false)?.finish(base);
-        self.scopes.declare(&name, if is_typedef { Binding::Typedef } else { Binding::Ordinary });
-        let initializer_operator = self.peek()?.filter(|t| t.text == "=").map(|t| t.span);
-        let init = if initializer_operator.is_some() {
-            self.take()?;
-            Some(self.parse_initializer()?)
-        } else {
-            None
-        };
-        if is_typedef {
-            if let Some(span) = initializer_operator {
-                return Err(Diagnostic::coded(span, DiagnosticCode::SyntaxInvalidDeclaration,
-                    "typedef cannot have an initializer"));
+        let mut declarations = Vec::new();
+        loop {
+            let (name, ty, _, name_span) =
+                self.parse_declarator_shape(false)?.finish(base.clone());
+            self.scopes.declare(&name,
+                if is_typedef { Binding::Typedef } else { Binding::Ordinary });
+            let initializer_operator = self.peek()?.filter(|t| t.text == "=").map(|t| t.span);
+            let init = if initializer_operator.is_some() {
+                self.take()?;
+                Some(self.parse_initializer()?)
+            } else {
+                None
+            };
+            if is_typedef {
+                if let Some(span) = initializer_operator {
+                    return Err(Diagnostic::coded(span, DiagnosticCode::SyntaxInvalidDeclaration,
+                        "typedef cannot have an initializer"));
+                }
             }
+            declarations.push(Decl {
+                storage, name, name_span, ty, asm_label: None, init,
+                span: Span { lo: start, hi: start },
+            });
+            if self.peek()?.is_some_and(|t| t.text == ",") {
+                self.take()?;
+                continue;
+            }
+            let end = self.expect(";")?.span.hi;
+            for declaration in &mut declarations {
+                declaration.span.hi = end;
+            }
+            return Ok(declarations);
         }
-        let end = self.expect(";")?.span.hi;
-        Ok(Decl { storage, name, name_span, ty, asm_label: None, init, span: Span { lo: start, hi: end } })
     }
 
     fn parse_tag_or_decl(&mut self) -> Result<Stmt, Diagnostic> {
@@ -1127,7 +1160,29 @@ impl<'a> Parser<'a> {
                     let end = self.take()?.expect("peeked token").span.hi;
                     return Ok((Stmt::Block(statements), end));
                 }
-                statements.push(self.parse_stmt()?);
+                // A declaration-list is one C block item, not a nested
+                // scope. Flatten its individual checked declarations into
+                // this same block so later statements can use every name.
+                let declaration = match token.text {
+                    "typedef" => {
+                        self.take()?;
+                        Some(true)
+                    }
+                    "static" | "extern" | "register" | "int" | "char" | "short"
+                    | "long" | "_Float128" | "float" | "double" | "void"
+                    | "unsigned" | "signed" | "const" | "restrict"
+                    | "__restrict" | "__restrict__" => Some(false),
+                    _ if token.kind == TokenKind::TypedefName => Some(false),
+                    _ => None,
+                };
+                if let Some(is_typedef) = declaration {
+                    for decl in self.parse_decl_group(is_typedef)? {
+                        statements.push(if is_typedef { Stmt::Typedef(decl) }
+                            else { Stmt::Decl(decl) });
+                    }
+                } else {
+                    statements.push(self.parse_stmt()?);
+                }
             }
         })();
         self.scopes.leave();
@@ -1978,6 +2033,41 @@ mod tests {
         for malformed in ["1e+", "0.5ff", "0x1p+"] {
             let src = format!("double value(void) {{ return {malformed}; }}");
             assert!(Parser::new(&src).next_item().is_err(), "{malformed}");
+        }
+    }
+
+
+    #[test]
+    fn m10_block_declaration_lists_share_one_scope_and_keep_shapes() {
+        let source = "int use(void) { typedef int Word, Other; \
+            Word i=3, j=i+4; int *p=&i, k=2; return *p+j+k; }";
+        let mut parser = Parser::new(source);
+        let Some(ExternalItem::Function(fun)) = parser.next_item().unwrap() else {
+            panic!("function required");
+        };
+        let Stmt::Block(stmts) = fun.body else { panic!("block required") };
+        assert_eq!(stmts.len(), 7);
+        let names = stmts.iter().filter_map(|stmt| match stmt {
+            Stmt::Decl(d) => Some(d.name.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(names, ["i", "j", "p", "k"]);
+        assert!(matches!(stmts[0], Stmt::Typedef(_)));
+        assert!(matches!(stmts[1], Stmt::Typedef(_)));
+        assert!(matches!(stmts[6], Stmt::Return(_)));
+        assert!(parser.next_item().unwrap().is_none());
+    }
+
+    #[test]
+    fn m10_block_list_rejects_malformed_declarators_and_initializers() {
+        for source in [
+            "int f(void){ int a,; return 0; }",
+            "int f(void){ int a=1,b=; return a; }",
+            "int f(void){ typedef int A,B=1; return 0; }",
+            "int f(void){ int a=1,,b=2; return a; }",
+            "int f(void){ for(int i=0,j=1;i<2;i++) return j; return 0; }",
+        ] {
+            assert!(Parser::new(source).next_item().is_err(), "{source}");
         }
     }
 
