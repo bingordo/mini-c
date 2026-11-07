@@ -1610,10 +1610,30 @@ impl Checker {
                     Box::new(condition), Box::new(yes), Box::new(no))))
             }
             Expr::Cast(ty, operand) => {
-                let dest = self.cast_integer_type(ty, span)?;
+                // Preserve the existing integer cast rules, and accept the
+                // ordinary C pointer type-name syntax without assuming that
+                // all integer-to-pointer conversions have portable meaning.
+                let dest = if matches!(ty, Type::Pointer(..) | Type::Alias(..)
+                    | Type::Qualified(..))
+                {
+                    self.resolve_sizeof_type(ty, span)?
+                } else {
+                    self.cast_integer_type(ty, span)?
+                };
+                // C cast results are rvalues: top-level qualifiers on the
+                // type name do not qualify the resulting scalar value.
+                let dest = dest.unqualified().clone();
                 let value = self.check_expr(operand, span)?.rvalue();
-                if !value.ty.is_integer() {
-                    return Err(type_error(span, "integer cast requires integer operand"));
+                match &dest {
+                    CType::Integer { .. } if value.ty.is_integer() => {},
+                    CType::Pointer(_) if matches!(value.ty.unqualified(), CType::Pointer(_)) => {},
+                    CType::Pointer(_) if value.ty.is_integer()
+                        && const_eval::evaluate(&value, self.target) == Ok(0) => {},
+                    CType::Pointer(_) => return Err(type_error(span,
+                        "pointer cast requires a pointer or null integer constant")),
+                    CType::Integer { .. } => return Err(type_error(span,
+                        "integer cast requires integer operand")),
+                    _ => return Err(type_error(span, "unsupported cast type-name")),
                 }
                 Ok(self.convert(value, &dest))
             }

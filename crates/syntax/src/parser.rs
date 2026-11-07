@@ -457,15 +457,23 @@ impl<'a> Parser<'a> {
                 self.located(Expr::Name(t.text.to_owned()), t.span),
             Some(t) if t.text == "(" => {
                 // Typedef-aware type-name recognition distinguishes (T)x from
-                // (x) without rewinding the incremental lexer. Only integer
-                // scalar type names are accepted in this first cast slice.
+                // (x) without rewinding the incremental lexer. Parse the
+                // full *abstract declarator* after the base type so a cast
+                // like (void*)0 is not mistaken for (void) followed by *.
                 let cast_type = self.peek()?.is_some_and(|next| {
                     matches!(next.text, "int" | "char" | "short" | "long" | "_Float128" | "float" | "double" | "void" |
-                        "signed" | "unsigned" | "struct" | "union" | "enum")
+                        "signed" | "unsigned" | "struct" | "union" | "enum" |
+                        "const" | "restrict" | "__restrict" | "__restrict__")
                         || next.kind == TokenKind::TypedefName
                 });
                 if cast_type {
-                    let (ty, _) = self.parse_type()?.expect("type-name lookahead");
+                    let (base, _) = self.parse_type()?.expect("type-name lookahead");
+                    let (name, ty, nested, _) = self.parse_declarator_shape(true)?.finish(base);
+                    if !name.is_empty() || nested.is_some() {
+                        return Err(Diagnostic::coded(t.span,
+                            DiagnosticCode::SyntaxInvalidDeclaration,
+                            "cast requires an abstract type-name declarator"));
+                    }
                     let close = self.expect(")")?;
                     let operand = self.parse_unary()?;
                     let hi = operand.location().map_or(close.span.hi, |span| span.hi);
@@ -2006,7 +2014,20 @@ mod tests {
             if **inner == Type::Char));
         let mut parser = Parser::new("int f(int x) { return (x) + 1; }");
         assert!(matches!(parser.next_item(), Ok(Some(ExternalItem::Function(_)))));
-        assert!(Parser::new("int f(int x) { return (unsigned *)x; }").next_item().is_err());
+        assert!(matches!(Parser::new("int f(int x) { return (const int)x; }")
+            .next_item(), Ok(Some(ExternalItem::Function(_)))));
+        let ExternalItem::Function(fun) = Parser::new(
+            "int f(void) { return (void*)0 == (unsigned *)0; }"
+        ).next_item().unwrap().unwrap() else { panic!("function expected"); };
+        let Stmt::Block(stmts) = fun.body else { panic!("block expected"); };
+        let Stmt::Return(Some(Expr::Binary(BinOp::Eq, left, right))) = &stmts[0]
+            else { panic!("cast comparison expected"); };
+        assert!(matches!(left.as_ref(), Expr::Cast(Type::Pointer(inner), _)
+            if matches!(inner.as_ref(), Type::Void)));
+        assert!(matches!(right.as_ref(), Expr::Cast(Type::Pointer(inner), _)
+            if matches!(inner.as_ref(), Type::Unsigned(_))));
+        assert!(Parser::new("int f(int x) { return (unsigned *name)x; }")
+            .next_item().is_err());
     }
 
 
