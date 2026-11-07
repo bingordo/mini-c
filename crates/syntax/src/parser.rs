@@ -2036,4 +2036,40 @@ mod tests {
         }
     }
 
+
+    #[test]
+    fn m10_block_declaration_lists_share_one_scope_and_keep_shapes() {
+        let source = "typedef int Word, Other; int use(void) { \
+            Word i=3, j=i+4; int *p=&i, k=2; return *p+j+k; }";
+        let mut parser = Parser::new(source);
+        assert!(matches!(parser.next_item().unwrap(), Some(ExternalItem::Typedef(_))));
+        assert!(matches!(parser.next_item().unwrap(), Some(ExternalItem::Typedef(_))));
+        let Some(ExternalItem::Function(fun)) = parser.next_item().unwrap() else {
+            panic!("function required");
+        };
+        let Stmt::Block(stmts) = fun.body else { panic!("block required") };
+        assert_eq!(stmts.len(), 6);
+        let names = stmts.iter().filter_map(|stmt| match stmt {
+            Stmt::Decl(d) => Some(d.name.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(names, ["i", "j", "p", "k"]);
+        assert!(matches!(stmts[0], Stmt::Decl(_)));
+        assert!(matches!(stmts[4], Stmt::Return(_)));
+        assert!(parser.next_item().unwrap().is_none());
+    }
+
+    #[test]
+    fn m10_block_list_rejects_malformed_declarators_and_initializers() {
+        for source in [
+            "int f(void){ int a,; return 0; }",
+            "int f(void){ int a=1,b=; return a; }",
+            "int f(void){ typedef int A,B=1; return 0; }",
+            "int f(void){ int a=1,,b=2; return a; }",
+            "int f(void){ for(int i=0,j=1;i<2;i++) return j; return 0; }",
+        ] {
+            assert!(Parser::new(source).next_item().is_err(), "{source}");
+        }
+    }
+
 }
