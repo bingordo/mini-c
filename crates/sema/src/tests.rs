@@ -1772,3 +1772,23 @@ fn m10_floating_arithmetic_rejects_integer_only_and_pointer_operations() {
     // Floating expressions are not integer constant expressions.
     reject("enum E { A=(1.5f + 2.5f) };", "integer constant expression");
 }
+
+#[test]
+fn m10_floating_conditional_common_type_is_not_integer() {
+    use mini_c_syntax::ast::FloatRank;
+    for (source, expected) in [
+        ("float f(int test,float a,float b){return test ? a : b;}",
+            CType::Floating(FloatRank::Float)),
+        ("double f(int test,float a,double b){return test ? a : b;}",
+            CType::Floating(FloatRank::Double)),
+        ("float f(int test,float a){return test ? a : 0;}",
+            CType::Floating(FloatRank::Float)),
+    ] {
+        let items = check(source).unwrap();
+        let CheckedItem::Function(fun) = &items[0] else { panic!("function"); };
+        let CheckedStmt::Block(stmts) = &fun.body else { panic!("block"); };
+        let CheckedStmt::Return(Some(result)) = &stmts[0] else { panic!("return"); };
+        assert_eq!(result.ty, expected, "{source}");
+        assert!(matches!(result.kind, CheckedExprKind::Conditional(..)), "{source}");
+    }
+}
