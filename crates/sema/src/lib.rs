@@ -1274,10 +1274,25 @@ impl Checker {
                 };
                 CType::Integer { rank, unsigned }
             }
-            Type::Array(inner, None) => CType::Array(Box::new(
-                self.resolve_sizeof_type(inner, span)?), None),
-            // Constant-bounded abstract arrays are deferred until ordinary
-            // type resolution can be shared without mutating symbol scopes.
+            Type::Array(inner, bound) => {
+                let element = self.resolve_sizeof_type(inner, span)?;
+                let count = bound.as_ref().map(|expr| {
+                    let typed = self.check_expr(expr, span)?;
+                    if !typed.ty.is_integer() {
+                        return Err(type_error(span,
+                            "array bound requires an integer constant expression"));
+                    }
+                    let value = const_eval::evaluate(&typed, self.target)
+                        .map_err(|why| type_error(span, format!(
+                            "array bound requires an integer constant expression: {why}")))?;
+                    if value <= 0 {
+                        return Err(type_error(span, "array bound must be positive"));
+                    }
+                    u64::try_from(value)
+                        .map_err(|_| type_error(span, "array bound exceeds the supported range"))
+                }).transpose()?;
+                CType::Array(Box::new(element), count)
+            }
             _ => return Err(type_error(span,
                 "unsupported sizeof type-name; requires a non-defining complete type")),
         })
