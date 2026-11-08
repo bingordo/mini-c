@@ -154,6 +154,8 @@ pub enum Expr {
     Name(Ident),
     /// C sizeof(type-name): operand is a type, never evaluated at runtime.
     SizeofType(Type),
+    /// ISO C99 sizeof unary-expression: type-check but never evaluate operand.
+    SizeofExpr(Box<Expr>),
     Unary(UnOp, Box<Expr>),
     Binary(BinOp, Box<Expr>, Box<Expr>),
     Call(Box<Expr>, Vec<Expr>),
