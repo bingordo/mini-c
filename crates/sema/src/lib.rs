@@ -1107,7 +1107,16 @@ impl Checker {
             const_eval::evaluate(expression, self.target).map_err(|why|
                 type_error(span, format!("initializer is not a valid integer constant expression: {why}")))?;
         } else if matches!(ty, CType::Pointer(_)) {
-            let null = const_eval::evaluate(expression, self.target) == Ok(0);
+            // A checked C null pointer initializer is commonly represented
+            // as a conversion from an integer constant expression (including
+            // explicit (void*)0 or nested pointer casts). Do not ask the
+            // integer evaluator to interpret the pointer-typed conversion.
+            let mut constant = expression;
+            while let CheckedExprKind::Convert(inner) = &constant.kind {
+                constant = inner;
+            }
+            let null = constant.ty.is_integer()
+                && const_eval::evaluate(constant, self.target) == Ok(0);
             let address_of_global = match original {
                 Expr::Unary(UnOp::Address, inner) => match inner.without_location() {
                     Expr::Name(name) => self.globals.get(name).is_some_and(|s| s.kind != SymbolKind::Typedef),
