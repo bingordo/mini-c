@@ -1,0 +1,205 @@
+{
+  "schema_version": 1,
+  "standards_mode": "-std=c99 -pedantic-errors -fsyntax-only",
+  "description": "Strict C99 frontend-only probes. supported: Mini-C must match; gap: valid C99 remains unsupported and is measured, not counted as a passing C99 feature.",
+  "cases": [
+    {
+      "id": "sizeof-array",
+      "feature": "F2.1",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_sizeof_expression_preserves_array_types_and_is_unevaluated",
+      "source": "int f(void){int a[@N@];return sizeof a == @N@ * sizeof(int);}"
+    },
+    {
+      "id": "sizeof-unevaluated",
+      "feature": "F2.1",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_sizeof_expression_preserves_array_types_and_is_unevaluated",
+      "source": "int f(void){int n=@N@;return sizeof(n++) == sizeof(int);}"
+    },
+    {
+      "id": "sizeof-abstract-array",
+      "feature": "F2.1",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_sizeof_expression_preserves_array_types_and_is_unevaluated",
+      "source": "int f(void){return sizeof(int[@N@]) == @N@ * sizeof(int);}"
+    },
+    {
+      "id": "for-scope",
+      "feature": "F1",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:for",
+      "source": "int f(void){int r=0;for(int i=0;i<@N@;i++){r+=i;}return r;}"
+    },
+    {
+      "id": "conditional-integer",
+      "feature": "F2",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:typed_parameters_arithmetic_and_returns",
+      "source": "int f(int x){return x ? @N@ : @N@+1;}"
+    },
+    {
+      "id": "float-arithmetic",
+      "feature": "F2",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:m10_floating_usual_arithmetic_preserves_checked_result_types",
+      "source": "float f(float x){return x + @N@.5f;}"
+    },
+    {
+      "id": "pointer-index",
+      "feature": "F2",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:indexing_checks_lvalue_and_pointee_arithmetic",
+      "source": "int f(int *p){return p[@N@];}"
+    },
+    {
+      "id": "const-reassignment",
+      "feature": "F1",
+      "expect": "reject",
+      "mini": "supported",
+      "kind": "constraint",
+      "test_ref": "crates/sema/src/tests.rs:assignment",
+      "source": "int f(void){const int x=@N@;x=2;return x;}"
+    },
+    {
+      "id": "duplicate-local",
+      "feature": "F1",
+      "expect": "reject",
+      "mini": "supported",
+      "kind": "constraint",
+      "test_ref": "crates/sema/src/tests.rs:scoping_and_shadowing",
+      "source": "int f(void){int x=@N@;int x=3;return x;}"
+    },
+    {
+      "id": "sizeof-void",
+      "feature": "F2.1",
+      "expect": "reject",
+      "mini": "supported",
+      "kind": "constraint",
+      "test_ref": "crates/sema/src/tests.rs:c99_sizeof_expression_typedef_disambiguation_and_constraints",
+      "source": "int f(void){return sizeof(void);}"
+    },
+    {
+      "id": "pointer-plus-pointer",
+      "feature": "F2",
+      "expect": "reject",
+      "mini": "supported",
+      "kind": "constraint",
+      "test_ref": "crates/sema/src/tests.rs:indexing_checks_lvalue_and_pointee_arithmetic",
+      "source": "int *f(int *p,int *q){return p+q;}"
+    },
+    {
+      "id": "switch-statement",
+      "feature": "F1",
+      "expect": "accept",
+      "mini": "gap",
+      "kind": "valid",
+      "test_ref": "docs/C99_Frontend_Plan.md:F1",
+      "source": "int f(int x){switch(x){case @N@:return 1;default:return 0;}}"
+    },
+    {
+      "id": "goto-label",
+      "feature": "F1",
+      "expect": "accept",
+      "mini": "gap",
+      "kind": "valid",
+      "test_ref": "docs/C99_Frontend_Plan.md:F1",
+      "source": "int f(int x){if(x)goto done; x=@N@; done:return x;}"
+    },
+    {
+      "id": "bool-type",
+      "feature": "F1",
+      "expect": "accept",
+      "mini": "gap",
+      "kind": "valid",
+      "test_ref": "docs/C99_Frontend_Plan.md:F1",
+      "source": "int f(void){_Bool b=@N@;return b;}"
+    },
+    {
+      "id": "volatile-type",
+      "feature": "F1",
+      "expect": "accept",
+      "mini": "gap",
+      "kind": "valid",
+      "test_ref": "docs/C99_Frontend_Plan.md:F1",
+      "source": "int f(void){volatile int x=@N@;return x;}"
+    },
+    {
+      "id": "designated-init",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "gap",
+      "kind": "valid",
+      "test_ref": "docs/C99_Frontend_Plan.md:F3",
+      "source": "struct S{int a,b;};int f(void){struct S x={.b=@N@,.a=1};return x.b;}"
+    },
+    {
+      "id": "compound-literal",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "gap",
+      "kind": "valid",
+      "test_ref": "docs/C99_Frontend_Plan.md:F3",
+      "source": "struct S{int x;};int f(void){return ((struct S){.x=@N@}).x;}"
+    },
+    {
+      "id": "vla-auto",
+      "feature": "F4",
+      "expect": "accept",
+      "mini": "gap",
+      "kind": "valid",
+      "test_ref": "docs/C99_Frontend_Plan.md:F4",
+      "source": "int f(int n){int a[n];a[0]=@N@;return sizeof a > 0;}"
+    },
+    {
+      "id": "func-identifier",
+      "feature": "F1",
+      "expect": "accept",
+      "mini": "gap",
+      "kind": "valid",
+      "test_ref": "docs/C99_Frontend_Plan.md:F1",
+      "source": "int f(void){return sizeof __func__ >= @N@;}"
+    },
+    {
+      "id": "floating-cast",
+      "feature": "F2",
+      "expect": "accept",
+      "mini": "gap",
+      "kind": "valid",
+      "test_ref": "docs/C99_Frontend_Plan.md:F2",
+      "source": "int f(void){return (int)@N@.25;}"
+    },
+    {
+      "id": "bitfield-struct",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "gap",
+      "kind": "valid",
+      "test_ref": "docs/C99_Frontend_Plan.md:F3",
+      "source": "struct S{unsigned int a:3;};int f(void){struct S s={@N@%8};return s.a;}"
+    },
+    {
+      "id": "complex-type",
+      "feature": "F5",
+      "expect": "accept",
+      "mini": "gap",
+      "kind": "valid",
+      "test_ref": "docs/C99_Frontend_Plan.md:F5",
+      "source": "double _Complex f(double _Complex z){return z + @N@.0;}"
+    }
+  ]
+}

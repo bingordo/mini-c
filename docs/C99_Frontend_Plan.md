@@ -18,9 +18,24 @@ Keep the incremental item-at-a-time checker and the existing external `cc -E` pr
 ## F0 — Audit and test matrix
 
 - [x] Record a source-based baseline of missing constructs (this file).
-- [ ] Add machine-readable C99 feature rows with references to parser/sema tests and required diagnostics.
-- [ ] Add GCC/Clang acceptance harness for source-only checks. Compare structured checked types, not just “both exited 0”.
-- [ ] Generate bounded positive/negative examples by grammar feature; save failed seeds and exact first diagnostic.
+- [x] Add `tools/c99_features.json`: machine-readable positive/constraint rows with feature IDs, current Mini-C support/gap status and source test references.
+- [x] Add `tools/c99_frontend_matrix.py`: strict independent GCC/Clang C99 syntax+constraint acceptance oracle, Mini-C comparison, preserved reference verdicts and explicit coverage gaps. Compile-time C99 `sizeof` type witnesses and `c99_f0_feature_matrix_checked_shapes_are_not_only_exit_codes` assert checked-IR types/kinds; a future larger corpus must extend these assertions feature by feature.
+- [x] Generate bounded reproducible variants from explicit valid/invalid grammar fixtures. Record seed, generated source SHA, compiler commands, tool versions, acceptance, exact first diagnostic, and artifacts for unexpected discrepancies; optionally apply a bounded source-line reducer without changing the independent reference verdict. CI uploads the full coverage report.
+
+### F0 acceptance and usage
+
+Current baseline (2026-11-08): **22 cases × 2 deterministic variants = 44 source-only probes**; strict GCC and Clang agree with the normative fixture labels, Mini-C matches 22 probes and explicitly does not accept 22 *valid C99* gap probes. There were zero unexpected mismatches in [syntax CI run #42499920995](https://github.com/bingordo/mini-c/actions/runs/42499920995). These gaps **do not count** toward conformance. Focused Rust checked-IR assertions verify types and expression shape; additional features must expand those assertions.
+
+Run after `cargo build -p mini-c`:
+
+```sh
+python3 -m unittest discover -s tools/tests -p 'test_c99_frontend_matrix.py'
+python3 tools/c99_frontend_matrix.py \
+  --mini target/debug/mini-c --seed 99 --variants 2 --minimize \
+  --report target/c99-f0/report.json --artifacts target/c99-f0/failures
+```
+
+The CI syntax job runs this independently of native backend/FP execution. Every unexpected mismatch fails CI and preserves source, SHA, reference commands, compiler diagnostics and optionally a minimized repro. The suite is a **baseline**, not a complete C99 conformance claim. New F1–F5 features should convert recorded `mini: gap` rows to `mini: supported` only after independent semantic tests and the GCC/Clang matrix pass.
 
 ## F1 — Core statements, objects and specifiers (highest priority)
 

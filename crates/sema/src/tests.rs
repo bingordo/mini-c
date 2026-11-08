@@ -1871,3 +1871,36 @@ fn c99_sizeof_expression_typedef_disambiguation_and_constraints() {
     reject("int g(void); int f(void) { return sizeof(g); }", "complete object type");
     reject("int f(void) { int a[]; return sizeof(a); }", "incomplete local object type");
 }
+
+#[test]
+fn c99_f0_feature_matrix_checked_shapes_are_not_only_exit_codes() {
+    use mini_c_syntax::ast::{BinOp, FloatRank};
+    // tools/c99_features.json:sizeof-array. The checked representation must
+    // be the size_t constant, not an address/array-decay or runtime load.
+    let items = check("unsigned long f(void){int a[4]; return sizeof a;}").unwrap();
+    let CheckedItem::Function(fun) = &items[0] else { panic!("function"); };
+    let CheckedStmt::Block(stmts) = &fun.body else { panic!("body"); };
+    let CheckedStmt::Return(Some(size)) = &stmts[1] else { panic!("return"); };
+    assert_eq!(size.ty, CType::Integer { rank: IntRank::Long, unsigned: true });
+    assert!(matches!(size.kind, CheckedExprKind::Literal(16)));
+    assert_eq!(size.category, Category::Value);
+
+    // tools/c99_features.json:float-arithmetic. The result and operands
+    // remain floating typed; accepting syntax alone would miss wrong typing.
+    let items = check("float f(float x){return x + 3.5f;}").unwrap();
+    let CheckedItem::Function(fun) = &items[0] else { panic!("function"); };
+    let CheckedStmt::Block(stmts) = &fun.body else { panic!("body"); };
+    let CheckedStmt::Return(Some(sum)) = &stmts[0] else { panic!("return"); };
+    assert_eq!(sum.ty, CType::Floating(FloatRank::Float));
+    assert!(matches!(sum.kind, CheckedExprKind::Binary(BinOp::Add, _, _)));
+    assert_eq!(sum.category, Category::Value);
+
+    // tools/c99_features.json:conditional-integer. Check the actual lazy
+    // conditional expression kind and integer result type.
+    let items = check("int f(int x){return x ? 3 : 4;}").unwrap();
+    let CheckedItem::Function(fun) = &items[0] else { panic!("function"); };
+    let CheckedStmt::Block(stmts) = &fun.body else { panic!("body"); };
+    let CheckedStmt::Return(Some(expr)) = &stmts[0] else { panic!("return"); };
+    assert_eq!(expr.ty, CType::int());
+    assert!(matches!(expr.kind, CheckedExprKind::Conditional(..)));
+}
