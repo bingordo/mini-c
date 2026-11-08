@@ -1634,7 +1634,7 @@ fn s12_sizeof_type_folds_in_glibc_array_bounds() {
     assert!(matches!(c.ty, CType::Array(_, Some(8))));
     reject("int a[sizeof(void)];", "complete object type");
     reject("int a[sizeof(int[])];", "complete object type");
-    reject("int a[sizeof(missing)];", "expected");
+    reject("int a[sizeof(missing)];", "undeclared identifier");
 }
 
 #[test]
@@ -1858,7 +1858,7 @@ fn c99_sizeof_expression_typedef_disambiguation_and_constraints() {
         "int f(void) { int Tval=1; return sizeof(Tval)==sizeof(T); }"
     )).unwrap();
     check("int f(int a[9]) { return sizeof(a) == sizeof(int *); }").unwrap();
-    reject("int f(void) { return sizeof(missing); }", "unknown");
+    reject("int f(void) { return sizeof(missing); }", "undeclared identifier");
     reject("int f(void) { return sizeof(void); }", "complete object type");
     reject("int f(void) { return sizeof(int[]); }", "complete object type");
     reject("int g(void); int f(void) { return sizeof(g); }", "complete object type");
