@@ -1820,3 +1820,47 @@ fn m10_checked_block_declaration_groups_preserve_scope_and_order() {
     reject("int f(void){ int a=1,b=unknown; return a; }", "undeclared identifier");
     reject("int f(void){ const int a=1,b=a+2; b=3; return a; }", "modifiable lvalue");
 }
+
+#[test]
+fn c99_sizeof_expression_preserves_array_types_and_is_unevaluated() {
+    let items = check(concat!(
+        "int a[7]; int changed; ",
+        "int f(int *p) { ",
+        "return sizeof a == 28 && sizeof(a) == 28 && ",
+        "sizeof(a[0]) == 4 && sizeof(*p) == 4 && ",
+        "sizeof p == 8 && sizeof(p+1) == 8 && ",
+        "sizeof(changed++) == 4 && sizeof(++changed) == 4 && ",
+        "sizeof(1.0f) == 4 && sizeof 2.0 == 8 && ",
+        "sizeof \"abc\" == 4 && sizeof(int[3]) == 12; }"
+    )).unwrap();
+    let CheckedItem::Function(fun) = &items[2] else { panic!("expected function"); };
+    let CheckedStmt::Block(stmts) = &fun.body else { panic!("expected body"); };
+    let CheckedStmt::Return(Some(expr)) = &stmts[0] else { panic!("expected return"); };
+    assert_eq!(expr.ty, CType::int());
+    // Any side-effecting sizeof operand is discarded during checking.
+    // Only a constant size_t value appears in the checked tree.
+    fn count_updates(e: &CheckedExpr) -> usize {
+        match &e.kind {
+            CheckedExprKind::Update { .. } => 1,
+            CheckedExprKind::Binary(_, a, b) => count_updates(a) + count_updates(b),
+            CheckedExprKind::Convert(inner) | CheckedExprKind::Load(inner) =>
+                count_updates(inner),
+            _ => 0,
+        }
+    }
+    assert_eq!(count_updates(expr), 0);
+}
+
+#[test]
+fn c99_sizeof_expression_typedef_disambiguation_and_constraints() {
+    check(concat!(
+        "typedef int T; int a[sizeof(T)]; ",
+        "int f(void) { int Tval=1; return sizeof(Tval)==sizeof(T); }"
+    )).unwrap();
+    check("int f(int a[9]) { return sizeof(a) == sizeof(int *); }").unwrap();
+    reject("int f(void) { return sizeof(missing); }", "unknown");
+    reject("int f(void) { return sizeof(void); }", "complete object type");
+    reject("int f(void) { return sizeof(int[]); }", "complete object type");
+    reject("int g(void); int f(void) { return sizeof(g); }", "complete object type");
+    reject("int f(void) { int a[]; return sizeof(a); }", "complete object type");
+}
