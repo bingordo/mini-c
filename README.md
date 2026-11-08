@@ -2,6 +2,8 @@
 
 A small, embeddable Rust frontend for a deliberately limited subset of C, modeled in part on [bingundu/oberon](https://github.com/bingundu/oberon).
 
+**C99 frontend completion:** The active source-audited roadmap is [C99 Frontend Plan](docs/C99_Frontend_Plan.md). Parser/semantic C99 coverage is tracked independently of native and Cranelift codegen; previous broad “not supported” lists are historical and may be stale.
+
 ## Implemented functionality
 
 - Incremental lexer and translation-unit parser: each global declaration or complete function body can be consumed independently, without retaining an entire translation-unit AST.

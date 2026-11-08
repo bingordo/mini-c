@@ -2,6 +2,10 @@
 
 This plan combines language scope, architecture, backend reuse and validation. See [Specification](Specification.md) and [CI and testing](Testing.md). Work in substantial vertical slices; run targeted tests on every change and full integration suites at milestones.
 
+## Current frontend focus — C99 completion (2026-11-08)
+
+The authoritative ongoing C99-only checklist, ordered F0–F6 milestones, negative/positive test gates, and generated GCC/Clang conformance program are in [C99 Frontend Plan](C99_Frontend_Plan.md). Existing M0–M6 sections record prior development history, not a current gap inventory. The initial F2.1 implementation is expression-form `sizeof` (unevaluated operand and array no-decay), independent of code generation. The native FP backend is managed separately in `bingordo/compiler`.
+
 ## M0 — Foundation (complete; latest CI success assumed pending confirmation)
 
 - [x] Rust workspace and syntax AST scaffold.

@@ -1283,10 +1283,25 @@ impl Checker {
                 };
                 CType::Integer { rank, unsigned }
             }
-            Type::Array(inner, None) => CType::Array(Box::new(
-                self.resolve_sizeof_type(inner, span)?), None),
-            // Constant-bounded abstract arrays are deferred until ordinary
-            // type resolution can be shared without mutating symbol scopes.
+            Type::Array(inner, bound) => {
+                let element = self.resolve_sizeof_type(inner, span)?;
+                let count = bound.as_ref().map(|expr| {
+                    let typed = self.check_expr(expr, span)?;
+                    if !typed.ty.is_integer() {
+                        return Err(type_error(span,
+                            "array bound requires an integer constant expression"));
+                    }
+                    let value = const_eval::evaluate(&typed, self.target)
+                        .map_err(|why| type_error(span, format!(
+                            "array bound requires an integer constant expression: {why}")))?;
+                    if value <= 0 {
+                        return Err(type_error(span, "array bound must be positive"));
+                    }
+                    u64::try_from(value)
+                        .map_err(|_| type_error(span, "array bound exceeds the supported range"))
+                }).transpose()?;
+                CType::Array(Box::new(element), count)
+            }
             _ => return Err(type_error(span,
                 "unsupported sizeof type-name; requires a non-defining complete type")),
         })
@@ -1325,6 +1340,18 @@ impl Checker {
                     kind: CheckedExprKind::StringLiteral(bytes.clone()),
                 })
             },
+            Expr::SizeofExpr(operand) => {
+                // C99 6.5.3.4: the operand is *not evaluated*. In particular
+                // do not call .rvalue(), which would decay an array to pointer,
+                // or evaluate side effects from function calls and ++/--.
+                let typed = self.check_expr(operand, span)?;
+                let ty = self.complete_tag_type(typed.ty, span)?;
+                let size = ty.size_bytes(self.target).ok_or_else(|| type_error(
+                    span, "sizeof requires a complete object type (not void or function)"
+                ))?;
+                let size_ty = CType::Integer { rank: IntRank::Long, unsigned: true };
+                Ok(CheckedExpr::value(size_ty, CheckedExprKind::Literal(size)))
+            }
             Expr::SizeofType(type_name) => {
                 let operand_ty = self.resolve_sizeof_type(type_name, span)?;
                 let operand_ty = self.complete_tag_type(operand_ty, span)?;
