@@ -207,6 +207,13 @@ fn static_initializers_respect_target_arithmetic_and_short_circuit() {
     reject("int bad = 2147483647 + 1;", "signed integer overflow");
     reject("int bad = 1 / 0;", "integer constant expression");
     check("int global; int *pointer = &global; int *nil = 0;").unwrap();
+    check("int *global_ptr = (void*)0; void *global_void = (void*)0;").unwrap();
+    check("typedef int *Ptr; Ptr global_alias = (Ptr)0; int **global_nested=(int**)0;")
+        .unwrap();
+    check("int *p=(int*)(unsigned long)0;").unwrap();
+    reject("int *bad=(int*)1;", "pointer cast requires a pointer or null integer constant");
+    reject("int global; int *copy = &global; int *bad2 = (int*)copy;",
+        "pointer initializer requires");
     reject("int global; int *copy = &global; int *bad = copy;", "pointer initializer requires");
     reject("int f(void) { int auto_var; static int *bad = &auto_var; return 0; }", "pointer initializer requires");
 }
