@@ -380,20 +380,40 @@ impl<'a> Parser<'a> {
     fn parse_unary(&mut self) -> Result<Expr, Diagnostic> {
         if self.peek()?.is_some_and(|token| token.text == "sizeof") {
             let keyword = self.take()?.expect("peeked sizeof");
-            self.expect("(")?;
-            let (base, _) = self.parse_type()?.ok_or_else(|| Diagnostic::coded(
-                keyword.span, DiagnosticCode::SyntaxExpectedExpression,
-                "sizeof expression operands are not yet supported; expected a type name"
-            ))?;
-            let (name, ty, nested, _) = self.parse_declarator_shape(true)?.finish(base);
-            if !name.is_empty() || nested.is_some() {
-                return Err(Diagnostic::coded(keyword.span,
-                    DiagnosticCode::SyntaxExpectedExpression,
-                    "sizeof requires an abstract type-name declarator"));
+            if self.peek()?.is_some_and(|t| t.text == "(") {
+                self.take()?;
+                // A typedef-aware type-name lookahead is essential:
+                // sizeof(T) and sizeof(variable) have different AST forms.
+                let type_name = self.peek()?.is_some_and(|next| {
+                    matches!(next.text, "int" | "char" | "short" | "long" | "_Float128" |
+                        "float" | "double" | "void" | "signed" | "unsigned" |
+                        "struct" | "union" | "enum" | "const" | "restrict" |
+                        "__restrict" | "__restrict__")
+                        || next.kind == TokenKind::TypedefName
+                });
+                if type_name {
+                    let (base, _) = self.parse_type()?.expect("type-name lookahead");
+                    let (name, ty, nested, _) = self.parse_declarator_shape(true)?.finish(base);
+                    if !name.is_empty() || nested.is_some() {
+                        return Err(Diagnostic::coded(keyword.span,
+                            DiagnosticCode::SyntaxExpectedExpression,
+                            "sizeof requires an abstract type-name declarator"));
+                    }
+                    let close = self.expect(")")?;
+                    return Ok(self.located(Expr::SizeofType(ty),
+                        Span { lo: keyword.span.lo, hi: close.span.hi }));
+                }
+                let operand = self.parse_expr()?;
+                let close = self.expect(")")?;
+                return Ok(self.located(Expr::SizeofExpr(Box::new(operand)),
+                    Span { lo: keyword.span.lo, hi: close.span.hi }));
             }
-            let close = self.expect(")")?;
-            return Ok(self.located(Expr::SizeofType(ty),
-                Span { lo: keyword.span.lo, hi: close.span.hi }));
+            // sizeof unary-expression also accepts *p, ++x, string literals,
+            // nested sizeof and other non-parenthesized unary expressions.
+            let operand = self.parse_unary()?;
+            let end = operand.location().map_or(keyword.span.hi, |s| s.hi);
+            return Ok(self.located(Expr::SizeofExpr(Box::new(operand)),
+                Span { lo: keyword.span.lo, hi: end }));
         }
         if let Some(increment) = self.peek()?.and_then(|t| match t.text {
             "++" => Some(true),
