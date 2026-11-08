@@ -1862,5 +1862,5 @@ fn c99_sizeof_expression_typedef_disambiguation_and_constraints() {
     reject("int f(void) { return sizeof(void); }", "complete object type");
     reject("int f(void) { return sizeof(int[]); }", "complete object type");
     reject("int g(void); int f(void) { return sizeof(g); }", "complete object type");
-    reject("int f(void) { int a[]; return sizeof(a); }", "complete object type");
+    reject("int f(void) { int a[]; return sizeof(a); }", "incomplete local object type");
 }
