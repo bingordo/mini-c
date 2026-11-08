@@ -60,8 +60,8 @@ def validate_manifest(manifest: dict) -> list[dict]:
             raise ValueError(f"{cid}: missing milestone")
         if not isinstance(case.get("source"), str) or not case["source"].strip():
             raise ValueError(f"{cid}: empty source")
-        if "@N@" not in case["source"]:
-            raise ValueError(f"{cid}: no generated variant")
+        # Fixed normative constraint fixtures deliberately need no placeholder.
+        # Generated valid cases may contain @N@ for bounded variations.
     return cases
 
 
