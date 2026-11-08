@@ -33,7 +33,7 @@ Keep the incremental item-at-a-time checker and the existing external `cc -E` pr
 
 ## F2 — Expressions and conversions (start immediately; independent slices)
 
-- [ ] `sizeof unary-expression`, including `sizeof x` and `sizeof(x)`; preserve operand *type* without emitting evaluation or lvalue decay. Incomplete/function/void operands reject; `sizeof arr` measures the whole array. Later VLA sizeof has runtime-evaluation rules.
+- [x] **F2.1:** `sizeof unary-expression`, including `sizeof x` and `sizeof(x)`, no operand evaluation or array decay, incomplete/function/void rejection, and constant-bounded abstract arrays. Implemented in PR #105, verified by syntax/semantics plus Cranelift/glibc compatibility CI. Runtime VLA `sizeof` remains F4.
 - [ ] General arithmetic casts, including integer↔float, float↔float, scalar→`_Bool`; preserve target conversions in checked IR.
 - [ ] C99 pointer subtraction, relational comparison constraints, conditional expression types, null pointer constant subtleties and qualified composite pointer types.
 - [ ] Complete usual arithmetic conversions, default promotions at varargs/non-prototype calls and complex types, without requiring executable codegen.
