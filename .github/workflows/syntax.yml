@@ -82,6 +82,21 @@ jobs:
       # Compile just the checker, reusing the workspace build/cache above.
       - name: Build Mini-C checker for pinned musl acceptance
         run: cargo build -p mini-c
+      - name: C99 frontend feature matrix against strict GCC and Clang
+        run: |
+          python3 tools/c99_frontend_matrix.py \
+            --mini target/debug/mini-c \
+            --seed 99 --variants 2 --minimize \
+            --report target/c99-f0/report.json \
+            --artifacts target/c99-f0/failures
+      - name: Upload C99 frontend coverage and unexpected reproducers
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mini-c-c99-f0-coverage
+          path: target/c99-f0/
+          if-no-files-found: warn
+          retention-days: 14
       - name: Check immutable S9 musl source and preserve per-function diagnostics
         run: python3 tools/test_musl_s9.py --report target/s9-musl-acceptance.json
       - name: S10 unfiltered musl string corpus and explicit rejection accounting
