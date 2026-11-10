@@ -102,7 +102,7 @@ pub fn expand_line(
     counter: Option<&Cell<u32>>,
 ) -> Vec<PpToken> {
     expand_line_impl(source_map, interner, handler, macros, line_map, line,
-        gnu_va_args_elision, gnu_permissive_paste, counter, None)
+        gnu_va_args_elision, gnu_permissive_paste, counter, None, None)
 }
 
 /// Apply the same expansion-work budget across every macro rescan, argument
@@ -121,10 +121,13 @@ pub(crate) fn expand_line_bounded(
     counter: Option<&Cell<u32>>,
     expansion_steps: &Cell<usize>,
     expansion_limit: usize,
+    synthetic_bytes: &Cell<usize>,
+    synthetic_byte_limit: usize,
 ) -> Vec<PpToken> {
     expand_line_impl(source_map, interner, handler, macros, line_map, line,
         gnu_va_args_elision, gnu_permissive_paste, counter,
-        Some((expansion_steps, expansion_limit)))
+        Some((expansion_steps, expansion_limit)),
+        Some((synthetic_bytes, synthetic_byte_limit)))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -139,6 +142,7 @@ fn expand_line_impl(
     gnu_permissive_paste: bool,
     counter: Option<&Cell<u32>>,
     expansion_budget: Option<(&Cell<usize>, usize)>,
+    synthetic_budget: Option<(&Cell<usize>, usize)>,
 ) -> Vec<PpToken> {
     let input: Vec<ExpToken> =
         line.into_iter().map(|t| ExpToken { tok: t, hide: FxHashSet::default(), expansion_site: None }).collect();
@@ -154,6 +158,7 @@ fn expand_line_impl(
         gnu_permissive_paste,
         counter,
         expansion_budget,
+        synthetic_budget,
     };
     exp.expand(input).into_iter().map(|et| et.tok).collect()
 }
@@ -177,6 +182,8 @@ struct Expander<'a> {
     counter: Option<&'a Cell<u32>>,
     /// Monotonic work counter and maximum visits for a whole translation unit.
     expansion_budget: Option<(&'a Cell<usize>, usize)>,
+    /// Total bytes registered as generated token spellings in SourceMap.
+    synthetic_budget: Option<(&'a Cell<usize>, usize)>,
 }
 
 impl Expander<'_> {
@@ -429,7 +436,8 @@ impl Expander<'_> {
                 if let Some((nxt, sym)) = lookup {
                     if let Some(idx) = params.iter().position(|p| *p == sym) {
                         let hash_span = tok.span;
-                        let stringized = self.stringize(&args[idx], hash_span, nxt.span);
+                        let Some(stringized) = self.stringize(&args[idx], hash_span, nxt.span)
+                        else { return Vec::new(); };
                         out.push(stringized);
                         prev_empty = false;
                         i += 2;
@@ -438,8 +446,9 @@ impl Expander<'_> {
                     if sym == self.va_args_sym {
                         if variadic {
                             let hash_span = tok.span;
-                            let stringized =
-                                self.stringize(&args[params.len()], hash_span, nxt.span);
+                            let Some(stringized) =
+                                self.stringize(&args[params.len()], hash_span, nxt.span)
+                            else { return Vec::new(); };
                             out.push(stringized);
                         } else {
                             self.emit_e0026(nxt.span);
@@ -447,7 +456,8 @@ impl Expander<'_> {
                             // output shape still has one token where
                             // the stringize was expected.
                             let hash_span = tok.span;
-                            let stringized = self.stringize(&[], hash_span, nxt.span);
+                            let Some(stringized) = self.stringize(&[], hash_span, nxt.span)
+                            else { return Vec::new(); };
                             out.push(stringized);
                         }
                         prev_empty = false;
@@ -458,7 +468,8 @@ impl Expander<'_> {
                     // named variadic parameter.
                     if named_variadic.is_some_and(|nv| nv == sym) {
                         let hash_span = tok.span;
-                        let stringized = self.stringize(&args[params.len()], hash_span, nxt.span);
+                        let Some(stringized) = self.stringize(&args[params.len()], hash_span, nxt.span)
+                        else { return Vec::new(); };
                         out.push(stringized);
                         prev_empty = false;
                         i += 2;
@@ -639,6 +650,51 @@ impl Expander<'_> {
         false
     }
 
+    /// Check projected synthetic token spelling bytes *before* growing a
+    /// String or registering a generated source-map file. The counter is
+    /// shared across nested argument prescans, header includes and builtin
+    /// macros. One overrun emits one source-located diagnostic.
+    fn synthetic_room(&mut self, current: usize, extra: usize, span: Span) -> bool {
+        let Some((used, limit)) = self.synthetic_budget else {
+            return true;
+        };
+        if used.get() <= limit
+            && current.saturating_add(extra) <= limit.saturating_sub(used.get())
+        {
+            return true;
+        }
+        if used.get() <= limit {
+            used.set(limit.saturating_add(1));
+            self.handler.emit(&Diagnostic {
+                level: Level::Error,
+                code: None,
+                message: format!(
+                    "synthetic preprocessor spelling byte limit exceeded ({limit} bytes)"
+                ),
+                labels: vec![Label {
+                    span,
+                    message: "generating this token would exceed the spelling byte budget".into(),
+                    primary: true,
+                }],
+                notes: vec![
+                    "macro stringification, token pasting and dynamic builtins share this limit".into(),
+                ],
+                help: vec!["reduce generated token text or use --cpp=cc".into()],
+            });
+        }
+        false
+    }
+
+    fn charge_synthetic(&mut self, bytes: usize, span: Span) -> bool {
+        if !self.synthetic_room(0, bytes, span) {
+            return false;
+        }
+        if let Some((used, _)) = self.synthetic_budget {
+            used.set(used.get().saturating_add(bytes));
+        }
+        true
+    }
+
     /// Emit E0025 for each `##` that sits at the very beginning or
     /// end of a replacement list (C99 §6.10.3.3p1). Called once per
     /// `subst` invocation; the body walk itself then treats the
@@ -754,7 +810,11 @@ impl Expander<'_> {
     fn paste_two(&mut self, lhs: &ExpToken, rhs: &ExpToken, hh_span: Span, invocation_site: Span) -> Vec<ExpToken> {
         let lhs_text = self.token_text(&lhs.tok);
         let rhs_text = self.token_text(&rhs.tok);
-        let mut combined = String::with_capacity(lhs_text.len() + rhs_text.len());
+        let total_bytes = lhs_text.len().saturating_add(rhs_text.len());
+        if !self.charge_synthetic(total_bytes, hh_span) {
+            return Vec::new();
+        }
+        let mut combined = String::with_capacity(total_bytes);
         combined.push_str(&lhs_text);
         combined.push_str(&rhs_text);
 
@@ -832,9 +892,12 @@ impl Expander<'_> {
     fn stringize(
         &mut self,
         arg_tokens: &[ExpToken],
-        _hash_span: Span,
+        hash_span: Span,
         _param_span: Span,
-    ) -> ExpToken {
+    ) -> Option<ExpToken> {
+        if !self.synthetic_room(0, 2, hash_span) {
+            return None;
+        }
         let mut body = String::from("\"");
         let mut first = true;
         for et in arg_tokens {
@@ -844,11 +907,20 @@ impl Expander<'_> {
             if matches!(tok.kind, PpTokenKind::Whitespace | PpTokenKind::Newline) {
                 continue;
             }
-            if !first && tok.leading_ws {
-                body.push(' ');
-            }
+            let separated = !first && tok.leading_ws;
             first = false;
             let text = self.token_text(tok);
+            // Quotes and backslashes double in the rendered string. Count
+            // exact UTF-8 output bytes and preserve room for final '"'.
+            let escaped = text.bytes().filter(|b| *b == b'\\' || *b == b'"').count();
+            let extra = text.len().saturating_add(escaped)
+                .saturating_add(usize::from(separated)).saturating_add(1);
+            if !self.synthetic_room(body.len(), extra, hash_span) {
+                return None;
+            }
+            if separated {
+                body.push(' ');
+            }
             for ch in text.chars() {
                 match ch {
                     '\\' => body.push_str("\\\\"),
@@ -858,6 +930,9 @@ impl Expander<'_> {
             }
         }
         body.push('"');
+        if !self.charge_synthetic(body.len(), hash_span) {
+            return None;
+        }
 
         let body_len = body.len() as u32;
         let file_id = {
@@ -871,7 +946,7 @@ impl Expander<'_> {
             leading_ws: false,
             at_line_start: false,
         };
-        ExpToken { tok, hide: FxHashSet::default(), expansion_site: None }
+        Some(ExpToken { tok, hide: FxHashSet::default(), expansion_site: None })
     }
 
     /// Expand a dynamic predefined macro (C99 §6.10.8p1) at the
@@ -902,7 +977,12 @@ impl Expander<'_> {
                     let eff = self.line_map.effective_file(&sm, origin_span.file, origin_span.lo);
                     sm.file(eff).name.display().to_string()
                 };
-                let mut body = String::with_capacity(path_text.len() + 2);
+                let escaped = path_text.bytes().filter(|b| *b == b'\\' || *b == b'"').count();
+                let bytes = path_text.len().saturating_add(escaped).saturating_add(2);
+                if !self.synthetic_room(0, bytes, origin_span) {
+                    return Vec::new();
+                }
+                let mut body = String::with_capacity(bytes);
                 body.push('"');
                 for ch in path_text.chars() {
                     match ch {
@@ -934,6 +1014,9 @@ impl Expander<'_> {
                 (PpTokenKind::PpNumber(PpNumberKind::Integer), n.unwrap_or(0).to_string())
             }
         };
+        if !self.charge_synthetic(text.len(), origin_span) {
+            return Vec::new();
+        }
         let len = text.len() as u32;
         let file_id = {
             let mut sm = self.source_map.write().unwrap();
