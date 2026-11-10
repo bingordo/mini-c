@@ -16,6 +16,8 @@ A small, embeddable Rust frontend for a deliberately limited subset of C, modele
 
 **This is not a conforming ISO C implementation.** Its parser recognizes only a subset; full C declarators, many types, complete language semantics, internal preprocessing, precise expression-level diagnostics, and the full native backend remain incomplete or future work. C23 provides the language design reference ([WG14 N3220](https://www.open-std.org/jtc1/sc22/wg14/www/docs/n3220.pdf)).
 
+**Future Csmith differential tests:** [Csmith end-to-end milestone #116](https://github.com/bingordo/mini-c/issues/116) tracks unchanged source-pinned Csmith programs through external/internal preprocessing, checked frontend, native object/link/run and seeded differential CI. The existing real-source floating-helper blocker is [#99](https://github.com/bingordo/mini-c/issues/99). These tests are planned *after* immediate practical C99 and internal-CPP milestones; compiler acceptance must be demonstrated by actual execution, not merely parsing.
+
 ## Development and smoke tests
 
 ```sh
