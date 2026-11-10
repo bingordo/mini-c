@@ -123,8 +123,15 @@ metadata), with a separate bounded root read in the Mini-C adapter. The
 preprocessor also accounts for client-preloaded and virtual root/header
 sources. This is pending feature-gated compiler-ci verification.
 
-Synthetic token spelling/stringification byte growth and time/peak-memory
-budgets remain open. The macro-substitution temporary guard rejects replacements exceeding
+A further translation-unit-wide **16 MiB synthetic spelling budget** now
+limits generated source-map text for C99 `#` stringification, `##` token
+pasting and dynamic built-in macro values. Text growth is checked before
+string construction and the output is charged once registered, across nested
+macro rescans and included files; small-budget regression tests cover
+stringification and paste. This requires feature-gated CI verification.
+
+Time/peak-memory budgets and the remaining temporary argument clones are
+still open. The macro-substitution temporary guard rejects replacements exceeding
 the 1,000,000-token work ceiling before reserving the body vector or appending
 arguments/paste results (validated by
 [compiler-ci #42913501690](https://github.com/bingordo/compiler-ci/actions/runs/42913501690)).
