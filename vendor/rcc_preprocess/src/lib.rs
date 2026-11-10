@@ -132,6 +132,9 @@ pub struct Preprocessor<'a> {
     /// Maximum pp-tokens materialized in a single run(root) output buffer,
     /// including child-header tokens returned via #include.
     output_token_limit: usize,
+    /// Set only when the accumulated output limit is exceeded, distinct
+    /// from ordinary #error and other halting preprocessing directives.
+    output_limit_reported: bool,
     /// Set once [`Self::install_cli_defines`] + [`Self::install_predefined`]
     /// have seeded the macro table. `run()` is re-entered for every
     /// `#include`d file and must install those entries *exactly* once
@@ -179,6 +182,7 @@ impl<'a> Preprocessor<'a> {
             input_tokens_seen: 0,
             input_token_limit: 1_000_000,
             output_token_limit: 1_000_000,
+            output_limit_reported: false,
             predefined_installed: false,
             halted: false,
         }
@@ -376,11 +380,16 @@ impl<'a> Preprocessor<'a> {
         span: Span,
     ) {
         if self.halted {
-            out.clear();
+            // Do not change ordinary #error behavior. Only an output
+            // budget overflow invalidates and clears the earlier output.
+            if self.output_limit_reported {
+                out.clear();
+            }
             return;
         }
         if additional.len() > self.output_token_limit.saturating_sub(out.len()) {
             self.halted = true;
+            self.output_limit_reported = true;
             out.clear();
             self.session.handler.emit(&rcc_errors::Diagnostic {
                 level: rcc_errors::Level::Error,
@@ -2122,7 +2131,7 @@ mod run_tests {
         let mut pp = Preprocessor::new(&mut sess);
         // Each individual file fits; combining the prefix and included
         // tokens in the root's output must exceed the shared buffer cap.
-        pp.output_token_limit = 11;
+        pp.output_token_limit = 8;
         let out = pp.run(id);
         assert!(out.is_empty());
         assert!(pp.halted);
