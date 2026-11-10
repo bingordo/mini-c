@@ -117,9 +117,14 @@ and [compiler-ci #42814806296](https://github.com/bingordo/compiler-ci/actions/r
 checker/Cranelift integration).
 
 The 16 MiB **output** guard still runs after rcc returns its token vector.
-Preloading arbitrary-size input files, synthetic token
-spelling/stringification byte growth and time/peak-memory budgets remain
-open. The macro-substitution temporary guard rejects replacements exceeding
+A further **16 MiB cumulative source-byte budget** is now enforced when
+reading included headers from disk (bounded reads, not check-then-read
+metadata), with a separate bounded root read in the Mini-C adapter. The
+preprocessor also accounts for client-preloaded and virtual root/header
+sources. This is pending feature-gated compiler-ci verification.
+
+Synthetic token spelling/stringification byte growth and time/peak-memory
+budgets remain open. The macro-substitution temporary guard rejects replacements exceeding
 the 1,000,000-token work ceiling before reserving the body vector or appending
 arguments/paste results (validated by
 [compiler-ci #42913501690](https://github.com/bingordo/compiler-ci/actions/runs/42913501690)).
