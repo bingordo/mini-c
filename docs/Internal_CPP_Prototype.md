@@ -108,9 +108,10 @@ an **in-engine monotonic 1,000,000 token-visit work budget** across macro rescan
 argument prescans and included files (validated by compiler-ci #42803491387).
 This is now complemented by a separate **1,000,000 raw preprocessing-token
 input budget**, enforced via a capped lexical iterator *before* collection into
-the initial per-file token Vec. Include-cycle guard rescans charge the same
-translation-unit-wide budget. Tests verify oversized roots and cumulative header
-input. The new input cap is pending independent compiler-ci verification.
+the initial per-file token Vec. Both recursive-cycle probes and post-include guard/pragma fingerprint rescans
+charge the same translation-unit-wide budget. Tests verify oversized roots,
+cumulative header input and the second header fingerprint pass. The extended
+fingerprint scan cap is pending independent compiler-ci verification.
 
 The 16 MiB **output** guard still runs after rcc returns its token vector.
 Preloading arbitrary-size input files, huge individual macro substitutions,
