@@ -1064,6 +1064,12 @@ impl Checker {
                 self.locals.pop();
                 checked?
             }
+            // Syntax is preserved for later full switch checking. Never
+            // silently accept or miscompile an unvalidated case dispatch.
+            Stmt::Switch { .. } => return Err(type_error(span,
+                "switch requires C99 case dispatch semantic checking (not yet supported)")),
+            Stmt::Case { .. } | Stmt::Default(_) => return Err(type_error(span,
+                "case/default label is only valid inside a supported switch")),
             Stmt::Break => {
                 if self.loop_depth == 0 { return Err(type_error(span, "break outside loop")); }
                 CheckedStmt::Break
