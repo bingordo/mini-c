@@ -124,6 +124,11 @@ pub struct Preprocessor<'a> {
     expansion_steps: Cell<usize>,
     /// Implementation resource bound; a smaller value may be set by tests.
     expansion_step_limit: usize,
+    /// Number of raw pp-tokens scanned from all source/header files and
+    /// recursive-include guard probes in this translation unit.
+    input_tokens_seen: usize,
+    /// Hard cap applied DURING lexical collection, before Vec growth.
+    input_token_limit: usize,
     /// Set once [`Self::install_cli_defines`] + [`Self::install_predefined`]
     /// have seeded the macro table. `run()` is re-entered for every
     /// `#include`d file and must install those entries *exactly* once
@@ -168,6 +173,8 @@ impl<'a> Preprocessor<'a> {
             counter: Cell::new(0),
             expansion_steps: Cell::new(0),
             expansion_step_limit: 1_000_000,
+            input_tokens_seen: 0,
+            input_token_limit: 1_000_000,
             predefined_installed: false,
             halted: false,
         }
@@ -217,7 +224,7 @@ impl<'a> Preprocessor<'a> {
         self.local_macro_revision_stack.push(0);
 
         let src = self.session.source_map.read().unwrap().file(root).src.clone();
-        let tokens: Vec<PpToken> = rcc_lexer::tokenize(root, &src).collect();
+        let tokens = self.tokenize_source_bounded(root, &src);
 
         let mut out: Vec<PpToken> = Vec::new();
         let mut pending_text: Vec<PpToken> = Vec::new();
@@ -268,6 +275,49 @@ impl<'a> Preprocessor<'a> {
         self.include_stack.pop();
 
         out
+    }
+
+    /// Scan input with a translation-unit-wide budget. A full collect() here
+    /// could allocate an arbitrarily large Vec before the later expansion
+    /// limit or output byte guard ever runs. Limit the scanner iterator itself.
+    ///
+    /// Include-cycle guard probes also use this function, so their repeated
+    /// scanning cannot bypass the global cap. One extra token distinguishes
+    /// an exact-fit stream from an over-budget one.
+    fn tokenize_source_bounded(&mut self, file: FileId, src: &str) -> Vec<PpToken> {
+        if self.halted {
+            return Vec::new();
+        }
+        let remaining = self.input_token_limit.saturating_sub(self.input_tokens_seen);
+        let tokens: Vec<PpToken> = rcc_lexer::tokenize(file, src)
+            .take(remaining.saturating_add(1))
+            .collect();
+        if tokens.len() > remaining {
+            self.halted = true;
+            let location = tokens.last().expect("budget overflow has a token").span;
+            self.session.handler.emit(&rcc_errors::Diagnostic {
+                level: rcc_errors::Level::Error,
+                code: None,
+                message: format!(
+                    "preprocessing input token limit exceeded ({} tokens)",
+                    self.input_token_limit
+                ),
+                labels: vec![rcc_errors::Label {
+                    span: location,
+                    message: "input scanning stopped here".into(),
+                    primary: true,
+                }],
+                notes: vec![
+                    "source files, nested includes, and include-guard scans share this token budget".into(),
+                ],
+                help: vec![
+                    "reduce input size or use external preprocessing with --cpp=cc".into(),
+                ],
+            });
+            return Vec::new();
+        }
+        self.input_tokens_seen += tokens.len();
+        tokens
     }
 
     pub(crate) fn mark_self_include_reentry(&mut self, current_file: FileId) -> bool {
@@ -1872,6 +1922,55 @@ mod run_tests {
         let out = pp.run(id);
         assert_eq!(joined_text(&pp, &out), "314");
         assert!(cap.diagnostics().is_empty());
+    }
+
+    #[test]
+    fn lexed_input_token_limit_rejects_before_collecting_whole_source() {
+        let source = "int a;\n".repeat(64);
+        let (mut sess, id, cap) = seed(&source);
+        let mut pp = Preprocessor::new(&mut sess);
+        pp.input_token_limit = 16;
+        let out = pp.run(id);
+        assert!(out.is_empty(), "over-budget input must not return partial output");
+        assert!(pp.halted);
+        assert!(pp.input_tokens_seen <= pp.input_token_limit);
+        let matching: Vec<_> = cap.diagnostics().into_iter()
+            .filter(|d| d.message.contains("preprocessing input token limit exceeded"))
+            .collect();
+        assert_eq!(matching.len(), 1, "one source-located budget diagnostic");
+        assert_eq!(matching[0].labels.len(), 1);
+    }
+
+    #[test]
+    fn input_token_limit_is_shared_by_nested_includes() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let dir = std::env::temp_dir().join(format!(
+            "mini-c-token-budget-{}-{}", std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.join("main.c");
+        let header = dir.join("ordinary.h");
+        let source = "#include \"ordinary.h\"\nint after;\n";
+        std::fs::write(&root, source).unwrap();
+        std::fs::write(&header, "int header_value;\n").unwrap();
+        let cap = rcc_errors::CaptureEmitter::new();
+        let mut sess = Session::with_handler(
+            Options::default(),
+            rcc_errors::Handler::with_emitter(Box::new(cap.clone())),
+        );
+        let id = sess.load_source_file(&root).unwrap();
+        let root_tokens = rcc_lexer::tokenize(id, source).count();
+        let mut pp = Preprocessor::new(&mut sess);
+        // Root by itself fits, but the included header must be counted too.
+        pp.input_token_limit = root_tokens + 1;
+        pp.run(id);
+        assert!(pp.halted, "header tokens should consume the same budget");
+        let matching: Vec<_> = cap.diagnostics().into_iter()
+            .filter(|d| d.message.contains("preprocessing input token limit exceeded"))
+            .collect();
+        assert_eq!(matching.len(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
