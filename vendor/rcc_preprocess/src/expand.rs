@@ -379,6 +379,15 @@ impl Expander<'_> {
         named_variadic: Option<Symbol>,
         invocation_site: Span,
     ) -> Vec<ExpToken> {
+        // Refuse a large single replacement BEFORE reserving its output
+        // vector. The visit counter normally stops *later*, after the
+        // replacement has already been materialized and put on the work
+        // deque. Keep the same translation-unit resource ceiling.
+        let span = body.first().map_or(invocation_site, |token| token.span);
+        if !self.substitution_room(0, body.len(), span) {
+            return Vec::new();
+        }
+
         // C99 §6.10.3.3p1: `##` must not appear at the beginning or
         // end of a replacement list. Diagnose up front; the walk
         // below tolerates the malformed positions (dangling `##`s are
@@ -395,6 +404,13 @@ impl Expander<'_> {
         let mut i = 0;
         while i < body.len() {
             let tok = body[i];
+            // Every branch can emit at most one immediate token except
+            // argument splices and token pastes, which have separate
+            // pre-append checks below. Avoid allocating even one more
+            // element once the substitution temporary reaches its cap.
+            if !self.substitution_room(out.len(), 1, tok.span) {
+                return Vec::new();
+            }
 
             // Stringize `#param` — only applies inside function-like
             // replacement lists (C99 §6.10.3.2p1). `#__VA_ARGS__` is
@@ -492,11 +508,23 @@ impl Expander<'_> {
                         // Keep the comma, splice the raw __VA_ARGS__
                         // tokens in place of the `## __VA_ARGS__`
                         // pair. This matches GCC / Clang behaviour.
+                        if !self.substitution_room(out.len(), rhs_tokens.len(), tok.span) {
+                            return Vec::new();
+                        }
                         out.extend(rhs_tokens);
                         prev_empty = false;
                     }
                     i += 2;
                     continue;
+                }
+                // A well-formed paste consumes the LHS and RHS head.
+                // Reserve a conservative two extra slots to allow
+                // malformed/passthrough token results without allocating
+                // an unbounded temporary vector.
+                if !self.substitution_room(
+                    out.len(), rhs_tokens.len().saturating_add(2), tok.span,
+                ) {
+                    return Vec::new();
                 }
                 self.apply_paste(&mut out, &mut prev_empty, tok.span, rhs_tokens, invocation_site);
                 i += 2;
@@ -548,6 +576,9 @@ impl Expander<'_> {
                         // them.
                         self.expand(args[idx].clone())
                     };
+                    if !self.substitution_room(out.len(), toks.len(), tok.span) {
+                        return Vec::new();
+                    }
                     prev_empty = toks.is_empty();
                     out.extend(toks);
                     i += 1;
@@ -570,6 +601,42 @@ impl Expander<'_> {
         }
 
         out
+    }
+
+    /// Bound the intermediate output of a *single* macro replacement.
+    /// An expansion may produce many tokens before any of them have
+    /// been visited by the outer scan and charged to the work budget.
+    /// Use its same ceiling, and saturate its shared counter on failure
+    /// so subsequent rescans cannot diagnose the same overrun again.
+    fn substitution_room(&mut self, current: usize, extra: usize, span: Span) -> bool {
+        let Some((used, limit)) = self.expansion_budget else {
+            return true;
+        };
+        if current.saturating_add(extra) <= limit && used.get() <= limit {
+            return true;
+        }
+        if used.get() <= limit {
+            used.set(limit.saturating_add(1));
+            self.handler.emit(&Diagnostic {
+                level: Level::Error,
+                code: None,
+                message: format!(
+                    "macro substitution token buffer limit exceeded ({limit} tokens)"
+                ),
+                labels: vec![Label {
+                    span,
+                    message: "this macro replacement exceeds the token buffer limit".into(),
+                    primary: true,
+                }],
+                notes: vec![
+                    "substitution buffers are limited before allocating their output".into(),
+                ],
+                help: vec![
+                    "reduce macro amplification or use --cpp=cc".into(),
+                ],
+            });
+        }
+        false
     }
 
     /// Emit E0025 for each `##` that sits at the very beginning or

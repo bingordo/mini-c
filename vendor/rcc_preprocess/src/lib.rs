@@ -2009,6 +2009,28 @@ mod run_tests {
     }
 
     #[test]
+    fn substitution_limit_rejects_a_single_large_macro_body_before_allocation() {
+        // The invocation is one token. Without the new substitution guard,
+        // all eighty replacement tokens would be allocated into a Vec
+        // before the existing visit counter could inspect any of them.
+        let macro_body = std::iter::repeat("17").take(80).collect::<Vec<_>>().join(" ");
+        let source = format!("#define BIG {macro_body}\nBIG\n");
+        let (mut sess, id, cap) = seed(&source);
+        let mut pp = Preprocessor::new(&mut sess);
+        pp.expansion_step_limit = 32;
+        pp.run(id);
+        let diagnostics = cap.diagnostics();
+        let matches: Vec<_> = diagnostics.iter()
+            .filter(|d| d.message.contains("macro substitution token buffer limit exceeded"))
+            .collect();
+        assert_eq!(matches.len(), 1, "must reject before allocating the body");
+        assert!(matches[0].labels.iter().any(|label| label.primary));
+        assert!(!diagnostics.iter().any(|d|
+            d.message.contains("macro expansion work limit exceeded")),
+            "single substitution must fail at the earlier allocation guard");
+    }
+
+    #[test]
     fn expansion_work_limit_rejects_macro_token_amplification() {
         // A small input creates exponentially many pp-token visits via
         // argument prescans and replacement rescans. Lower the limit for

@@ -117,9 +117,13 @@ and [compiler-ci #42814806296](https://github.com/bingordo/compiler-ci/actions/r
 checker/Cranelift integration).
 
 The 16 MiB **output** guard still runs after rcc returns its token vector.
-Preloading arbitrary-size input files, huge individual macro substitutions,
-cumulative expanded-output token-buffer allocation and time/peak-memory budgets
-remain open: these partial guards are **not** a full memory/CPU safety guarantee.
+Preloading arbitrary-size input files, cumulative expanded-output token-buffer
+allocation, synthetic token spelling/stringification byte growth and
+time/peak-memory budgets remain open. A new macro-substitution temporary
+guard rejects replacements larger than the existing 1,000,000-token work
+ceiling **before reserving the body vector** and before appending raw/expanded
+arguments and paste results; it is pending compiler-ci validation.
+These partial guards are **not** a full memory/CPU safety guarantee.
 No C23 conformance claim is made.
 
 ## Deterministic differential testing
