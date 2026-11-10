@@ -1559,6 +1559,27 @@ mod tests {
     }
 
     #[test]
+    fn c99_switch_preserves_fallthrough_and_nested_labels() {
+        let source = "int f(int x) { switch(x) { case 1: x=2; case 2: { x=3; break; } default: return x; } return 0; }";
+        let item = Parser::new(source).next_item().expect("parse").expect("function");
+        let ExternalItem::Function(function) = item else { panic!("expected function"); };
+        let Stmt::Block(statements) = function.body else { panic!("expected function body"); };
+        let Stmt::Switch { control, body } = &statements[0] else { panic!("expected switch"); };
+        assert!(matches!(control.without_location(), Expr::Name(name) if name == "x"));
+        let Stmt::Block(arms) = body.as_ref() else { panic!("expected switch block"); };
+        assert!(matches!(&arms[0], Stmt::Case { .. }));
+        assert!(matches!(&arms[1], Stmt::Case { body, .. }
+            if matches!(body.as_ref(), Stmt::Block(_))));
+        assert!(matches!(&arms[2], Stmt::Default(_)));
+    }
+
+    #[test]
+    fn c99_switch_parser_rejects_missing_case_colon() {
+        let source = "int f(int x) { switch(x) { case 1 return x; } }";
+        assert!(Parser::new(source).next_item().is_err());
+    }
+
+    #[test]
     fn streams_global_declarations() {
         let mut parser = Parser::new("int a; char *b; long c;");
         let mut sink = Collector::default();
