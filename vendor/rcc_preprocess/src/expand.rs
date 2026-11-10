@@ -101,6 +101,45 @@ pub fn expand_line(
     gnu_permissive_paste: bool,
     counter: Option<&Cell<u32>>,
 ) -> Vec<PpToken> {
+    expand_line_impl(source_map, interner, handler, macros, line_map, line,
+        gnu_va_args_elision, gnu_permissive_paste, counter, None)
+}
+
+/// Apply the same expansion-work budget across every macro rescan, argument
+/// prescan and recursively included header in one Preprocessor instance.
+/// This is an opt-in internal path; the public unbounded API remains intact.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn expand_line_bounded(
+    source_map: &Arc<RwLock<SourceMap>>,
+    interner: &mut Interner,
+    handler: &mut Handler,
+    macros: &MacroTable,
+    line_map: &LineMap,
+    line: Vec<PpToken>,
+    gnu_va_args_elision: bool,
+    gnu_permissive_paste: bool,
+    counter: Option<&Cell<u32>>,
+    expansion_steps: &Cell<usize>,
+    expansion_limit: usize,
+) -> Vec<PpToken> {
+    expand_line_impl(source_map, interner, handler, macros, line_map, line,
+        gnu_va_args_elision, gnu_permissive_paste, counter,
+        Some((expansion_steps, expansion_limit)))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn expand_line_impl(
+    source_map: &Arc<RwLock<SourceMap>>,
+    interner: &mut Interner,
+    handler: &mut Handler,
+    macros: &MacroTable,
+    line_map: &LineMap,
+    line: Vec<PpToken>,
+    gnu_va_args_elision: bool,
+    gnu_permissive_paste: bool,
+    counter: Option<&Cell<u32>>,
+    expansion_budget: Option<(&Cell<usize>, usize)>,
+) -> Vec<PpToken> {
     let input: Vec<ExpToken> =
         line.into_iter().map(|t| ExpToken { tok: t, hide: FxHashSet::default(), expansion_site: None }).collect();
     let va_args_sym = interner.intern(VA_ARGS_NAME);
@@ -114,6 +153,7 @@ pub fn expand_line(
         gnu_va_args_elision,
         gnu_permissive_paste,
         counter,
+        expansion_budget,
     };
     exp.expand(input).into_iter().map(|et| et.tok).collect()
 }
@@ -135,6 +175,8 @@ struct Expander<'a> {
     gnu_permissive_paste: bool,
     /// Shared state for `__COUNTER__`.
     counter: Option<&'a Cell<u32>>,
+    /// Monotonic work counter and maximum visits for a whole translation unit.
+    expansion_budget: Option<(&'a Cell<usize>, usize)>,
 }
 
 impl Expander<'_> {
@@ -151,6 +193,40 @@ impl Expander<'_> {
         let mut out: Vec<ExpToken> = Vec::with_capacity(work.len());
 
         while let Some(et) = work.pop_front() {
+            // Account for every pp-token visit, including argument prescans
+            // and rescanning replacement lists. A single source-level macro
+            // can multiply into exponentially many tokens; checking only the
+            // final output size is too late to prevent runaway work.
+            if let Some((steps, limit)) = self.expansion_budget {
+                let used = steps.get();
+                if used >= limit {
+                    // Saturate at limit + 1 so we diagnose only once even
+                    // when the caller expands more lines/includes afterward.
+                    if used == limit {
+                        steps.set(limit.saturating_add(1));
+                        self.handler.emit(&Diagnostic {
+                            level: Level::Error,
+                            code: None,
+                            message: format!(
+                                "macro expansion work limit exceeded ({limit} token visits)"
+                            ),
+                            labels: vec![Label {
+                                span: et.tok.span,
+                                message: "preprocessing stopped here".into(),
+                                primary: true,
+                            }],
+                            notes: vec![
+                                "macro arguments, replacements and rescans all consume this limit".into(),
+                            ],
+                            help: vec![
+                                "reduce pathological macro expansion or use external --cpp=cc".into(),
+                            ],
+                        });
+                    }
+                    return out;
+                }
+                steps.set(used + 1);
+            }
             // Only identifiers can name macros.
             if et.tok.kind != PpTokenKind::Ident {
                 out.push(et);
