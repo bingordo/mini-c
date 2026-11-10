@@ -484,8 +484,9 @@ impl Preprocessor<'_> {
             .map(|f| f.id);
         let new_file = match existing {
             Some(id) => id,
-            None => match self.session.load_source_file(&resolved) {
-                Ok(id) => id,
+            None => match self.load_include_source_bounded(&resolved, directive_span) {
+                Ok(Some(id)) => id,
+                Ok(None) => return Vec::new(),
                 Err(err) => {
                     self.session.handler.emit(&cannot_load_header(directive_span, &resolved, &err));
                     return Vec::new();

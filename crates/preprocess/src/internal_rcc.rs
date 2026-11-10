@@ -4,7 +4,7 @@
 //! expanded preprocessing tokens of rcc_preprocess and converts them back to
 //! token-separated C text for Mini-C's unchanged, standalone parser.
 //! The adapter is feature gated pending GCC/Clang differential validation.
-use std::{collections::BTreeMap, path::{Path, PathBuf}};
+use std::{collections::BTreeMap, io::Read, path::{Path, PathBuf}, sync::Arc};
 
 use rcc_errors::Level;
 use rcc_lexer::PpTokenKind;
@@ -12,6 +12,9 @@ use rcc_session::Session;
 
 /// Maximum generated text in an experimental translation unit.
 const MAX_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
+/// Bound the root source before it is added to the session source map.
+/// Included headers use the same total-size budget inside rcc_preprocess.
+const MAX_SOURCE_BYTES: usize = 16 * 1024 * 1024;
 
 /// C99 preprocessing with a source-location-preserving text adapter.
 ///
@@ -63,8 +66,25 @@ pub fn file(path: &Path, args: &[std::ffi::OsString]) -> Result<String, String> 
 
     let (mut session, captured) = Session::for_test();
     session.opts = opts;
-    let root = session.load_source_file(path)
+    // Do not call Session::load_source_file here: its unbounded disk read
+    // happens before the internal preprocessor's budget can be checked.
+    let mut root_bytes = Vec::new();
+    std::fs::File::open(path)
+        .map_err(|e| format!("cannot read C source {}: {e}", path.display()))?
+        .take((MAX_SOURCE_BYTES + 1) as u64)
+        .read_to_end(&mut root_bytes)
         .map_err(|e| format!("cannot read C source {}: {e}", path.display()))?;
+    if root_bytes.len() > MAX_SOURCE_BYTES {
+        return Err(format!(
+            "preprocessing source byte limit exceeded ({} bytes) for {}",
+            MAX_SOURCE_BYTES, path.display()
+        ));
+    }
+    let source = String::from_utf8(root_bytes)
+        .map_err(|e| format!("cannot decode C source {}: {e}", path.display()))?;
+    let root = session.source_map.write()
+        .map_err(|_| "internal source map lock poisoned")?
+        .add_file(path.to_path_buf(), Arc::from(source));
     let mut preprocessor = rcc_preprocess::Preprocessor::new(&mut session);
     let tokens = preprocessor.run(root);
 
@@ -158,6 +178,22 @@ fn c_identifier(name: &str) -> bool {
 mod tests {
     use super::*;
     use std::{ffi::OsString, time::{SystemTime, UNIX_EPOCH}};
+
+    #[test]
+    fn rejects_oversize_disk_root_without_unbounded_read() {
+        let dir = std::env::temp_dir().join(format!(
+            "mini-c-rcc-root-budget-{}-{}", std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("too-large.c");
+        // Sparse file: no large allocation required in the test runner.
+        let file = std::fs::File::create(&source).unwrap();
+        file.set_len((MAX_SOURCE_BYTES + 1) as u64).unwrap();
+        let error = super::file(&source, &[OsString::from("-E")]).unwrap_err();
+        assert!(error.contains("source byte limit exceeded"), "{error}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn cli_macro_names_and_unsupported_options_are_checked() {

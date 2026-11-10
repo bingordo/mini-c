@@ -8,7 +8,8 @@
 #![warn(missing_docs)]
 
 use std::cell::Cell;
-use std::path::PathBuf;
+use std::io::{self, Read};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -129,6 +130,11 @@ pub struct Preprocessor<'a> {
     input_tokens_seen: usize,
     /// Hard cap applied DURING lexical collection, before Vec growth.
     input_token_limit: usize,
+    /// Input source bytes registered across the root and distinct included
+    /// files, not counting repeated guarded inclusions.
+    source_bytes_seen: usize,
+    /// Cap applied before disk sources are fully loaded into SourceMap.
+    source_byte_limit: usize,
     /// Maximum pp-tokens materialized in a single run(root) output buffer,
     /// including child-header tokens returned via #include.
     output_token_limit: usize,
@@ -181,6 +187,8 @@ impl<'a> Preprocessor<'a> {
             expansion_step_limit: 1_000_000,
             input_tokens_seen: 0,
             input_token_limit: 1_000_000,
+            source_bytes_seen: 0,
+            source_byte_limit: 16 * 1024 * 1024,
             output_token_limit: 1_000_000,
             output_limit_reported: false,
             predefined_installed: false,
@@ -221,6 +229,12 @@ impl<'a> Preprocessor<'a> {
     /// (which unconditionally overrides any colliding `-D`).
     pub fn run(&mut self, root: FileId) -> Vec<PpToken> {
         if !self.predefined_installed {
+            // The Mini-C adapter loads the root with a bounded read. Also
+            // account for roots supplied by clients of this public API.
+            let source_len = self.session.source_map.read().unwrap().file(root).src.len();
+            if !self.charge_source_bytes(source_len, Span::new(root, BytePos(0), BytePos(0))) {
+                return Vec::new();
+            }
             self.predefined_installed = true;
             self.install_cli_defines();
             self.install_predefined();
@@ -289,6 +303,65 @@ impl<'a> Preprocessor<'a> {
         self.include_stack.pop();
 
         out
+    }
+
+    /// Charge the total source-byte budget, including files that were
+    /// loaded through the in-memory virtual layer. The caller checks before
+    /// registering a disk-backed file; virtual sources were preallocated by
+    /// the client and can only be checked after lookup.
+    fn charge_source_bytes(&mut self, bytes: usize, span: Span) -> bool {
+        if bytes <= self.source_byte_limit.saturating_sub(self.source_bytes_seen) {
+            self.source_bytes_seen += bytes;
+            return true;
+        }
+        if !self.halted {
+            self.session.handler.emit(&rcc_errors::Diagnostic {
+                level: rcc_errors::Level::Error,
+                code: None,
+                message: format!(
+                    "preprocessing source byte limit exceeded ({} bytes)",
+                    self.source_byte_limit
+                ),
+                labels: vec![rcc_errors::Label {
+                    span,
+                    message: "loading this source would exceed the input byte budget".into(),
+                    primary: true,
+                }],
+                notes: vec![
+                    "the root source and distinct included headers share one source byte budget".into(),
+                ],
+                help: vec![
+                    "reduce source/header size or use the external --cpp=cc path".into(),
+                ],
+            });
+        }
+        self.halted = true;
+        false
+    }
+
+    /// Load an included file without reading arbitrarily many bytes from
+    /// disk. A bounded read closes the check-then-read race of using only
+    /// filesystem metadata. Virtual sources remain supported as before.
+    fn load_include_source_bounded(
+        &mut self, path: &Path, directive_span: Span,
+    ) -> io::Result<Option<FileId>> {
+        if self.session.has_virtual_file(path) {
+            let id = self.session.load_source_file(path)?;
+            let size = self.session.source_map.read().unwrap().file(id).src.len();
+            return Ok(self.charge_source_bytes(size, directive_span).then_some(id));
+        }
+        let remaining = self.source_byte_limit.saturating_sub(self.source_bytes_seen);
+        let max_read = remaining.saturating_add(1) as u64;
+        let mut bytes = Vec::new();
+        std::fs::File::open(path)?.take(max_read).read_to_end(&mut bytes)?;
+        if !self.charge_source_bytes(bytes.len(), directive_span) {
+            return Ok(None);
+        }
+        let source = String::from_utf8(bytes)
+            .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+        let id = self.session.source_map.write().unwrap()
+            .add_file(path.to_path_buf(), Arc::from(source));
+        Ok(Some(id))
     }
 
     /// Scan input with a translation-unit-wide budget. A full collect() here
@@ -1985,6 +2058,52 @@ mod run_tests {
         let out = pp.run(id);
         assert_eq!(joined_text(&pp, &out), "314");
         assert!(cap.diagnostics().is_empty());
+    }
+
+    #[test]
+    fn included_file_source_byte_cap_is_checked_before_full_read() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let dir = std::env::temp_dir().join(format!(
+            "mini-c-source-budget-{}-{}", std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = "#include \"big.h\"\nint after;\n";
+        let root = dir.join("root.c");
+        std::fs::write(&root, source).unwrap();
+        std::fs::write(dir.join("big.h"), "int huge;\n".repeat(50)).unwrap();
+        let cap = rcc_errors::CaptureEmitter::new();
+        let mut sess = Session::with_handler(
+            Options::default(),
+            rcc_errors::Handler::with_emitter(Box::new(cap.clone())),
+        );
+        let id = sess.load_source_file(&root).unwrap();
+        let mut pp = Preprocessor::new(&mut sess);
+        pp.source_byte_limit = source.len() + 16;
+        let result = pp.run(id);
+        assert!(pp.halted);
+        assert!(result.is_empty());
+        assert!(pp.source_bytes_seen <= pp.source_byte_limit);
+        let matches: Vec<_> = cap.diagnostics().into_iter()
+            .filter(|d| d.message.contains("preprocessing source byte limit exceeded"))
+            .collect();
+        assert_eq!(matches.len(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn root_source_byte_cap_rejects_preloaded_input() {
+        let source = "int oversized;\n".repeat(32);
+        let (mut sess, id, cap) = seed(&source);
+        let mut pp = Preprocessor::new(&mut sess);
+        pp.source_byte_limit = 64;
+        let output = pp.run(id);
+        assert!(output.is_empty());
+        assert!(pp.halted);
+        let matches: Vec<_> = cap.diagnostics().into_iter()
+            .filter(|d| d.message.contains("preprocessing source byte limit exceeded"))
+            .collect();
+        assert_eq!(matches.len(), 1);
     }
 
     #[test]
