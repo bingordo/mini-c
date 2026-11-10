@@ -9,7 +9,19 @@ fn tokens(source: &str) -> Vec<String> {
         .iter().map(|token| token.text.to_string()).collect()
 }
 
+/// Strict C99 source checking is separate from intentional GCC/Clang
+/// command-line compatibility cases that trigger pedantic diagnostics.
+#[derive(Clone, Copy)]
+enum ReferenceMode {
+    StrictC99,
+    CommandLineRedefinition,
+}
+
 fn compare(fixture: &str, flags: &[&str]) {
+    compare_mode(fixture, flags, ReferenceMode::StrictC99);
+}
+
+fn compare_mode(fixture: &str, flags: &[&str], mode: ReferenceMode) {
     let name = format!("mini-c-internal-cpp-{}-{}",
         std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos());
     let dir = std::env::temp_dir().join(name);
@@ -31,7 +43,16 @@ fn compare(fixture: &str, flags: &[&str]) {
     // external-compiler flags, so only the references receive these switches.
     let mut reference_args = args.clone();
     reference_args.push(OsString::from("-std=c99"));
-    reference_args.push(OsString::from("-pedantic-errors"));
+    // Both GCC and Clang diagnose consecutive non-identical -DNAME
+    // definitions under -pedantic-errors, even though they still produce
+    // a final expanded token stream. That deliberately non-normative
+    // driver-compatibility fixture uses -pedantic (warnings only), while
+    // every ISO C99 source conformance fixture stays fail-on-diagnostics.
+    let strictness = match mode {
+        ReferenceMode::StrictC99 => "-pedantic-errors",
+        ReferenceMode::CommandLineRedefinition => "-pedantic",
+    };
+    reference_args.push(OsString::from(strictness));
     let external = file(Path::new(&path), &Config {
         executable: OsString::from("cc"), args: reference_args.clone(),
     });
@@ -307,9 +328,11 @@ int feature_is_missing = 1;
 
 #[test]
 fn command_line_macro_redefinitions_keep_last_value() {
-    compare("int last = NUMBER;\n", &[
+    // Repeated -D is a toolchain CLI compatibility test, not an ISO C99
+    // source conformance test: the reference tools legitimately warn.
+    compare_mode("int last = NUMBER;\n", &[
         "-DNUMBER=17", "-DNUMBER=23",
-    ]);
+    ], ReferenceMode::CommandLineRedefinition);
 }
 
 #[test]
