@@ -121,14 +121,16 @@ A further **16 MiB cumulative source-byte budget** is now enforced when
 reading included headers from disk (bounded reads, not check-then-read
 metadata), with a separate bounded root read in the Mini-C adapter. The
 preprocessor also accounts for client-preloaded and virtual root/header
-sources. This is pending feature-gated compiler-ci verification.
+sources. This passed [compiler-ci #42921431587](https://github.com/bingordo/compiler-ci/actions/runs/42921431587).
 
 A further translation-unit-wide **16 MiB synthetic spelling budget** now
 limits generated source-map text for C99 `#` stringification, `##` token
 pasting and dynamic built-in macro values. Text growth is checked before
 string construction and the output is charged once registered, across nested
 macro rescans and included files; small-budget regression tests cover
-stringification and paste. This requires feature-gated CI verification.
+stringification and paste. This passed [compiler-ci #42921935531](https://github.com/bingordo/compiler-ci/actions/runs/42921935531).
+
+The merged revisions also passed a 128-seed GCC/Clang macro differential check in [compiler-ci #42922134884](https://github.com/bingordo/compiler-ci/actions/runs/42922134884) on Mini-C commit `45af40fa2e87d9759633a2011726ce695807c8b0`.
 
 Time/peak-memory budgets and the remaining temporary argument clones are
 still open. The macro-substitution temporary guard rejects replacements exceeding
