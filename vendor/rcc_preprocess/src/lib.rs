@@ -125,6 +125,10 @@ pub struct Preprocessor<'a> {
     expansion_steps: Cell<usize>,
     /// Implementation resource bound; a smaller value may be set by tests.
     expansion_step_limit: usize,
+    /// Cumulative bytes of generated macro string literals, pasted tokens
+    /// and dynamic builtins registered in the source map.
+    synthetic_bytes: Cell<usize>,
+    synthetic_byte_limit: usize,
     /// Number of raw pp-tokens scanned from all source/header files and
     /// recursive-include guard probes in this translation unit.
     input_tokens_seen: usize,
@@ -185,6 +189,8 @@ impl<'a> Preprocessor<'a> {
             counter: Cell::new(0),
             expansion_steps: Cell::new(0),
             expansion_step_limit: 1_000_000,
+            synthetic_bytes: Cell::new(0),
+            synthetic_byte_limit: 16 * 1024 * 1024,
             input_tokens_seen: 0,
             input_token_limit: 1_000_000,
             source_bytes_seen: 0,
@@ -524,6 +530,8 @@ impl<'a> Preprocessor<'a> {
             Some(&self.counter),
             &self.expansion_steps,
             self.expansion_step_limit,
+            &self.synthetic_bytes,
+            self.synthetic_byte_limit,
         )
     }
 
@@ -2259,6 +2267,33 @@ mod run_tests {
             .collect();
         assert_eq!(hits.len(), 1);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn stringification_respects_shared_synthetic_byte_budget() {
+        let source = "#define STR(x) #x\nconst char *a = STR(abcdefghijk);\n";
+        let (mut sess, id, cap) = seed(source);
+        let mut pp = Preprocessor::new(&mut sess);
+        pp.synthetic_byte_limit = 8;
+        pp.run(id);
+        let hits: Vec<_> = cap.diagnostics().into_iter()
+            .filter(|d| d.message.contains("synthetic preprocessor spelling byte limit exceeded"))
+            .collect();
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].labels.iter().any(|label| label.primary));
+    }
+
+    #[test]
+    fn token_paste_respects_shared_synthetic_byte_budget() {
+        let source = "#define JOIN(a,b) a ## b\nint v = JOIN(abcdefgh,ijklmnop);\n";
+        let (mut sess, id, cap) = seed(source);
+        let mut pp = Preprocessor::new(&mut sess);
+        pp.synthetic_byte_limit = 12;
+        pp.run(id);
+        let hits: Vec<_> = cap.diagnostics().into_iter()
+            .filter(|d| d.message.contains("synthetic preprocessor spelling byte limit exceeded"))
+            .collect();
+        assert_eq!(hits.len(), 1);
     }
 
     #[test]
