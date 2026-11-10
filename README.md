@@ -2,7 +2,7 @@
 
 A small, embeddable Rust frontend for a deliberately limited subset of C, modeled in part on [bingundu/oberon](https://github.com/bingundu/oberon).
 
-**C99 frontend completion:** The active source-audited roadmap is [C99 Frontend Plan](docs/C99_Frontend_Plan.md). Parser/semantic C99 coverage is tracked independently of native and Cranelift codegen; previous broad “not supported” lists are historical and may be stale.
+**C99 frontend priorities:** The active source-audited roadmap is [C99 Frontend Plan](docs/C99_Frontend_Plan.md). F1 and practical F2/F3/F4 work continue; **F5 advanced numeric/lexical work is deferred**, while completing the internal C99 preprocessor is an active P0 milestone ([CPP-C99 #110](https://github.com/bingordo/mini-c/issues/110), slices #111–#114). Parser/semantic C99 coverage and CPP conformance are tracked independently of native and Cranelift codegen.
 
 ## Implemented functionality
 
@@ -57,9 +57,12 @@ cargo run -p mini-c --features internal-cpp -- check --cpp=internal -I include -
 cargo run -p mini-c-cranelift --features internal-cpp -- --emit-obj /tmp/example.o --cpp=internal example.c
 ```
 
-The internal option is **not enabled by default** and is not yet C99/C23
-conformance-complete; see [Internal CPP Prototype](docs/Internal_CPP_Prototype.md)
-for limits, comparison tests and next steps.
+The internal option is **not enabled by default** and is not yet ISO C99
+preprocessing-complete. [CPP-C99 #110](https://github.com/bingordo/mini-c/issues/110)
+tracks C99 macro/phase parity, target built-ins and include paths, source
+provenance, bounded expansion and final CI acceptance; C23 is deferred. See
+[Internal CPP Prototype](docs/Internal_CPP_Prototype.md) for current implementation
+and limitations.
 
 The parser API itself never invokes a preprocessor. The default checker CLI
 stops at the first error; passing `--max-errors=N` enables bounded syntax and
