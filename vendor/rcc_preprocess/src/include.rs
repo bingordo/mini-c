@@ -601,7 +601,13 @@ impl Preprocessor<'_> {
         let need_guard_scan = !self.include_guards.contains_key(&new_file);
         if need_pragma_scan || need_guard_scan {
             let src = self.session.source_map.read().unwrap().file(new_file).src.clone();
-            let raw: Vec<PpToken> = rcc_lexer::tokenize(new_file, &src).collect();
+            // Fingerprinting runs AFTER run(new_file), so this is a second
+            // raw tokenization of the same header. Charge it to the same
+            // translation-unit budget instead of collecting unboundedly.
+            let raw = self.tokenize_source_bounded(new_file, &src);
+            if self.halted {
+                return Vec::new();
+            }
             if need_pragma_scan && detect_pragma_once(&raw, &src) {
                 self.pragma_once.insert(new_file, ());
             }
