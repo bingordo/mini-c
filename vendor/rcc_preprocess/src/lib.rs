@@ -129,6 +129,12 @@ pub struct Preprocessor<'a> {
     input_tokens_seen: usize,
     /// Hard cap applied DURING lexical collection, before Vec growth.
     input_token_limit: usize,
+    /// Maximum pp-tokens materialized in a single run(root) output buffer,
+    /// including child-header tokens returned via #include.
+    output_token_limit: usize,
+    /// Set only when the accumulated output limit is exceeded, distinct
+    /// from ordinary #error and other halting preprocessing directives.
+    output_limit_reported: bool,
     /// Set once [`Self::install_cli_defines`] + [`Self::install_predefined`]
     /// have seeded the macro table. `run()` is re-entered for every
     /// `#include`d file and must install those entries *exactly* once
@@ -175,6 +181,8 @@ impl<'a> Preprocessor<'a> {
             expansion_step_limit: 1_000_000,
             input_tokens_seen: 0,
             input_token_limit: 1_000_000,
+            output_token_limit: 1_000_000,
+            output_limit_reported: false,
             predefined_installed: false,
             halted: false,
         }
@@ -240,11 +248,15 @@ impl<'a> Preprocessor<'a> {
             }
             if is_directive_line(&line) {
                 self.flush_pending_text(&mut pending_text, &mut out);
+                if self.halted {
+                    break;
+                }
                 // Null directive (`#` alone): no side effect, no output.
                 if line.len() == 1 {
                     continue;
                 }
-                out.extend(self.dispatch_directive(&line, &src, &mut cond));
+                let directive_output = self.dispatch_directive(&line, &src, &mut cond);
+                self.append_output_bounded(&mut out, directive_output, line[0].span);
                 continue;
             }
             if !cond.is_active() {
@@ -253,7 +265,9 @@ impl<'a> Preprocessor<'a> {
             }
             pending_text.extend(line);
         }
-        self.flush_pending_text(&mut pending_text, &mut out);
+        if !self.halted {
+            self.flush_pending_text(&mut pending_text, &mut out);
+        }
 
         // Unterminated `#if` / `#ifdef` / `#ifndef` at end of file.
         // One diagnostic per still-open frame, each labelled at its
@@ -346,10 +360,59 @@ impl<'a> Preprocessor<'a> {
         if pending_text.is_empty() {
             return;
         }
+        let span = pending_text[0].span;
         let expanded = self.expand_tokens(std::mem::take(pending_text));
         let expanded = self.process_pragma_operators(expanded);
         let expanded = self.apply_pragma_pack(expanded);
-        out.extend(expanded);
+        self.append_output_bounded(out, expanded, span);
+    }
+
+    /// Append completed preprocessor tokens without growing the aggregate
+    /// output vector beyond the per-run budget. Directives and expanded
+    /// source lines use this same path. A child include's output is
+    /// checked again when appended to its parent, accounting for the
+    /// parent buffer's already-emitted text without double-counting
+    /// output tokens against a global translation-unit counter.
+    fn append_output_bounded(
+        &mut self,
+        out: &mut Vec<PpToken>,
+        additional: Vec<PpToken>,
+        span: Span,
+    ) {
+        if self.halted {
+            // Do not change ordinary #error behavior. Only an output
+            // budget overflow invalidates and clears the earlier output.
+            if self.output_limit_reported {
+                out.clear();
+            }
+            return;
+        }
+        if additional.len() > self.output_token_limit.saturating_sub(out.len()) {
+            self.halted = true;
+            self.output_limit_reported = true;
+            out.clear();
+            self.session.handler.emit(&rcc_errors::Diagnostic {
+                level: rcc_errors::Level::Error,
+                code: None,
+                message: format!(
+                    "preprocessing output token buffer limit exceeded ({} tokens)",
+                    self.output_token_limit
+                ),
+                labels: vec![rcc_errors::Label {
+                    span,
+                    message: "the accumulated preprocessor output exceeded its token limit".into(),
+                    primary: true,
+                }],
+                notes: vec![
+                    "ordinary code and expanded included headers share this output buffer limit".into(),
+                ],
+                help: vec![
+                    "reduce the expanded output or use --cpp=cc".into(),
+                ],
+            });
+            return;
+        }
+        out.extend(additional);
     }
 
     /// Entry point for expanding a single pre-tokenised token into its
@@ -2028,6 +2091,55 @@ mod run_tests {
         assert!(!diagnostics.iter().any(|d|
             d.message.contains("macro expansion work limit exceeded")),
             "single substitution must fail at the earlier allocation guard");
+    }
+
+    #[test]
+    fn accumulated_output_buffer_limit_rejects_before_final_extend() {
+        let source = "int a; int b; int c; int d; int e;\n";
+        let (mut sess, id, cap) = seed(source);
+        let mut pp = Preprocessor::new(&mut sess);
+        pp.output_token_limit = 10;
+        let tokens = pp.run(id);
+        assert!(tokens.is_empty(), "overflow must not return a partial output");
+        assert!(pp.halted);
+        let hits: Vec<_> = cap.diagnostics().into_iter()
+            .filter(|d| d.message.contains("preprocessing output token buffer limit exceeded"))
+            .collect();
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].labels.iter().any(|label| label.primary));
+    }
+
+    #[test]
+    fn output_budget_counts_included_header_against_parent_output() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let dir = std::env::temp_dir().join(format!(
+            "mini-c-output-budget-{}-{}", std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = "int before;\n#include \"header.h\"\nint after;\n";
+        let header_source = "int one;\nint two;\n";
+        let root = dir.join("root.c");
+        std::fs::write(&root, source).unwrap();
+        std::fs::write(dir.join("header.h"), header_source).unwrap();
+        let cap = rcc_errors::CaptureEmitter::new();
+        let mut sess = Session::with_handler(
+            Options::default(),
+            rcc_errors::Handler::with_emitter(Box::new(cap.clone())),
+        );
+        let id = sess.load_source_file(&root).unwrap();
+        let mut pp = Preprocessor::new(&mut sess);
+        // Each individual file fits; combining the prefix and included
+        // tokens in the root's output must exceed the shared buffer cap.
+        pp.output_token_limit = 8;
+        let out = pp.run(id);
+        assert!(out.is_empty());
+        assert!(pp.halted);
+        let hits: Vec<_> = cap.diagnostics().into_iter()
+            .filter(|d| d.message.contains("preprocessing output token buffer limit exceeded"))
+            .collect();
+        assert_eq!(hits.len(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
