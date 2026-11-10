@@ -528,7 +528,10 @@ impl Preprocessor<'_> {
                 // inclusion would expand to nothing — silent skip.
                 if !self.include_guards.contains_key(&new_file) {
                     let src = self.session.source_map.read().unwrap().file(new_file).src.clone();
-                    let raw: Vec<PpToken> = rcc_lexer::tokenize(new_file, &src).collect();
+                    let raw = self.tokenize_source_bounded(new_file, &src);
+                    if self.halted {
+                        return Vec::new();
+                    }
                     if let Some(guard) = detect_guard(&raw, &src, &mut self.session.interner) {
                         self.include_guards.insert(new_file, guard);
                     }

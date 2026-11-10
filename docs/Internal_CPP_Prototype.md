@@ -103,15 +103,19 @@ Closure evidence: [compiler-ci #41414499660](https://github.com/bingordo/compile
 passed the expanded GCC/Clang source-origin differential matrix, driver
 integration, Rust Clippy and native GCC differential tests.
 
-Resource limitations remain: the 16 MiB output guard is applied after rcc
-returns its token vector. The internal candidate now also has a separate
-**in-engine monotonic 1,000,000 token-visit work budget** across macro rescans,
-argument prescans and included files, with an error on overflow (CPP/4,
-pending CI verification). This prevents repeated macro amplification from
-running forever, but is **not** yet a complete memory/CPU budget: large source
-tokenization, huge individual substitutions and emitted token-buffer allocations
-still need bounded allocation and benchmark coverage. Full bounded-time
-and bounded-allocation preprocessing remains open under #114.
+Resource limits are under active development (#114). The internal candidate has
+an **in-engine monotonic 1,000,000 token-visit work budget** across macro rescans,
+argument prescans and included files (validated by compiler-ci #42803491387).
+This is now complemented by a separate **1,000,000 raw preprocessing-token
+input budget**, enforced via a capped lexical iterator *before* collection into
+the initial per-file token Vec. Include-cycle guard rescans charge the same
+translation-unit-wide budget. Tests verify oversized roots and cumulative header
+input. The new input cap is pending independent compiler-ci verification.
+
+The 16 MiB **output** guard still runs after rcc returns its token vector.
+Preloading arbitrary-size input files, huge individual macro substitutions,
+cumulative expanded-output token-buffer allocation and time/peak-memory budgets
+remain open: these partial guards are **not** a full memory/CPU safety guarantee.
 No C23 conformance claim is made.
 
 ## Deterministic differential testing
