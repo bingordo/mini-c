@@ -121,10 +121,14 @@ Preloading arbitrary-size input files, synthetic token
 spelling/stringification byte growth and time/peak-memory budgets remain
 open. The macro-substitution temporary guard rejects replacements exceeding
 the 1,000,000-token work ceiling before reserving the body vector or appending
-arguments/paste results (compiler-ci #42913501690). An additional per-run
-1,000,000-token **accumulated output buffer** ceiling checks completed
-source lines and included-header results before appending them. The new
-output cap is pending compiler-ci verification.
+arguments/paste results (validated by
+[compiler-ci #42913501690](https://github.com/bingordo/compiler-ci/actions/runs/42913501690)).
+An additional per-run 1,000,000-token **accumulated output buffer** ceiling
+checks completed source lines and included-header results before appending
+them (validated by
+[compiler-ci #42914156513](https://github.com/bingordo/compiler-ci/actions/runs/42914156513)).
+Both checks included feature-gated Rust unit tests, GCC/Clang differentials,
+Clippy and checker/Cranelift integration.
 
 These guards do not yet limit all intermediary temporary allocations or
 cumulative bytes across nested include calls; they are **not** a full
