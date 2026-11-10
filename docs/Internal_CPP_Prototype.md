@@ -104,8 +104,14 @@ passed the expanded GCC/Clang source-origin differential matrix, driver
 integration, Rust Clippy and native GCC differential tests.
 
 Resource limitations remain: the 16 MiB output guard is applied after rcc
-returns its token vector, not during internal expansion. Full bounded-time
-and bounded-allocation preprocessing needs upstream resource-budget support.
+returns its token vector. The internal candidate now also has a separate
+**in-engine monotonic 1,000,000 token-visit work budget** across macro rescans,
+argument prescans and included files, with an error on overflow (CPP/4,
+pending CI verification). This prevents repeated macro amplification from
+running forever, but is **not** yet a complete memory/CPU budget: large source
+tokenization, huge individual substitutions and emitted token-buffer allocations
+still need bounded allocation and benchmark coverage. Full bounded-time
+and bounded-allocation preprocessing remains open under #114.
 No C23 conformance claim is made.
 
 ## Deterministic differential testing

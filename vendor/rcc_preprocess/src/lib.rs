@@ -119,6 +119,11 @@ pub struct Preprocessor<'a> {
     pub diagnostic_warning_stack: Vec<WarningConfig>,
     /// Expansion state for the `__COUNTER__` predefined extension.
     pub counter: Cell<u32>,
+    /// Cumulative preprocessing token-visits, shared across nested macro
+    /// rescans, argument expansion and included headers.
+    expansion_steps: Cell<usize>,
+    /// Implementation resource bound; a smaller value may be set by tests.
+    expansion_step_limit: usize,
     /// Set once [`Self::install_cli_defines`] + [`Self::install_predefined`]
     /// have seeded the macro table. `run()` is re-entered for every
     /// `#include`d file and must install those entries *exactly* once
@@ -161,6 +166,8 @@ impl<'a> Preprocessor<'a> {
             diagnostic_warning_config,
             diagnostic_warning_stack: Vec::new(),
             counter: Cell::new(0),
+            expansion_steps: Cell::new(0),
+            expansion_step_limit: 1_000_000,
             predefined_installed: false,
             halted: false,
         }
@@ -319,7 +326,7 @@ impl<'a> Preprocessor<'a> {
         let sm_arc = Arc::clone(&self.session.source_map);
         let gnu_va_args_elision = self.session.opts.gnu_va_args_elision;
         let gnu_permissive_paste = self.session.opts.gnu_permissive_paste;
-        expand::expand_line(
+        expand::expand_line_bounded(
             &sm_arc,
             &mut self.session.interner,
             &mut self.session.handler,
@@ -329,6 +336,8 @@ impl<'a> Preprocessor<'a> {
             gnu_va_args_elision,
             gnu_permissive_paste,
             Some(&self.counter),
+            &self.expansion_steps,
+            self.expansion_step_limit,
         )
     }
 
@@ -1863,6 +1872,26 @@ mod run_tests {
         let out = pp.run(id);
         assert_eq!(joined_text(&pp, &out), "314");
         assert!(cap.diagnostics().is_empty());
+    }
+
+    #[test]
+    fn expansion_work_limit_rejects_macro_token_amplification() {
+        // A small input creates exponentially many pp-token visits via
+        // argument prescans and replacement rescans. Lower the limit for
+        // the test; production uses a 1,000,000-visit ceiling.
+        let mut expression = "1".to_owned();
+        for _ in 0..10 {
+            expression = format!("DUP({expression})");
+        }
+        let source = format!("#define DUP(x) x + x\nint value = {expression};\n");
+        let (mut sess, id, cap) = seed(&source);
+        let mut pp = Preprocessor::new(&mut sess);
+        pp.expansion_step_limit = 128;
+        pp.run(id);
+        let matching: Vec<_> = cap.diagnostics().into_iter()
+            .filter(|d| d.message.contains("macro expansion work limit exceeded"))
+            .collect();
+        assert_eq!(matching.len(), 1, "limit must diagnose exactly once");
     }
 
     #[test]
