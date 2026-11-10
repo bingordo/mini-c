@@ -26,11 +26,17 @@ fn compare(fixture: &str, flags: &[&str]) {
         .chain(std::iter::once(OsString::from(
             format!("-I{}", dir.join("inc folder").display()))))
         .chain(flags.iter().map(OsString::from)).collect();
+    // Reference compilers must be asked to preprocess ISO C99, not their
+    // default GNU dialects. The internal engine intentionally does not accept
+    // external-compiler flags, so only the references receive these switches.
+    let mut reference_args = args.clone();
+    reference_args.push(OsString::from("-std=c99"));
+    reference_args.push(OsString::from("-pedantic-errors"));
     let external = file(Path::new(&path), &Config {
-        executable: OsString::from("cc"), args: args.clone(),
+        executable: OsString::from("cc"), args: reference_args.clone(),
     });
     let clang = file(Path::new(&path), &Config {
-        executable: OsString::from("clang"), args: args.clone(),
+        executable: OsString::from("clang"), args: reference_args,
     });
     let internal = file(Path::new(&path), &Config {
         executable: OsString::from("internal"), args,
@@ -304,6 +310,38 @@ fn command_line_macro_redefinitions_keep_last_value() {
     compare("int last = NUMBER;\n", &[
         "-DNUMBER=17", "-DNUMBER=23",
     ]);
+}
+
+#[test]
+fn macro_generated_include_is_expanded_before_header_lookup() {
+    // The #include operand must be macro-expanded into a header-name.
+    // The included header itself defines the guarded conditional value.
+    compare(r#"
+#define HEADER <data.h>
+#include HEADER
+#if HEADER_VALUE == 23
+int from_header = HEADER_VALUE;
+#else
+#error macro_include_resolution_failed
+#endif
+"#, &[]);
+}
+
+#[test]
+fn placemarker_token_pasting_and_indirect_expansion_follow_c99() {
+    // C99 6.10.3.3: empty ## arguments behave as placemarkers; pasted raw
+    // parameters differ from those expanded by an intermediate macro.
+    compare(r#"
+#define PASTE(a,b) a ## b
+#define EXPAND(a,b) PASTE(a,b)
+#define RIGHT suffix
+#define ZERO
+int PASTE(left_,RIGHT) = 1;
+int EXPAND(right_,RIGHT) = 2;
+int PASTE(empty_,) = 3;
+int PASTE(,trailing) = 4;
+int EXPAND(expanded_,ZERO) = 5;
+"#, &[]);
 }
 
 fn next_random(state: &mut u64) -> u64 {
