@@ -200,6 +200,78 @@
       "kind": "valid",
       "test_ref": "docs/C99_Frontend_Plan.md:F5",
       "source": "double _Complex f(double _Complex z){return z + @N@.0;}"
+    },
+    {
+      "id": "switch-fallthrough",
+      "feature": "F1",
+      "expect": "accept",
+      "mini": "gap",
+      "kind": "valid",
+      "test_ref": "docs/C99_Frontend_Plan.md:F1",
+      "source": "int f(int x){int r=0;switch(x){case @N@:r=4;case 9:r+=2;break;default:r=7;}return r;}"
+    },
+    {
+      "id": "switch-nested",
+      "feature": "F1",
+      "expect": "accept",
+      "mini": "gap",
+      "kind": "valid",
+      "test_ref": "docs/C99_Frontend_Plan.md:F1",
+      "source": "int f(int x){switch(x){case @N@:switch(x-1){case 1:return 3;default:return 0;}default:return 5;}}"
+    },
+    {
+      "id": "switch-promotion",
+      "feature": "F1",
+      "expect": "accept",
+      "mini": "gap",
+      "kind": "valid",
+      "test_ref": "docs/C99_Frontend_Plan.md:F1",
+      "source": "int f(unsigned char x){switch(x){case @N@:return 1;default:return 0;}}"
+    },
+    {
+      "id": "bool-conversion",
+      "feature": "F1",
+      "expect": "accept",
+      "mini": "gap",
+      "kind": "valid",
+      "test_ref": "docs/C99_Frontend_Plan.md:F1",
+      "source": "int f(int x){_Bool b=x;return b==(x!=0);}"
+    },
+    {
+      "id": "bool-sizeof",
+      "feature": "F1",
+      "expect": "accept",
+      "mini": "gap",
+      "kind": "valid",
+      "test_ref": "docs/C99_Frontend_Plan.md:F1",
+      "source": "int f(void){_Bool b=@N@;return sizeof b==sizeof(_Bool);}"
+    },
+    {
+      "id": "goto-forward",
+      "feature": "F1",
+      "expect": "accept",
+      "mini": "gap",
+      "kind": "valid",
+      "test_ref": "docs/C99_Frontend_Plan.md:F1",
+      "source": "int f(int x){goto done;x=@N@;done:return x;}"
+    },
+    {
+      "id": "goto-backward",
+      "feature": "F1",
+      "expect": "accept",
+      "mini": "gap",
+      "kind": "valid",
+      "test_ref": "docs/C99_Frontend_Plan.md:F1",
+      "source": "int f(int x){again:if(x>@N@){x--;goto again;}return x;}"
+    },
+    {
+      "id": "func-array",
+      "feature": "F1",
+      "expect": "accept",
+      "mini": "gap",
+      "kind": "valid",
+      "test_ref": "docs/C99_Frontend_Plan.md:F1",
+      "source": "int f(void){return sizeof __func__ >= @N@;}"
     }
   ]
 }
