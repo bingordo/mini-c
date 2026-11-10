@@ -1974,6 +1974,41 @@ mod run_tests {
     }
 
     #[test]
+    fn input_token_limit_also_covers_post_include_guard_fingerprinting() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let dir = std::env::temp_dir().join(format!(
+            "mini-c-guard-token-budget-{}-{}", std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.join("main.c");
+        let header = dir.join("ordinary.h");
+        let source = "#include \"ordinary.h\"\nint after;\n";
+        let header_source = "int header_value;\n";
+        std::fs::write(&root, source).unwrap();
+        std::fs::write(&header, header_source).unwrap();
+        let cap = rcc_errors::CaptureEmitter::new();
+        let mut sess = Session::with_handler(
+            Options::default(),
+            rcc_errors::Handler::with_emitter(Box::new(cap.clone())),
+        );
+        let id = sess.load_source_file(&root).unwrap();
+        let root_tokens = rcc_lexer::tokenize(id, source).count();
+        let header_tokens = rcc_lexer::tokenize(id, header_source).count();
+        let mut pp = Preprocessor::new(&mut sess);
+        // The root and first processing of the header fit. Only the
+        // post-include fingerprint scan should exhaust this budget.
+        pp.input_token_limit = root_tokens + header_tokens + 1;
+        pp.run(id);
+        assert!(pp.halted, "header fingerprinting must also be budgeted");
+        let matching: Vec<_> = cap.diagnostics().into_iter()
+            .filter(|d| d.message.contains("preprocessing input token limit exceeded"))
+            .collect();
+        assert_eq!(matching.len(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn expansion_work_limit_rejects_macro_token_amplification() {
         // A small input creates exponentially many pp-token visits via
         // argument prescans and replacement rescans. Lower the limit for
