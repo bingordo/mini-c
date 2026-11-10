@@ -820,7 +820,7 @@ impl<'a> Parser<'a> {
                 && !matches!(token.text, "int" | "char" | "short" | "long" | "_Float128" | "float" | "double" | "void"
                     | "unsigned" | "signed" | "const" | "restrict" | "__restrict" | "__restrict__"
                     | "typedef" | "static" | "extern" | "register"
-                    | "struct" | "union" | "enum" | "if" | "else" | "while" | "do" | "for" | "return" | "break" | "continue")
+                    | "struct" | "union" | "enum" | "if" | "else" | "while" | "do" | "for" | "switch" | "case" | "default" | "return" | "break" | "continue")
         }) {
             self.take()?;
             Declarator::Name(token.text.to_owned(), self.expression_spans.then_some(token.span))
@@ -1091,6 +1091,24 @@ impl<'a> Parser<'a> {
                     self.take()?; Some(Box::new(self.parse_stmt()?))
                 } else { None };
                 Ok(Stmt::If { cond, then, otherwise })
+            }
+            "switch" => {
+                self.take()?; self.expect("(")?;
+                let control = self.parse_expr()?;
+                self.expect(")")?;
+                let body = Box::new(self.parse_stmt()?);
+                Ok(Stmt::Switch { control, body })
+            }
+            "case" => {
+                self.take()?;
+                let value = self.parse_conditional()?;
+                self.expect(":")?;
+                Ok(Stmt::Case { value, body: Box::new(self.parse_stmt()?) })
+            }
+            "default" => {
+                self.take()?;
+                self.expect(":")?;
+                Ok(Stmt::Default(Box::new(self.parse_stmt()?)))
             }
             "while" => {
                 self.take()?; self.expect("(")?;
