@@ -2,9 +2,9 @@
 
 This plan combines language scope, architecture, backend reuse and validation. See [Specification](Specification.md) and [CI and testing](Testing.md). Work in substantial vertical slices; run targeted tests on every change and full integration suites at milestones.
 
-## Current frontend focus — C99 completion (2026-11-08)
+## Current frontend focus — practical C99 + internal CPP completion (2026-11-09)
 
-The authoritative ongoing C99-only checklist, ordered F0–F6 milestones, negative/positive test gates, and generated GCC/Clang conformance program are in [C99 Frontend Plan](C99_Frontend_Plan.md). Existing M0–M6 sections record prior development history, not a current gap inventory. The initial F2.1 implementation is expression-form `sizeof` (unevaluated operand and array no-decay), independent of code generation. The native FP backend is managed separately in `bingordo/compiler`.
+The authoritative checklist and generated GCC/Clang tests are in [C99 Frontend Plan](C99_Frontend_Plan.md). **F5 numeric/lexical language completion is deferred.** F1 and practical F2/F3/F4 work remain active; **CPP-C99 internal preprocessing completion is now an active parallel P0 milestone** ([tracker #110](https://github.com/bingordo/mini-c/issues/110), slices #111–#114). The previously complete M6 *external* `cc -E` path remains the default; do not conflate it with the unfinished internal CPP. Existing M0–M6 sections describe historical milestones rather than current gaps. F2.1 `sizeof(expression)` is done. Native FP backend work remains in `bingordo/compiler`. Do not claim full C99 until the deferred F5 and final F6 gate are eventually completed.
 
 ## M0 — Foundation (complete; latest CI success assumed pending confirmation)
 
@@ -188,11 +188,9 @@ Clippy, GCC/Clang fixture and native GCC differential checks passed in
 [compiler-ci run #41348660474](https://github.com/bingordo/compiler-ci/actions/runs/41348660474).
 Implementation and limits are in [M6_Preprocessing.md](M6_Preprocessing.md).
 
-A self-contained full C preprocessor is explicitly optional and *not*
-implemented. External compiler headers may contain C constructs beyond
-Mini-C's supported language; that does not change M6's external-tool scope.
+The *external* M6 milestone did not require a self-contained C preprocessor. The feature-gated internal CPP prototype now exists and **its completion is separately prioritized under CPP-C99 #110**. External compiler headers may contain C constructs beyond Mini-C's supported language; that does not change M6's historical external-tool completion gate.
 
-## Follow-up to M6 — Internal C preprocessing (prototype in progress)
+## Follow-up to M6 — Internal C preprocessing (active CPP-C99 #110; prototype still gated)
 
 [Candidate research](Internal_CPP_Crate_Review.md) identified several
 standalone Rust preprocessing engines. To keep Mini-C independent of other
@@ -214,9 +212,7 @@ routine CI is restored to four seeds. External `cc -E` remains the
 default and full-C reference.
 
 This is a **prototype, not complete full internal C preprocessing**.
-Remaining gates include broad C99 adversarial conformance, macro-origin
-diagnostics, target predefines and system-header search compatibility,
-resource/performance validation, and support for the requested C23 features.
+The active CPP-C99 issue set [#110](https://github.com/bingordo/mini-c/issues/110)–[#114](https://github.com/bingordo/mini-c/issues/114) tracks C99 macro/translation-phase parity, macro-origin diagnostics, target predefines and system-header search compatibility, and in-engine resource/performance validation. C23-specific preprocessing extensions are deferred beyond C99 completion; F5 language work is also deferred.
 Do not silently substitute another frontend for Mini-C.
 See [Internal CPP Prototype](Internal_CPP_Prototype.md) for implementation
 details, feature flags and follow-up tests.

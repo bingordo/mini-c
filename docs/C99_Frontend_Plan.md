@@ -1,6 +1,16 @@
-# C99 frontend completion plan (2026-11-08)
+# C99 frontend completion plan (reprioritized 2026-11-09)
 
 **Scope:** `mini-c-syntax`, `mini-c-sema`, and preprocessor front-end interfaces only. Native x86/AArch64, floating-point code generation, ABI, ELF, Cranelift and optimizations are separate projects. The target is *ISO C99 language and constraint semantics*, not GNU C or C23. Hosted library completeness is explicitly separate. Do not block valid checked C99 ASTs on backend capabilities.
+
+## Active priorities and milestone ownership (2026-11-09)
+
+**Priority change:** Keep F1 (core statements) and practical F2/F3/F4 C99 frontend slices active. **Defer F5** (advanced numeric/lexical C language semantics) until practical C support and the internal C99 preprocessor are usable. Deferred does **not** mean completed, removed, or optional for a future full-C99-conformance claim.
+
+**NEW ACTIVE P0 — CPP-C99: complete internal preprocessing**, tracked by [#110](https://github.com/bingordo/mini-c/issues/110) and child issues [#111](https://github.com/bingordo/mini-c/issues/111)–[#114](https://github.com/bingordo/mini-c/issues/114). Work in parallel with F1/F2. External `cc -E` preprocessing and origin mapping already passed historical M6; this work specifically graduates the feature-gated self-contained `--cpp=internal` from experimental to production-eligible for ISO C99. C23 CPP extensions are not a release gate.
+
+**Separation of responsibility:** The CPP milestone owns preprocessing translation phases, directive parsing, `_Pragma`, macro expansion, include search, predefines, source origins and resource limits. F5 retains wide character/string and numeric *language* semantics plus post-preprocessing lexical constraints. CPP must not block on native code generation or the deferred F5 language work. Do not call the entire C99 frontend conformant until F5 and final F6 validation eventually close.
+
+**Near-term order:** finish F1 switch and _Bool slices; concurrently CPP-C99/1 macro/phase parity and CPP-C99/2 include/predefine support; then CPP-C99/3 provenance and CPP-C99/4 resource/CI graduation. Continue practical F2/F3/F4 increments driven by real-source acceptance. Leave F5 deferred and F6 final language conformance last.
 
 ## Ground truth and validation rules
 
@@ -69,20 +79,34 @@ The CI syntax job runs this independently of native backend/FP execution. Every 
 - [ ] Complete type compatibility/composite types across translation units; tentative definitions, storage/linkage and C99 inline definitions.
 - [ ] Qualifier combinations and constraints (`const`, `volatile`, `restrict`) across pointers, typedefs, function parameters and lvalues.
 
-## F5 — Remaining normative C99 numeric/lexical rules
+## F5 — Remaining normative C99 numeric/lexical rules (DEFERRED)
+
+Do not schedule new F5-specific work now. Preserve all acceptance criteria for later; a full C99 frontend conformance claim will require finishing them. CPP-owned C99 translation phases, `_Pragma` expansion and preprocessing tokenization have been promoted to the active CPP-C99 milestone below. C23 numeric/lexical additions are not currently in scope.
+
 
 - [ ] `_Complex` and `_Imaginary` types and usual arithmetic semantics; distinguish conditional C99 support from required core.
 - [ ] Real and complex floating conversions, hex/decimal literal target rounding, signed zero, floating constant-expression constraints and floating environment implications.
 - [ ] Wide character/string literals, universal character names, execution/source character-set rules, adjacent string literal concatenation and lexical translation phases.
 - [ ] Complete C99 grammar constraints, keywords and diagnostics (including `_Pragma` preprocessing syntax).
 
-## F6 — Preprocessing and final conformance matrix
+## CPP-C99 — Complete the internal preprocessor (ACTIVE P0)
 
-- [ ] External `cc -E` remains the default working preprocessing path. Conformance of the internal optional Rust CPP is a separate gate: translation phases, macro rescan/`#`/`##`, variadics, trigraphs, `_Pragma`, `#line`, include search and predefined macros.
+**Tracker:** [#110](https://github.com/bingordo/mini-c/issues/110). The verified M6 external path remains the default; the already implemented optional internal `rcc_preprocess` adapter remains feature-gated until the last production-readiness gate is satisfied. This is completion work, not a replacement of Mini-C's parser/sema with another C frontend.
+
+- [ ] **CPP/1: C99 phase, directive and macro parity** ([#111](https://github.com/bingordo/mini-c/issues/111)). Cover C99 translation phases, trigraphs/digraphs, line splicing, pp-token formation, comment removal, object/function/variadic macros, argument expansion, `#` and `##`, rescan/hide sets, conditionals, `#line`, `#pragma`, `_Pragma`, and malformed directive diagnostics.
+- [ ] **CPP/2: target environment and include resolution** ([#112](https://github.com/bingordo/mini-c/issues/112)). Explicit supported x86-64 LP64 predefined macros, quoted/angle include lookup, reproducible include roots and defines, macro-generated `#include`, nested headers, path/error handling, and representative real libc headers. Do not silently claim GCC-only extensions.
+- [ ] **CPP/3: source/macro provenance** ([#113](https://github.com/bingordo/mini-c/issues/113)). Track spelling vs invocation vs argument origin and nested expansion/include locations through `#`/`##`; produce useful source-mapped frontend diagnostics without fabricated precise columns.
+- [ ] **CPP/4: robustness and production graduation** ([#114](https://github.com/bingordo/mini-c/issues/114)). Enforce bounded expansion/token/byte/include budgets *inside* the engine (not post-allocation), deterministic adversarial/fuzz regressions, bounded CI plus 128+ seeded extended checks, GCC/Clang comparisons, minimizable artifacts, check/Cranelift integration, and measured CPU/memory/startup overhead. Document any remaining deviations and explicitly review flipping the default only when every gate is green.
+
+**Exit:** Independent C99 preprocessing token/directed-error differential acceptance against GCC and Clang on a pinned conformance corpus, reproducible reference versions/seeds, stable source mapping, bounded resource use, representative real-header acceptance and passing CI for both Mini-C drivers. Keep external `--cpp=cc`/`--cpp=clang` and `--cpp=none` available, and do **not** enable internal preprocessing by default or claim complete while tests/devices are missing. C23 `__VA_OPT__`, `#elifdef`, `#embed` etc. are follow-ups, not C99 completion gates.
+
+## F6 — Final C99 conformance matrix (AFTER F5; CPP work tracked separately)
+
+- [ ] Treat verified external `cc -E` and completed CPP-C99 as separate preprocessing paths; verify both through the final language conformance matrix, keeping the external fallback available.
 - [ ] Expand automated feature-matrix differential across GCC/Clang versions and x86-64 LP64 target; collect implementation-defined assumptions, track independent expected types.
 - [ ] Exhaustive negative syntax/constraint tests, malformed-input fuzzing and stable error spans.
 - [ ] Produce an explicit C99 support statement and known deviations; **only** claim full frontend C99 when every required row is green.
 
 ## Execution order and first slice
 
-**Start F2.1 `sizeof(expression)` immediately** because it is small, source-independent, and exposes the required distinction between an unevaluated operand's type and its ordinary rvalue conversion. Then start F1 switch and `_Bool` in separate PRs. Never conflate the fact that a frontend *types* floating expressions with native FP codegen. Track checks and revisions in the PR description, and keep incomplete work unmerged.
+**Updated:** F2.1 is complete. Continue F1 switch and `_Bool`, practical F2/F3/F4 work, and the four CPP-C99 slices in parallel. Defer F5. F6 is the eventual final frontend conformance gate after F5 is resumed. Never conflate typing FP expressions with native FP codegen, and do not call the internal CPP production-ready before the #110 exit gate passes.
