@@ -6,6 +6,10 @@ This plan combines language scope, architecture, backend reuse and validation. S
 
 The authoritative checklist and generated GCC/Clang tests are in [C99 Frontend Plan](C99_Frontend_Plan.md). **F5 numeric/lexical language completion is deferred.** F1 and practical F2/F3/F4 work remain active; **CPP-C99 internal preprocessing completion is now an active parallel P0 milestone** ([tracker #110](https://github.com/bingordo/mini-c/issues/110), slices #111–#114). The previously complete M6 *external* `cc -E` path remains the default; do not conflate it with the unfinished internal CPP. Existing M0–M6 sections describe historical milestones rather than current gaps. F2.1 `sizeof(expression)` is done. Native FP backend work remains in `bingordo/compiler`. Do not claim full C99 until the deferred F5 and final F6 gate are eventually completed.
 
+## Planned post-core acceptance — original Csmith programs
+
+A separate future milestone [#116](https://github.com/bingordo/mini-c/issues/116) will reuse the eight unmodified source-pinned Csmith 2.3.0 restricted-observable tests documented in [#99](https://github.com/bingordo/mini-c/issues/99). Preserve exact source/preprocessed hashes, reference compiler versions, seed denominator, GCC/Clang agreement and explicit source-level failure categories. Sequence preprocessor-token parity, checked frontend acceptance, then native object/link/**execution** differential against real original sources; follow with deterministic seeded CI in `bingordo/compiler-ci`. The historical 8/8 GCC/Clang agreement and 0/8 native acceptance are a baseline, not a pass. This is planned after practical core C99 and CPP gates and does not cancel the F5 deferral or gate the C++ transition.
+
 ## M0 — Foundation (complete; latest CI success assumed pending confirmation)
 
 - [x] Rust workspace and syntax AST scaffold.
