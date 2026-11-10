@@ -110,8 +110,11 @@ This is now complemented by a separate **1,000,000 raw preprocessing-token
 input budget**, enforced via a capped lexical iterator *before* collection into
 the initial per-file token Vec. Both recursive-cycle probes and post-include guard/pragma fingerprint rescans
 charge the same translation-unit-wide budget. Tests verify oversized roots,
-cumulative header input and the second header fingerprint pass. The extended
-fingerprint scan cap is pending independent compiler-ci verification.
+cumulative header input and the second header fingerprint pass. This is validated
+by [compiler-ci #42814316308](https://github.com/bingordo/compiler-ci/actions/runs/42814316308)
+and [compiler-ci #42814806296](https://github.com/bingordo/compiler-ci/actions/runs/42814806296)
+(feature-gated Rust suites, GCC/Clang differential tests, Clippy and
+checker/Cranelift integration).
 
 The 16 MiB **output** guard still runs after rcc returns its token vector.
 Preloading arbitrary-size input files, huge individual macro substitutions,
