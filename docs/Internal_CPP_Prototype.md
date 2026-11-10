@@ -5,6 +5,17 @@ preprocessor. Mini-C's standalone lexer, parser, semantic checker and
 Cranelift backend remain unchanged and independent of other compiler
 frontends.
 
+## Active completion milestone — CPP-C99 (P0)
+
+The previously optional experimental path is now **scheduled for completion**, tracked by [#110](https://github.com/bingordo/mini-c/issues/110), in parallel with F1/F2. The implementation **remains opt-in** until the production exit gate is met. Current completed M6 external `cc -E` preprocessing stays the default and supported fallback.
+
+- [#111](https://github.com/bingordo/mini-c/issues/111): audit/fix C99 preprocessing phases, macro rescan/expansion, directives, `_Pragma` and negative constraints against GCC+Clang.
+- [#112](https://github.com/bingordo/mini-c/issues/112): target/host predefines, quote/angle include search, header roots and representative real headers.
+- [#113](https://github.com/bingordo/mini-c/issues/113): maintain separate spelling/argument/invocation provenance through nested macros and headers and expose honest mapped diagnostics.
+- [#114](https://github.com/bingordo/mini-c/issues/114): enforce expansion/token/include budgets inside the engine, regression fuzzing, performance and CI graduation checks.
+
+**C99 scope only.** C23 extensions and F5 advanced lexical/numeric language work are deferred. Full ISO C99 preprocessing support must be demonstrated using token and diagnostic differentials plus adversarial negative cases, not inferred from compiling a handful of fixtures. Do not enable `--cpp=internal` as default or mark complete without these gates.
+
 ## Design
 
 `crates/preprocess` has an optional `internal-rcc` feature using a
@@ -130,10 +141,10 @@ regressions and broader source-provenance testing.
 2. Extend the now-correct builtin invocation-site tracking into complete
    diagnostic expansion traces, including nested synthetic `#`/`##`
    token origins and argument provenance; keep spelling spans independent.
-3. Add differential testing for C23 additions such as `__VA_OPT__`,
-   `#elifdef`, `#elifndef`, `#embed` and `__has_embed`.
-   The pinned rcc candidate implements C99; some newer facilities may
-   require extending the engine or reconsidering the dependency.
+3. **Deferred beyond CPP-C99:** evaluate C23 additions such as `__VA_OPT__`,
+   `#elifdef`, `#elifndef`, `#embed` and `__has_embed` separately.
+   The pinned rcc candidate implements C99; newer facilities may require
+   extending the engine or reconsidering the dependency.
 4. Validate target predefined macros and system-header search roots for
    supported host/target triples. Passing the built-in macro environment
    of GCC as though we fully implement its extensions would be misleading.
