@@ -2,6 +2,18 @@
 
 **Scope:** `mini-c-syntax`, `mini-c-sema`, and preprocessor front-end interfaces only. Native x86/AArch64, floating-point code generation, ABI, ELF, Cranelift and optimizations are separate projects. The target is *ISO C99 language and constraint semantics*, not GNU C or C23. Hosted library completeness is explicitly separate. Do not block valid checked C99 ASTs on backend capabilities.
 
+## Future real-program testing — Csmith (after core C99/CPP gates)
+
+**Tracked by [#116](https://github.com/bingordo/mini-c/issues/116)** with the already measured frontend blocker in [#99](https://github.com/bingordo/mini-c/issues/99). Plan this as a **later end-to-end acceptance milestone**, not as immediate F5 work. Initial reference evidence from eight original Csmith 2.3.0 restricted-observable programs showed GCC/Clang 8/8 agreement and Mini-C native acceptance 0/8 at the pinned historical revision. Do not replace those unchanged original programs or report parse-only success as native success.
+
+1. Preserve the source-pinned eight-file corpus, generator version, compiler options and checksums; maintain independent GCC/Clang reference and sanitizer or defined-behavior checks.
+2. Audit external and eventually internal CPP against original Csmith sources and document token/source-map differences distinctly from parser or checker failures.
+3. Check unmodified source through Mini-C syntax and semantic IR, track first real diagnostics; resolve practical C99 gaps in F1–F4 and any backend FP/ABI gaps in their owning projects.
+4. Compile, link, **execute** and compare all eight native programs against GCC/Clang; report exact denominators and output/exit status. Expand to reproducible seeded Csmith CI only after this fixed baseline passes.
+5. Keep extended seeded runs in `bingordo/compiler-ci` with failure artifacts, versions, reproducible seeds and minimization. Separate errors by CPP, frontend, IR, backend, runtime and reference disagreement.
+
+This milestone should not prevent progressing to a usable C compiler and C++ support; defer F5 until separately resumed, unless a specific real-program blocker is deliberately reprioritized.
+
 ## Active priorities and milestone ownership (2026-11-09)
 
 **Priority change:** Keep F1 (core statements) and practical F2/F3/F4 C99 frontend slices active. **Defer F5** (advanced numeric/lexical C language semantics) until practical C support and the internal C99 preprocessor are usable. Deferred does **not** mean completed, removed, or optional for a future full-C99-conformance claim.
