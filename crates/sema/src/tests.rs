@@ -1216,6 +1216,20 @@ fn conditional_operator_types_lazy_branches_and_null_pointers() {
 }
 
 #[test]
+fn c99_bool_is_distinct_promoted_and_normalized() {
+    let items = check("_Bool a = 2; _Bool b = 0; int f(_Bool v) { \
+        _Bool local = 256; return sizeof(_Bool) == 1 && \
+        sizeof(v+1) == sizeof(int) && (int)local == 1; }").unwrap();
+    let CheckedItem::Declaration(first) = &items[0] else { panic!("bool global"); };
+    assert_eq!(first.ty, CType::Integer { rank: IntRank::Bool, unsigned: true });
+    let initializer = first.initializer.as_ref().expect("global initializer");
+    assert_eq!(const_eval::evaluate(initializer, Target::default()), Ok(1));
+    check("typedef _Bool flag; int f(int x) { flag a = (_Bool)x; return a; }").unwrap();
+    check("int f(_Bool x) { switch (x) { case 0: return 0; case 1: return 1; } return 2; }").unwrap();
+    reject("unsigned _Bool bad;", "expected identifier in declarator");
+}
+
+#[test]
 fn explicit_integer_casts_handle_typedefs_and_unsigned_conversions() {
     check("int isdigit(int c) { return (unsigned)c-'0' < 10; }").unwrap();
     check("int isalpha(int c) { return ((unsigned)c|32)-'a' < 26; }").unwrap();

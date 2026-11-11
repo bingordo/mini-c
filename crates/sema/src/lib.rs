@@ -393,6 +393,7 @@ impl Checker {
                 CType::Array(Box::new(tag), Some(1))
             }
             Type::Void => CType::Void,
+            Type::Bool => CType::Integer { rank: IntRank::Bool, unsigned: true },
             Type::Char => CType::Integer { rank: IntRank::Char, unsigned: !self.target.char_is_signed },
             Type::Short => CType::Integer { rank: IntRank::Short, unsigned: false },
             Type::Floating(rank) => CType::Floating(*rank),
@@ -1211,6 +1212,7 @@ impl Checker {
     /// or scopes; expression checking only holds an immutable checker borrow.
     fn cast_integer_type(&self, ty: &Type, span: Span) -> Result<CType, Diagnostic> {
         let resolved = match ty {
+            Type::Bool => CType::Integer { rank: IntRank::Bool, unsigned: true },
             Type::Char => CType::Integer {
                 rank: IntRank::Char, unsigned: !self.target.char_is_signed,
             },
@@ -1321,6 +1323,7 @@ impl Checker {
     fn resolve_sizeof_type(&self, ty: &Type, span: Span) -> Result<CType, Diagnostic> {
         Ok(match ty {
             Type::Void => CType::Void,
+            Type::Bool => CType::Integer { rank: IntRank::Bool, unsigned: true },
             Type::Char => CType::Integer {
                 rank: IntRank::Char, unsigned: !self.target.char_is_signed,
             },

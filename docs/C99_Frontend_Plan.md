@@ -79,6 +79,23 @@ The CI syntax job runs this independently of native backend/FP execution. Every 
 - [ ] `inline` function specifier and C99 external-definition / linkage compatibility (not optimization inlining).
 - [ ] `__func__` predefined per-function string object with correct scope and array semantics.
 
+### F1 progress: switch and `_Bool` (2026-11-11)
+
+- **Switch:** PRs [#109](https://github.com/bingordo/mini-c/pull/109),
+  [#141](https://github.com/bingordo/mini-c/pull/141) and
+  [#142](https://github.com/bingordo/mini-c/pull/142) merged parser, checked
+  integral control and case/default constraints, and initial native dispatch
+  with fallthrough and switch-aware `break`. Arbitrarily nested case labels
+  and jumping over local declarations still require more native CFG work;
+  do not mark the entire F1 switch gate as complete.
+- **`_Bool`:** [PR #146](https://github.com/bingordo/mini-c/pull/146)
+  introduces a distinct one-byte `_Bool` integer rank, integer promotion,
+  `sizeof`, explicit scalar casts, checked constant 0/1 normalization and
+  Cranelift 0/1 conversion. A native GCC/Mini-C executable acceptance test
+  covers global/local storage, the nonzero values 2 and 256, and promotions.
+  Full scalar source coverage, complete aggregate layout, additional ABI
+  contexts and F2 floating-to-`_Bool` conversions remain separate work.
+
 ## F2 — Expressions and conversions (start immediately; independent slices)
 
 - [x] **F2.1:** `sizeof unary-expression`, including `sizeof x` and `sizeof(x)`, no operand evaluation or array decay, incomplete/function/void rejection, and constant-bounded abstract arrays. Implemented in PR #105, verified by syntax/semantics plus Cranelift/glibc compatibility CI. Runtime VLA `sizeof` remains F4.
