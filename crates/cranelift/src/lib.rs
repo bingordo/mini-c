@@ -509,7 +509,7 @@ impl Compiler {
                 gp_vararg_thunks: &mut self.gp_vararg_thunks,
                 data: &self.data,
                 strings: &mut self.strings,
-                scopes: vec![HashMap::new()], loops: Vec::new(),
+                scopes: vec![HashMap::new()], loops: Vec::new(), breaks: Vec::new(),
                 result_ty: match &function.signature {
                     CType::Function { result, .. } => result.as_ref().clone(),
                     _ => return Err("function signature expected".into()),
@@ -704,6 +704,8 @@ struct Lower<'a> {
     strings: &'a mut HashMap<Vec<u8>, DataId>,
     scopes: Vec<HashMap<String, Local>>,
     loops: Vec<(ir::Block, ir::Block)>, // (break target, continue target)
+    /// Nearest breakable construct: a loop *or* switch. Continue uses loops.
+    breaks: Vec<ir::Block>,
     result_ty: CType,
 }
 
@@ -1301,6 +1303,129 @@ impl Lower<'_> {
         }
     }
 
+
+    /// A case nested beneath a control construct or brace block needs a
+    /// general label-to-CFG mapping (not yet implemented in the reference
+    /// backend). A nested switch has its own independent case namespace.
+    fn has_nonleading_case(stmt: &CheckedStmt) -> bool {
+        match stmt {
+            CheckedStmt::Case { .. } | CheckedStmt::Default(_) => true,
+            CheckedStmt::Block(stmts) => stmts.iter().any(Self::has_nonleading_case),
+            CheckedStmt::If { then, otherwise, .. } =>
+                Self::has_nonleading_case(then)
+                || otherwise.as_ref().is_some_and(|other| Self::has_nonleading_case(other)),
+            CheckedStmt::While { body, .. } | CheckedStmt::DoWhile { body, .. } =>
+                Self::has_nonleading_case(body),
+            CheckedStmt::For(for_loop) =>
+                for_loop.init.as_ref().is_some_and(|stmt| Self::has_nonleading_case(stmt))
+                || Self::has_nonleading_case(&for_loop.body),
+            // The inner switch owns its own case labels.
+            CheckedStmt::Switch { .. } => false,
+            _ => false,
+        }
+    }
+
+    /// Lower ordinary switch arms to linear conditional dispatch blocks.
+    /// Each leading case/default group gets a block. The following statement
+    /// stream is emitted in source order so fallthrough is real fallthrough,
+    /// not a synthetic jump to the enclosing switch exit.
+    ///
+    /// Labels hidden under if/while/nested compound statements are rejected
+    /// explicitly until the native CFG can map arbitrary labels.
+    fn switch_statement(
+        &mut self, b: &mut FunctionBuilder<'_>,
+        control: &CheckedExpr, body: &CheckedStmt,
+    ) -> Result<bool> {
+        let control_value = self.expression(b, control)?;
+        let control_type = scalar_type(&control.ty)?;
+        let statements: &[CheckedStmt] = match body {
+            CheckedStmt::Block(stmts) => stmts,
+            other => std::slice::from_ref(other),
+        };
+
+        let mut labels = Vec::with_capacity(statements.len());
+        let mut cases = Vec::new();
+        let mut default = None;
+        let mut saw_label = false;
+        for stmt in statements {
+            let mut tail = stmt;
+            let mut case_values = Vec::new();
+            let mut is_default = false;
+            loop {
+                match tail {
+                    CheckedStmt::Case { value, body } => {
+                        case_values.push(*value);
+                        tail = body;
+                    }
+                    CheckedStmt::Default(body) => {
+                        is_default = true;
+                        tail = body;
+                    }
+                    _ => break,
+                }
+            }
+            if Self::has_nonleading_case(tail) {
+                return Err("native switch labels under nested blocks/conditions are not supported".into());
+            }
+            if case_values.is_empty() && !is_default {
+                if !saw_label && matches!(stmt, CheckedStmt::Decl(_)) {
+                    return Err("native switch cannot jump over a local declaration before its first case".into());
+                }
+                labels.push(None);
+                continue;
+            }
+            saw_label = true;
+            let label = b.create_block();
+            cases.extend(case_values.into_iter().map(|value| (value, label)));
+            if is_default { default = Some(label); }
+            labels.push(Some(label));
+        }
+
+        // An unlabelled switch body is unreachable, but its controlling
+        // expression still runs exactly once.
+        if !saw_label { return Ok(true); }
+
+        let exit = b.create_block();
+        for &(value, arm) in &cases {
+            let next = b.create_block();
+            // A checked case has already been normalized to the promoted
+            // control type. Form signed 32/64-bit immediates with the same
+            // low bits (including values above i64::MAX for unsigned long).
+            let immediate = if control_type == types::I64 {
+                value as i64
+            } else {
+                value as i32 as i64
+            };
+            let equal = b.ins().icmp_imm(IntCC::Equal, control_value, immediate);
+            b.ins().brif(equal, arm, &[], next, &[]);
+            b.switch_to_block(next);
+        }
+        b.ins().jump(default.unwrap_or(exit), &[]);
+
+        self.breaks.push(exit);
+        self.scopes.push(HashMap::new());
+        let mut live = false;
+        for (stmt, label) in statements.iter().zip(&labels) {
+            let mut tail = stmt;
+            while let CheckedStmt::Case { body, .. } | CheckedStmt::Default(body) = tail {
+                tail = body;
+            }
+            if let Some(label) = label {
+                if live { b.ins().jump(*label, &[]); }
+                b.switch_to_block(*label);
+                live = true;
+            }
+            if live {
+                live = self.statement(b, tail)?;
+            }
+        }
+        if live { b.ins().jump(exit, &[]); }
+        self.scopes.pop();
+        self.breaks.pop();
+        b.switch_to_block(exit);
+        Ok(true)
+    }
+
     /// Returns whether control can fall through to the next statement.
     fn statement(&mut self, b: &mut FunctionBuilder<'_>, stmt: &CheckedStmt) -> Result<bool> {
         match stmt {
@@ -1374,8 +1499,10 @@ impl Lower<'_> {
                 let cond = self.condition(b, cond)?;
                 b.ins().brif(cond, loop_body, &[], exit, &[]);
                 self.loops.push((exit, header));
+                self.breaks.push(exit);
                 b.switch_to_block(loop_body);
                 let body_live = self.statement(b, body)?;
+                self.breaks.pop();
                 self.loops.pop();
                 if body_live { b.ins().jump(header, &[]); }
                 b.switch_to_block(exit);
@@ -1388,8 +1515,10 @@ impl Lower<'_> {
                 // Unlike while, do-while always executes the body first.
                 b.ins().jump(loop_body, &[]);
                 self.loops.push((exit, test));
+                self.breaks.push(exit);
                 b.switch_to_block(loop_body);
                 let body_live = self.statement(b, body)?;
+                self.breaks.pop();
                 self.loops.pop();
                 if body_live { b.ins().jump(test, &[]); }
                 // A continue in a do-while must evaluate its condition,
@@ -1424,8 +1553,10 @@ impl Lower<'_> {
                     b.ins().jump(loop_body, &[]);
                 }
                 self.loops.push((exit, increment));
+                self.breaks.push(exit);
                 b.switch_to_block(loop_body);
                 let body_live = self.statement(b, body)?;
+                self.breaks.pop();
                 self.loops.pop();
                 if body_live { b.ins().jump(increment, &[]); }
                 b.switch_to_block(increment);
@@ -1437,15 +1568,12 @@ impl Lower<'_> {
                 self.scopes.pop();
                 Ok(true)
             }
-            // Checked switch semantics are backend-neutral; native CFG
-            // dispatch/fallthrough lowering is the next independent milestone.
-            // Reject every switch here rather than misrouting a break.
-            CheckedStmt::Switch { .. } | CheckedStmt::Case { .. }
-            | CheckedStmt::Default(_) =>
-                Err("native switch/case dispatch is not implemented yet".into()),
+            CheckedStmt::Switch { control, body } => self.switch_statement(b, control, body),
+            CheckedStmt::Case { .. } | CheckedStmt::Default(_) =>
+                Err("native case/default label has no switch dispatch block".into()),
             CheckedStmt::Break => {
-                let (break_dest, _) = self.loops.last()
-                    .copied().ok_or("break outside loop in checked IR")?;
+                let break_dest = self.breaks.last()
+                    .copied().ok_or("break outside loop or switch in checked IR")?;
                 b.ins().jump(break_dest, &[]);
                 Ok(false)
             }
