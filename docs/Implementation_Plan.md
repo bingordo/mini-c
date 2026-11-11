@@ -4,7 +4,7 @@ This plan combines language scope, architecture, backend reuse and validation. S
 
 ## Current frontend focus — practical C99 + internal CPP completion (2026-11-09)
 
-The authoritative checklist and generated GCC/Clang tests are in [C99 Frontend Plan](C99_Frontend_Plan.md). **F5 numeric/lexical language completion is deferred.** F1 and practical F2/F3/F4 work remain active; **CPP-C99 internal preprocessing completion is now an active parallel P0 milestone** ([tracker #110](https://github.com/bingordo/mini-c/issues/110), slices #111–#114). The previously complete M6 *external* `cc -E` path remains the default; do not conflate it with the unfinished internal CPP. Existing M0–M6 sections describe historical milestones rather than current gaps. F2.1 `sizeof(expression)` is done. Native FP backend work remains in `bingordo/compiler`. Do not claim full C99 until the deferred F5 and final F6 gate are eventually completed.
+The authoritative checklist and generated GCC/Clang tests are in [C99 Frontend Plan](C99_Frontend_Plan.md). **F5 numeric/lexical language completion is deferred.** F1 and practical F2/F3/F4 work remain active; **CPP-C99 internal preprocessing completion is now an active parallel P0 milestone** ([tracker #110](https://github.com/bingordo/mini-c/issues/110), slices #111–#114). The completed M6 *external* `cc -E` path remains an explicitly selectable fallback (`--cpp=cc`); the Mini-C checker and Cranelift driver now use internal CPP by default for practical programs. This does not mean CPP-C99 conformance is complete. Existing M0–M6 sections describe historical milestones rather than current gaps. F2.1 `sizeof(expression)` is done. Native FP backend work remains in `bingordo/compiler`. Do not claim full C99 until the deferred F5 and final F6 gate are eventually completed.
 
 ## Planned post-core acceptance — original Csmith programs
 
@@ -178,8 +178,9 @@ rejection probes pass. See M5_Aggregates_ABI.md for unimplemented C features.
 
 ## M6 — Preprocessor maturity (external path complete)
 
-The checker and optional Cranelift ELF object driver now default to external
-`cc -E` preprocessing and share a dependency-free option parser for `-I`,
+The checker and optional Cranelift ELF object driver now default to **internal**
+preprocessing, with explicit `--cpp=cc` selecting the historical M6 external
+path. The two drivers share a dependency-free option parser for `-I`,
 `-D`, `-U`, `--cpp=clang`, `--cpp=<path>`, `--cpp-arg`, and `--cpp=none`.
 Subprocess arguments are passed directly without a shell. The source mapper
 handles GCC/Clang line directives and escaped filenames, and both drivers
@@ -212,10 +213,11 @@ with active GCC/Clang conformance tests including `#line`, header macros,
 nested calls, stringification and pasting. The full 128-seed regression suite
 and native integration passed in
 [compiler-ci #41414910339](https://github.com/bingordo/compiler-ci/actions/runs/41414910339);
-routine CI is restored to four seeds. External `cc -E` remains the
-default and full-C reference.
+routine CI is restored to four seeds. Internal CPP now serves as the
+normal driver default; external `cc -E` remains the explicit fallback and
+independent C reference.
 
-This is a **prototype, not complete full internal C preprocessing**.
+This is the **practical default, not a claim of complete ISO C99 preprocessing**.
 The active CPP-C99 issue set [#110](https://github.com/bingordo/mini-c/issues/110)–[#114](https://github.com/bingordo/mini-c/issues/114) tracks C99 macro/translation-phase parity, macro-origin diagnostics, target predefines and system-header search compatibility, and in-engine resource/performance validation. C23-specific preprocessing extensions are deferred beyond C99 completion; F5 language work is also deferred.
 Do not silently substitute another frontend for Mini-C.
 See [Internal CPP Prototype](Internal_CPP_Prototype.md) for implementation

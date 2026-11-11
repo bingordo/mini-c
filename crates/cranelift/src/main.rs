@@ -1,5 +1,6 @@
-//! Standalone native ELF object emitter. The external C preprocessor is
-//! explicitly configured by the driver, not invoked from the parser.
+//! Standalone native ELF object emitter. Preprocessing is a driver operation,
+//! never a parser side effect. The internal CPP is the default; --cpp=cc
+//! selects the external compatibility fallback.
 use mini_c_cranelift::{compile_source_diagnostic, CompileError};
 use mini_c_preprocess::source_map::SourceMap;
 use mini_c_syntax::source::SourceFile;
@@ -74,7 +75,7 @@ fn main() -> ExitCode {
             eprintln!("{e}");
             eprintln!(
                 "usage: mini-c-cranelift --emit-obj OUTPUT.o \
-                 [--cpp=none|--cpp=cc|--cpp=clang|--cpp=<path>] \
+                 [--cpp=internal|--cpp=cc|--cpp=none|--cpp=clang|--cpp=<path>] \
                  [-I dir] [-DNAME=value] [-UNAME] [--cpp-arg=<arg>] INPUT.c"
             );
             return ExitCode::FAILURE;
@@ -110,6 +111,20 @@ fn main() -> ExitCode {
 mod tests {
     use super::*;
 
+    #[test]
+    fn native_driver_defaults_to_internal_and_keeps_external_fallback() {
+        let default = parse_options([
+            "--emit-obj", "out.o", "main.c",
+        ].into_iter().map(str::to_owned)).unwrap();
+        assert_eq!(default.cpp.unwrap().executable, std::ffi::OsString::from(
+            if cfg!(feature = "internal-cpp") { "internal" } else { "cc" }
+        ));
+        let fallback = parse_options([
+            "--emit-obj", "out.o", "--cpp=cc", "main.c",
+        ].into_iter().map(str::to_owned)).unwrap();
+        assert_eq!(fallback.cpp.unwrap().executable, "cc");
+    }
+
     #[cfg(all(feature = "internal-cpp", target_arch = "x86_64", target_os = "linux"))]
     #[test]
     fn internal_cpp_emits_native_object_without_external_cpp() {
@@ -126,10 +141,10 @@ mod tests {
         let args = vec![
             "--emit-obj".to_string(),
             output.to_string_lossy().into_owned(),
-            "--cpp=internal".to_string(),
             source.to_string_lossy().into_owned(),
         ];
         let options = parse_options(args).unwrap();
+        assert_eq!(options.cpp.as_ref().unwrap().executable, std::ffi::OsString::from("internal"));
         let preprocessed = preprocess::file(
             Path::new(&options.source), options.cpp.as_ref().unwrap()
         );
