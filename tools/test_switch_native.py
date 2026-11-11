@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Execute source-pinned C99 switch programs with GCC and Mini-C native ELF.
+"""Execute C99 nested switch CFG programs with GCC and Mini-C native ELF.
 
 These tests verify *behavior*, not merely object emission or semantic
 acceptance. All cases return zero on success and run with the internal
@@ -83,6 +83,145 @@ CASES = {
         }
         int main(void) { return check(2)!=7; }
     """,
+    "nested_case_under_compound": r"""
+        int run(int x) {
+            int result=0;
+            switch(x) {
+                { int local=42; case 3: local=11; result=local; }
+                break;
+                default: result=8;
+            }
+            return result;
+        }
+        int main(void) { return run(3)!=11 || run(0)!=8; }
+    """,
+    "nested_case_under_if": r"""
+        int calls=0;
+        int condition(void) { calls++; return 0; }
+        int run(int x) {
+            int result=2;
+            switch(x) {
+                if(condition()) {
+                    case 1: result+=3; break;
+                } else {
+                    case 2: result+=4; break;
+                }
+                default: result+=5;
+            }
+            return result;
+        }
+        int main(void) {
+            return run(1)!=5 || run(2)!=6 || run(7)!=7 || calls!=0;
+        }
+    """,
+    "case_under_while_continues": r"""
+        int run(int x) {
+            int count=0;
+            switch(x) {
+                while(count<3) {
+                    case 1: count++;
+                    if(count==2) break;
+                }
+                break;
+                default: count=7;
+            }
+            return count;
+        }
+        int main(void) { return run(1)!=2 || run(8)!=7; }
+    """,
+    "case_under_for_skips_initializer": r"""
+        int run(int x) {
+            int i=0;
+            int count=0;
+            switch(x) {
+                for(i=100; i<3; i++) {
+                    case 1: count++; i++;
+                }
+                break;
+                default: count=6;
+            }
+            return count;
+        }
+        int main(void) { return run(1)!=2 || run(2)!=6; }
+    """,
+    "case_under_do_while": r"""
+        int run(int x) {
+            int count=0;
+            switch(x) {
+                do {
+                    case 1: count++;
+                } while(count<3);
+                break;
+                default: count=8;
+            }
+            return count;
+        }
+        int main(void) { return run(1)!=3 || run(2)!=8; }
+    """,
+    "case_skips_side_effecting_local": r"""
+        int calls=0;
+        int init(void) { calls++; return 99; }
+        int run(int x) {
+            int result=0;
+            switch(x) {
+                int value=init();
+                case 1: value=3; result=value; break;
+                case 2: value=4; result=value; break;
+                default: result=7;
+            }
+            return result;
+        }
+        int main(void) {
+            return run(1)!=3 || run(2)!=4 || run(9)!=7 || calls!=0;
+        }
+    """,
+    "case_skips_local_between_arms": r"""
+        int calls=0;
+        int init(void) { calls++; return 99; }
+        int run(int x) {
+            int result=0;
+            switch(x) {
+                case 1: result=1; break;
+                int value=init();
+                case 2: value=5; result=value; break;
+                default: result=7;
+            }
+            return result;
+        }
+        int main(void) {
+            return run(1)!=1 || run(2)!=5 || run(9)!=7 || calls!=0;
+        }
+    """,
+    "nested_default": r"""
+        int run(int x) {
+            int result=2;
+            switch(x) {
+                if(x<0) {
+                    case 1: result+=1; break;
+                } else {
+                    default: result+=5; break;
+                }
+            }
+            return result;
+        }
+        int main(void) { return run(1)!=3 || run(9)!=7; }
+    """,
+    "case_chains_inside_blocks": r"""
+        int run(int x) {
+            int result=0;
+            switch(x) {
+                {
+                    case 1: case 2: result=8; break;
+                    case 3: result=9; break;
+                }
+                default: result=7;
+            }
+            return result;
+        }
+        int main(void) {
+            return run(1)!=8 || run(2)!=8 || run(3)!=9 || run(4)!=7;
+        }
+    """,
     "branch_in_arm": r"""
         int test(int x) {
             int v=0;
@@ -97,15 +236,10 @@ CASES = {
     """,
 }
 UNSUPPORTED = {
-    "nested_case": (
-        "int test(int x){ switch(x){ if(x){case 1:return 1;} "
-        "default:return 0;} }",
-        "native switch labels under nested",
-    ),
-    "jump_past_local_definition": (
-        "int test(int x){switch(x){int y=3;case 1:return y;"
-        "default:return 0;}}",
-        "cannot jump over a local declaration across case labels",
+    "goto_into_switch_arm_pending": (
+        "int test(int x){goto done; switch(x){case 1: done: return 1;"
+        "default: return 0;}}",
+        "native goto labels inside switch arms are not yet supported",
     ),
 }
 
