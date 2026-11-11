@@ -142,6 +142,10 @@ pub enum Stmt {
     },
     Break,
     Continue,
+    /// Labels have function scope and a separate namespace from ordinary names.
+    Label { name: Ident, span: Span, body: Box<Stmt> },
+    /// A forward reference is allowed; the checker resolves it in function scope.
+    Goto { target: Ident, span: Span },
 }
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
