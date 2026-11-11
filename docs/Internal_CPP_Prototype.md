@@ -1,20 +1,21 @@
 # Experimental internal C preprocessor for Mini-C
 
-**Status:** optional implementation prototype, not yet a conforming or default
-preprocessor. Mini-C's standalone lexer, parser, semantic checker and
+**Status:** the internal preprocessor is the **default in the Mini-C checker and
+Cranelift binary drivers** for practical C programs, but is not yet fully
+ISO C99 conforming. Mini-C's standalone lexer, parser, semantic checker and
 Cranelift backend remain unchanged and independent of other compiler
 frontends.
 
 ## Active completion milestone — CPP-C99 (P0)
 
-The previously optional experimental path is now **scheduled for completion**, tracked by [#110](https://github.com/bingordo/mini-c/issues/110), in parallel with F1/F2. The implementation **remains opt-in** until the production exit gate is met. Current completed M6 external `cc -E` preprocessing stays the default and supported fallback.
+The previously optional experimental path is now **scheduled for completion**, tracked by [#110](https://github.com/bingordo/mini-c/issues/110), in parallel with F1/F2. The implementation is now enabled by default as a practical driver choice; the completed M6 external `cc -E` path stays available using `--cpp=cc` for compatibility and comparison.
 
 - [#111](https://github.com/bingordo/mini-c/issues/111): audit/fix C99 preprocessing phases, macro rescan/expansion, directives, `_Pragma` and negative constraints against GCC+Clang.
 - [#112](https://github.com/bingordo/mini-c/issues/112): target/host predefines, quote/angle include search, header roots and representative real headers.
 - [#113](https://github.com/bingordo/mini-c/issues/113): maintain separate spelling/argument/invocation provenance through nested macros and headers and expose honest mapped diagnostics.
 - [#114](https://github.com/bingordo/mini-c/issues/114): enforce expansion/token/include budgets inside the engine, regression fuzzing, performance and CI graduation checks.
 
-**C99 scope only.** C23 extensions and F5 advanced lexical/numeric language work are deferred. Full ISO C99 preprocessing support must be demonstrated using token and diagnostic differentials plus adversarial negative cases, not inferred from compiling a handful of fixtures. Do not enable `--cpp=internal` as default or mark complete without these gates.
+**C99 scope only.** C23 extensions and F5 advanced lexical/numeric language work are deferred. Full ISO C99 preprocessing support must be demonstrated using token and diagnostic differentials plus adversarial negative cases, not inferred from compiling a handful of fixtures. The default is a pragmatic usability decision; do not mark full ISO C99 preprocessing complete without these gates.
 
 ## Practical C program acceptance (priority update, 2026-11-10)
 
@@ -22,8 +23,8 @@ The previously optional experimental path is now **scheduled for completion**, t
 Existing input/token/work/synthetic-byte guards remain enabled. New performance
 and peak-memory work in [#114](https://github.com/bingordo/mini-c/issues/114)
 is deferred behind completing system-header and macro compatibility ([#112](https://github.com/bingordo/mini-c/issues/112), [#111](https://github.com/bingordo/mini-c/issues/111)).
-Do not interpret this as a complete ISO C99 conformance claim or a decision to
-switch defaults.
+Do not interpret this as a complete ISO C99 conformance claim. The practical
+default has now been switched; the independent conformance milestones remain open.
 
 **End-to-end passing example:** the unmodified
 `tests/fixtures/glibc-s12/hello_stdio.c` with real host `<stdio.h>` is
@@ -66,7 +67,7 @@ all **24/24** GCC-accepted originals preprocessed, plus the existing strict
 GCC/Clang macro differential and checker/Cranelift feature tests.
 
 Broader real-source and cross-distribution coverage is still needed.
-The external `cc -E` path remains the default fallback; F5 is deferred and
+The external `cc -E` path remains an explicit fallback (`--cpp=cc`); F5 is deferred and
 Csmith end-to-end checks are planned separately under #116.
 
 ## Hosted target predefine correctness
@@ -125,16 +126,18 @@ non-synthetic token origins where available. Synthetic macro-token origins
 are currently incomplete. The existing Mini-C lexer and parser consume the
 result normally. No external preprocessor or shell is invoked.
 
-The external `cc -E` backend is still the default and stays available as
-the oracle for differential tests; `--cpp=none` is unchanged. To try the
-experimental internal mode:
+The internal engine is now enabled by default for both Mini-C binary drivers.
+The external `cc -E` backend stays available as `--cpp=cc` and as the oracle
+for differential tests; `--cpp=none` remains unchanged. Example commands:
 
 ```sh
-cargo run -p mini-c --features internal-cpp -- check \
-  --cpp=internal -I include -DFEATURE=1 file.c
+cargo run -p mini-c -- check -I include -DFEATURE=1 file.c
 
-cargo run -p mini-c-cranelift --features internal-cpp -- \
-  --emit-obj /tmp/file.o --cpp=internal -I include file.c
+cargo run -p mini-c-cranelift -- \
+  --emit-obj /tmp/file.o -I include file.c
+
+# External workaround for a header or macro incompatibility:
+cargo run -p mini-c -- check --cpp=cc file.c
 ```
 
 The internal C99 adapter now automatically discovers the supported target's
@@ -271,7 +274,7 @@ claim of exhaustive C99 macro conformance follows from the seeded tests;
 they complement, rather than replace, the hand-written edge-case
 regressions and broader source-provenance testing.
 
-## Before enabling by default
+## Remaining completion work after the practical default switch
 
 1. Increase the GCC/Clang differential corpus substantially and minimize
    mismatches reproducibly. Test arbitrary macro interactions, trigraphs,
