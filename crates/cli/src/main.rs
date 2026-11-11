@@ -213,13 +213,14 @@ mod tests {
             "#include <config.h>\n#if FEATURE != 19\n#error wrong_feature\n#endif\n#ifdef OLD\n#error old_macro\n#endif\nint result = HEADER_VALUE+FEATURE;\n"
         ).unwrap();
         let arguments = vec![
-            "check".to_owned(), "-I".to_owned(),
+            "check".to_owned(), "--cpp=cc".to_owned(), "-I".to_owned(),
             dir.join("include folder").to_string_lossy().into_owned(),
             "-DFEATURE=19".to_owned(), "-DOLD=1".to_owned(),
             "-U".to_owned(), "OLD".to_owned(),
             source.to_string_lossy().into_owned(),
         ];
         let options = parse_options(arguments).unwrap();
+        assert_eq!(options.cpp.as_ref().unwrap().executable, OsString::from("cc"));
         let outcome = check(source.to_str().unwrap(), options.cpp.as_ref());
         assert!(outcome.is_ok(), "{outcome:?}");
 
