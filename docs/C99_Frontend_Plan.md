@@ -22,7 +22,7 @@ This milestone should not prevent progressing to a usable C compiler and C++ sup
 
 **Separation of responsibility:** The CPP milestone owns preprocessing translation phases, directive parsing, `_Pragma`, macro expansion, include search, predefines, source origins and resource limits. F5 retains wide character/string and numeric *language* semantics plus post-preprocessing lexical constraints. CPP must not block on native code generation or the deferred F5 language work. Do not call the entire C99 frontend conformant until F5 and final F6 validation eventually close.
 
-**Near-term order:** finish F1 switch/_Bool, then continue practical F2 pointer/integer and arithmetic conversions, F3 initializers, and F4 declarator/compatibility support driven by unmodified real programs. Pointer-to-integer cast slice [#139](https://github.com/bingordo/mini-c/pull/139) is merged; it does not establish complete `memmove`/`memset` acceptance. Follow-up CPP fixes only when they block an actual program. Leave F5 deferred and F6 final language conformance last.
+**Near-term order:** F1 switch is checked and the practical native subset passes; implement the distinct C99 `_Bool` type and scalar conversion rules ([#144](https://github.com/bingordo/mini-c/issues/144)), then continue practical F2 arithmetic conversions, F3 initializers, and F4 declarator/compatibility support driven by unmodified real programs. Pointer-to-integer cast slice [#139](https://github.com/bingordo/mini-c/pull/139) is merged; it does not establish complete `memmove`/`memset` acceptance. Follow-up CPP fixes only when they block an actual program. Leave F5 deferred and F6 final language conformance last.
 
 ## Immediate CPP-C99 focus — usable programs (2026-11-10)
 
@@ -72,7 +72,7 @@ The CI syntax job runs this independently of native backend/FP execution. Every 
 
 ## F1 — Core statements, objects and specifiers (highest priority)
 
-- [ ] `switch` with integral promotions, duplicate case/default detection, constant-expression validation, nested switches, case fallthrough and switch-aware break.
+- [x] **F1 switch checked semantics:** integral promotions, integer constant-expression cases, duplicate case/default rejection after conversion, nested-switch label ownership, case fallthrough, break/continue scope. Parser [#109](https://github.com/bingordo/mini-c/pull/109), checker [#141](https://github.com/bingordo/mini-c/pull/141) and practical native dispatch [#142](https://github.com/bingordo/mini-c/pull/142) have merged. The reference native backend covers direct switch arms and **six GCC-matching executed programs**, while complex nested case placements and label-crossing local declarations remain explicitly unsupported ([#143](https://github.com/bingordo/mini-c/issues/143)).
 - [ ] Ordinary identifiers as labels, `goto`, forward references, duplicate/missing label diagnosis and function scope; preserve explicit control flow in checked IR.
 - [ ] `_Bool` distinct from unsigned char, including 0/1 conversion, promotions, `sizeof`, parameters/returns and aggregate layout.
 - [ ] `volatile` qualifier preservation/compatibility, qualified lvalue accesses and compound operations. No loss of observable access semantics.
@@ -143,4 +143,4 @@ Do not schedule new F5-specific work now. Preserve all acceptance criteria for l
 
 ## Execution order and first slice
 
-**Updated:** F2.1 `sizeof` and F2 pointer-to-integer cast slices are merged. Focus on F1 switch and `_Bool`, and practical F2/F3/F4 work; CPP-C99 #110–#114 is nonblocking follow-up because internal preprocessing is now the driver default for usable programs. F5 remains deferred. F6 remains the final language conformance gate after F5 is resumed. Do not conflate FP frontend typing with native FP codegen or a practical CPP default with complete ISO C99 preprocessing.
+**Updated:** F1 `switch` syntax/checking and practical native execution are merged ([#109](https://github.com/bingordo/mini-c/pull/109), [#141](https://github.com/bingordo/mini-c/pull/141), [#142](https://github.com/bingordo/mini-c/pull/142)); F2.1 `sizeof` and F2 pointer-to-integer casts are merged. Focus on F1 `_Bool` ([#144](https://github.com/bingordo/mini-c/issues/144)) and practical F2/F3/F4; CPP-C99 #110–#114 is nonblocking follow-up because internal preprocessing is now the driver default for usable programs. F5 remains deferred. F6 remains the final language conformance gate after F5 is resumed. Do not conflate FP frontend typing with native FP codegen or a practical CPP default with complete ISO C99 preprocessing.
