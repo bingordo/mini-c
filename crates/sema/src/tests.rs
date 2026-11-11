@@ -1224,9 +1224,31 @@ fn explicit_integer_casts_handle_typedefs_and_unsigned_conversions() {
     check("int f(int x) { return (unsigned long)(unsigned)x > 0; }").unwrap();
     check("int f(void) { int x=3; return (x) + 2; }").unwrap();
     check("int f(void) { unsigned int x=0; return (unsigned)(x=5); }").unwrap();
-    reject("int f(int *p) { return (unsigned)p; }", "integer operand");
+    check("int f(int *p) { return (unsigned)p; }").unwrap();
     reject("int f(int x) { return (void)x; }", "unsupported cast type-name");
     check("typedef int T; int f(void) { int T=3; return (T)+1; }").unwrap();
+}
+
+#[test]
+fn c99_pointer_to_integer_explicit_casts_preserve_checked_conversion() {
+    let source = "typedef unsigned long uintptr_t; \
+        uintptr_t ptr_bits(int *p) { return (uintptr_t)p; } \
+        int pointer_low_byte(char *p) { return (unsigned int)(uintptr_t)p & 255; }";
+    let items = check(source).unwrap();
+    let CheckedItem::Function(f) = &items[1] else { panic!("expected typed function"); };
+    let CheckedStmt::Block(statements) = &f.body else { panic!("expected block"); };
+    let CheckedStmt::Return(Some(result)) = &statements[0] else { panic!("expected return"); };
+    assert!(matches!(result.kind, CheckedExprKind::Convert(_)));
+    let CType::Integer { rank: IntRank::Long, unsigned: true } = result.ty else {
+        panic!("pointer-to-uintptr_t must retain unsigned-long type: {:?}", result.ty);
+    };
+    // Source pointer-to-integer casts and nested integer narrowing do not
+    // silently turn into pointer arithmetic or an unevaluated constant.
+    check("typedef unsigned long uintptr_t; uintptr_t align(char *p) { \
+        return -(uintptr_t)p & 7; }").unwrap();
+    // Implicit pointer-to-integer assignment remains invalid.
+    reject("unsigned long bad(int *p) { unsigned long value=p; return value; }",
+        "incompatible");
 }
 
 #[test]
