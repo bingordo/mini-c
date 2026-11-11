@@ -73,7 +73,7 @@ The CI syntax job runs this independently of native backend/FP execution. Every 
 ## F1 — Core statements, objects and specifiers (highest priority)
 
 - [x] **F1 switch checked semantics:** integral promotions, integer constant-expression cases, duplicate case/default rejection after conversion, nested-switch label ownership, case fallthrough, break/continue scope. Parser [#109](https://github.com/bingordo/mini-c/pull/109), checker [#141](https://github.com/bingordo/mini-c/pull/141) and practical native dispatch [#142](https://github.com/bingordo/mini-c/pull/142) have merged. The reference native backend covers direct switch arms and **six GCC-matching executed programs**, while complex nested case placements and label-crossing local declarations remain explicitly unsupported ([#143](https://github.com/bingordo/mini-c/issues/143)).
-- [ ] Ordinary identifiers as labels, `goto`, forward references, duplicate/missing label diagnosis and function scope; preserve explicit control flow in checked IR.
+- [x] **Checked F1 labels and `goto`:** function-scope label namespace, forward/backward references, duplicate/missing label diagnostics, typedef-label disambiguation, and checked-IR jump/label preservation. Native CFG lowering remains intentionally unsupported and fails closed.
 - [ ] `_Bool` distinct from unsigned char, including 0/1 conversion, promotions, `sizeof`, parameters/returns and aggregate layout.
 - [ ] `volatile` qualifier preservation/compatibility, qualified lvalue accesses and compound operations. No loss of observable access semantics.
 - [ ] `inline` function specifier and C99 external-definition / linkage compatibility (not optimization inlining).
