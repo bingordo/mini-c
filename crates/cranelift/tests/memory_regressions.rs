@@ -55,6 +55,12 @@ fn c99_switch_nested_label_locations_fail_closed_in_native_backend() {
 }
 
 #[test]
+fn c99_bool_truth_conversion_and_promotion_compile() {
+    emits_elf("_Bool g = 256; int main(void) { _Bool x = 2; \
+        _Bool y = 256; return x == 1 && y == 1 && g == 1 ? 0 : 1; }");
+}
+
+#[test]
 fn pointer_aliasing_and_array_indexing_compile() {
     emits_elf("int main(void) { int a[4]; int *p=a; p[1]=11; a[2]=7; return a[1]+p[2]-18; }");
 }
