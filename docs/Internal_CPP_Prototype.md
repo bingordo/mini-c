@@ -6,9 +6,9 @@ ISO C99 conforming. Mini-C's standalone lexer, parser, semantic checker and
 Cranelift backend remain unchanged and independent of other compiler
 frontends.
 
-## Active completion milestone — CPP-C99 (P0)
+## CPP-C99 — practical default with conformance follow-ups deferred
 
-The previously optional experimental path is now **scheduled for completion**, tracked by [#110](https://github.com/bingordo/mini-c/issues/110), in parallel with F1/F2. The implementation is now enabled by default as a practical driver choice; the completed M6 external `cc -E` path stays available using `--cpp=cc` for compatibility and comparison.
+The implementation is enabled by default in both Mini-C binaries after [PR #138](https://github.com/bingordo/mini-c/pull/138), as a practical usability decision. Full C99 conformance and resource polishing remain tracked by [#110](https://github.com/bingordo/mini-c/issues/110)–#114 but are **deferred behind practical F1–F4 language work**. The completed external M6 `cc -E` path stays available using `--cpp=cc` for compatibility and independent reference validation.
 
 - [#111](https://github.com/bingordo/mini-c/issues/111): audit/fix C99 preprocessing phases, macro rescan/expansion, directives, `_Pragma` and negative constraints against GCC+Clang.
 - [#112](https://github.com/bingordo/mini-c/issues/112): target/host predefines, quote/angle include search, header roots and representative real headers.
