@@ -68,3 +68,71 @@ fn all_reference_accepted_original_musl_sources_preprocess_internally() {
         "internal preprocessing rejected {} GCC-accepted originals:\n{}",
         mismatches.len(), mismatches.join("\n"));
 }
+
+#[test]
+fn hosted_target_integer_predefines_match_gcc_and_clang() {
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!(
+        "mini-c-cpp-hosted-target-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("probe.c");
+    // These compiler-generated target facts are used by real libc headers.
+    // Compare the *expanded initializer expressions* only: glibc may emit
+    // unrelated declaration/attribute text that intentionally differs from
+    // the independent reference preprocessing implementations.
+    let probes = [
+        ("probe_char_bit", "__CHAR_BIT__"),
+        ("probe_int_max", "__INT_MAX__"),
+        ("probe_long_max", "__LONG_MAX__"),
+        ("probe_long_long_max", "__LONG_LONG_MAX__"),
+        ("probe_byte_order", "__BYTE_ORDER__"),
+        ("probe_order_little", "__ORDER_LITTLE_ENDIAN__"),
+        ("probe_sizeof_pointer", "__SIZEOF_POINTER__"),
+    ];
+    let mut text = String::from("#include <limits.h>\\n#include <stdint.h>\\n");
+    for (name, macro_name) in probes {
+        text.push_str(&format!("unsigned long {name} = {macro_name};\\n"));
+    }
+    std::fs::write(&source, text).unwrap();
+    let run = |program: &str| file(&source, &Config {
+        executable: OsString::from(program),
+        args: if program == "internal" {
+            vec![OsString::from("-E"), OsString::from("-D_GNU_SOURCE")]
+        } else {
+            vec![
+                OsString::from("-E"), OsString::from("-std=gnu99"),
+                OsString::from("-D_GNU_SOURCE"),
+            ]
+        },
+    });
+    let gcc = run("cc").expect("GCC must preprocess hosted target fixture");
+    let internal = run("internal").expect("internal must preprocess hosted target fixture");
+    let clang = run("clang");
+    std::fs::remove_dir_all(&dir).unwrap();
+
+    fn rhs(text: &str, name: &str) -> Vec<String> {
+        let toks = mini_c_syntax::lexer::scan(text)
+            .expect("valid preprocessing output");
+        let i = toks.iter().position(|t| t.text == name)
+            .unwrap_or_else(|| panic!("missing {name} in preprocessed output"));
+        assert_eq!(toks[i+1].text, "=");
+        toks[i+2..].iter().take_while(|tok| tok.text != ";")
+            .map(|tok| tok.text.to_owned()).collect()
+    }
+    for (name, macro_name) in probes {
+        let expected = rhs(&gcc, name);
+        let actual = rhs(&internal, name);
+        assert_eq!(actual, expected,
+            "target macro {macro_name} differs from hosted GCC reference");
+        if let Ok(ref clang) = clang {
+            assert_eq!(actual, rhs(clang, name),
+                "target macro {macro_name} differs from Clang reference");
+        }
+    }
+}
