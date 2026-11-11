@@ -1851,6 +1851,61 @@ fn m10_checked_block_declaration_groups_preserve_scope_and_order() {
 }
 
 #[test]
+fn c99_switch_integral_promotions_fallthrough_and_checked_labels() {
+    let items = check(
+        "int select(unsigned char c) { switch (c) { \
+         case 1+2: c=4; case 7: { c=9; break; } \
+         default: return c; } return 0; }"
+    ).unwrap();
+    let CheckedItem::Function(function) = &items[0] else { panic!("function") };
+    let CheckedStmt::Block(stmts) = &function.body else { panic!("body") };
+    let CheckedStmt::Switch { control, body } = &stmts[0] else { panic!("switch") };
+    assert_eq!(control.ty, CType::int(), "char must be promoted to int");
+    let CheckedStmt::Block(arms) = body.as_ref() else { panic!("case block") };
+    assert!(matches!(&arms[0], CheckedStmt::Case { value: 3, .. }));
+    assert!(matches!(&arms[1], CheckedStmt::Case { value: 7, .. }));
+    assert!(matches!(&arms[2], CheckedStmt::Default(_)));
+}
+
+#[test]
+fn c99_switch_scope_case_ownership_and_break_continue_rules() {
+    check("int f(int x) { switch (x) { case 1: while(x) { break; } break; default: break; } return 0; }").unwrap();
+    check("int f(int x) { while(x) { switch(x) { case 1: continue; default: break; } break; } return 0; }").unwrap();
+    check("int f(int x) { switch(x) { case 1: switch(x) { case 1: break; default: break; } case 2: break; } return 0; }").unwrap();
+    check("int f(int x) { switch(x) { case 1: if (x) { case 2: x=3; } default: break; } return 0; }").unwrap();
+    reject("int f(int x) { case 1: return x; }", "case label outside switch");
+    reject("int f(int x) { default: return x; }", "default label outside switch");
+    reject("int f(int x) { switch (x) { case 1: continue; } return 0; }", "continue outside loop");
+    reject("int f(void) { break; }", "break outside loop");
+}
+
+#[test]
+fn c99_switch_rejects_non_integer_or_non_constant_and_duplicates() {
+    reject("int f(float f) { switch(f) { default: break; } return 0; }",
+        "controlling expression requires an integer");
+    reject("int f(int *p) { switch(p) { default: break; } return 0; }",
+        "controlling expression requires an integer");
+    reject("int f(int x) { switch(x) { case x: return 1; } return 0; }",
+        "integer constant expression");
+    reject("int f(int x) { switch(x) { case 1.5: return 1; } return 0; }",
+        "integer constant expression");
+    reject("int f(int x) { switch(x) { case 3: return 0; case 1+2: return 1; } return 2; }",
+        "duplicate case");
+    reject("int f(int x) { switch(x) { default: return 0; default: return 1; } }",
+        "duplicate default");
+    reject("int f(int x) { switch(x) { case 1/0: return 0; } }",
+        "integer constant expression");
+    // Conversion to unsigned long wraps a negative case constant before
+    // duplicate checking. The two cases are equal in the controlling type.
+    reject("int f(unsigned long x) { switch(x) { case -1: return 0; \
+        case 18446744073709551615UL: return 1; } return 2; }",
+        "duplicate case");
+    // Distinct nested switches can reuse both a case value and default.
+    check("int f(int x) { switch(x) { case 1: switch(x) { case 1: return 1; default: break; } \
+        default: return 2; } return 0; }").unwrap();
+}
+
+#[test]
 fn c99_sizeof_expression_preserves_array_types_and_is_unevaluated() {
     let items = check(concat!(
         "int a[7]; int changed; ",
