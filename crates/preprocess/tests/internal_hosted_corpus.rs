@@ -148,3 +148,130 @@ fn hosted_target_integer_predefines_match_gcc_and_clang() {
         }
     }
 }
+
+
+#[test]
+fn common_c99_and_posix_hosted_headers_preprocess_individually() {
+    if !cfg!(target_os = "linux") || !Path::new("/usr/include/stdio.h").is_file() {
+        return;
+    }
+    // glibc <tgmath.h> requires a GNU-compiler identity/capability profile;
+    // do not impersonate GCC just to bypass its rejection. Track this
+    // separately from the 27 supported headers.
+    // These common hosted C99/POSIX headers are tested at the preprocessing
+    // boundary: Mini-C checker and native codegen have separate acceptance
+    // tests. Keep every header unchanged, using the host's normal sysroot.
+    const HEADERS: &[&str] = &[
+        "assert.h", "complex.h", "ctype.h", "dirent.h", "errno.h",
+        "fenv.h", "float.h", "inttypes.h", "limits.h", "locale.h",
+        "math.h", "setjmp.h", "signal.h", "stdarg.h", "stdbool.h",
+        "stddef.h", "stdint.h", "stdio.h", "stdlib.h", "string.h",
+        "strings.h", "sys/stat.h", "sys/types.h",
+        "time.h", "unistd.h", "wchar.h", "wctype.h",
+    ];
+    let dir = std::env::temp_dir().join(format!(
+        "mini-c-cpp-hosted-headers-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("include.c");
+    let internal = Config {
+        executable: OsString::from("internal"),
+        args: vec![OsString::from("-E"), OsString::from("-D_GNU_SOURCE")],
+    };
+    let gcc = Config {
+        executable: OsString::from("cc"),
+        args: vec![
+            OsString::from("-E"), OsString::from("-std=gnu11"),
+            OsString::from("-D_GNU_SOURCE"),
+        ],
+    };
+    let mut reference_pass = 0;
+    let mut accepted = 0;
+    let mut failures = Vec::new();
+    for header in HEADERS {
+        std::fs::write(
+            &source, format!("#include <{header}>\nint header_probe = 7;\n")
+        ).unwrap();
+        let reference = match file(&source, &gcc) {
+            Ok(result) => result,
+            Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::remove_dir_all(&dir).unwrap();
+                return;
+            }
+            Err(error) => {
+                failures.push(format!("{header}: GCC rejected host header: {error}"));
+                continue;
+            }
+        };
+        assert!(reference.contains("header_probe"), "GCC lost {header}'s source");
+        reference_pass += 1;
+        match file(&source, &internal) {
+            Ok(output) if output.contains("header_probe") => accepted += 1,
+            Ok(_) => failures.push(format!("{header}: internal output lost source")),
+            Err(error) => failures.push(format!("{header}: {error}")),
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+    eprintln!("hosted C99/POSIX header corpus: {accepted}/{reference_pass} GCC-accepted");
+    assert_eq!(reference_pass, HEADERS.len(), "reference environment is incomplete: {failures:?}");
+    assert!(failures.is_empty(), "internal hosted-header failures:\n{}", failures.join("\n"));
+}
+
+
+#[test]
+fn common_hosted_headers_can_be_combined_in_both_orders() {
+    if !cfg!(target_os = "linux") || !Path::new("/usr/include/stdio.h").is_file() {
+        return;
+    }
+    const HEADER_SETS: &[&[&str]] = &[
+        &[
+            "stddef.h", "stdint.h", "stdio.h", "stdlib.h", "string.h",
+            "strings.h", "errno.h", "inttypes.h", "ctype.h", "time.h",
+            "sys/types.h", "sys/stat.h", "fcntl.h", "unistd.h",
+            "pthread.h", "wchar.h", "math.h",
+        ],
+        &[
+            "math.h", "wchar.h", "pthread.h", "unistd.h", "fcntl.h",
+            "sys/stat.h", "sys/types.h", "time.h", "ctype.h",
+            "inttypes.h", "errno.h", "strings.h", "string.h",
+            "stdlib.h", "stdio.h", "stdint.h", "stddef.h",
+        ],
+    ];
+    let dir = std::env::temp_dir().join(format!(
+        "mini-c-cpp-mixed-headers-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("combined.c");
+    let gcc = Config {
+        executable: OsString::from("cc"),
+        args: vec![
+            OsString::from("-E"), OsString::from("-std=gnu11"),
+            OsString::from("-D_GNU_SOURCE"),
+        ],
+    };
+    let internal = Config {
+        executable: OsString::from("internal"),
+        args: vec![OsString::from("-E"), OsString::from("-D_GNU_SOURCE")],
+    };
+    for (index, headers) in HEADER_SETS.iter().enumerate() {
+        let mut source = String::new();
+        for header in *headers {
+            source.push_str(&format!("#include <{header}>\n"));
+        }
+        source.push_str("int mixed_header_source_survived = 19;\n");
+        std::fs::write(&path, source).unwrap();
+        let reference = file(&path, &gcc)
+            .unwrap_or_else(|error| panic!("GCC rejected header set {index}: {error}"));
+        assert!(reference.contains("mixed_header_source_survived"));
+        let output = file(&path, &internal)
+            .unwrap_or_else(|error| panic!("internal CPP rejected header set {index}: {error}"));
+        assert!(output.contains("mixed_header_source_survived"));
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}

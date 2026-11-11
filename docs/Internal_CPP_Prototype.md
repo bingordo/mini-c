@@ -84,6 +84,28 @@ corpus, Clippy and feature-gated checker/Cranelift integration passed in
 This establishes the tested x86-64 Linux LP64 environment, not universal
 cross-target or all-header parity.
 
+## Broader hosted C99/POSIX headers (CPP/2)
+
+A feature-gated hosted Linux x86-64 smoke test now preprocesses **27
+representative C99/POSIX headers** separately (including `stdio.h`,
+`stdlib.h`, `stdint.h`, `math.h`, `wchar.h`, `pthread.h`, `sys/stat.h`,
+and `unistd.h`). It also processes **17 common headers together in two
+opposite include orders**, checking that the following source reaches the
+output stream. [compiler-ci #42959543662](https://github.com/bingordo/compiler-ci/actions/runs/42959543662)
+passed these tests, the 24-source original musl preprocessing corpus,
+Clippy, and feature-gated checker/Cranelift integration.
+
+One additional hosted C99 header, **`tgmath.h`**, is currently unsupported
+in the internal CPP: unmodified glibc requires a compatible compiler identity
+via `__GNUC_PREREQ`, not merely correct target integer layouts. This is
+tracked as [#136](https://github.com/bingordo/mini-c/issues/136). Do not
+globally claim an arbitrary GCC version just to bypass its `#error`:
+the selected header branches may require compiler extensions not yet
+implemented in Mini-C. GNU-capability declaration and source-level
+type-generic math acceptance need separate validation. These results are
+preprocessing coverage, **not** evidence that every header's declarations
+pass the Mini-C frontend or backend.
+
 ## Design
 
 `crates/preprocess` has an optional `internal-rcc` feature using a
