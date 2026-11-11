@@ -70,6 +70,8 @@ pub enum FloatRank { Float, Double, LongDouble, Float128 }
 #[derive(Debug, Clone, PartialEq)]
 pub enum Type {
     Void,
+    /// ISO C99 _Bool, a distinct one-byte integer type.
+    Bool,
     Char,
     Short,
     Int,
