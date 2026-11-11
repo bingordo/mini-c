@@ -1239,9 +1239,9 @@ fn c99_pointer_to_integer_explicit_casts_preserve_checked_conversion() {
     let CheckedStmt::Block(statements) = &f.body else { panic!("expected block"); };
     let CheckedStmt::Return(Some(result)) = &statements[0] else { panic!("expected return"); };
     assert!(matches!(result.kind, CheckedExprKind::Convert(_)));
-    let CType::Integer { rank: IntRank::Long, unsigned: true } = result.ty else {
-        panic!("pointer-to-uintptr_t must retain unsigned-long type: {:?}", result.ty);
-    };
+    assert!(matches!(&result.ty,
+        CType::Integer { rank: IntRank::Long, unsigned: true }),
+        "pointer-to-uintptr_t must retain unsigned-long type: {:?}", result.ty);
     // Source pointer-to-integer casts and nested integer narrowing do not
     // silently turn into pointer arithmetic or an unevaluated constant.
     check("typedef unsigned long uintptr_t; uintptr_t align(char *p) { \
