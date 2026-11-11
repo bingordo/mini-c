@@ -43,15 +43,27 @@ fn c99_switch_nested_loop_break_continue_and_unsigned_cases_emit_elf() {
 }
 
 #[test]
-fn c99_switch_nested_label_locations_fail_closed_in_native_backend() {
-    let error=compile_source(
+fn c99_switch_nested_case_and_skipped_local_emit_elf() {
+    emits_elf(
         "int f(int x){switch(x){if(x){case 1: return 1;} default: return 0;}}"
+    );
+    // A selected case can bypass the initializer. Assign before reading the
+    // local to keep the executed C program defined.
+    emits_elf(
+        "int f(int x){switch(x){int y=3; case 1: y=7; return y; default: return 0;}}"
+    );
+    emits_elf(concat!(
+        "int f(int x){switch(x){for(int i=0;i<3;i++){case 1: i=2; break;} ",
+        "break; default: return 0;}return 3;}"
+    ));
+}
+
+#[test]
+fn c99_switch_goto_arm_label_still_fails_closed() {
+    let error = compile_source(
+        "int f(int x){goto done;switch(x){case 1: done: return 1;default:return 0;}}"
     ).unwrap_err();
-    assert!(error.contains("native switch labels under nested"), "{error}");
-    let error=compile_source(
-        "int f(int x){switch(x){int y=3; case 1: return y; default: return 0;}}"
-    ).unwrap_err();
-    assert!(error.contains("cannot jump over a local declaration across case labels"), "{error}");
+    assert!(error.contains("native goto labels inside switch arms"), "{error}");
 }
 
 #[test]
