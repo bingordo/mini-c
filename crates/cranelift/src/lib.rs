@@ -542,50 +542,45 @@ impl Compiler {
         }
     }
 
-    /// Labels may form a chain on a direct function-body statement.
-    /// Scan the whole checked function before IR emission so even unreachable
-    /// or late label definitions are validated before any object is emitted.
-    fn native_goto_plan(body: &CheckedStmt) -> Result<(Vec<String>, HashSet<String>)> {
-        let CheckedStmt::Block(stmts) = body else {
-            return Err("native goto requires a compound function body".into());
-        };
-        let mut label_positions = HashMap::<String, usize>::new();
-        let mut ordered_labels = Vec::new();
-        let mut gotos = Vec::<(String, usize)>::new();
-        for (index, stmt) in stmts.iter().enumerate() {
-            let mut tail = stmt;
-            while let CheckedStmt::Label { name, body } = tail {
-                if label_positions.insert(name.clone(), index).is_none() {
-                    ordered_labels.push(name.clone());
+    /// Source-order label collection, including nested lexical blocks. A
+    /// label under if/loop/switch still needs full cross-construct CFG entry
+    /// modeling; reject that form *before* creating any native functions.
+    fn collect_native_labels(stmt: &CheckedStmt, ordered: &mut Vec<String>) -> Result<()> {
+        match stmt {
+            CheckedStmt::Label { name, body } => {
+                ordered.push(name.clone());
+                Self::collect_native_labels(body, ordered)?;
+            }
+            CheckedStmt::Block(stmts) => {
+                for stmt in stmts {
+                    Self::collect_native_labels(stmt, ordered)?;
                 }
-                tail = body;
             }
-            if Self::has_nested_label(tail) {
-                return Err("native goto does not yet support labels nested in control flow or compound scopes".into());
+            _ if Self::has_nested_label(stmt) => {
+                return Err("native goto does not yet support labels nested in conditional, loop or switch control flow".into());
             }
-            let mut targets = Vec::new();
-            Self::collect_goto_targets(tail, &mut targets);
-            gotos.extend(targets.into_iter().map(|name| (name, index)));
+            _ => {}
         }
+        Ok(())
+    }
+
+    fn native_goto_plan(body: &CheckedStmt) -> Result<(Vec<String>, HashSet<String>)> {
+        if !matches!(body, CheckedStmt::Block(_)) {
+            return Err("native goto requires a compound function body".into());
+        }
+        let mut ordered_labels = Vec::new();
+        Self::collect_native_labels(body, &mut ordered_labels)?;
+        let definitions: HashSet<_> = ordered_labels.iter().cloned().collect();
+        let mut targets = Vec::new();
+        Self::collect_goto_targets(body, &mut targets);
         let mut referenced = HashSet::new();
-        for (target, source_index) in gotos {
-            let &target_index = label_positions.get(&target)
-                .ok_or_else(|| format!("native goto refers to missing checked label '{target}'"))?;
-            // A stack_addr created while emitting a local declaration must
-            // dominate its uses. Jumping past that declaration could bypass
-            // its definition; reject until stack slots are hoisted safely.
-            if target_index > source_index
-                && stmts[source_index + 1..target_index].iter()
-                    .any(|stmt| matches!(stmt, CheckedStmt::Decl(_)))
-            {
-                return Err(format!(
-                    "native goto to '{target}' cannot jump over a local declaration"
-                ));
+        for target in targets {
+            if !definitions.contains(&target) {
+                return Err(format!("native goto refers to missing checked label '{target}'"));
             }
             referenced.insert(target);
         }
-        // Preserve source order. Hash-map iteration order would produce
-        // nondeterministic Cranelift block numbering and ELF object bytes.
+        // Source order is deterministic; hash-map order is not.
         Ok((ordered_labels, referenced))
     }
 
@@ -793,7 +788,9 @@ pub fn compile_source(source: &str) -> Result<Vec<u8>> {
 
 #[derive(Clone, Copy)]
 struct Local {
-    address: Value,
+    /// Stack slot identity, not an SSA stack_addr value tied to a particular
+    /// predecessor. Materialize an address at its *use*, after any goto edge.
+    slot: ir::StackSlot,
 }
 
 struct Lower<'a> {
@@ -828,17 +825,26 @@ impl Lower<'_> {
         }
     }
 
-    fn bind(&mut self, b: &mut FunctionBuilder<'_>, name: &str, ty: &CType, value: Option<Value>) -> Result<()> {
+    /// Allocate a stack slot and bind the source name without emitting an
+    /// instruction. This also handles declarations skipped by a forward goto:
+    /// a later label can still refer to their storage, but no initializer or
+    /// synthetic zero store is executed on the bypassed path.
+    fn bind_storage(&mut self, b: &mut FunctionBuilder<'_>, name: &str, ty: &CType) -> Result<()> {
         let size = ty.size_bytes(Target::default())
             .ok_or_else(|| format!("M2.5 cannot allocate incomplete or non-object type {ty:?}"))?;
         let size = u32::try_from(size).map_err(|_| "M2.5 stack object exceeds 4GiB")?;
         let slot = b.create_sized_stack_slot(ir::StackSlotData::new(
             ir::StackSlotKind::ExplicitSlot, size, Self::alignment(ty),
         ));
-        let address = b.ins().stack_addr(types::I64, slot, 0);
-        // Bind before evaluating a local initializer: the declarator's scope
-        // starts before its initializer, and its address may escape.
-        self.scopes.last_mut().expect("scope exists").insert(name.to_owned(), Local { address });
+        self.scopes.last_mut().expect("scope exists").insert(name.to_owned(), Local { slot });
+        Ok(())
+    }
+
+    fn bind(&mut self, b: &mut FunctionBuilder<'_>, name: &str, ty: &CType, value: Option<Value>) -> Result<()> {
+        self.bind_storage(b, name, ty)?;
+        // Rematerialized in the current block, never inherited across CFG
+        // edges from an earlier declaration or parameter block.
+        let address = self.object_address(b, name)?;
         if let Some(value) = value {
             b.ins().store(ir::MemFlagsData::new(), value, address, 0);
         } else if !matches!(ty.unqualified(), CType::Array(..) | CType::Struct { .. } | CType::Union { .. }) {
@@ -950,7 +956,7 @@ impl Lower<'_> {
 
     fn object_address(&mut self, b: &mut FunctionBuilder<'_>, name: &str) -> Result<Value> {
         if let Some(local) = self.scopes.iter().rev().find_map(|scope| scope.get(name)) {
-            return Ok(local.address);
+            return Ok(b.ins().stack_addr(types::I64, local.slot, 0));
         }
         let data = self.data.get(name).ok_or_else(|| format!("unresolved variable '{name}'"))?;
         let gv = self.module.declare_data_in_func(data.id, b.func);
@@ -1550,36 +1556,71 @@ impl Lower<'_> {
         }
     }
 
+    /// Does a nested compound contain a label targeted by any goto?
+    fn contains_referenced_label(&self, stmt: &CheckedStmt) -> bool {
+        match stmt {
+            CheckedStmt::Label { name, body } =>
+                self.referenced_labels.contains(name) || self.contains_referenced_label(body),
+            CheckedStmt::Block(stmts) => stmts.iter()
+                .any(|stmt| self.contains_referenced_label(stmt)),
+            _ => false, // other control constructs with labels fail planning
+        }
+    }
+
+    /// Lower a lexical block even if it has no natural incoming fallthrough:
+    /// a goto may land on a label in one of its descendant compound blocks.
+    /// Dead declarations must still register their stack slots, but do not
+    /// execute initializers, default stores or other runtime side effects.
+    fn lower_block(
+        &mut self, b: &mut FunctionBuilder<'_>,
+        stmts: &[CheckedStmt], mut live: bool,
+    ) -> Result<bool> {
+        self.scopes.push(HashMap::new());
+        for stmt in stmts {
+            let mut tail = stmt;
+            let mut chain = Vec::new();
+            while let CheckedStmt::Label { name, body } = tail {
+                chain.push(name.as_str());
+                tail = body;
+            }
+            let referenced = chain.iter()
+                .any(|name| self.referenced_labels.contains(*name));
+            if !live && !referenced {
+                match tail {
+                    CheckedStmt::Decl(CheckedDecl { name, ty, storage, .. }) => {
+                        if !matches!(*storage, StorageClass::Default | StorageClass::Register) {
+                            return Err(format!("M2.5 does not emit storage-class local '{name}'"));
+                        }
+                        self.bind_storage(b, name, ty)?;
+                    }
+                    CheckedStmt::Block(inner) if self.contains_referenced_label(tail) => {
+                        live = self.lower_block(b, inner, false)?;
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+            // Each consecutive label owns a distinct CFG block; fallthrough
+            // to it is explicit, and a goto can directly target any label.
+            for name in chain {
+                let target = *self.labels.get(name)
+                    .ok_or_else(|| format!("unplanned native label '{name}'"))?;
+                if live {
+                    b.ins().jump(target, &[]);
+                }
+                b.switch_to_block(target);
+                live = true;
+            }
+            live = self.statement(b, tail)?;
+        }
+        self.scopes.pop();
+        Ok(live)
+    }
+
     /// Returns whether control can fall through to the next statement.
     fn statement(&mut self, b: &mut FunctionBuilder<'_>, stmt: &CheckedStmt) -> Result<bool> {
         match stmt {
-            CheckedStmt::Block(stmts) => {
-                self.scopes.push(HashMap::new());
-                let mut live = true;
-                for stmt in stmts {
-                    let mut tail = stmt;
-                    let mut chain = Vec::new();
-                    while let CheckedStmt::Label { name, body } = tail {
-                        chain.push(name.as_str());
-                        tail = body;
-                    }
-                    let referenced = chain.iter()
-                        .any(|name| self.referenced_labels.contains(*name));
-                    if !live && !referenced { continue; }
-                    // A chain like a: b: stmt gives both labels a distinct CFG
-                    // block, and fallthrough jumps to the next one.
-                    for name in chain {
-                        let target = *self.labels.get(name)
-                            .ok_or_else(|| format!("unplanned native label '{name}'"))?;
-                        if live { b.ins().jump(target, &[]); }
-                        b.switch_to_block(target);
-                        live = true;
-                    }
-                    live = self.statement(b, tail)?;
-                }
-                self.scopes.pop();
-                Ok(live)
-            }
+            CheckedStmt::Block(stmts) => self.lower_block(b, stmts, true),
             CheckedStmt::Typedef { .. } | CheckedStmt::Tag => Ok(true),
             CheckedStmt::Goto { target } => {
                 let block = *self.labels.get(target)
@@ -1756,16 +1797,22 @@ mod tests {
     }
 
     #[test]
-    fn native_goto_must_reject_unsupported_scope_edges() {
-        for (source, message) in [
-            ("int f(int x) { goto done; int y=3; done: return x; }",
-             "cannot jump over a local declaration"),
-            ("int f(int x) { goto done; if(x) { done: return 2; } return 0; }",
-             "labels nested in control flow"),
+    fn native_goto_supports_skipped_local_storage_and_nested_compound_labels() {
+        for source in [
+            "int f(void) { goto done; int y=3; done: y=7; return y; }",
+            "int f(void) { goto done; int a[3]; done: a[2]=7; return a[2]; }",
+            "int f(void) { goto inner; { int y=3; inner: y=7; return y; } }",
+            "int f(void) { goto inner; { int x=4; { inner: x=2; } } return 0; }",
         ] {
-            let error = compile_source(source).expect_err("unsupported goto must reject");
-            assert!(error.contains(message), "{error}: {source}");
+            compile_source(source).unwrap_or_else(|why| panic!("{why}: {source}"));
         }
+    }
+
+    #[test]
+    fn native_goto_rejects_control_construct_labels() {
+        let source = "int f(int x) { goto done; if(x) { done: return 2; } return 0; }";
+        let error = compile_source(source).expect_err("unsupported goto must reject");
+        assert!(error.contains("labels nested in conditional"), "{error}");
     }
 
     #[test]
