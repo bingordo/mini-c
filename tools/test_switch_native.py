@@ -105,7 +105,7 @@ UNSUPPORTED = {
     "jump_past_local_definition": (
         "int test(int x){switch(x){int y=3;case 1:return y;"
         "default:return 0;}}",
-        "cannot jump over a local declaration",
+        "cannot jump over a local declaration across case labels",
     ),
 }
 
