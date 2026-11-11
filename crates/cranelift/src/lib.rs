@@ -619,7 +619,7 @@ impl Compiler {
                 data: &self.data,
                 strings: &mut self.strings,
                 scopes: vec![HashMap::new()], loops: Vec::new(), breaks: Vec::new(),
-                labels, referenced_labels,
+                switch_labels: Vec::new(), labels, referenced_labels,
                 result_ty: match &function.signature {
                     CType::Function { result, .. } => result.as_ref().clone(),
                     _ => return Err("function signature expected".into()),
@@ -818,6 +818,9 @@ struct Lower<'a> {
     loops: Vec<(ir::Block, ir::Block)>, // (break target, continue target)
     /// Nearest breakable construct: a loop *or* switch. Continue uses loops.
     breaks: Vec<(ir::Block, bool)>, // destination, whether a break may reach it
+    /// Maps source case/default node identities to the currently active
+    /// switch dispatch's blocks; nested switches push their own scope.
+    switch_labels: Vec<HashMap<usize, ir::Block>>,
     /// Preallocated function-scope basic blocks for source labels.
     labels: HashMap<String, ir::Block>,
     /// Only these labels can revive code after an unconditional terminator.
@@ -1437,97 +1440,95 @@ impl Lower<'_> {
     }
 
 
-    /// A case nested beneath a control construct or brace block needs a
-    /// general label-to-CFG mapping (not yet implemented in the reference
-    /// backend). A nested switch has its own independent case namespace.
-    fn has_nonleading_case(stmt: &CheckedStmt) -> bool {
+    /// Each case/default is its own source-level entry point. Discover labels
+    /// recursively across ordinary blocks and control statements, but never
+    /// descend into a nested switch: that switch owns an independent case
+    /// namespace (and will build its own dispatch map on lowering).
+    fn collect_switch_cases<'a>(
+        stmt: &'a CheckedStmt,
+        labels: &mut Vec<(&'a CheckedStmt, Option<i128>)>,
+    ) {
         match stmt {
-            CheckedStmt::Case { .. } | CheckedStmt::Default(_) => true,
-            CheckedStmt::Block(stmts) => stmts.iter().any(Self::has_nonleading_case),
-            CheckedStmt::If { then, otherwise, .. } =>
-                Self::has_nonleading_case(then)
-                || otherwise.as_ref().is_some_and(|other| Self::has_nonleading_case(other)),
+            CheckedStmt::Case { value, body } => {
+                labels.push((stmt, Some(*value)));
+                Self::collect_switch_cases(body, labels);
+            }
+            CheckedStmt::Default(body) => {
+                labels.push((stmt, None));
+                Self::collect_switch_cases(body, labels);
+            }
+            CheckedStmt::Block(stmts) => {
+                for stmt in stmts { Self::collect_switch_cases(stmt, labels); }
+            }
+            CheckedStmt::Label { body, .. } => Self::collect_switch_cases(body, labels),
+            CheckedStmt::If { then, otherwise, .. } => {
+                Self::collect_switch_cases(then, labels);
+                if let Some(otherwise) = otherwise {
+                    Self::collect_switch_cases(otherwise, labels);
+                }
+            }
             CheckedStmt::While { body, .. } | CheckedStmt::DoWhile { body, .. } =>
-                Self::has_nonleading_case(body),
-            CheckedStmt::For(for_loop) =>
-                for_loop.init.as_ref().is_some_and(|stmt| Self::has_nonleading_case(stmt))
-                || Self::has_nonleading_case(&for_loop.body),
-            // The inner switch owns its own case labels.
-            CheckedStmt::Switch { .. } => false,
-            _ => false,
+                Self::collect_switch_cases(body, labels),
+            CheckedStmt::For(for_loop) => {
+                if let Some(init) = &for_loop.init {
+                    Self::collect_switch_cases(init, labels);
+                }
+                Self::collect_switch_cases(&for_loop.body, labels);
+            }
+            CheckedStmt::Switch { .. } => {} // inner switch owns its cases
+            _ => {}
         }
     }
 
-    /// Lower ordinary switch arms to linear conditional dispatch blocks.
-    /// Each leading case/default group gets a block. The following statement
-    /// stream is emitted in source order so fallthrough is real fallthrough,
-    /// not a synthetic jump to the enclosing switch exit.
+    /// Switch dispatch targets source case nodes, even when a case is nested
+    /// under an if/loop/compound statement. Every node's address is stable for
+    /// the duration of lowering this immutable checked function body. The
+    /// pointer is used only as an identity key and is never dereferenced.
+    fn checked_stmt_id(stmt: &CheckedStmt) -> usize {
+        stmt as *const CheckedStmt as usize
+    }
+
+    /// Source labels are CFG entry blocks. Evaluate the controlling expression
+    /// exactly once, then dispatch to the matching node (or default/exit).
+    /// Ordinary switch-body entry is intentionally disconnected: C dispatch
+    /// cannot execute statements preceding the first matching case.
     ///
-    /// Labels hidden under if/while/nested compound statements are rejected
-    /// explicitly until the native CFG can map arbitrary labels.
+    /// Local stack slots are bound independently of the runtime declaration
+    /// path, so jumping over an initializer cannot inherit an invalid SSA
+    /// stack_addr nor execute the skipped initializer.
     fn switch_statement(
         &mut self, b: &mut FunctionBuilder<'_>,
         control: &CheckedExpr, body: &CheckedStmt,
     ) -> Result<bool> {
         let control_value = self.expression(b, control)?;
         let control_type = scalar_type(&control.ty)?;
-        let statements: &[CheckedStmt] = match body {
-            CheckedStmt::Block(stmts) => stmts,
-            other => std::slice::from_ref(other),
-        };
-
-        let mut labels = Vec::with_capacity(statements.len());
-        let mut cases = Vec::new();
-        let mut default = None;
-        let mut saw_label = false;
-        for stmt in statements {
-            let mut tail = stmt;
-            let mut case_values = Vec::new();
-            let mut is_default = false;
-            loop {
-                match tail {
-                    CheckedStmt::Case { value, body } => {
-                        case_values.push(*value);
-                        tail = body;
-                    }
-                    CheckedStmt::Default(body) => {
-                        is_default = true;
-                        tail = body;
-                    }
-                    _ => break,
-                }
-            }
-            if Self::has_nonleading_case(tail) {
-                return Err("native switch labels under nested blocks/conditions are not supported".into());
-            }
-            if case_values.is_empty() && !is_default {
-                if matches!(stmt, CheckedStmt::Decl(_)) {
-                    // A jump into a later case can skip the stack_addr
-                    // defining a local declared in an earlier arm. The
-                    // general solution hoists stack slots while keeping C
-                    // initializer execution at its source position.
-                    return Err("native switch cannot jump over a local declaration across case labels".into());
-                }
-                labels.push(None);
-                continue;
-            }
-            saw_label = true;
-            let label = b.create_block();
-            cases.extend(case_values.into_iter().map(|value| (value, label)));
-            if is_default { default = Some(label); }
-            labels.push(Some(label));
+        let mut source_labels = Vec::new();
+        Self::collect_switch_cases(body, &mut source_labels);
+        if source_labels.is_empty() {
+            // No case/default can be selected. The controlling expression
+            // still executes, but the body has no possible entry.
+            return Ok(true);
         }
 
-        // An unlabelled switch body is unreachable, but its controlling
-        // expression still runs exactly once.
-        if !saw_label { return Ok(true); }
+        let mut label_blocks = HashMap::new();
+        let mut cases = Vec::new();
+        let mut default = None;
+        for (source, value) in source_labels {
+            let block = b.create_block();
+            label_blocks.insert(Self::checked_stmt_id(source), block);
+            if let Some(value) = value {
+                cases.push((value, block));
+            } else {
+                default = Some(block);
+            }
+        }
 
         let exit = b.create_block();
-        for &(value, arm) in &cases {
+        for (value, arm) in cases {
             let next = b.create_block();
-            // A checked case has already been normalized to the promoted
-            // control type. Form signed 32/64-bit immediates with the same
-            // low bits (including values above i64::MAX for unsigned long).
+            // Checked case values were normalized to the promoted controlling
+            // type. Preserve the same low-bit conversion for both signed and
+            // unsigned long / int as the previous direct-arm emitter.
             let immediate = if control_type == types::I64 {
                 value as i64
             } else {
@@ -1540,35 +1541,50 @@ impl Lower<'_> {
         b.ins().jump(default.unwrap_or(exit), &[]);
 
         self.breaks.push((exit, false));
-        self.scopes.push(HashMap::new());
-        let mut live = false;
-        for (stmt, label) in statements.iter().zip(&labels) {
-            let mut tail = stmt;
-            while let CheckedStmt::Case { body, .. } | CheckedStmt::Default(body) = tail {
-                tail = body;
-            }
-            if let Some(label) = label {
-                if live { b.ins().jump(*label, &[]); }
-                b.switch_to_block(*label);
-                live = true;
-            }
-            if live {
-                live = self.statement(b, tail)?;
-            }
-        }
+        self.switch_labels.push(label_blocks);
+        // The body is emitted for its nested case entry blocks, not as a
+        // fallthrough successor of the switch dispatch or any outer block.
+        let disconnected_entry = b.create_block();
+        b.switch_to_block(disconnected_entry);
+        let live = self.statement(b, body)?;
         if live { b.ins().jump(exit, &[]); }
-        self.scopes.pop();
+        self.switch_labels.pop();
         let (_, break_reaches_exit) = self.breaks.pop().expect("active switch break scope");
         b.switch_to_block(exit);
         if default.is_some() && !live && !break_reaches_exit {
-            // Every dispatch path goes through a case/default that returns
-            // (or traps). The synthetic exit is unreachable. Do not falsely
-            // reject a function with no final return statement.
+            // All dispatch paths end in returns/traps, with no path to the
+            // synthetic exit. Retain the existing conservative fallthrough
+            // contract for a non-void function with no trailing return.
             b.ins().trap(ir::TrapCode::unwrap_user(1));
             Ok(false)
         } else {
             Ok(true)
         }
+    }
+
+    /// Is a case/default targeted by the innermost active switch dispatch in
+    /// this statement subtree? Ignore case labels owned by a nested switch.
+    fn contains_active_switch_case(&self, stmt: &CheckedStmt) -> bool {
+        let Some(mapping) = self.switch_labels.last() else { return false };
+        fn walk(stmt: &CheckedStmt, mapping: &HashMap<usize, ir::Block>) -> bool {
+            match stmt {
+                CheckedStmt::Case { body, .. } | CheckedStmt::Default(body) =>
+                    mapping.contains_key(&Compiler::checked_stmt_id(stmt)) || walk(body, mapping),
+                CheckedStmt::Block(stmts) => stmts.iter().any(|stmt| walk(stmt, mapping)),
+                CheckedStmt::Label { body, .. } => walk(body, mapping),
+                CheckedStmt::If { then, otherwise, .. } =>
+                    walk(then, mapping) ||
+                        otherwise.as_ref().is_some_and(|s| walk(s, mapping)),
+                CheckedStmt::While { body, .. } | CheckedStmt::DoWhile { body, .. } =>
+                    walk(body, mapping),
+                CheckedStmt::For(for_loop) =>
+                    for_loop.init.as_ref().is_some_and(|s| walk(s, mapping))
+                    || walk(&for_loop.body, mapping),
+                CheckedStmt::Switch { .. } => false,
+                _ => false,
+            }
+        }
+        walk(stmt, mapping)
     }
 
     /// Does this subtree have a label targeted by a goto from any source?
@@ -1619,17 +1635,26 @@ impl Lower<'_> {
                         }
                         self.bind_storage(b, name, ty)?;
                     }
-                    CheckedStmt::Block(inner) if self.contains_referenced_label(tail) => {
+                    CheckedStmt::Block(inner) if self.contains_referenced_label(tail)
+                        || self.contains_active_switch_case(tail) =>
+                    {
                         live = self.lower_block(b, inner, false)?;
                     }
                     CheckedStmt::If { .. } | CheckedStmt::While { .. }
                     | CheckedStmt::DoWhile { .. } | CheckedStmt::For(_)
-                        if self.contains_referenced_label(tail) =>
+                        if self.contains_referenced_label(tail)
+                            || self.contains_active_switch_case(tail) =>
                     {
-                        // The source entry of this construct was skipped by a
-                        // return/goto. Emit a disconnected entry block for
-                        // the ordinary condition/init edges; incoming gotos
-                        // can only enter at explicit nested label blocks.
+                        // The lexical entry is bypassed. Build its normal
+                        // condition/init paths on a disconnected block while
+                        // the case/goto entry receives its real CFG edge.
+                        let dead_entry = b.create_block();
+                        b.switch_to_block(dead_entry);
+                        live = self.statement(b, tail)?;
+                    }
+                    CheckedStmt::Case { .. } | CheckedStmt::Default(_)
+                        if self.contains_active_switch_case(tail) =>
+                    {
                         let dead_entry = b.create_block();
                         b.switch_to_block(dead_entry);
                         live = self.statement(b, tail)?;
@@ -1805,8 +1830,15 @@ impl Lower<'_> {
                 Ok(true)
             }
             CheckedStmt::Switch { control, body } => self.switch_statement(b, control, body),
-            CheckedStmt::Case { .. } | CheckedStmt::Default(_) =>
-                Err("native case/default label has no switch dispatch block".into()),
+            CheckedStmt::Case { body, .. } | CheckedStmt::Default(body) => {
+                let target = self.switch_labels.last()
+                    .and_then(|scope| scope.get(&Compiler::checked_stmt_id(stmt)))
+                    .copied()
+                    .ok_or("native case/default label has no switch dispatch block")?;
+                b.ins().jump(target, &[]);
+                b.switch_to_block(target);
+                self.statement(b, body)
+            },
             CheckedStmt::Break => {
                 let (break_dest, reaches_exit) = self.breaks.last_mut()
                     .ok_or("break outside loop or switch in checked IR")?;
