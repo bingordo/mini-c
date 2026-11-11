@@ -16,6 +16,45 @@ fn explicit_pointer_to_uintptr_casts_compile_for_lp64() {
 }
 
 #[test]
+fn c99_switch_direct_labels_fallthrough_and_default_emit_elf() {
+    emits_elf(
+        "int choose(int x) { int total=0; switch(x) { \
+         case 1: total=3; break; \
+         case 2: total=4; case 3: total+=5; break; \
+         default: total=6; } return total; } \
+         int main(void) { return choose(1)!=3 || choose(2)!=9 || \
+         choose(3)!=5 || choose(99)!=6; }"
+    );
+}
+
+#[test]
+fn c99_switch_nested_loop_break_continue_and_unsigned_cases_emit_elf() {
+    emits_elf(
+        "int main(void) { unsigned long x=~0UL; int result=0; \
+         switch(x) { case 18446744073709551615UL: result=2; break; default: result=7; } \
+         for(int i=0;i<4;i++){switch(i){case 1: continue; default: result+=i;} result+=3;} \
+         return result != 16; }"
+    );
+    emits_elf(
+        "int main(void) { int value=0; switch(1) { \
+         case 1: switch(2) { case 2: value=7; break; default: value=9; } \
+         value+=3; break; default: value=11; } return value!=10; }"
+    );
+}
+
+#[test]
+fn c99_switch_nested_label_locations_fail_closed_in_native_backend() {
+    let error=compile_source(
+        "int f(int x){switch(x){if(x){case 1: return 1;} default: return 0;}}"
+    ).unwrap_err();
+    assert!(error.contains("native switch labels under nested"), "{error}");
+    let error=compile_source(
+        "int f(int x){switch(x){int y=3; case 1: return y; default: return 0;}}"
+    ).unwrap_err();
+    assert!(error.contains("cannot jump over a local declaration across case labels"), "{error}");
+}
+
+#[test]
 fn pointer_aliasing_and_array_indexing_compile() {
     emits_elf("int main(void) { int a[4]; int *p=a; p[1]=11; a[2]=7; return a[1]+p[2]-18; }");
 }
