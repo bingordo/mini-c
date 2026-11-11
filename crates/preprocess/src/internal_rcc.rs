@@ -268,6 +268,56 @@ mod tests {
     }
 
     #[test]
+    fn command_line_gnu_source_can_be_redefined_by_real_sources() {
+        let dir = std::env::temp_dir().join(format!(
+            "mini-c-gnu-feature-redefine-{}-{}", std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.join("unit.c");
+        std::fs::write(&root,
+            "#define _GNU_SOURCE\n#ifdef _GNU_SOURCE\nint selected = 1;\n#endif\n"
+        ).unwrap();
+        let output = file(&root, &[
+            OsString::from("-E"), OsString::from("-D_GNU_SOURCE")
+        ]);
+        std::fs::remove_dir_all(dir).unwrap();
+        let output = output.unwrap();
+        assert!(output.contains("selected"), "{output}");
+    }
+
+    #[test]
+    fn arbitrary_cli_macro_redefinition_still_fails_under_strict_c99() {
+        let dir = std::env::temp_dir().join(format!(
+            "mini-c-strict-redefine-{}-{}", std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.join("unit.c");
+        std::fs::write(&root, "#define USER_VALUE 2\nint selected = USER_VALUE;\n").unwrap();
+        let result = file(&root, &[
+            OsString::from("-E"), OsString::from("-DUSER_VALUE=1")
+        ]);
+        std::fs::remove_dir_all(dir).unwrap();
+        let error = result.expect_err("unrelated redefinition must remain diagnosed");
+        assert!(error.contains("USER_VALUE"), "{error}");
+        assert!(error.contains("redefined"), "{error}");
+    }
+
+    #[test]
+    fn unmodified_musl_strcasestr_preprocesses_with_cli_gnu_source() {
+        if !cfg!(target_os = "linux") || !Path::new("/usr/include/string.h").is_file() {
+            return;
+        }
+        let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/musl-s10/string/strcasestr.c");
+        let output = file(&source, &[
+            OsString::from("-E"), OsString::from("-D_GNU_SOURCE")
+        ]).expect("unmodified musl strcasestr must preprocess");
+        assert!(output.contains("strcasestr"), "{output}");
+    }
+
+    #[test]
     fn hosted_linux_system_stdio_header_is_discovered() {
         // This is a preprocessor-only smoke test; Mini-C's C frontend
         // may still reject language constructs in the unmodified header.
