@@ -1569,7 +1569,7 @@ impl Lower<'_> {
         fn walk(stmt: &CheckedStmt, mapping: &HashMap<usize, ir::Block>) -> bool {
             match stmt {
                 CheckedStmt::Case { body, .. } | CheckedStmt::Default(body) =>
-                    mapping.contains_key(&Compiler::checked_stmt_id(stmt)) || walk(body, mapping),
+                    mapping.contains_key(&Lower::checked_stmt_id(stmt)) || walk(body, mapping),
                 CheckedStmt::Block(stmts) => stmts.iter().any(|stmt| walk(stmt, mapping)),
                 CheckedStmt::Label { body, .. } => walk(body, mapping),
                 CheckedStmt::If { then, otherwise, .. } =>
@@ -1832,7 +1832,7 @@ impl Lower<'_> {
             CheckedStmt::Switch { control, body } => self.switch_statement(b, control, body),
             CheckedStmt::Case { body, .. } | CheckedStmt::Default(body) => {
                 let target = self.switch_labels.last()
-                    .and_then(|scope| scope.get(&Compiler::checked_stmt_id(stmt)))
+                    .and_then(|scope| scope.get(&Lower::checked_stmt_id(stmt)))
                     .copied()
                     .ok_or("native case/default label has no switch dispatch block")?;
                 b.ins().jump(target, &[]);
