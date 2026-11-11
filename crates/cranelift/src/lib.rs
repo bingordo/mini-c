@@ -16,7 +16,7 @@ use mini_c_sema::{
     CheckedItem, CheckedStmt, Checker, IntRank, Linkage, Target,
 };
 use mini_c_syntax::{ast::{BinOp, UnOp, StorageClass}, parser::Parser, stream::ItemSource};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 type Result<T> = std::result::Result<T, String>;
 
@@ -494,35 +494,98 @@ impl Compiler {
         }
     }
 
-    /// Native goto/labels require general cross-block CFG construction. Reject
-    /// even unreachable labels, rather than accidentally skipping one after
-    /// a return or emitting an executable with the wrong entry edges.
-    fn has_goto_or_label(stmt: &CheckedStmt) -> bool {
+    /// A first, deliberately bounded native CFG slice. General labels nested
+    /// inside blocks/conditionals/loops and jumps across skipped local object
+    /// declarations need a wider scope/stack-slot lowering pass.
+    fn has_nested_label(stmt: &CheckedStmt) -> bool {
         match stmt {
-            CheckedStmt::Goto { .. } | CheckedStmt::Label { .. } => true,
-            CheckedStmt::Block(stmts) => stmts.iter().any(Self::has_goto_or_label),
-            CheckedStmt::If { then, otherwise, .. } => {
-                Self::has_goto_or_label(then)
-                    || otherwise.as_ref().is_some_and(|s| Self::has_goto_or_label(s))
-            }
+            CheckedStmt::Label { .. } => true,
+            CheckedStmt::Block(stmts) => stmts.iter().any(Self::has_nested_label),
+            CheckedStmt::If { then, otherwise, .. } =>
+                Self::has_nested_label(then)
+                    || otherwise.as_ref().is_some_and(|s| Self::has_nested_label(s)),
             CheckedStmt::While { body, .. } | CheckedStmt::DoWhile { body, .. }
             | CheckedStmt::Switch { body, .. } | CheckedStmt::Case { body, .. }
-            | CheckedStmt::Default(body) => Self::has_goto_or_label(body),
-            CheckedStmt::For(for_loop) => {
-                for_loop.init.as_ref().is_some_and(|s| Self::has_goto_or_label(s))
-                    || Self::has_goto_or_label(&for_loop.body)
-            }
+            | CheckedStmt::Default(body) => Self::has_nested_label(body),
+            CheckedStmt::For(for_loop) =>
+                for_loop.init.as_ref().is_some_and(|s| Self::has_nested_label(s))
+                    || Self::has_nested_label(&for_loop.body),
             _ => false,
         }
     }
 
-    fn define(&mut self, function: CheckedFunction) -> Result<()> {
-        if Self::has_goto_or_label(&function.body) {
-            return Err(format!(
-                "native goto/label control flow is not yet supported in function '{}'",
-                function.name
-            ));
+    fn collect_goto_targets(stmt: &CheckedStmt, targets: &mut Vec<String>) {
+        match stmt {
+            CheckedStmt::Goto { target } => targets.push(target.clone()),
+            CheckedStmt::Label { body, .. } => Self::collect_goto_targets(body, targets),
+            CheckedStmt::Block(stmts) => {
+                for stmt in stmts {
+                    Self::collect_goto_targets(stmt, targets);
+                }
+            }
+            CheckedStmt::If { then, otherwise, .. } => {
+                Self::collect_goto_targets(then, targets);
+                if let Some(otherwise) = otherwise {
+                    Self::collect_goto_targets(otherwise, targets);
+                }
+            }
+            CheckedStmt::While { body, .. } | CheckedStmt::DoWhile { body, .. }
+            | CheckedStmt::Switch { body, .. } | CheckedStmt::Case { body, .. }
+            | CheckedStmt::Default(body) => Self::collect_goto_targets(body, targets),
+            CheckedStmt::For(for_loop) => {
+                if let Some(init) = &for_loop.init {
+                    Self::collect_goto_targets(init, targets);
+                }
+                Self::collect_goto_targets(&for_loop.body, targets);
+            }
+            _ => {}
         }
+    }
+
+    /// Labels may form a chain on a direct function-body statement.
+    /// Scan the whole checked function before IR emission so even unreachable
+    /// or late label definitions are validated before any object is emitted.
+    fn native_goto_plan(body: &CheckedStmt) -> Result<(Vec<String>, HashSet<String>)> {
+        let CheckedStmt::Block(stmts) = body else {
+            return Err("native goto requires a compound function body".into());
+        };
+        let mut label_positions = HashMap::<String, usize>::new();
+        let mut gotos = Vec::<(String, usize)>::new();
+        for (index, stmt) in stmts.iter().enumerate() {
+            let mut tail = stmt;
+            while let CheckedStmt::Label { name, body } = tail {
+                label_positions.insert(name.clone(), index);
+                tail = body;
+            }
+            if Self::has_nested_label(tail) {
+                return Err("native goto does not yet support labels nested in control flow or compound scopes".into());
+            }
+            let mut targets = Vec::new();
+            Self::collect_goto_targets(tail, &mut targets);
+            gotos.extend(targets.into_iter().map(|name| (name, index)));
+        }
+        let mut referenced = HashSet::new();
+        for (target, source_index) in gotos {
+            let &target_index = label_positions.get(&target)
+                .ok_or_else(|| format!("native goto refers to missing checked label '{target}'"))?;
+            // A stack_addr created while emitting a local declaration must
+            // dominate its uses. Jumping past that declaration could bypass
+            // its definition; reject until stack slots are hoisted safely.
+            if target_index > source_index
+                && stmts[source_index + 1..target_index].iter()
+                    .any(|stmt| matches!(stmt, CheckedStmt::Decl(_)))
+            {
+                return Err(format!(
+                    "native goto to '{target}' cannot jump over a local declaration"
+                ));
+            }
+            referenced.insert(target);
+        }
+        Ok((label_positions.into_keys().collect(), referenced))
+    }
+
+    fn define(&mut self, function: CheckedFunction) -> Result<()> {
+        let (label_names, referenced_labels) = Self::native_goto_plan(&function.body)?;
         self.flush_pending_imports()?;
         let id = self.declare(&function.name, &function.signature, function.linkage, true, None)?;
         let mut ctx = self.module.make_context();
@@ -532,12 +595,16 @@ impl Compiler {
         {
             let mut fb_ctx = FunctionBuilderContext::new();
             let mut builder = FunctionBuilder::new(&mut ctx.func, &mut fb_ctx);
+            let labels = label_names.into_iter()
+                .map(|name| (name, builder.create_block()))
+                .collect();
             let mut lower = Lower {
                 module: &mut self.module, functions: &self.functions,
                 gp_vararg_thunks: &mut self.gp_vararg_thunks,
                 data: &self.data,
                 strings: &mut self.strings,
                 scopes: vec![HashMap::new()], loops: Vec::new(), breaks: Vec::new(),
+                labels, referenced_labels,
                 result_ty: match &function.signature {
                     CType::Function { result, .. } => result.as_ref().clone(),
                     _ => return Err("function signature expected".into()),
@@ -734,6 +801,10 @@ struct Lower<'a> {
     loops: Vec<(ir::Block, ir::Block)>, // (break target, continue target)
     /// Nearest breakable construct: a loop *or* switch. Continue uses loops.
     breaks: Vec<(ir::Block, bool)>, // destination, whether a break may reach it
+    /// Preallocated function-scope basic blocks for source labels.
+    labels: HashMap<String, ir::Block>,
+    /// Only these labels can revive code after an unconditional terminator.
+    referenced_labels: HashSet<String>,
     result_ty: CType,
 }
 
@@ -1481,15 +1552,38 @@ impl Lower<'_> {
                 self.scopes.push(HashMap::new());
                 let mut live = true;
                 for stmt in stmts {
-                    if !live { break; }
-                    live = self.statement(b, stmt)?;
+                    let mut tail = stmt;
+                    let mut chain = Vec::new();
+                    while let CheckedStmt::Label { name, body } = tail {
+                        chain.push(name.as_str());
+                        tail = body;
+                    }
+                    let referenced = chain.iter()
+                        .any(|name| self.referenced_labels.contains(*name));
+                    if !live && !referenced { continue; }
+                    // A chain like a: b: stmt gives both labels a distinct CFG
+                    // block, and fallthrough jumps to the next one.
+                    for name in chain {
+                        let target = *self.labels.get(name)
+                            .ok_or_else(|| format!("unplanned native label '{name}'"))?;
+                        if live { b.ins().jump(target, &[]); }
+                        b.switch_to_block(target);
+                        live = true;
+                    }
+                    live = self.statement(b, tail)?;
                 }
                 self.scopes.pop();
                 Ok(live)
             }
             CheckedStmt::Typedef { .. } | CheckedStmt::Tag => Ok(true),
-            CheckedStmt::Goto { .. } | CheckedStmt::Label { .. } =>
-                Err("native goto/label CFG lowering is not yet supported".into()),
+            CheckedStmt::Goto { target } => {
+                let block = *self.labels.get(target)
+                    .ok_or_else(|| format!("unplanned native goto target '{target}'"))?;
+                b.ins().jump(block, &[]);
+                Ok(false)
+            }
+            CheckedStmt::Label { .. } =>
+                Err("native goto label must be a direct function-body statement".into()),
             CheckedStmt::Decl(CheckedDecl { name, ty, storage, initializer, .. }) => {
                 if !matches!(*storage, StorageClass::Default | StorageClass::Register) {
                     return Err(format!("M2.5 does not emit storage-class local '{name}'"));
@@ -1644,15 +1738,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn native_goto_must_fail_closed_even_after_unreachable_return() {
-        let error = compile_source(
-            "int f(void) { goto done; return 1; done: return 2; }"
-        ).expect_err("goto must not silently compile");
-        assert!(error.contains("native goto/label"), "{error}");
-        let error = compile_source(
-            "int f(void) { return 1; after: return 2; }"
-        ).expect_err("unreachable label must not be skipped");
-        assert!(error.contains("native goto/label"), "{error}");
+    fn native_goto_compiles_direct_forward_backward_and_label_chains() {
+        for source in [
+            "int f(int x) { if(x) goto done; x=3; done: return x; }",
+            "int f(int x) { again: x=x-1; if(x>0) goto again; return x; }",
+            "int f(void) { goto second; first: return 1; second: third: return 2; }",
+            "int f(void) { int x=3; if(x) goto done; x=7; done: return x; }",
+            "int f(void) { return 1; after: return 2; }",
+        ] {
+            compile_source(source).unwrap_or_else(|why| panic!("{why}: {source}"));
+        }
+    }
+
+    #[test]
+    fn native_goto_must_reject_unsupported_scope_edges() {
+        for (source, message) in [
+            ("int f(int x) { goto done; int y=3; done: return x; }",
+             "cannot jump over a local declaration"),
+            ("int f(int x) { goto done; if(x) { done: return 2; } return 0; }",
+             "labels nested in control flow"),
+        ] {
+            let error = compile_source(source).expect_err("unsupported goto must reject");
+            assert!(error.contains(message), "{error}: {source}");
+        }
     }
 
     #[test]
