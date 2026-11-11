@@ -93,6 +93,10 @@ The CI syntax job runs this independently of native backend/FP execution. Every 
   `sizeof`, explicit scalar casts, checked constant 0/1 normalization and
   Cranelift 0/1 conversion. A native GCC/Mini-C executable acceptance test
   covers global/local storage, the nonzero values 2 and 256, and promotions.
+  [Pointer-to-`_Bool` follow-up](https://github.com/bingordo/mini-c/pull/147)
+  adds implicit pointer initialization/assignment, pointer arguments,
+  pointer returns, null conversions and explicit pointer casts, while
+  preserving the ban on implicit pointer-to-other-integer assignment.
   Full scalar source coverage, complete aggregate layout, additional ABI
   contexts and F2 floating-to-`_Bool` conversions remain separate work.
 

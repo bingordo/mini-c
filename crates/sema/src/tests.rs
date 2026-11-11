@@ -1216,6 +1216,28 @@ fn conditional_operator_types_lazy_branches_and_null_pointers() {
 }
 
 #[test]
+fn c99_bool_accepts_pointer_scalars_but_not_implicit_pointer_to_integer() {
+    let source = "int nonnull(_Bool b) { return b; } \
+        _Bool is_nonnull(int *p) { return p; } \
+        int main(void) { int x=0; int *p=&x; \
+            _Bool from_ptr=p; _Bool explicit_ptr=(_Bool)p; \
+            _Bool null_ptr=(int*)0; _Bool reassigned=0; \
+            reassigned=p; return nonnull(p) && is_nonnull(p) \
+                && from_ptr && explicit_ptr && reassigned && !null_ptr ? 0 : 1; }";
+    let checked = check(source).expect("C99 pointer to _Bool conversions must type-check");
+    let CheckedItem::Function(func) = &checked[1] else { panic!("expected is_nonnull"); };
+    let CheckedStmt::Block(statements) = &func.body else { panic!("expected block"); };
+    let CheckedStmt::Return(Some(return_value)) = &statements[0] else {
+        panic!("expected return");
+    };
+    assert_eq!(return_value.ty, CType::Integer { rank: IntRank::Bool, unsigned: true });
+    assert!(matches!(return_value.kind, CheckedExprKind::Convert(_)),
+        "returning a pointer as _Bool must retain a checked conversion");
+    reject("long wrong(int *p) { return p; }", "incompatible assignment");
+    reject("int wrong(int *p) { return p; }", "incompatible assignment");
+}
+
+#[test]
 fn c99_bool_is_distinct_promoted_and_normalized() {
     let items = check("_Bool a = 2; _Bool b = 0; int f(_Bool v) { \
         _Bool local = 256; return sizeof(_Bool) == 1 && \
