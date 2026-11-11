@@ -64,6 +64,12 @@ fn c99_bool_pointer_scalar_conversions_compile() {
 }
 
 #[test]
+fn c99_sizeof_named_aggregate_type_name_emits_elf() {
+    emits_elf("struct Flags { _Bool first; int middle; _Bool last; }; \
+        int main(void) { return sizeof(struct Flags)==12 ? 0 : 1; }");
+}
+
+#[test]
 fn c99_bool_struct_fields_and_arrays_compile() {
     emits_elf("struct Flags { _Bool active; int count; _Bool ready; }; \
         int main(void) { struct Flags f; _Bool flags[3]; \
