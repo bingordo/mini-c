@@ -72,6 +72,29 @@ jobs:
         run: cargo build -p mini-c-cranelift -p mini-c-fuzz
       - name: Compare emitted ELF executables with GCC
         run: python3 tools/test_cranelift.py --seed-count 4 --steps 100
+      - name: C99 _Bool native conversion and storage acceptance
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/bool.c" <<'EOF'
+          _Bool global_true = 256;
+          _Bool global_false = 0;
+          int main(void) {
+              _Bool local_true = 2;
+              _Bool local_from_int = (_Bool)256;
+              _Bool local_false = 0;
+              return !(sizeof(_Bool) == 1
+                  && global_true == 1 && global_false == 0
+                  && local_true == 1 && local_from_int == 1
+                  && local_false == 0
+                  && local_from_int + 1 == 2);
+          }
+          EOF
+          cc -std=c99 "$RUNNER_TEMP/bool.c" -o "$RUNNER_TEMP/bool-gcc"
+          target/debug/mini-c-cranelift --emit-obj "$RUNNER_TEMP/bool.o" "$RUNNER_TEMP/bool.c"
+          cc "$RUNNER_TEMP/bool.o" -o "$RUNNER_TEMP/bool-mini"
+          "$RUNNER_TEMP/bool-gcc"
+          "$RUNNER_TEMP/bool-mini"
       - name: Source-pinned C99 switch native execution against GCC
         run: python3 tools/test_switch_native.py --backend target/debug/mini-c-cranelift
       - name: Compare exact pinned musl S9 objects with GCC
