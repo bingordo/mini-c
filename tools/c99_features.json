@@ -106,9 +106,9 @@
       "id": "switch-statement",
       "feature": "F1",
       "expect": "accept",
-      "mini": "gap",
+      "mini": "supported",
       "kind": "valid",
-      "test_ref": "docs/C99_Frontend_Plan.md:F1",
+      "test_ref": "crates/sema/src/tests.rs:c99_switch_integral_promotions_fallthrough_and_checked_labels",
       "source": "int f(int x){switch(x){case @N@:return 1;default:return 0;}}"
     },
     {
@@ -205,27 +205,27 @@
       "id": "switch-fallthrough",
       "feature": "F1",
       "expect": "accept",
-      "mini": "gap",
+      "mini": "supported",
       "kind": "valid",
-      "test_ref": "docs/C99_Frontend_Plan.md:F1",
+      "test_ref": "crates/sema/src/tests.rs:c99_switch_integral_promotions_fallthrough_and_checked_labels",
       "source": "int f(int x){int r=0;switch(x){case @N@:r=4;case 9:r+=2;break;default:r=7;}return r;}"
     },
     {
       "id": "switch-nested",
       "feature": "F1",
       "expect": "accept",
-      "mini": "gap",
+      "mini": "supported",
       "kind": "valid",
-      "test_ref": "docs/C99_Frontend_Plan.md:F1",
+      "test_ref": "crates/sema/src/tests.rs:c99_switch_integral_promotions_fallthrough_and_checked_labels",
       "source": "int f(int x){switch(x){case @N@:switch(x-1){case 1:return 3;default:return 0;}default:return 5;}}"
     },
     {
       "id": "switch-promotion",
       "feature": "F1",
       "expect": "accept",
-      "mini": "gap",
+      "mini": "supported",
       "kind": "valid",
-      "test_ref": "docs/C99_Frontend_Plan.md:F1",
+      "test_ref": "crates/sema/src/tests.rs:c99_switch_integral_promotions_fallthrough_and_checked_labels",
       "source": "int f(unsigned char x){switch(x){case @N@:return 1;default:return 0;}}"
     },
     {
