@@ -784,23 +784,44 @@ impl<'a> Preprocessor<'a> {
             }
             Os::None => {}
         }
-    }
 
-    fn install_gnu_builtin_predefined(&mut self) {
-        self.install_static_predefined("__CHAR_BIT__", "8");
-        self.install_static_predefined("__INT_MAX__", "2147483647");
-        self.install_static_predefined("__LONG_MAX__", "9223372036854775807L");
-        self.install_static_predefined("__LONG_LONG_MAX__", "9223372036854775807LL");
-        self.install_static_predefined("__SIZE_TYPE__", "unsigned long");
+        // Target facts are needed by ordinary hosted headers even when
+        // GNU builtin *call rewriting* is disabled. Do not tie these
+        // definitions to opts.gnu_builtin_libcalls: that option controls
+        // callable __builtin_* aliases, not target ABI properties.
+        self.install_static_predefined(
+            "__CHAR_BIT__", &(target.layouts.char_.size * 8).to_string(),
+        );
+        let signed_max = |bytes: u64| (1_u128 << (bytes * 8 - 1) as u32) - 1;
+        self.install_static_predefined(
+            "__INT_MAX__", &signed_max(target.layouts.int.size).to_string(),
+        );
+        self.install_static_predefined(
+            "__LONG_MAX__", &format!("{}L", signed_max(target.layouts.long.size)),
+        );
+        self.install_static_predefined(
+            "__LONG_LONG_MAX__", &format!("{}LL", signed_max(target.layouts.long_long.size)),
+        );
+        let size_type = if target.layouts.pointer.size == target.layouts.long.size {
+            "long unsigned int"
+        } else if target.layouts.pointer.size == target.layouts.long_long.size {
+            "long long unsigned int"
+        } else {
+            "unsigned int"
+        };
+        self.install_static_predefined("__SIZE_TYPE__", size_type);
         self.install_static_predefined("__ORDER_LITTLE_ENDIAN__", "1234");
         self.install_static_predefined("__ORDER_BIG_ENDIAN__", "4321");
         self.install_static_predefined("__ORDER_PDP_ENDIAN__", "3412");
-        let byte_order = match self.session.opts.target.endianness {
+        let byte_order = match target.endianness {
             Endianness::Little => "1234",
             Endianness::Big => "4321",
         };
         self.install_static_predefined("__BYTE_ORDER__", byte_order);
+    }
 
+    // Only GNU builtin *functions* belong behind this opt-in gate.
+    fn install_gnu_builtin_predefined(&mut self) {
         self.install_static_predefined("__builtin_abort", "abort");
         self.install_static_predefined("__builtin_exit", "exit");
         self.install_static_predefined("__builtin_printf", "printf");
