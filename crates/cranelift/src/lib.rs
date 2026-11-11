@@ -1368,8 +1368,12 @@ impl Lower<'_> {
                 return Err("native switch labels under nested blocks/conditions are not supported".into());
             }
             if case_values.is_empty() && !is_default {
-                if !saw_label && matches!(stmt, CheckedStmt::Decl(_)) {
-                    return Err("native switch cannot jump over a local declaration before its first case".into());
+                if matches!(stmt, CheckedStmt::Decl(_)) {
+                    // A jump into a later case can skip the stack_addr
+                    // defining a local declared in an earlier arm. The
+                    // general solution hoists stack slots while keeping C
+                    // initializer execution at its source position.
+                    return Err("native switch cannot jump over a local declaration across case labels".into());
                 }
                 labels.push(None);
                 continue;
@@ -1396,7 +1400,7 @@ impl Lower<'_> {
             } else {
                 value as i32 as i64
             };
-            let equal = b.ins().icmp_imm(IntCC::Equal, control_value, immediate);
+            let equal = b.ins().icmp_imm_s(IntCC::Equal, control_value, immediate);
             b.ins().brif(equal, arm, &[], next, &[]);
             b.switch_to_block(next);
         }
