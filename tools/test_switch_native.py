@@ -130,7 +130,7 @@ def main() -> int:
             gcc_exe = base / f"{name}.gcc"
             src.write_text(source, encoding="utf-8")
             steps = [
-                ["cc", "-std=c99", "-pedantic-errors", "-O0",
+                ["cc", "-std=c99", "-pedantic-errors", "-Wno-switch-unreachable", "-O0",
                  str(src), "-o", str(gcc_exe)],
                 [str(backend), "--emit-obj", str(mini_obj), str(src)],
                 ["cc", str(mini_obj), "-o", str(mini_exe)],
