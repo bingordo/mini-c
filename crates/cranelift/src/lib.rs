@@ -1437,6 +1437,12 @@ impl Lower<'_> {
                 self.scopes.pop();
                 Ok(true)
             }
+            // Checked switch semantics are backend-neutral; native CFG
+            // dispatch/fallthrough lowering is the next independent milestone.
+            // Reject every switch here rather than misrouting a break.
+            CheckedStmt::Switch { .. } | CheckedStmt::Case { .. }
+            | CheckedStmt::Default(_) =>
+                Err("native switch/case dispatch is not implemented yet".into()),
             CheckedStmt::Break => {
                 let (break_dest, _) = self.loops.last()
                     .copied().ok_or("break outside loop in checked IR")?;

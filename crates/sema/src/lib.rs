@@ -4,7 +4,7 @@
 pub mod types;
 pub mod const_eval;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::cell::{Cell, RefCell};
 use mini_c_syntax::ast::{BinOp, Decl, Expr, Function, Span, Stmt, StorageClass, TagKind, Type, UnOp};
 use mini_c_syntax::diag::{Diagnostic, DiagnosticCode};
@@ -114,6 +114,13 @@ pub enum CheckedStmt {
     Return(Option<CheckedExpr>),
     If { cond: CheckedExpr, then: Box<CheckedStmt>, otherwise: Option<Box<CheckedStmt>> },
     While { cond: CheckedExpr, body: Box<CheckedStmt> },
+    /// Case and default labels remain in source order to preserve fallthrough.
+    /// Dispatch uses the controlling expression after integer promotions.
+    Switch { control: CheckedExpr, body: Box<CheckedStmt> },
+    /// The case value has been constant-evaluated and converted to the
+    /// promoted controlling integer type, so duplicate detection is exact.
+    Case { value: i128, body: Box<CheckedStmt> },
+    Default(Box<CheckedStmt>),
     DoWhile { body: Box<CheckedStmt>, cond: CheckedExpr },
     For(Box<CheckedFor>),
     Break,
@@ -169,6 +176,15 @@ struct TagEntry {
     complete: Option<CType>,
 }
 
+/// Lexically nearest active switch. Cases inside nested loops/blocks belong
+/// to it; a nested switch has an independent label namespace.
+#[derive(Clone)]
+struct SwitchContext {
+    control_type: CType,
+    seen_cases: HashSet<i128>,
+    seen_default: bool,
+}
+
 /// Checked expressions carry their converted value types and lvalue category.
 /// Scopes and persistent file symbols are local to this Checker instance.
 pub struct Checker {
@@ -182,6 +198,7 @@ pub struct Checker {
     locals: Vec<HashMap<String, Symbol>>,
     result_ty: Option<CType>,
     loop_depth: usize,
+    switches: Vec<SwitchContext>,
     // Enabled only by the recovery API. Normal compilation has no
     // transactional logging or symbol-table copying overhead.
     rollback_log: Option<HashMap<String, Option<Symbol>>>,
@@ -195,7 +212,7 @@ pub struct Checker {
 
 impl Checker {
     pub fn new(target: Target) -> Result<Self, Diagnostic> {
-        Ok(Self { target: target.validate()?, next_tag_identity: Cell::new(1), tags: RefCell::new(vec![HashMap::new()]), tag_definitions: RefCell::new(HashMap::new()), globals: HashMap::new(), locals: Vec::new(), result_ty: None, loop_depth: 0, rollback_log: None, statement_undo: Vec::new(),
+        Ok(Self { target: target.validate()?, next_tag_identity: Cell::new(1), tags: RefCell::new(vec![HashMap::new()]), tag_definitions: RefCell::new(HashMap::new()), globals: HashMap::new(), locals: Vec::new(), result_ty: None, loop_depth: 0, switches: Vec::new(), rollback_log: None, statement_undo: Vec::new(),
             recovery_errors: None, recovery_limit: 0 })
     }
 
@@ -920,6 +937,7 @@ impl Checker {
             let tag_snapshot = self.tags.borrow().clone();
             let definitions_snapshot = self.tag_definitions.borrow().clone();
             let loop_depth = self.loop_depth;
+            let switches = self.switches.clone();
             self.statement_undo.push(HashMap::new());
             let result = self.check_stmt(statement, span);
             let changed = self.statement_undo.pop().expect("statement transaction");
@@ -930,6 +948,7 @@ impl Checker {
                     *self.tags.borrow_mut() = tag_snapshot;
                     *self.tag_definitions.borrow_mut() = definitions_snapshot;
                     self.loop_depth = loop_depth;
+                    self.switches = switches;
                     self.restore_symbols(changed);
                     self.recovery_errors.as_mut().expect("diagnostic collection").push(error);
                 }
@@ -1064,14 +1083,59 @@ impl Checker {
                 self.locals.pop();
                 checked?
             }
-            // Syntax is preserved for later full switch checking. Never
-            // silently accept or miscompile an unvalidated case dispatch.
-            Stmt::Switch { .. } => return Err(type_error(span,
-                "switch requires C99 case dispatch semantic checking (not yet supported)")),
-            Stmt::Case { .. } | Stmt::Default(_) => return Err(type_error(span,
-                "case/default label is only valid inside a supported switch")),
+            Stmt::Switch { control, body } => {
+                let control_span = control.location().unwrap_or(span);
+                let control = self.check_expr(control, control_span)?.rvalue();
+                if !control.ty.is_integer() {
+                    return Err(type_error(control_span,
+                        "switch controlling expression requires an integer type"));
+                }
+                let promoted = self.target.promote(&control.ty);
+                let control = self.convert(control, &promoted);
+                self.switches.push(SwitchContext {
+                    control_type: promoted,
+                    seen_cases: HashSet::new(),
+                    seen_default: false,
+                });
+                // Always pop the active switch even after a body error.
+                let checked = self.check_stmt(body, span);
+                self.switches.pop();
+                CheckedStmt::Switch { control, body: Box::new(checked?) }
+            }
+            Stmt::Case { value, body } => {
+                let case_span = value.location().unwrap_or(span);
+                let promoted = self.switches.last().ok_or_else(||
+                    type_error(case_span, "case label outside switch"))?
+                    .control_type.clone();
+                let value = self.check_expr(value, case_span)?.rvalue();
+                if !value.ty.is_integer() {
+                    return Err(type_error(case_span,
+                        "case label requires an integer constant expression"));
+                }
+                // The case's integer constant expression is converted to the
+                // promoted switch type before duplicate detection (C99 6.8.4.2).
+                let value = const_eval::evaluate(&self.convert(value, &promoted), self.target)
+                    .map_err(|why| type_error(case_span,
+                        format!("case label requires an integer constant expression: {why}")))?;
+                if !self.switches.last_mut().expect("active switch").seen_cases.insert(value) {
+                    return Err(type_error(case_span, format!(
+                        "duplicate case value {value} in switch")));
+                }
+                CheckedStmt::Case { value, body: Box::new(self.check_stmt(body, span)?) }
+            }
+            Stmt::Default(body) => {
+                let context = self.switches.last_mut().ok_or_else(||
+                    type_error(span, "default label outside switch"))?;
+                if context.seen_default {
+                    return Err(type_error(span, "duplicate default label in switch"));
+                }
+                context.seen_default = true;
+                CheckedStmt::Default(Box::new(self.check_stmt(body, span)?))
+            }
             Stmt::Break => {
-                if self.loop_depth == 0 { return Err(type_error(span, "break outside loop")); }
+                if self.loop_depth == 0 && self.switches.is_empty() {
+                    return Err(type_error(span, "break outside loop or switch"));
+                }
                 CheckedStmt::Break
             }
             Stmt::Continue => {
