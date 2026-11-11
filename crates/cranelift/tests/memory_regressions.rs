@@ -55,6 +55,15 @@ fn c99_switch_nested_label_locations_fail_closed_in_native_backend() {
 }
 
 #[test]
+fn c99_bool_pointer_scalar_conversions_compile() {
+    emits_elf("int nonnull(_Bool b) { return b; } \
+        _Bool is_nonnull(int *p) { return p; } \
+        int main(void) { int x=0; int *p=&x; \
+          _Bool a=p, b=(_Bool)p, c=(int*)0, d=0; \
+          d=p; return nonnull(p) && is_nonnull(p) && a && b && d && !c ? 0 : 1; }");
+}
+
+#[test]
 fn c99_bool_truth_conversion_and_promotion_compile() {
     emits_elf("_Bool g = 256; int main(void) { _Bool x = 2; \
         _Bool y = 256; return x == 1 && y == 1 && g == 1 ? 0 : 1; }");
