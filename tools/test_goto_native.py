@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """C99 native goto differential: compile/link/execute unchanged programs with GCC and Mini-C.
 
-Supports forward jumps over local declarations and labels nested in plain
-compound scopes. Labels inside if/loop/switch constructs remain fail-closed.
+Supports forward jumps over locals, plain compound scopes and labels inside
+if/while/do-while/for. Switch-arm labels remain fail-closed.
 """
 from __future__ import annotations
 
@@ -115,15 +115,71 @@ CASES = {
         int test(void) { goto Target; { Target: return 5; } }
         int main(void) { return test()!=5; }
     """,
+    "goto_into_if_then_without_condition": r"""
+        int calls=0;
+        int cond(void) { calls++; return 0; }
+        int test(void) { goto inside; if(cond()) { inside: return 7; } return 0; }
+        int main(void) { return test()!=7 || calls!=0; }
+    """,
+    "goto_into_if_else_without_condition": r"""
+        int calls=0;
+        int cond(void) { calls++; return 1; }
+        int test(void) { goto inside; if(cond()) return 1; else { inside: return 8; } }
+        int main(void) { return test()!=8 || calls!=0; }
+    """,
+    "goto_into_if_then_then_fallthrough": r"""
+        int test(void) { int x=0; goto inside; if(0) { inside: x=9; } return x; }
+        int main(void) { return test()!=9; }
+    """,
+    "goto_into_while_and_repeat": r"""
+        int test(void) { int x=0; goto inside; while(x<3) { inside: x++; } return x; }
+        int main(void) { return test()!=3; }
+    """,
+    "goto_into_do_while_and_repeat": r"""
+        int test(void) { int x=0; goto inside; do { inside: x++; } while(x<3); return x; }
+        int main(void) { return test()!=3; }
+    """,
+    "goto_into_for_skips_init": r"""
+        int calls=0;
+        int init(void) { calls++; return 0; }
+        int test(void) {
+            int x=0;
+            goto inside;
+            for(x=init();x<3;x++) { inside: x++; }
+            return x;
+        }
+        int main(void) { return test()!=4 || calls!=0; }
+    """,
+    "goto_into_for_decl_scope": r"""
+        int test(void) {
+            int value=0;
+            goto inside;
+            for(int i=3;i<5;i++) { inside: i=4; value=i; break; }
+            return value;
+        }
+        int main(void) { return test()!=4; }
+    """,
+    "goto_into_nested_dead_controls": r"""
+        int test(void) {
+            goto inside;
+            if(0) {
+                while(0) {
+                    inside: return 11;
+                }
+            }
+            return 0;
+        }
+        int main(void) { return test()!=11; }
+    """,
+    "goto_into_direct_if_label": r"""
+        int test(void) { goto inside; if(0) inside: return 12; return 0; }
+        int main(void) { return test()!=12; }
+    """,
 }
 UNSUPPORTED = {
-    "label_inside_if": (
-        "int main(void) {goto end; if(1) {end: return 0;} return 1;}",
-        "labels nested in conditional, loop or switch",
-    ),
-    "label_inside_loop": (
-        "int main(void) {goto end; while(1) {end: return 0;} return 1;}",
-        "labels nested in conditional, loop or switch",
+    "label_inside_switch_arm": (
+        "int main(void) {goto end; switch(1) {case 1: end: return 0; default: return 1;} }",
+        "labels inside switch arms",
     ),
 }
 
