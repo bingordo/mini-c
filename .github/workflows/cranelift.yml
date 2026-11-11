@@ -79,7 +79,16 @@ jobs:
           cat > "$RUNNER_TEMP/bool.c" <<'EOF'
           _Bool global_true = 256;
           _Bool global_false = 0;
+          int nonnull(_Bool b) { return b; }
+          _Bool pointer_truth(int *p) { return p; }
           int main(void) {
+              int value = 5;
+              int *pointer = &value;
+              _Bool from_pointer = pointer;
+              _Bool pointer_cast = (_Bool)pointer;
+              _Bool from_null = (int*)0;
+              _Bool reassigned = 0;
+              reassigned = pointer;
               _Bool local_true = 2;
               _Bool local_from_int = (_Bool)256;
               _Bool local_false = 0;
@@ -87,7 +96,11 @@ jobs:
                   && global_true == 1 && global_false == 0
                   && local_true == 1 && local_from_int == 1
                   && local_false == 0
-                  && local_from_int + 1 == 2);
+                  && local_from_int + 1 == 2
+                  && from_pointer == 1 && pointer_cast == 1
+                  && from_null == 0 && reassigned == 1
+                  && nonnull(pointer) == 1
+                  && pointer_truth(pointer) == 1);
           }
           EOF
           cc -std=c99 "$RUNNER_TEMP/bool.c" -o "$RUNNER_TEMP/bool-gcc"
