@@ -494,7 +494,35 @@ impl Compiler {
         }
     }
 
+    /// Native goto/labels require general cross-block CFG construction. Reject
+    /// even unreachable labels, rather than accidentally skipping one after
+    /// a return or emitting an executable with the wrong entry edges.
+    fn has_goto_or_label(stmt: &CheckedStmt) -> bool {
+        match stmt {
+            CheckedStmt::Goto { .. } | CheckedStmt::Label { .. } => true,
+            CheckedStmt::Block(stmts) => stmts.iter().any(Self::has_goto_or_label),
+            CheckedStmt::If { then, otherwise, .. } => {
+                Self::has_goto_or_label(then)
+                    || otherwise.as_ref().is_some_and(|s| Self::has_goto_or_label(s))
+            }
+            CheckedStmt::While { body, .. } | CheckedStmt::DoWhile { body, .. }
+            | CheckedStmt::Switch { body, .. } | CheckedStmt::Case { body, .. }
+            | CheckedStmt::Default(body) => Self::has_goto_or_label(body),
+            CheckedStmt::For(for_loop) => {
+                for_loop.init.as_ref().is_some_and(|s| Self::has_goto_or_label(s))
+                    || Self::has_goto_or_label(&for_loop.body)
+            }
+            _ => false,
+        }
+    }
+
     fn define(&mut self, function: CheckedFunction) -> Result<()> {
+        if Self::has_goto_or_label(&function.body) {
+            return Err(format!(
+                "native goto/label control flow is not yet supported in function '{}'",
+                function.name
+            ));
+        }
         self.flush_pending_imports()?;
         let id = self.declare(&function.name, &function.signature, function.linkage, true, None)?;
         let mut ctx = self.module.make_context();
@@ -1460,6 +1488,8 @@ impl Lower<'_> {
                 Ok(live)
             }
             CheckedStmt::Typedef { .. } | CheckedStmt::Tag => Ok(true),
+            CheckedStmt::Goto { .. } | CheckedStmt::Label { .. } =>
+                Err("native goto/label CFG lowering is not yet supported".into()),
             CheckedStmt::Decl(CheckedDecl { name, ty, storage, initializer, .. }) => {
                 if !matches!(*storage, StorageClass::Default | StorageClass::Register) {
                     return Err(format!("M2.5 does not emit storage-class local '{name}'"));
@@ -1612,6 +1642,18 @@ impl Lower<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_goto_must_fail_closed_even_after_unreachable_return() {
+        let error = compile_source(
+            "int f(void) { goto done; return 1; done: return 2; }"
+        ).expect_err("goto must not silently compile");
+        assert!(error.contains("native goto/label"), "{error}");
+        let error = compile_source(
+            "int f(void) { return 1; after: return 2; }"
+        ).expect_err("unreachable label must not be skipped");
+        assert!(error.contains("native goto/label"), "{error}");
+    }
 
     #[test]
     fn sysv_gp_only_variadic_printf_emits_zero_al_tail_thunk() {

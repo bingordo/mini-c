@@ -42,6 +42,7 @@ pub fn scan_with_scopes<'a>(
 
 /// Incremental scanner: the parser can change the scope between calls to next_token.
 /// This avoids classifying future typedef names before declarations take effect.
+#[derive(Clone)]
 pub struct Scanner<'a> {
     source: &'a str,
     offset: usize,
