@@ -121,7 +121,7 @@ jobs:
               f.active=256; f.count=17; f.ready=false;
               flags[0]=false; flags[1]=256; flags[2]=true;
               bool valid=true;
-              return !(sizeof(bool)==1 && sizeof(struct Flags)==12
+              return !(sizeof(bool)==1 && sizeof f==12
                   && sizeof(flags)==3 && valid==true
                   && f.active==true && f.count==17 && f.ready==false
                   && flags[0]==false && flags[1]==true && flags[2]==true);
