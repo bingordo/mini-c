@@ -10,9 +10,9 @@ A small, embeddable Rust frontend for a deliberately limited subset of C, modele
 - C subset including signed/unsigned integer types, pointers, function definitions/prototypes (including unnamed prototype parameters), block typedefs, static/extern declarations, arithmetic, comparisons, assignments, calls, blocks, if/else and while.
 - Recursive C declarator parsing handles pointer/array binding, grouped declarators, function-pointer typedefs, and abstract parameter declarators. Semantic analysis now represents fixed-size and incomplete array types, checks integer constant bounds, adjusts array/function parameters to pointers, and performs array-to-pointer decay. Array indexing, checked pointer+integer offsets and indexed assignments now have typed lvalue semantics. Native memory lowering, aggregate initialization and full ABI handling remain incomplete.
 - Independent `mini-c-sema` crate checks types, lexical scopes, linkage, integer conversions, lvalues, function calls, returns, constant initializers and loop-control legality. Typed expressions include explicit load/conversion nodes, suitable for later backends.
-- `mini-c check` validates **syntax and semantics** and normally runs external `cc -E`. It supports `-I`/`-D`/`-U`, `--cpp=clang` or a custom preprocessor, `--cpp=none` for already-preprocessed text, and diagnostics remapped through include-file line markers.
+- `mini-c check` validates **syntax and semantics** and runs the built-in C preprocessor by default. It supports `-I`/`-D`/`-U`, `--cpp=clang` or a custom preprocessor, `--cpp=none` for already-preprocessed text, and diagnostics remapped through include-file line markers.
 - Deterministic defined-behavior C corpus generator (`mini-c-fuzz`) with an independent arithmetic oracle, reference validation against GCC/Clang, sanitizer smoke tests, failure-artifact capture, and an extended weekly GitHub Actions workflow.
-- An **optional Cranelift ELF object backend** (`mini-c-cranelift`, M2.5/M5) compiles supported scalar/pointer functions, globals, strings, structures, unions, enums, aggregates and cross-object references; by-value SysV struct/union calls remain explicitly unsupported. It shares the same external preprocessing options as the checker.
+- An **optional Cranelift ELF object backend** (`mini-c-cranelift`, M2.5/M5) compiles supported scalar/pointer functions, globals, strings, structures, unions, enums, aggregates and cross-object references; by-value SysV struct/union calls remain explicitly unsupported. It shares the same internal-default and external-fallback preprocessing options as the checker.
 
 **This is not a conforming ISO C implementation.** Its parser recognizes only a subset; full C declarators, many types, complete language semantics, internal preprocessing, precise expression-level diagnostics, and the full native backend remain incomplete or future work. C23 provides the language design reference ([WG14 N3220](https://www.open-std.org/jtc1/sc22/wg14/www/docs/n3220.pdf)).
 
@@ -24,7 +24,8 @@ A small, embeddable Rust frontend for a deliberately limited subset of C, modele
 cargo test -p mini-c-syntax -p mini-c-preprocess -p mini-c-sema -p mini-c -p mini-c-fuzz
 cargo clippy -p mini-c-syntax -p mini-c-sema -p mini-c -p mini-c-fuzz --all-targets -- -D warnings
 cargo run -p mini-c -- check --cpp=none example.c
-cargo run -p mini-c -- check example.c    # default: cc -E
+cargo run -p mini-c -- check example.c    # default: internal C preprocessor
+cargo run -p mini-c -- check --cpp=cc example.c    # explicit external fallback
 cargo run -p mini-c -- check -I include -DDEBUG=1 -UOLD example.c
 cargo run -p mini-c -- check --cpp=clang example.c
 cargo run -p mini-c -- check --max-errors=8 example.c
@@ -40,27 +41,36 @@ cc /tmp/example.o -o /tmp/example
 python3 tools/test_cranelift.py --seed-count 4
 ```
 
-Both drivers default to external `cc -E` preprocessing. `--cpp=none`
-bypasses all subprocesses for already-preprocessed sources; CPP flags cannot
-be combined with that mode. `--cpp=clang` and `--cpp=/path/to/tool` select
-other executables. `-I`, `-D`, `-U` accept attached or separate values, and
+Both drivers now **default to the internal preprocessor** with ordinary
+`cargo build` and `cargo run` (the `internal-cpp` Cargo feature is enabled by
+default for both binary crates). `--cpp=cc` explicitly selects external
+`cc -E` for compatibility or investigation, while `--cpp=clang` or
+`--cpp=/path/to/tool` select other executable preprocessors. `--cpp=none`
+bypasses preprocessing entirely for already-preprocessed sources; CPP flags
+cannot be combined with that mode. `-I`, `-D`, `-U` accept attached or separate values, and
 `--cpp-arg=<argument>` passes an additional argument verbatim. Drivers pass
 arguments directly to subprocesses, not via a shell. Diagnostics restore the
 original filename and line using preprocessor markers (macro-expansion columns
 cannot be reconstructed). See [M6 preprocessing](docs/M6_Preprocessing.md).
 
-**Experimental internal CPP:** Mini-C also has a feature-gated C99
-preprocessing adapter that does not launch an external compiler or embed
-another C frontend. It reuses only a pinned Rust preprocessing engine;
-GCC/Clang remain the conformance references. Try:
+**Internal CPP (default in the Mini-C binaries):** Mini-C uses a Rust C99
+preprocessing adapter that does not run an external preprocessor or embed
+another C frontend. GCC/Clang remain the conformance references. For example:
 
 ```sh
-cargo run -p mini-c --features internal-cpp -- check --cpp=internal -I include -DFEATURE=1 example.c
-cargo run -p mini-c-cranelift --features internal-cpp -- --emit-obj /tmp/example.o --cpp=internal example.c
+cargo run -p mini-c -- check -I include -DFEATURE=1 example.c
+cargo run -p mini-c-cranelift -- --emit-obj /tmp/example.o example.c
+# To investigate a disagreement, force the old external path:
+cargo run -p mini-c -- check --cpp=cc example.c
 ```
 
-The internal option is **not enabled by default** and is not yet ISO C99
-preprocessing-complete. [CPP-C99 #110](https://github.com/bingordo/mini-c/issues/110)
+The internal engine is the **default for practical Mini-C driver use**, but
+it is not yet a fully ISO C99-conforming preprocessor. Build with
+`--no-default-features` if a smaller external-only binary is needed; such
+builds default back to `cc -E` and cannot select `--cpp=internal`.
+The independent `mini-c-preprocess` library still defaults to an external
+configuration when built without the optional engine; it does not force
+C parser or semantic crates to depend on vendored preprocessing. [CPP-C99 #110](https://github.com/bingordo/mini-c/issues/110)
 tracks C99 macro/phase parity, target built-ins and include paths, source
 provenance, bounded expansion and final CI acceptance; C23 is deferred. See
 [Internal CPP Prototype](docs/Internal_CPP_Prototype.md) for current implementation
