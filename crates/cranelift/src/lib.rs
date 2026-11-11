@@ -23,7 +23,7 @@ type Result<T> = std::result::Result<T, String>;
 fn scalar_type(ty: &CType) -> Result<ir::Type> {
     // Object qualifiers affect modifiability, not physical ABI storage.
     match ty.unqualified() {
-        CType::Integer { rank: IntRank::Char, .. } => Ok(types::I8),
+        CType::Integer { rank: IntRank::Bool | IntRank::Char, .. } => Ok(types::I8),
         CType::Integer { rank: IntRank::Short, .. } => Ok(types::I16),
         CType::Integer { rank: IntRank::Int, .. } => Ok(types::I32),
         CType::Integer { rank: IntRank::Long | IntRank::LongLong, .. } | CType::Pointer(_) => Ok(types::I64),
@@ -717,7 +717,7 @@ impl Lower<'_> {
             CType::Struct { align, .. } | CType::Union { align, .. } =>
                 u8::try_from(align.trailing_zeros()).unwrap_or(3),
             CType::Array(element, _) => Self::alignment(element),
-            CType::Integer { rank: IntRank::Char, .. } => 0,
+            CType::Integer { rank: IntRank::Bool | IntRank::Char, .. } => 0,
             CType::Integer { rank: IntRank::Short, .. } => 1,
             CType::Integer { rank: IntRank::Int, .. } => 2,
             _ => 3,
@@ -898,6 +898,14 @@ impl Lower<'_> {
     fn convert(b: &mut FunctionBuilder<'_>, value: Value, from: &CType, to: &CType) -> Result<Value> {
         let src_ty = scalar_type(from)?;
         let dst_ty = scalar_type(to)?;
+        // _Bool conversion is truth-value normalization, not integer
+        // truncation: both 2 and 256 must become 1, never 2 or 0.
+        if matches!(to.unqualified(), CType::Integer { rank: IntRank::Bool, .. }) {
+            let nonzero = b.ins().icmp_imm(IntCC::NotEqual, value, 0);
+            let one = b.ins().iconst(types::I8, 1);
+            let zero = b.ins().iconst(types::I8, 0);
+            return Ok(b.ins().select(nonzero, one, zero));
+        }
         if src_ty == dst_ty { return Ok(value); }
         if src_ty.bits() < dst_ty.bits() {
             let signed = matches!(from, CType::Integer { unsigned: false, .. });
