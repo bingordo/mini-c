@@ -125,13 +125,25 @@ fn hosted_target_integer_predefines_match_gcc_and_clang() {
         toks[i+2..].iter().take_while(|tok| tok.text != ";")
             .map(|tok| tok.text.to_owned()).collect()
     }
+    // GCC often spells __INT_MAX__ as 0x7fffffff while Clang and the
+    // internal engine may use 2147483647. Both denote the same integer
+    // and type; compare ABI integer values rather than textual spelling.
+    fn literal_value(tokens: &[String]) -> u128 {
+        assert_eq!(tokens.len(), 1, "expected one integer literal: {tokens:?}");
+        let literal = tokens[0].trim_end_matches(|c: char| matches!(c, 'u' | 'U' | 'l' | 'L'));
+        if let Some(hex) = literal.strip_prefix("0x").or_else(|| literal.strip_prefix("0X")) {
+            u128::from_str_radix(hex, 16).expect("hex macro value")
+        } else {
+            literal.parse::<u128>().expect("decimal macro value")
+        }
+    }
     for (name, macro_name) in probes {
-        let expected = rhs(&gcc, name);
-        let actual = rhs(&internal, name);
+        let expected = literal_value(&rhs(&gcc, name));
+        let actual = literal_value(&rhs(&internal, name));
         assert_eq!(actual, expected,
             "target macro {macro_name} differs from hosted GCC reference");
         if let Ok(ref clang) = clang {
-            assert_eq!(actual, rhs(clang, name),
+            assert_eq!(actual, literal_value(&rhs(clang, name)),
                 "target macro {macro_name} differs from Clang reference");
         }
     }
