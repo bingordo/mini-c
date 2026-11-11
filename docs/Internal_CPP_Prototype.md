@@ -36,7 +36,14 @@ It is now a permanent scheduled/manual validation gate in
 The unmodified musl `strcmp.c` using host `<string.h>` was also checked and
 emitted as an ELF object with internal preprocessing in
 [compiler-ci #42934545452](https://github.com/bingordo/compiler-ci/actions/runs/42934545452).
-Broader real-source and cross-distribution coverage is still needed.
+A further audit of 11 unmodified musl string/memory sources found 5 passing
+the current checked frontend, 5 failing in frontend type/name/extension
+handling, and one preprocessing rejection: `strcasestr.c` defines
+`_GNU_SOURCE` after the driver supplies `-D_GNU_SOURCE`. A narrow GNU
+compatibility exception now warns instead of rejecting this exact
+command-line feature-test redefinition; unrelated macro redefinitions
+remain strict errors (pending CI verification). Broader real-source and
+cross-distribution coverage is still needed.
 The external `cc -E` path remains the default fallback; F5 is deferred and
 Csmith end-to-end checks are planned separately under #116.
 
