@@ -72,7 +72,7 @@ fn check_recovering(
 
 fn usage() {
     eprintln!(
-        "usage: mini-c check [--cpp=none|--cpp=cc|--cpp=clang|--cpp=<path>] \
+        "usage: mini-c check [--cpp=internal|--cpp=cc|--cpp=none|--cpp=clang|--cpp=<path>] \
          [-I<dir>|-I <dir>] [-D<name>[=<value>]|-D <name>[=<value>]] \
          [-U<name>|-U <name>] [--cpp-arg=<arg>] \
          [--max-errors=<positive integer>] [--] <file.c> [file.c ...]"
@@ -168,7 +168,12 @@ mod tests {
         assert_eq!(options.max_errors, None);
 
         let default = parse_options(["check", "a.c"].into_iter().map(str::to_owned)).unwrap();
-        assert_eq!(default.cpp.unwrap().executable, OsString::from("cc"));
+        assert_eq!(default.cpp.unwrap().executable, OsString::from(
+            if cfg!(feature = "internal-cpp") { "internal" } else { "cc" }
+        ));
+        let fallback = parse_options(["check", "--cpp=cc", "a.c"]
+            .into_iter().map(str::to_owned)).unwrap();
+        assert_eq!(fallback.cpp.unwrap().executable, OsString::from("cc"));
         let raw = parse_options(["check", "--cpp=none", "a.c"]
             .into_iter().map(str::to_owned)).unwrap();
         assert!(raw.cpp.is_none());
@@ -223,6 +228,23 @@ mod tests {
         assert!(failure.contains("nested.h:1"), "{failure}");
         assert!(failure.contains("error"), "{failure}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "internal-cpp")]
+    #[test]
+    fn default_cpp_driver_checks_hosted_stdio_without_external_preprocessor() {
+        let input = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/glibc-s12/hello_stdio.c");
+        if !cfg!(target_os = "linux") || !Path::new("/usr/include/stdio.h").is_file() {
+            return;
+        }
+        let args = vec![
+            "check".to_string(), "-D_GNU_SOURCE".to_string(),
+            input.display().to_string(),
+        ];
+        let options = parse_options(args).unwrap();
+        assert_eq!(options.cpp.as_ref().unwrap().executable, OsString::from("internal"));
+        check(&options.paths[0], options.cpp.as_ref()).unwrap();
     }
 
     #[cfg(feature = "internal-cpp")]
