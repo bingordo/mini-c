@@ -53,6 +53,16 @@ passed the complete scheduled validation including this new gate. The five
 remaining files (`memmove`, `memcpy`, `memset`, `strchr`, `strcasecmp`)
 currently fail in checker type/name/extension handling, not reported as
 internal CPP failures. These are not silently counted as passing.
+The wider 24-source original musl corpus uncovered a hosted-header issue:
+glibc's `features.h` uses a GNU `#warning` directive when unmodified
+musl sources request deprecated `_BSD_SOURCE`. Six of the 24 files failed
+preprocessing at that directive even though GCC accepted all 24. The
+internal engine now parses `#warning` as a **nonfatal diagnostic**,
+suppresses it in inactive conditionals, and continues with subsequent
+tokens, while `#error` remains fatal. The full 24-source acceptance
+test is feature-gated under `crates/preprocess/tests/internal_hosted_corpus.rs`
+and awaits independent compiler-ci confirmation.
+
 Broader real-source and cross-distribution coverage is still needed.
 The external `cc -E` path remains the default fallback; F5 is deferred and
 Csmith end-to-end checks are planned separately under #116.
