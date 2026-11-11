@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """C99 native goto differential: compile/link/execute unchanged programs with GCC and Mini-C.
 
-A narrow direct-function-label CFG gate. More general nested labels and jumps
-skipping local definitions remain rejected rather than miscompiled.
+Supports forward jumps over local declarations and labels nested in plain
+compound scopes. Labels inside if/loop/switch constructs remain fail-closed.
 """
 from __future__ import annotations
 
@@ -61,15 +61,69 @@ CASES = {
         typedef int T;
         int main(void) { T value=4; goto T; value=99; T: return value!=4; }
     """,
+    "forward_over_scalar_local": r"""
+        int test(int jump) {
+            int result=10;
+            if(jump) goto target;
+            int x=4;
+            result+=x;
+            goto done;
+            target: x=7;
+            result+=x;
+            done: return result;
+        }
+        int main(void) { return test(0)!=14 || test(1)!=17; }
+    """,
+    "skipped_initializer_side_effect": r"""
+        int calls=0;
+        int side(void) { calls++; return 3; }
+        int test(void) { goto target; int x=side(); target: x=9; return x; }
+        int main(void) { return test()!=9 || calls!=0; }
+    """,
+    "forward_over_array_storage": r"""
+        int test(void) { goto done; int values[3]; done: values[2]=7; return values[2]; }
+        int main(void) { return test()!=7; }
+    """,
+    "nested_compound_entry": r"""
+        int test(int jump) {
+            int result=0;
+            if(jump) goto inside;
+            result=2;
+            goto done;
+            {
+                int scratch=99;
+                inside: result+=3;
+            }
+            done: return result;
+        }
+        int main(void) { return test(0)!=2 || test(1)!=3; }
+    """,
+    "nested_shadowed_local": r"""
+        int test(void) {
+            int x=5;
+            goto inner;
+            {
+                int x=20;
+                inner: x=9;
+            }
+            return x;
+        }
+        int main(void) { return test()!=5; }
+    """,
+    "nested_typedef_label": r"""
+        typedef int Target;
+        int test(void) { goto Target; { Target: return 5; } }
+        int main(void) { return test()!=5; }
+    """,
 }
 UNSUPPORTED = {
-    "nested_label": (
-        "int main(void) {goto end; {end: return 0;} }",
-        "labels nested in control flow or compound scopes",
+    "label_inside_if": (
+        "int main(void) {goto end; if(1) {end: return 0;} return 1;}",
+        "labels nested in conditional, loop or switch",
     ),
-    "jump_over_local": (
-        "int main(void) {goto end; int skipped=1; end: return 0;}",
-        "cannot jump over a local declaration",
+    "label_inside_loop": (
+        "int main(void) {goto end; while(1) {end: return 0;} return 1;}",
+        "labels nested in conditional, loop or switch",
     ),
 }
 
