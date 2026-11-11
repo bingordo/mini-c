@@ -75,7 +75,7 @@ predefines (including `__CHAR_BIT__`, `__INT_MAX__`, `__LONG_MAX__`,
 `__ORDER_LITTLE_ENDIAN__`) independently of the optional GNU builtin-call
 aliases. These ABI facts are consumed by real headers and must not require
 enabling `gnu_builtin_libcalls`. A feature-gated Linux x86-64 test compares
-the resulting macro initializer tokens against **both GCC and Clang** on an
+the numeric values of expanded macro initializers against **both GCC and Clang** (independent of decimal versus hexadecimal literal spelling) on an
 unmodified host header environment. CI verification is pending.
 
 ## Design
