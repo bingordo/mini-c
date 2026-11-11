@@ -705,7 +705,7 @@ struct Lower<'a> {
     scopes: Vec<HashMap<String, Local>>,
     loops: Vec<(ir::Block, ir::Block)>, // (break target, continue target)
     /// Nearest breakable construct: a loop *or* switch. Continue uses loops.
-    breaks: Vec<ir::Block>,
+    breaks: Vec<(ir::Block, bool)>, // destination, whether a break may reach it
     result_ty: CType,
 }
 
@@ -1406,7 +1406,7 @@ impl Lower<'_> {
         }
         b.ins().jump(default.unwrap_or(exit), &[]);
 
-        self.breaks.push(exit);
+        self.breaks.push((exit, false));
         self.scopes.push(HashMap::new());
         let mut live = false;
         for (stmt, label) in statements.iter().zip(&labels) {
@@ -1425,9 +1425,17 @@ impl Lower<'_> {
         }
         if live { b.ins().jump(exit, &[]); }
         self.scopes.pop();
-        self.breaks.pop();
+        let (_, break_reaches_exit) = self.breaks.pop().expect("active switch break scope");
         b.switch_to_block(exit);
-        Ok(true)
+        if default.is_some() && !live && !break_reaches_exit {
+            // Every dispatch path goes through a case/default that returns
+            // (or traps). The synthetic exit is unreachable. Do not falsely
+            // reject a function with no final return statement.
+            b.ins().trap(ir::TrapCode::unwrap_user(1));
+            Ok(false)
+        } else {
+            Ok(true)
+        }
     }
 
     /// Returns whether control can fall through to the next statement.
@@ -1503,7 +1511,7 @@ impl Lower<'_> {
                 let cond = self.condition(b, cond)?;
                 b.ins().brif(cond, loop_body, &[], exit, &[]);
                 self.loops.push((exit, header));
-                self.breaks.push(exit);
+                self.breaks.push((exit, false));
                 b.switch_to_block(loop_body);
                 let body_live = self.statement(b, body)?;
                 self.breaks.pop();
@@ -1519,7 +1527,7 @@ impl Lower<'_> {
                 // Unlike while, do-while always executes the body first.
                 b.ins().jump(loop_body, &[]);
                 self.loops.push((exit, test));
-                self.breaks.push(exit);
+                self.breaks.push((exit, false));
                 b.switch_to_block(loop_body);
                 let body_live = self.statement(b, body)?;
                 self.breaks.pop();
@@ -1557,7 +1565,7 @@ impl Lower<'_> {
                     b.ins().jump(loop_body, &[]);
                 }
                 self.loops.push((exit, increment));
-                self.breaks.push(exit);
+                self.breaks.push((exit, false));
                 b.switch_to_block(loop_body);
                 let body_live = self.statement(b, body)?;
                 self.breaks.pop();
@@ -1576,9 +1584,10 @@ impl Lower<'_> {
             CheckedStmt::Case { .. } | CheckedStmt::Default(_) =>
                 Err("native case/default label has no switch dispatch block".into()),
             CheckedStmt::Break => {
-                let break_dest = self.breaks.last()
-                    .copied().ok_or("break outside loop or switch in checked IR")?;
-                b.ins().jump(break_dest, &[]);
+                let (break_dest, reaches_exit) = self.breaks.last_mut()
+                    .ok_or("break outside loop or switch in checked IR")?;
+                *reaches_exit = true;
+                b.ins().jump(*break_dest, &[]);
                 Ok(false)
             }
             CheckedStmt::Continue => {
