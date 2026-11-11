@@ -89,6 +89,13 @@ pub enum Directive {
         /// Message body.
         message: String,
     },
+    /// GNU `#warning message`: emits a nonfatal warning, unlike `#error`.
+    Warning {
+        /// Full directive span.
+        span: Span,
+        /// Verbatim message body.
+        message: String,
+    },
     /// `#pragma ...`
     Pragma {
         /// Full directive span.
@@ -213,6 +220,11 @@ pub fn parse_directive_ext(
         "endif" => Ok(make_conditional(line_span, ConditionalKind::EndIf, Vec::new())),
         "line" => parse_line_directive(line_span, body, src),
         "error" => Ok(parse_error_directive(line_span, body, src)),
+        "warning" => {
+            let Directive::Error { message, .. } =
+                parse_error_directive(line_span, body, src) else { unreachable!() };
+            Ok(Directive::Warning { span: line_span, message })
+        }
         "pragma" => Ok(Directive::Pragma { span: line_span, tokens: body.to_vec() }),
         _ => Err(unknown_directive(name_tok.span, src)),
     }
@@ -1012,6 +1024,17 @@ mod tests {
                 );
             }
             other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn warning_directive_preserves_message_without_becoming_error() {
+        let (d, _) = parse("#warning deprecated feature-test macro\\n");
+        match d.expect("warning classified") {
+            Directive::Warning { message, .. } => {
+                assert_eq!(message, "deprecated feature-test macro");
+            }
+            other => panic!("expected Warning, got {other:?}"),
         }
     }
 
