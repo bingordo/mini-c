@@ -3374,7 +3374,7 @@ dead1
 
     #[test]
     fn gnu_warning_directive_warns_and_continues_without_losing_tokens() {
-        let src = "#warning deprecated feature-test macro\\nint survives;\\n";
+        let src = "#warning deprecated feature-test macro\nint survives;\n";
         let (mut sess, id, cap) = seed(src);
         let mut pp = Preprocessor::new(&mut sess);
         let out = pp.run(id);
@@ -3390,7 +3390,7 @@ dead1
     #[test]
     fn warning_in_inactive_conditional_is_ignored() {
         let (mut sess, id, cap) = seed(
-            "#if 0\\n#warning not_active\\n#endif\\nint survives;\\n"
+            "#if 0\n#warning not_active\n#endif\nint survives;\n"
         );
         let mut pp = Preprocessor::new(&mut sess);
         let out = pp.run(id);
