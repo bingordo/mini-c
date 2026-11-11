@@ -125,6 +125,9 @@ pub enum CheckedStmt {
     For(Box<CheckedFor>),
     Break,
     Continue,
+    /// Resolved in the label namespace of the enclosing function.
+    Label { name: String, body: Box<CheckedStmt> },
+    Goto { target: String },
 }
 
 /// Keep the relatively large for-loop payload out of the main statement enum.
@@ -199,6 +202,8 @@ pub struct Checker {
     result_ty: Option<CType>,
     loop_depth: usize,
     switches: Vec<SwitchContext>,
+    /// Function-scope label namespace, separate from ordinary identifiers/tags.
+    function_labels: HashMap<String, Span>,
     // Enabled only by the recovery API. Normal compilation has no
     // transactional logging or symbol-table copying overhead.
     rollback_log: Option<HashMap<String, Option<Symbol>>>,
@@ -212,7 +217,7 @@ pub struct Checker {
 
 impl Checker {
     pub fn new(target: Target) -> Result<Self, Diagnostic> {
-        Ok(Self { target: target.validate()?, next_tag_identity: Cell::new(1), tags: RefCell::new(vec![HashMap::new()]), tag_definitions: RefCell::new(HashMap::new()), globals: HashMap::new(), locals: Vec::new(), result_ty: None, loop_depth: 0, switches: Vec::new(), rollback_log: None, statement_undo: Vec::new(),
+        Ok(Self { target: target.validate()?, next_tag_identity: Cell::new(1), tags: RefCell::new(vec![HashMap::new()]), tag_definitions: RefCell::new(HashMap::new()), globals: HashMap::new(), locals: Vec::new(), result_ty: None, loop_depth: 0, switches: Vec::new(), function_labels: HashMap::new(), rollback_log: None, statement_undo: Vec::new(),
             recovery_errors: None, recovery_limit: 0 })
     }
 
@@ -857,6 +862,43 @@ impl Checker {
         })
     }
 
+    /// Discover all labels before checking jumps: forward targets are legal,
+    /// and labels have function scope even when nested in compound statements.
+    fn collect_function_labels(
+        stmt: &Stmt, labels: &mut HashMap<String, Span>,
+    ) -> Result<(), Diagnostic> {
+        match stmt {
+            Stmt::Label { name, span, body } => {
+                if labels.insert(name.clone(), *span).is_some() {
+                    return Err(type_error(*span, format!("duplicate label '{name}' in function")));
+                }
+                Self::collect_function_labels(body, labels)?;
+            }
+            Stmt::Block(stmts) => {
+                for stmt in stmts {
+                    Self::collect_function_labels(stmt, labels)?;
+                }
+            }
+            Stmt::If { then, otherwise, .. } => {
+                Self::collect_function_labels(then, labels)?;
+                if let Some(otherwise) = otherwise {
+                    Self::collect_function_labels(otherwise, labels)?;
+                }
+            }
+            Stmt::While { body, .. } | Stmt::DoWhile { body, .. }
+            | Stmt::Switch { body, .. } | Stmt::Case { body, .. }
+            | Stmt::Default(body) => Self::collect_function_labels(body, labels)?,
+            Stmt::For { init, body, .. } => {
+                if let Some(init) = init {
+                    Self::collect_function_labels(init, labels)?;
+                }
+                Self::collect_function_labels(body, labels)?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     fn check_function(&mut self, func: Function) -> Result<CheckedFunction, Diagnostic> {
         if func.storage == StorageClass::Register {
             return Err(type_error(func.span, "function cannot have register storage class"));
@@ -889,11 +931,16 @@ impl Checker {
             result: Box::new(result.clone()),
             params: params.iter().map(|p| p.ty.unqualified().clone()).collect(),
         };
+        // Resolve labels independently of ordinary lexical identifier scopes.
+        // A jump may target a label declared later in the same function.
+        let mut function_labels = HashMap::new();
+        Self::collect_function_labels(&func.body, &mut function_labels)?;
         // Register before checking the body: recursive calls are legal.
         self.declare_global(&func.name, signature.clone(), SymbolKind::Function, true, func.storage,
             func.name_span.unwrap_or(func.span))?;
         self.locals.push(HashMap::new());
         self.tags.borrow_mut().push(HashMap::new());
+        self.function_labels = function_labels;
         self.result_ty = Some(result);
         for (parsed_param, param) in func.params.iter().zip(&params) {
             if let Err(err) = self.define_local(&param.name, param.ty.clone(),
@@ -914,6 +961,7 @@ impl Checker {
         self.pop_tag_scope();
         self.locals.pop();
         self.result_ty = None;
+        self.function_labels.clear();
         let body = checked?;
         let linkage = self.global(&func.name).expect("registered function").linkage;
         Ok(CheckedFunction { linkage, name: func.name, signature, params, body, span: func.span })
@@ -1132,6 +1180,18 @@ impl Checker {
                 }
                 context.seen_default = true;
                 CheckedStmt::Default(Box::new(self.check_stmt(body, span)?))
+            }
+            Stmt::Label { name, body, .. } => {
+                CheckedStmt::Label {
+                    name: name.clone(),
+                    body: Box::new(self.check_stmt(body, span)?),
+                }
+            }
+            Stmt::Goto { target, span } => {
+                if !self.function_labels.contains_key(target) {
+                    return Err(type_error(*span, format!("goto to undefined label '{target}'")));
+                }
+                CheckedStmt::Goto { target: target.clone() }
             }
             Stmt::Break => {
                 if self.loop_depth == 0 && self.switches.is_empty() {
