@@ -1859,8 +1859,8 @@ mod tests {
         for source in [
             "int f(int x) { goto done; if(x) { done: return 2; } return 0; }",
             "int f(int x) { if(x) here: return 3; goto here; }",
-            "int f(void) { goto here; while(0) { here: return 3; } }",
-            "int f(void) { goto here; do { here: return 4; } while(0); }",
+            "int f(void) { goto here; while(0) { here: return 3; } return 0; }",
+            "int f(void) { goto here; do { here: return 4; } while(0); return 0; }",
             "int f(void) { goto here; for(int i=0;i<2;i++) { here: i=1; break; } return 5; }",
             "int f(void) { if(1) goto here; while(0) { here: break; } return 3; }",
         ] {
