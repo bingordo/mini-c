@@ -1206,13 +1206,15 @@ impl<'a> Parser<'a> {
                 let name = self.take()?.expect("peeked label");
                 self.expect(":")?;
                 // ISO C99 permits labels on statements, not declarations.
-                if self.peek()?.is_some_and(|next| matches!(next.text,
+                let next = self.peek()?;
+                let is_decl_keyword = next.is_some_and(|token| matches!(token.text,
                     "typedef" | "static" | "extern" | "register" | "struct" | "union" | "enum" |
                     "int" | "_Bool" | "char" | "short" | "long" | "_Float128" |
                     "float" | "double" | "void" | "unsigned" | "signed" |
-                    "const" | "restrict" | "__restrict" | "__restrict__")
-                    || next.kind == TokenKind::TypedefName && !self.followed_by_colon().unwrap_or(false))
-                {
+                    "const" | "restrict" | "__restrict" | "__restrict__"));
+                let is_typedef_decl = next.is_some_and(|token| token.kind == TokenKind::TypedefName)
+                    && !self.followed_by_colon()?;
+                if is_decl_keyword || is_typedef_decl {
                     return Err(Diagnostic::new(name.span, "C99 label must precede a statement, not a declaration"));
                 }
                 Ok(Stmt::Label { name: name.text.to_owned(), span: name.span,
