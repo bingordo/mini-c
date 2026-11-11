@@ -18,11 +18,11 @@ This milestone should not prevent progressing to a usable C compiler and C++ sup
 
 **Priority change:** Keep F1 (core statements) and practical F2/F3/F4 C99 frontend slices active. **Defer F5** (advanced numeric/lexical C language semantics) until practical C support and the internal C99 preprocessor are usable. Deferred does **not** mean completed, removed, or optional for a future full-C99-conformance claim.
 
-**CPP-C99: practical internal preprocessing now defaults on, remaining conformance deferred**, tracked by [#110](https://github.com/bingordo/mini-c/issues/110) and child issues [#111](https://github.com/bingordo/mini-c/issues/111)–[#114](https://github.com/bingordo/mini-c/issues/114). Work in parallel with F1/F2. External `cc -E` preprocessing and origin mapping already passed historical M6; this work specifically graduates the feature-gated self-contained `--cpp=internal` from experimental to production-eligible for ISO C99. C23 CPP extensions are not a release gate.
+**CPP-C99: internal preprocessing is the practical default; further CPP work is deferred**, tracked by [#110](https://github.com/bingordo/mini-c/issues/110) and children #111–#114. The user has accepted current real-program compatibility; the internal path is now default in both Mini-C binary drivers, with explicit external `--cpp=cc` fallback. Do not block active **F1–F4** work on full CPP conformance or resource-limit tuning. ISO C99 CPP coverage remains incomplete, tracked separately. C23 CPP extensions are not a release gate.
 
 **Separation of responsibility:** The CPP milestone owns preprocessing translation phases, directive parsing, `_Pragma`, macro expansion, include search, predefines, source origins and resource limits. F5 retains wide character/string and numeric *language* semantics plus post-preprocessing lexical constraints. CPP must not block on native code generation or the deferred F5 language work. Do not call the entire C99 frontend conformant until F5 and final F6 validation eventually close.
 
-**Near-term order:** finish F1 switch and _Bool slices; concurrently CPP-C99/1 macro/phase parity and CPP-C99/2 include/predefine support; then CPP-C99/3 provenance and CPP-C99/4 resource/CI graduation. Continue practical F2/F3/F4 increments driven by real-source acceptance. Leave F5 deferred and F6 final language conformance last.
+**Near-term order:** finish F1 switch/_Bool, then continue practical F2 pointer/integer and arithmetic conversions, F3 initializers, and F4 declarator/compatibility support driven by unmodified real programs. Pointer-to-integer cast slice [#139](https://github.com/bingordo/mini-c/pull/139) is merged; it does not establish complete `memmove`/`memset` acceptance. Follow-up CPP fixes only when they block an actual program. Leave F5 deferred and F6 final language conformance last.
 
 ## Immediate CPP-C99 focus — usable programs (2026-11-10)
 
@@ -123,7 +123,7 @@ Do not schedule new F5-specific work now. Preserve all acceptance criteria for l
 - [ ] Wide character/string literals, universal character names, execution/source character-set rules, adjacent string literal concatenation and lexical translation phases.
 - [ ] Complete C99 grammar constraints, keywords and diagnostics (including `_Pragma` preprocessing syntax).
 
-## CPP-C99 — Complete the internal preprocessor (ACTIVE P0)
+## CPP-C99 — Internal preprocessing default; full conformance follow-up (deferred)
 
 **Tracker:** [#110](https://github.com/bingordo/mini-c/issues/110). The verified M6 external path remains available via explicit `--cpp=cc`. The internal `rcc_preprocess` adapter is now enabled by default in the two Mini-C binary crates; the core frontend remains independent of it. This is a pragmatic driver-default decision, not closure of every production-readiness/conformance gate. This is completion work, not a replacement of Mini-C's parser/sema with another C frontend.
 
@@ -143,4 +143,4 @@ Do not schedule new F5-specific work now. Preserve all acceptance criteria for l
 
 ## Execution order and first slice
 
-**Updated:** F2.1 is complete. Continue F1 switch and `_Bool`, practical F2/F3/F4 work, and the four CPP-C99 slices in parallel. Defer F5. F6 is the eventual final frontend conformance gate after F5 is resumed. Never conflate typing FP expressions with native FP codegen, and do not call the internal CPP production-ready before the #110 exit gate passes.
+**Updated:** F2.1 `sizeof` and F2 pointer-to-integer cast slices are merged. Focus on F1 switch and `_Bool`, and practical F2/F3/F4 work; CPP-C99 #110–#114 is nonblocking follow-up because internal preprocessing is now the driver default for usable programs. F5 remains deferred. F6 remains the final language conformance gate after F5 is resumed. Do not conflate FP frontend typing with native FP codegen or a practical CPP default with complete ISO C99 preprocessing.

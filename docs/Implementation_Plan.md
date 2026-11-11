@@ -2,9 +2,9 @@
 
 This plan combines language scope, architecture, backend reuse and validation. See [Specification](Specification.md) and [CI and testing](Testing.md). Work in substantial vertical slices; run targeted tests on every change and full integration suites at milestones.
 
-## Current frontend focus — practical C99 + internal CPP completion (2026-11-09)
+## Current frontend focus — usable C: F1–F4 (2026-11-10)
 
-The authoritative checklist and generated GCC/Clang tests are in [C99 Frontend Plan](C99_Frontend_Plan.md). **F5 numeric/lexical language completion is deferred.** F1 and practical F2/F3/F4 work remain active; **CPP-C99 internal preprocessing completion is now an active parallel P0 milestone** ([tracker #110](https://github.com/bingordo/mini-c/issues/110), slices #111–#114). The completed M6 *external* `cc -E` path remains an explicitly selectable fallback (`--cpp=cc`); the Mini-C checker and Cranelift driver now use internal CPP by default for practical programs. This does not mean CPP-C99 conformance is complete. Existing M0–M6 sections describe historical milestones rather than current gaps. F2.1 `sizeof(expression)` is done. Native FP backend work remains in `bingordo/compiler`. Do not claim full C99 until the deferred F5 and final F6 gate are eventually completed.
+The authoritative checklist and generated GCC/Clang tests are in [C99 Frontend Plan](C99_Frontend_Plan.md). **F5 numeric/lexical language completion is deferred.** F1 and practical F2/F3/F4 work remain active; **the internal preprocessor is the default in both binary drivers**, and full CPP-C99 conformance/performance completion ([#110](https://github.com/bingordo/mini-c/issues/110)–#114) is deprioritized in favor of concrete F1–F4 C language and checked-IR gaps. The completed M6 *external* `cc -E` path remains an explicitly selectable fallback (`--cpp=cc`); the Mini-C checker and Cranelift driver now use internal CPP by default for practical programs. This does not mean CPP-C99 conformance is complete. Existing M0–M6 sections describe historical milestones rather than current gaps. F2.1 `sizeof(expression)` is done. Native FP backend work remains in `bingordo/compiler`. Do not claim full C99 until the deferred F5 and final F6 gate are eventually completed.
 
 ## Planned post-core acceptance — original Csmith programs
 
