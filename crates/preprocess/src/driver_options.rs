@@ -1,4 +1,4 @@
-//! Common, shell-free external C preprocessor command-line option handling.
+//! Shared, shell-free internal/external C preprocessor driver option handling.
 //! Both the checker and optional native-object driver use this parser.
 //! The surrounding driver owns filenames and its own non-CPP options.
 use crate::Config;
@@ -13,7 +13,14 @@ pub struct CppOptions {
 impl Default for CppOptions {
     fn default() -> Self {
         Self {
-            executable: Some(OsString::from("cc")),
+            // The C checker and native backend enable internal-rcc by
+            // default. Bare mini-c-preprocess library builds (without
+            // this optional engine) retain external cc as their fallback.
+            executable: Some(OsString::from(if cfg!(feature = "internal-rcc") {
+                "internal"
+            } else {
+                "cc"
+            })),
             arguments: vec![OsString::from("-E")],
         }
     }
@@ -75,6 +82,25 @@ impl CppOptions {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn configured_cpp_defaults_and_explicit_fallbacks() {
+        let default = CppOptions::default().finish().unwrap().unwrap();
+        assert_eq!(default.executable, OsString::from(
+            if cfg!(feature = "internal-rcc") { "internal" } else { "cc" }
+        ));
+        assert_eq!(default.args, vec![OsString::from("-E")]);
+
+        for selected in ["internal", "cc", "clang"] {
+            let mut opts = CppOptions::default();
+            assert!(opts.consume(&format!("--cpp={selected}"),
+                &mut std::iter::empty()).unwrap());
+            assert_eq!(opts.finish().unwrap().unwrap().executable, OsString::from(selected));
+        }
+        let mut disabled = CppOptions::default();
+        assert!(disabled.consume("--cpp=none", &mut std::iter::empty()).unwrap());
+        assert!(disabled.finish().unwrap().is_none());
+    }
 
     #[test]
     fn accepts_split_attached_and_no_shell_evaluation() {
