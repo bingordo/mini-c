@@ -1336,6 +1336,20 @@ impl Checker {
             Type::Long => CType::Integer { rank: IntRank::Long, unsigned: false },
             Type::LongLong => CType::Integer { rank: IntRank::LongLong, unsigned: false },
             Type::Floating(rank) => CType::Floating(*rank),
+            Type::TagRef(kind, name) => {
+                // sizeof(struct Tag) needs the *visible* tag definition, not
+                // an ordinary identifier lookup. This is deliberately
+                // read-only: sizeof must not create or shadow a tag.
+                // Keep incomplete references intact for legal
+                // sizeof(struct Forward *), while rejecting the incomplete
+                // object itself in the existing size_bytes check.
+                let entry = self.lookup_tag(*kind, name, span)?.ok_or_else(|| {
+                    type_error(span, format!("unknown aggregate tag '{name}' in sizeof"))
+                })?;
+                self.try_complete_tag_type(CType::TagRef {
+                    kind: *kind, name: name.clone(), identity: entry.identity,
+                })?
+            }
             Type::Alias(name) => {
                 let symbol = self.lookup(name).ok_or_else(|| type_error(span,
                     format!("unknown typedef '{name}' in sizeof")))?;
