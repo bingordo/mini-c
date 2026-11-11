@@ -111,6 +111,15 @@ The CI syntax job runs this independently of native backend/FP execution. Every 
 - [ ] Complete usual arithmetic conversions, default promotions at varargs/non-prototype calls and complex types, without requiring executable codegen.
 - [ ] `sizeof`/alignment and compile-time constant-expression rules for every scalar/aggregate category.
 
+### F2.1a — Named aggregate type-names in sizeof (2026-11-11)
+
+Allow `sizeof(struct Tag)`/`sizeof(union Tag)` against a *visible*
+completed aggregate, without creating or shadowing tags. Preserve
+`sizeof(struct Forward *)` even when the forward tag remains incomplete,
+while rejecting `sizeof(struct Forward)` itself. The change is exercised by
+the real `<stdbool.h>` struct-layout executable differential with GCC and
+does not imply full runtime-VLA or other F4 `sizeof` support.
+
 ### F2.2 — Practical pointer-to-integer casts (2026-11-10)
 
 Implement explicit pointer-to-integer conversions (C99 6.3.2.3), retaining
