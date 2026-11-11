@@ -54,6 +54,26 @@ The current backend initializes uninitialized locals to zero as an
 internal Cranelift SSA convenience; this does not define the behavior
 of reading uninitialized variables in C.
 
+## C99 switch implementation
+
+The F1 checked frontend now supports integer-promoted `switch`, typed
+constant cases, duplicate detection after conversion, nested switches,
+fallthrough labels and correct switch/loop break and continue constraints.
+The Cranelift reference backend handles **direct case/default arm labels**,
+shared labels, source-order fallthrough, default-only and no-label switches,
+nested switches, integer/unsigned-long dispatch and nearest break/continue
+targets. It evaluates the control once and uses a correct comparator-chain
+dispatch; optimizing dense cases into jump tables is optional future work.
+
+[CI #43023065658](https://github.com/bingordo/mini-c/actions/runs/43023065658)
+ran six source-pinned C99 programs via both GCC and Mini-C native ELF, all
+with matching successful execution. Unsupported case labels inside deeper
+conditional/loop/compound statements or a switch-block declaration jumped
+over by another case **fail explicitly**, not by silent miscompilation.
+These general CFG/storage cases remain tracked by [#143](https://github.com/bingordo/mini-c/issues/143).
+Syntax/semantics and the native reference backend have separate completion
+criteria.
+
 ## Independent reference tests
 
 `tools/test_cranelift.py` compiles each fixture with the Mini-C object
