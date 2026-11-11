@@ -61,7 +61,9 @@ internal engine now parses `#warning` as a **nonfatal diagnostic**,
 suppresses it in inactive conditionals, and continues with subsequent
 tokens, while `#error` remains fatal. The full 24-source acceptance
 test is feature-gated under `crates/preprocess/tests/internal_hosted_corpus.rs`
-and awaits independent compiler-ci confirmation.
+and passed [compiler-ci #42955500884](https://github.com/bingordo/compiler-ci/actions/runs/42955500884):
+all **24/24** GCC-accepted originals preprocessed, plus the existing strict
+GCC/Clang macro differential and checker/Cranelift feature tests.
 
 Broader real-source and cross-distribution coverage is still needed.
 The external `cc -E` path remains the default fallback; F5 is deferred and
@@ -76,7 +78,11 @@ predefines (including `__CHAR_BIT__`, `__INT_MAX__`, `__LONG_MAX__`,
 aliases. These ABI facts are consumed by real headers and must not require
 enabling `gnu_builtin_libcalls`. A feature-gated Linux x86-64 test compares
 the numeric values of expanded macro initializers against **both GCC and Clang** (independent of decimal versus hexadecimal literal spelling) on an
-unmodified host header environment. CI verification is pending.
+unmodified host header environment. The target-value check, 24-source
+corpus, Clippy and feature-gated checker/Cranelift integration passed in
+[compiler-ci #42956587572](https://github.com/bingordo/compiler-ci/actions/runs/42956587572).
+This establishes the tested x86-64 Linux LP64 environment, not universal
+cross-target or all-header parity.
 
 ## Design
 
