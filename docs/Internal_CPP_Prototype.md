@@ -67,6 +67,17 @@ Broader real-source and cross-distribution coverage is still needed.
 The external `cc -E` path remains the default fallback; F5 is deferred and
 Csmith end-to-end checks are planned separately under #116.
 
+## Hosted target predefine correctness
+
+The CPP/2 hosted-header work now installs target-derived integer and byte-order
+predefines (including `__CHAR_BIT__`, `__INT_MAX__`, `__LONG_MAX__`,
+`__LONG_LONG_MAX__`, `__SIZE_TYPE__`, `__BYTE_ORDER__` and
+`__ORDER_LITTLE_ENDIAN__`) independently of the optional GNU builtin-call
+aliases. These ABI facts are consumed by real headers and must not require
+enabling `gnu_builtin_libcalls`. A feature-gated Linux x86-64 test compares
+the numeric values of expanded macro initializers against **both GCC and Clang** (independent of decimal versus hexadecimal literal spelling) on an
+unmodified host header environment. CI verification is pending.
+
 ## Design
 
 `crates/preprocess` has an optional `internal-rcc` feature using a
