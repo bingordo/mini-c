@@ -941,7 +941,21 @@ impl<'a> Preprocessor<'a> {
             Ok(directive::Directive::Define(def)) => {
                 let result = {
                     let sm = self.session.source_map.read().unwrap();
-                    let permissive = self.session.opts.gnu_permissive_redefinition;
+                    // GNU feature-test macros are frequently defined both
+                    // on the driver command line and by an upstream source
+                    // (e.g. unmodified musl strcasestr.c). GCC/Clang warn
+                    // rather than rejecting this distinct replacement list
+                    // in their normal hosted modes. Preserve strict C99
+                    // diagnostics for arbitrary macro redefinitions: only
+                    // an existing command-line _GNU_SOURCE definition gets
+                    // this narrow compatibility exception.
+                    let cli_gnu_source = self.session.interner.get(def.name) == "_GNU_SOURCE"
+                        && self.macros.get(def.name).is_some_and(|existing| {
+                            sm.file(existing.def_span.file).name.to_string_lossy()
+                                == "<-D _GNU_SOURCE>"
+                        });
+                    let permissive =
+                        self.session.opts.gnu_permissive_redefinition || cli_gnu_source;
                     macros::define_macro(
                         def,
                         &mut self.macros,
