@@ -550,11 +550,14 @@ impl Compiler {
             return Err("native goto requires a compound function body".into());
         };
         let mut label_positions = HashMap::<String, usize>::new();
+        let mut ordered_labels = Vec::new();
         let mut gotos = Vec::<(String, usize)>::new();
         for (index, stmt) in stmts.iter().enumerate() {
             let mut tail = stmt;
             while let CheckedStmt::Label { name, body } = tail {
-                label_positions.insert(name.clone(), index);
+                if label_positions.insert(name.clone(), index).is_none() {
+                    ordered_labels.push(name.clone());
+                }
                 tail = body;
             }
             if Self::has_nested_label(tail) {
@@ -581,7 +584,9 @@ impl Compiler {
             }
             referenced.insert(target);
         }
-        Ok((label_positions.into_keys().collect(), referenced))
+        // Preserve source order. Hash-map iteration order would produce
+        // nondeterministic Cranelift block numbering and ELF object bytes.
+        Ok((ordered_labels, referenced))
     }
 
     fn define(&mut self, function: CheckedFunction) -> Result<()> {
