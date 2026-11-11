@@ -1226,7 +1226,7 @@ fn c99_bool_is_distinct_promoted_and_normalized() {
     assert_eq!(const_eval::evaluate(initializer, Target::default()), Ok(1));
     check("typedef _Bool flag; int f(int x) { flag a = (_Bool)x; return a; }").unwrap();
     check("int f(_Bool x) { switch (x) { case 0: return 0; case 1: return 1; } return 2; }").unwrap();
-    reject("unsigned _Bool bad;", "invalid");
+    reject("unsigned _Bool bad;", "expected identifier in declarator");
 }
 
 #[test]
