@@ -1276,6 +1276,10 @@ impl Checker {
             (CType::Struct { .. }, CType::Struct { .. }) |
             (CType::Union { .. }, CType::Union { .. }) => value_ty.same_type(&expr.ty),
             (CType::Integer { .. }, CType::Integer { .. }) => true,
+            // C99 6.3.1.2: any scalar pointer converts to _Bool by
+            // comparing against null (rather than truncating an address).
+            // Keep implicit pointer -> ordinary integer conversions invalid.
+            (CType::Integer { rank: IntRank::Bool, .. }, CType::Pointer(_)) => true,
             // Preserve exact-rank floating values in checked code. Implicit
             // FP conversions and native emission remain separately gated.
             (CType::Floating(a), CType::Floating(b)) => a == b,
