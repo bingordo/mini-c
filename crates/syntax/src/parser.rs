@@ -122,7 +122,7 @@ impl<'a> Parser<'a> {
         if self.brace_depth == 0
             && error.message.starts_with("expected ';'")
             && self.peek().ok().flatten().is_some_and(|t| matches!(
-                t.text, "int" | "char" | "short" | "long" | "_Float128" | "float" | "double" | "void" | "signed" |
+                t.text, "int" | "_Bool" | "_Bool" | "char" | "short" | "long" | "_Float128" | "float" | "double" | "void" | "signed" |
                     "unsigned" | "static" | "extern" | "register" | "typedef" | "struct" | "union" | "enum"
             ) || t.kind == TokenKind::TypedefName)
         {
@@ -385,7 +385,7 @@ impl<'a> Parser<'a> {
                 // A typedef-aware type-name lookahead is essential:
                 // sizeof(T) and sizeof(variable) have different AST forms.
                 let type_name = self.peek()?.is_some_and(|next| {
-                    matches!(next.text, "int" | "char" | "short" | "long" | "_Float128" |
+                    matches!(next.text, "int" | "_Bool" | "_Bool" | "char" | "short" | "long" | "_Float128" |
                         "float" | "double" | "void" | "signed" | "unsigned" |
                         "struct" | "union" | "enum" | "const" | "restrict" |
                         "__restrict" | "__restrict__")
@@ -481,7 +481,7 @@ impl<'a> Parser<'a> {
                 // full *abstract declarator* after the base type so a cast
                 // like (void*)0 is not mistaken for (void) followed by *.
                 let cast_type = self.peek()?.is_some_and(|next| {
-                    matches!(next.text, "int" | "char" | "short" | "long" | "_Float128" | "float" | "double" | "void" |
+                    matches!(next.text, "int" | "_Bool" | "_Bool" | "char" | "short" | "long" | "_Float128" | "float" | "double" | "void" |
                         "signed" | "unsigned" | "struct" | "union" | "enum" |
                         "const" | "restrict" | "__restrict" | "__restrict__")
                         || next.kind == TokenKind::TypedefName
@@ -817,7 +817,7 @@ impl<'a> Parser<'a> {
             inner
         } else if let Some(token) = self.peek()?.filter(|token| {
             matches!(token.kind, TokenKind::Identifier | TokenKind::TypedefName)
-                && !matches!(token.text, "int" | "char" | "short" | "long" | "_Float128" | "float" | "double" | "void"
+                && !matches!(token.text, "int" | "_Bool" | "_Bool" | "char" | "short" | "long" | "_Float128" | "float" | "double" | "void"
                     | "unsigned" | "signed" | "const" | "restrict" | "__restrict" | "__restrict__"
                     | "typedef" | "static" | "extern" | "register"
                     | "struct" | "union" | "enum" | "if" | "else" | "while" | "do" | "for" | "switch" | "case" | "default" | "return" | "break" | "continue")
@@ -1135,7 +1135,7 @@ impl<'a> Parser<'a> {
                                 Stmt::Typedef(self.parse_decl(true)?)
                             }
                             "struct" | "union" | "enum" => self.parse_tag_or_decl()?,
-                            "static" | "extern" | "register" | "int" | "char" | "long"
+                            "static" | "extern" | "register" | "int" | "_Bool" | "char" | "long"
                                 | "void" | "unsigned" | "signed" | "const" | "restrict" | "__restrict" | "__restrict__" =>
                                 Stmt::Decl(self.parse_decl(false)?),
                             _ if token.kind == TokenKind::TypedefName =>
@@ -1181,7 +1181,7 @@ impl<'a> Parser<'a> {
             "typedef" => { self.take()?; Ok(Stmt::Typedef(self.parse_decl(true)?)) },
             "static" | "extern" | "register" => Ok(Stmt::Decl(self.parse_decl(false)?)),
             "struct" | "union" | "enum" => self.parse_tag_or_decl(),
-            "int" | "char" | "short" | "long" | "_Float128" | "float" | "double" | "void" | "unsigned" | "signed"
+            "int" | "_Bool" | "_Bool" | "char" | "short" | "long" | "_Float128" | "float" | "double" | "void" | "unsigned" | "signed"
                 | "const" | "restrict" | "__restrict" | "__restrict__" => Ok(Stmt::Decl(self.parse_decl(false)?)),
             _ if token.kind == TokenKind::TypedefName => Ok(Stmt::Decl(self.parse_decl(false)?)),
             _ => { let expr = self.parse_expr()?; self.expect(";")?; Ok(Stmt::Expr(Some(expr))) }
@@ -1214,7 +1214,7 @@ impl<'a> Parser<'a> {
                         self.take()?;
                         Some(true)
                     }
-                    "static" | "extern" | "register" | "int" | "char" | "short"
+                    "static" | "extern" | "register" | "int" | "_Bool" | "_Bool" | "char" | "short"
                     | "long" | "_Float128" | "float" | "double" | "void"
                     | "unsigned" | "signed" | "const" | "restrict"
                     | "__restrict" | "__restrict__" => Some(false),
@@ -1325,6 +1325,7 @@ impl<'a> Parser<'a> {
                 else { Type::Struct { tag, members } }
             }
             "void" => { self.take()?; Type::Void }
+            "_Bool" => { self.take()?; Type::Bool }
             "float" => { self.take()?; Type::Floating(FloatRank::Float) }
             "__builtin_va_list" => { self.take()?; Type::BuiltinVaList }
             "_Float128" => { self.take()?; Type::Floating(FloatRank::Float128) }
@@ -1335,7 +1336,7 @@ impl<'a> Parser<'a> {
                     Type::Floating(FloatRank::LongDouble)
                 } else { Type::Floating(FloatRank::Double) }
             }
-            "char" | "short" | "int" | "long" | "unsigned" | "signed" => {
+            "_Bool" | "char" | "short" | "int" | "long" | "unsigned" | "signed" => {
                 // C integer declaration specifiers are order-independent:
                 // glibc's standard typedef 'long unsigned int size_t' must
                 // mean exactly the same type as 'unsigned long int'.
@@ -1364,7 +1365,7 @@ impl<'a> Parser<'a> {
                         "const" => qualifiers.is_const = true,
                         "restrict" | "__restrict" | "__restrict__" =>
                             qualifiers.is_restrict = true,
-                        "char" | "short" | "int" | "long" | "unsigned" | "signed" => {
+                        "_Bool" | "char" | "short" | "int" | "long" | "unsigned" | "signed" => {
                             return Err(Diagnostic::coded(next.span,
                                 DiagnosticCode::SyntaxInvalidDeclaration,
                                 "invalid or unsupported integer type-specifier combination"));
