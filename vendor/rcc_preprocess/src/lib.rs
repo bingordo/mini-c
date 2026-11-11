@@ -1008,6 +1008,9 @@ impl<'a> Preprocessor<'a> {
             Ok(directive::Directive::Error { span, message }) => {
                 self.dispatch_error_directive(span, &message);
             }
+            Ok(directive::Directive::Warning { span, message }) => {
+                self.dispatch_warning_directive(span, &message);
+            }
             Ok(directive::Directive::Pragma { span, tokens }) => {
                 self.dispatch_pragma_directive(span, &tokens, src);
             }
@@ -1048,6 +1051,24 @@ impl<'a> Preprocessor<'a> {
         let diag = error_directive(span, message);
         self.session.handler.emit(&diag);
         self.halted = true;
+    }
+
+    /// GNU/C23-style #warning is commonly used in hosted system headers,
+    /// including glibc features.h for deprecated _BSD_SOURCE. Unlike
+    /// #error, it must not stop preprocessing or discard subsequent tokens.
+    fn dispatch_warning_directive(&mut self, span: Span, message: &str) {
+        self.session.handler.emit(&rcc_errors::Diagnostic {
+            level: rcc_errors::Level::Warning,
+            code: None,
+            message: format!("#warning: {}", message.trim()),
+            labels: vec![rcc_errors::Label {
+                span,
+                message: "preprocessing warning here".into(),
+                primary: true,
+            }],
+            notes: vec!["GNU #warning extension (also standardized in C23)".into()],
+            help: vec![],
+        });
     }
 
     /// Handle a parsed `#pragma` directive.
@@ -3349,6 +3370,32 @@ dead1
             diags[0].message
         );
         assert!(pp.session.handler.has_errors(), "E0020 must count as an error");
+    }
+
+    #[test]
+    fn gnu_warning_directive_warns_and_continues_without_losing_tokens() {
+        let src = "#warning deprecated feature-test macro\\nint survives;\\n";
+        let (mut sess, id, cap) = seed(src);
+        let mut pp = Preprocessor::new(&mut sess);
+        let out = pp.run(id);
+        assert_eq!(joined_text(&pp, &out), "int survives ;");
+        let diags = cap.diagnostics();
+        assert_eq!(diags.len(), 1, "exactly one nonfatal warning: {diags:?}");
+        assert_eq!(diags[0].level, Level::Warning);
+        assert!(diags[0].message.contains("deprecated feature-test macro"));
+        assert!(!pp.halted);
+        assert!(!pp.session.handler.has_errors());
+    }
+
+    #[test]
+    fn warning_in_inactive_conditional_is_ignored() {
+        let (mut sess, id, cap) = seed(
+            "#if 0\\n#warning not_active\\n#endif\\nint survives;\\n"
+        );
+        let mut pp = Preprocessor::new(&mut sess);
+        let out = pp.run(id);
+        assert_eq!(joined_text(&pp, &out), "int survives ;");
+        assert!(cap.diagnostics().is_empty());
     }
 
     #[test]
