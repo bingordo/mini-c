@@ -820,7 +820,7 @@ impl<'a> Parser<'a> {
                 && !matches!(token.text, "int" | "char" | "short" | "long" | "_Float128" | "float" | "double" | "void"
                     | "unsigned" | "signed" | "const" | "restrict" | "__restrict" | "__restrict__"
                     | "typedef" | "static" | "extern" | "register"
-                    | "struct" | "union" | "enum" | "if" | "else" | "while" | "do" | "for" | "return" | "break" | "continue")
+                    | "struct" | "union" | "enum" | "if" | "else" | "while" | "do" | "for" | "switch" | "case" | "default" | "return" | "break" | "continue")
         }) {
             self.take()?;
             Declarator::Name(token.text.to_owned(), self.expression_spans.then_some(token.span))
@@ -1091,6 +1091,24 @@ impl<'a> Parser<'a> {
                     self.take()?; Some(Box::new(self.parse_stmt()?))
                 } else { None };
                 Ok(Stmt::If { cond, then, otherwise })
+            }
+            "switch" => {
+                self.take()?; self.expect("(")?;
+                let control = self.parse_expr()?;
+                self.expect(")")?;
+                let body = Box::new(self.parse_stmt()?);
+                Ok(Stmt::Switch { control, body })
+            }
+            "case" => {
+                self.take()?;
+                let value = self.parse_conditional()?;
+                self.expect(":")?;
+                Ok(Stmt::Case { value, body: Box::new(self.parse_stmt()?) })
+            }
+            "default" => {
+                self.take()?;
+                self.expect(":")?;
+                Ok(Stmt::Default(Box::new(self.parse_stmt()?)))
             }
             "while" => {
                 self.take()?; self.expect("(")?;
@@ -1538,6 +1556,27 @@ mod tests {
         fn function(&mut self, _: crate::ast::Function) -> Result<(), Self::Error> {
             unreachable!()
         }
+    }
+
+    #[test]
+    fn c99_switch_preserves_fallthrough_and_nested_labels() {
+        let source = "int f(int x) { switch(x) { case 1: x=2; case 2: { x=3; break; } default: return x; } return 0; }";
+        let item = Parser::new(source).next_item().expect("parse").expect("function");
+        let ExternalItem::Function(function) = item else { panic!("expected function"); };
+        let Stmt::Block(statements) = function.body else { panic!("expected function body"); };
+        let Stmt::Switch { control, body } = &statements[0] else { panic!("expected switch"); };
+        assert!(matches!(control.without_location(), Expr::Name(name) if name == "x"));
+        let Stmt::Block(arms) = body.as_ref() else { panic!("expected switch block"); };
+        assert!(matches!(&arms[0], Stmt::Case { .. }));
+        assert!(matches!(&arms[1], Stmt::Case { body, .. }
+            if matches!(body.as_ref(), Stmt::Block(_))));
+        assert!(matches!(&arms[2], Stmt::Default(_)));
+    }
+
+    #[test]
+    fn c99_switch_parser_rejects_missing_case_colon() {
+        let source = "int f(int x) { switch(x) { case 1 return x; } }";
+        assert!(Parser::new(source).next_item().is_err());
     }
 
     #[test]

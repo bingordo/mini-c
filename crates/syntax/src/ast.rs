@@ -121,6 +121,11 @@ pub enum Stmt {
         cond: Expr,
         body: Box<Stmt>,
     },
+    /// Preserve C99 switch dispatch and fallthrough; case/default labels can
+    /// occur under nested blocks and do not create a scope by themselves.
+    Switch { control: Expr, body: Box<Stmt> },
+    Case { value: Expr, body: Box<Stmt> },
+    Default(Box<Stmt>),
     /// C post-test loop: execute the body at least once.
     DoWhile {
         body: Box<Stmt>,
