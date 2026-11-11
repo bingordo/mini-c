@@ -141,10 +141,10 @@ mod tests {
         let args = vec![
             "--emit-obj".to_string(),
             output.to_string_lossy().into_owned(),
-            "--cpp=internal".to_string(),
             source.to_string_lossy().into_owned(),
         ];
         let options = parse_options(args).unwrap();
+        assert_eq!(options.cpp.as_ref().unwrap().executable, std::ffi::OsString::from("internal"));
         let preprocessed = preprocess::file(
             Path::new(&options.source), options.cpp.as_ref().unwrap()
         );
