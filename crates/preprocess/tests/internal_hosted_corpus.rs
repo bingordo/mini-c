@@ -95,9 +95,9 @@ fn hosted_target_integer_predefines_match_gcc_and_clang() {
         ("probe_order_little", "__ORDER_LITTLE_ENDIAN__"),
         ("probe_sizeof_pointer", "__SIZEOF_POINTER__"),
     ];
-    let mut text = String::from("#include <limits.h>\\n#include <stdint.h>\\n");
+    let mut text = String::from("#include <limits.h>\n#include <stdint.h>\n");
     for (name, macro_name) in probes {
-        text.push_str(&format!("unsigned long {name} = {macro_name};\\n"));
+        text.push_str(&format!("unsigned long {name} = {macro_name};\n"));
     }
     std::fs::write(&source, text).unwrap();
     let run = |program: &str| file(&source, &Config {
