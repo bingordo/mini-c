@@ -1,6 +1,6 @@
 //! Evaluate checked integer constant expressions using the caller's target model.
 //! This is for initializer constraints, not runtime evaluation or optimization.
-use crate::types::{CType, Target};
+use crate::types::{CType, IntRank, Target};
 use crate::{CheckedExpr, CheckedExprKind};
 use mini_c_syntax::ast::{BinOp, UnOp};
 
@@ -8,6 +8,9 @@ fn normalize(value: i128, ty: &CType, target: Target) -> Result<i128, &'static s
     let CType::Integer { rank, unsigned } = ty else {
         return Err("not an integer constant expression");
     };
+    if *rank == IntRank::Bool {
+        return Ok(i128::from(value != 0));
+    }
     let bits = target.bits(*rank);
     let modulus = 1i128 << bits;
     let upper = if *unsigned { modulus - 1 } else { (modulus >> 1) - 1 };
