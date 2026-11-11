@@ -108,6 +108,30 @@ jobs:
           cc "$RUNNER_TEMP/bool.o" -o "$RUNNER_TEMP/bool-mini"
           "$RUNNER_TEMP/bool-gcc"
           "$RUNNER_TEMP/bool-mini"
+      - name: C99 _Bool stdbool.h arrays and structure layout versus GCC
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/stdbool.c" <<'EOF'
+          #include <stdbool.h>
+          struct Flags { bool active; int count; bool ready; };
+          int main(void) {
+              struct Flags f;
+              bool flags[3];
+              f.active=256; f.count=17; f.ready=false;
+              flags[0]=false; flags[1]=256; flags[2]=true;
+              bool valid=true;
+              return !(sizeof(bool)==1 && sizeof(struct Flags)==12
+                  && sizeof(flags)==3 && valid==true
+                  && f.active==true && f.count==17 && f.ready==false
+                  && flags[0]==false && flags[1]==true && flags[2]==true);
+          }
+          EOF
+          cc -std=c99 "$RUNNER_TEMP/stdbool.c" -o "$RUNNER_TEMP/stdbool-gcc"
+          target/debug/mini-c-cranelift --emit-obj "$RUNNER_TEMP/stdbool.o" "$RUNNER_TEMP/stdbool.c"
+          cc "$RUNNER_TEMP/stdbool.o" -o "$RUNNER_TEMP/stdbool-mini"
+          "$RUNNER_TEMP/stdbool-gcc"
+          "$RUNNER_TEMP/stdbool-mini"
       - name: Source-pinned C99 switch native execution against GCC
         run: python3 tools/test_switch_native.py --backend target/debug/mini-c-cranelift
       - name: Compare exact pinned musl S9 objects with GCC
