@@ -51,7 +51,7 @@ fn c99_switch_nested_label_locations_fail_closed_in_native_backend() {
     let error=compile_source(
         "int f(int x){switch(x){int y=3; case 1: return y; default: return 0;}}"
     ).unwrap_err();
-    assert!(error.contains("cannot jump over a local declaration"), "{error}");
+    assert!(error.contains("cannot jump over a local declaration across case labels"), "{error}");
 }
 
 #[test]
