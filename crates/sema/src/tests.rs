@@ -1238,6 +1238,24 @@ fn c99_bool_accepts_pointer_scalars_but_not_implicit_pointer_to_integer() {
 }
 
 #[test]
+fn c99_bool_one_byte_array_and_struct_layout() {
+    let items = check("struct Flags { _Bool active; int count; _Bool ready; } f;").unwrap();
+    let CheckedItem::Declaration(f) = &items[0] else { panic!("expected Flags object"); };
+    let CType::Struct { members, size, align, .. } = &f.ty else {
+        panic!("_Bool must be a distinct struct-member type");
+    };
+    assert_eq!((*size, *align), (12, 4));
+    assert_eq!(members.iter().map(|m| m.offset).collect::<Vec<_>>(), [0, 4, 8]);
+    assert_eq!(members[0].ty, CType::Integer { rank: IntRank::Bool, unsigned: true });
+    assert_eq!(members[2].ty, CType::Integer { rank: IntRank::Bool, unsigned: true });
+    let checked = check("int f(void) { _Bool flags[3]; return sizeof flags; }").unwrap();
+    let CheckedItem::Function(f) = &checked[0] else { panic!("expected function"); };
+    let CheckedStmt::Block(stmts) = &f.body else { panic!("expected body"); };
+    let CheckedStmt::Decl(flags) = &stmts[0] else { panic!("expected array object"); };
+    assert_eq!(flags.ty.size_bytes(Target::default()), Some(3));
+}
+
+#[test]
 fn c99_bool_is_distinct_promoted_and_normalized() {
     let items = check("_Bool a = 2; _Bool b = 0; int f(_Bool v) { \
         _Bool local = 256; return sizeof(_Bool) == 1 && \

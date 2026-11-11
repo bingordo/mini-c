@@ -97,8 +97,11 @@ The CI syntax job runs this independently of native backend/FP execution. Every 
   adds implicit pointer initialization/assignment, pointer arguments,
   pointer returns, null conversions and explicit pointer casts, while
   preserving the ban on implicit pointer-to-other-integer assignment.
-  Full scalar source coverage, complete aggregate layout, additional ABI
-  contexts and F2 floating-to-`_Bool` conversions remain separate work.
+  A separate original `<stdbool.h>` native execution gate checks
+  `bool`/`true`/`false` macros, one-byte arrays, struct field
+  offsets/size/alignment and boolean normalization across field stores.
+  More complex aggregate ABI parameter/return cases and F2
+  floating-to-`_Bool` conversions remain separate work.
 
 ## F2 — Expressions and conversions (start immediately; independent slices)
 

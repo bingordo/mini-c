@@ -64,6 +64,17 @@ fn c99_bool_pointer_scalar_conversions_compile() {
 }
 
 #[test]
+fn c99_bool_struct_fields_and_arrays_compile() {
+    emits_elf("struct Flags { _Bool active; int count; _Bool ready; }; \
+        int main(void) { struct Flags f; _Bool flags[3]; \
+        f.active=256; f.count=17; f.ready=0; \
+        flags[0]=0; flags[1]=256; flags[2]=3; \
+        return sizeof(f)!=12 || sizeof(flags)!=3 || \
+            f.active!=1 || f.count!=17 || f.ready!=0 || \
+            flags[0]!=0 || flags[1]!=1 || flags[2]!=1; }");
+}
+
+#[test]
 fn c99_bool_truth_conversion_and_promotion_compile() {
     emits_elf("_Bool g = 256; int main(void) { _Bool x = 2; \
         _Bool y = 256; return x == 1 && y == 1 && g == 1 ? 0 : 1; }");
