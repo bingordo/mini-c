@@ -1029,7 +1029,7 @@ mod tests {
 
     #[test]
     fn warning_directive_preserves_message_without_becoming_error() {
-        let (d, _) = parse("#warning deprecated feature-test macro\\n");
+        let (d, _) = parse("#warning deprecated feature-test macro\n");
         match d.expect("warning classified") {
             Directive::Warning { message, .. } => {
                 assert_eq!(message, "deprecated feature-test macro");
