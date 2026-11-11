@@ -115,7 +115,7 @@
       "id": "goto-label",
       "feature": "F1",
       "expect": "accept",
-      "mini": "gap",
+      "mini": "supported",
       "kind": "valid",
       "test_ref": "docs/C99_Frontend_Plan.md:F1",
       "source": "int f(int x){if(x)goto done; x=@N@; done:return x;}"
@@ -250,7 +250,7 @@
       "id": "goto-forward",
       "feature": "F1",
       "expect": "accept",
-      "mini": "gap",
+      "mini": "supported",
       "kind": "valid",
       "test_ref": "docs/C99_Frontend_Plan.md:F1",
       "source": "int f(int x){goto done;x=@N@;done:return x;}"
@@ -259,7 +259,7 @@
       "id": "goto-backward",
       "feature": "F1",
       "expect": "accept",
-      "mini": "gap",
+      "mini": "supported",
       "kind": "valid",
       "test_ref": "docs/C99_Frontend_Plan.md:F1",
       "source": "int f(int x){again:if(x>@N@){x--;goto again;}return x;}"
