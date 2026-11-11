@@ -1990,6 +1990,23 @@ fn c99_sizeof_expression_preserves_array_types_and_is_unevaluated() {
 }
 
 #[test]
+fn c99_sizeof_named_aggregate_type_name_uses_visible_tag() {
+    let items = check("struct Flags { _Bool first; int middle; _Bool last; }; \
+        int size(void) { return sizeof(struct Flags); }").unwrap();
+    let CheckedItem::Function(f) = &items[1] else { panic!("expected function"); };
+    let CheckedStmt::Block(stmts) = &f.body else { panic!("expected block"); };
+    let CheckedStmt::Return(Some(result)) = &stmts[0] else { panic!("expected return"); };
+    assert_eq!(const_eval::evaluate(result, Target::default()), Ok(12));
+    check("struct Forward; int f(void) { return sizeof(struct Forward *); }").unwrap();
+    check("struct A { int x; }; int f(void) { \
+        struct A { long y; }; return sizeof(struct A) == 8; }").unwrap();
+    reject("struct Forward; int f(void) { return sizeof(struct Forward); }",
+        "complete object type");
+    reject("int f(void) { return sizeof(struct Missing); }",
+        "unknown aggregate tag");
+}
+
+#[test]
 fn c99_sizeof_expression_typedef_disambiguation_and_constraints() {
     check(concat!(
         "typedef int T; int a[sizeof(T)]; ",
