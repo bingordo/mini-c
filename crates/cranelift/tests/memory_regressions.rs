@@ -52,10 +52,10 @@ fn c99_switch_nested_case_and_skipped_local_emit_elf() {
     emits_elf(
         "int f(int x){switch(x){int y=3; case 1: y=7; return y; default: return 0;}}"
     );
-    emits_elf(
-        "int f(int x){switch(x){for(int i=0;i<3;i++){case 1: i=2; break;} "
+    emits_elf(concat!(
+        "int f(int x){switch(x){for(int i=0;i<3;i++){case 1: i=2; break;} ",
         "break; default: return 0;}return 3;}"
-    );
+    ));
 }
 
 #[test]
