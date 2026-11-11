@@ -24,6 +24,17 @@ This milestone should not prevent progressing to a usable C compiler and C++ sup
 
 **Near-term order:** finish F1 switch and _Bool slices; concurrently CPP-C99/1 macro/phase parity and CPP-C99/2 include/predefine support; then CPP-C99/3 provenance and CPP-C99/4 resource/CI graduation. Continue practical F2/F3/F4 increments driven by real-source acceptance. Leave F5 deferred and F6 final language conformance last.
 
+## Immediate CPP-C99 focus — usable programs (2026-11-10)
+
+The priority is **a working self-contained C99 preprocessor for practical programs**, not another round of resource-budget hardening. Retain the already merged input/macro/output safety guards, but put new CPP/4 memory/CPU instrumentation and tuning on the follow-up queue until real-program compatibility is stronger.
+
+1. **CPP/2 first:** production hosted header search, target predefines, `-isystem`/`--sysroot` correctness, and unmodified glibc/musl header processing. [Mini-C PR #129](https://github.com/bingordo/mini-c/pull/129) enabled system-header discovery and proved unmodified `<stdio.h>` through native `printf` Hello World in [compiler-ci #42933767715](https://github.com/bingordo/compiler-ci/actions/runs/42933767715). [compiler-ci PR #336](https://github.com/bingordo/compiler-ci/pull/336) makes it a scheduled acceptance gate.
+2. **CPP/1 and CPP/3 as blockers are found:** fix macro/directive conformance and actionable source mapping when actual programs expose gaps, rather than exhaustively auditing low-value variants ahead of integration. Strict GCC/Clang differential tests remain.
+3. Add unmodified real-source smoke cases to `bingordo/compiler-ci`: [musl `strcmp.c`](https://github.com/bingordo/mini-c/blob/main/tests/fixtures/musl-s10/string/strcmp.c) passed checker + native object with internal CPP in [compiler-ci #42934545452](https://github.com/bingordo/compiler-ci/actions/runs/42934545452), and is tracked for permanent CI in [compiler-ci PR #337](https://github.com/bingordo/compiler-ci/pull/337).
+4. **CPP/4 later:** complete peak-RSS, allocation and stress benchmarks after core hosted C coverage, keeping the existing guardrails. The internal option stays opt-in until the broader graduation criteria are met.
+
+Csmith original-program native execution remains scheduled under [#116](https://github.com/bingordo/mini-c/issues/116). **F5 remains deferred**; do not delay a usable C compiler or initial C++ support for exhaustive C99 conformance.
+
 ## Ground truth and validation rules
 
 This plan supersedes stale feature-gap sections in `docs/Semantics.md`, `docs/Specification.md` and `docs/Next_Gaps.md`; those files still describe parts of the already implemented enums, aggregates, decimal/hex floating tokens, arithmetic conversions, variadic declarations and nested recovery as missing. Validate each milestone against **current source**, not milestone completion claims.

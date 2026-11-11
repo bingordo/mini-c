@@ -16,6 +16,30 @@ The previously optional experimental path is now **scheduled for completion**, t
 
 **C99 scope only.** C23 extensions and F5 advanced lexical/numeric language work are deferred. Full ISO C99 preprocessing support must be demonstrated using token and diagnostic differentials plus adversarial negative cases, not inferred from compiling a handful of fixtures. Do not enable `--cpp=internal` as default or mark complete without these gates.
 
+## Practical C program acceptance (priority update, 2026-11-10)
+
+**Now prioritize real hosted C programs over further resource-budget tuning.**
+Existing input/token/work/synthetic-byte guards remain enabled. New performance
+and peak-memory work in [#114](https://github.com/bingordo/mini-c/issues/114)
+is deferred behind completing system-header and macro compatibility ([#112](https://github.com/bingordo/mini-c/issues/112), [#111](https://github.com/bingordo/mini-c/issues/111)).
+Do not interpret this as a complete ISO C99 conformance claim or a decision to
+switch defaults.
+
+**End-to-end passing example:** the unmodified
+`tests/fixtures/glibc-s12/hello_stdio.c` with real host `<stdio.h>` is
+preprocessed, checked, compiled by Cranelift, linked with glibc and executed
+via `--cpp=internal -D_GNU_SOURCE`, producing exactly `Hello, world!\n`.
+Evidence: [compiler-ci #42933767715](https://github.com/bingordo/compiler-ci/actions/runs/42933767715).
+It is now a permanent scheduled/manual validation gate in
+[compiler-ci PR #336](https://github.com/bingordo/compiler-ci/pull/336).
+
+The unmodified musl `strcmp.c` using host `<string.h>` was also checked and
+emitted as an ELF object with internal preprocessing in
+[compiler-ci #42934545452](https://github.com/bingordo/compiler-ci/actions/runs/42934545452).
+Broader real-source and cross-distribution coverage is still needed.
+The external `cc -E` path remains the default fallback; F5 is deferred and
+Csmith end-to-end checks are planned separately under #116.
+
 ## Design
 
 `crates/preprocess` has an optional `internal-rcc` feature using a
