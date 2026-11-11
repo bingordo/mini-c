@@ -87,6 +87,17 @@ The CI syntax job runs this independently of native backend/FP execution. Every 
 - [ ] Complete usual arithmetic conversions, default promotions at varargs/non-prototype calls and complex types, without requiring executable codegen.
 - [ ] `sizeof`/alignment and compile-time constant-expression rules for every scalar/aggregate category.
 
+### F2.2 — Practical pointer-to-integer casts (2026-11-10)
+
+Implement explicit pointer-to-integer conversions (C99 6.3.2.3), retaining
+an explicit checked-IR `Convert` and using the current LP64 backend's
+integer bit-pattern conversion. This supports the `(uintptr_t)pointer`
+address-alignment idioms used by original musl `memmove.c` and `memset.c`
+without enabling implicit pointer-to-integer assignments. Tests cover
+semantic typing, cast chains, and native ELF object emission. This is a
+focused F2 slice, **not** completion of all arithmetic/conversion semantics;
+backend floating-point work remains independent.
+
 ## F3 — Initializers and aggregates
 
 - [ ] Nested designated initializers (`[index]`, `.member` and mixed chains), overlapping designator semantics and array-bound inference.

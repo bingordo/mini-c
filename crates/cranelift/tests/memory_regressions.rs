@@ -9,6 +9,13 @@ fn emits_elf(src: &str) {
 }
 
 #[test]
+fn explicit_pointer_to_uintptr_casts_compile_for_lp64() {
+    emits_elf("typedef unsigned long uintptr_t; \
+        uintptr_t addr(char *p) { return (uintptr_t)p; } \
+        int main(void) { char s[8]; return ((uintptr_t)s & 7) == 0; }");
+}
+
+#[test]
 fn pointer_aliasing_and_array_indexing_compile() {
     emits_elf("int main(void) { int a[4]; int *p=a; p[1]=11; a[2]=7; return a[1]+p[2]-18; }");
 }
