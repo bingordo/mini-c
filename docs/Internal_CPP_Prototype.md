@@ -47,10 +47,17 @@ cargo run -p mini-c-cranelift --features internal-cpp -- \
   --emit-obj /tmp/file.o --cpp=internal -I include file.c
 ```
 
-Only `-I`, `-D`, `-U` and the implicit `-E` driver argument are
-mapped into the C99 engine; unsupported CPP switches fail with a clear
-error, rather than being silently ignored. OS arguments are passed directly
-to the internal library without shell interpretation.
+The internal C99 adapter now automatically discovers the supported target's
+hosted system-header search roots (including libc multiarch headers on Linux).
+Project `-I` paths retain precedence. `-isystem` adds explicit system
+include roots before the discovered ones; `-nostdinc` disables default
+system discovery; `--sysroot=DIR` redirects target-default header roots.
+`-D`, `-U` and the implicit `-E` are supported as before. Other CPP
+switches fail with a clear error rather than being silently ignored.
+OS arguments are passed directly to the internal library without shell
+interpretation. On hosted Linux, the preprocessor's path discovery may query
+the host C compiler for its resource-header directory; it does not use that
+compiler to preprocess the source.
 
 ## Conformance gate
 

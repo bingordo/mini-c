@@ -23,6 +23,11 @@ const MAX_SOURCE_BYTES: usize = 16 * 1024 * 1024;
 /// This function never launches an external C preprocessor or shell.
 pub fn file(path: &Path, args: &[std::ffi::OsString]) -> Result<String, String> {
     let mut opts = rcc_session::Options::default();
+    // Hosted-mode include discovery is done by the adapter, not by
+    // rcc_session::Options::default(): the latter intentionally starts
+    // with no system include roots. Keep user -isystem directories ahead
+    // of the discovered target/host defaults.
+    let mut no_stdinc = false;
     // GCC applies -D and -U in command-line order. The pinned rcc Options
     // instead processes every -D before every -U, so normalize each name to
     // its final operation before passing it into the independent engine.
@@ -31,6 +36,24 @@ pub fn file(path: &Path, args: &[std::ffi::OsString]) -> Result<String, String> 
     for arg in args {
         let arg = arg.to_str().ok_or("internal preprocessor needs UTF-8 option values")?;
         if arg == "-E" {
+            continue;
+        }
+        if arg == "-nostdinc" {
+            no_stdinc = true;
+            continue;
+        }
+        if let Some(dir) = arg.strip_prefix("--sysroot=") {
+            if dir.is_empty() {
+                return Err("internal --sysroot requires a directory".into());
+            }
+            opts.sysroot = Some(PathBuf::from(dir));
+            continue;
+        }
+        if let Some(dir) = arg.strip_prefix("-isystem") {
+            if dir.is_empty() {
+                return Err("internal -isystem requires a directory".into());
+            }
+            opts.system_include_paths.push(PathBuf::from(dir));
             continue;
         }
         if let Some(dir) = arg.strip_prefix("-I") {
@@ -56,6 +79,13 @@ pub fn file(path: &Path, args: &[std::ffi::OsString]) -> Result<String, String> 
                 "unsupported internal preprocessor option {arg:?}; use --cpp=cc for this switch"
             ));
         }
+    }
+    if !no_stdinc {
+        opts.system_include_paths.extend(
+            rcc_preprocess::include::discover_system_include_paths(
+                &opts.target, opts.sysroot.as_deref(),
+            ),
+        );
     }
     for (name, action) in macro_actions {
         match action {
@@ -205,6 +235,77 @@ mod tests {
             OsString::from("header.h")];
         assert!(file(Path::new("/unused/source.c"), &args).unwrap_err()
             .contains("unsupported internal preprocessor option"));
+    }
+
+    #[test]
+    fn isystem_include_directory_is_used_after_project_include_paths() {
+        let dir = std::env::temp_dir().join(format!(
+            "mini-c-rcc-isystem-{}-{}", std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let user = dir.join("user");
+        let system = dir.join("system");
+        std::fs::create_dir_all(&user).unwrap();
+        std::fs::create_dir_all(&system).unwrap();
+        std::fs::write(user.join("values.h"), "int user_header;\n").unwrap();
+        std::fs::write(system.join("values.h"), "int system_header;\n").unwrap();
+        std::fs::write(system.join("system_only.h"), "#define FROM_SYSTEM 42\n").unwrap();
+        let root = dir.join("root.c");
+        std::fs::write(&root,
+            "#include <values.h>\n#include <system_only.h>\nint value = FROM_SYSTEM;\n"
+        ).unwrap();
+        let result = file(&root, &[
+            OsString::from("-E"),
+            OsString::from(format!("-I{}", user.display())),
+            OsString::from(format!("-isystem{}", system.display())),
+            OsString::from("-nostdinc"),
+        ]);
+        let _ = std::fs::remove_dir_all(dir);
+        let output = result.unwrap();
+        assert!(output.contains("user_header"), "{output}");
+        assert!(!output.contains("system_header"), "{output}");
+        assert!(output.contains("42"), "{output}");
+    }
+
+    #[test]
+    fn hosted_linux_system_stdio_header_is_discovered() {
+        // This is a preprocessor-only smoke test; Mini-C's C frontend
+        // may still reject language constructs in the unmodified header.
+        if !cfg!(target_os = "linux") || !Path::new("/usr/include/stdio.h").is_file() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!(
+            "mini-c-rcc-host-stdio-{}-{}", std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.join("main.c");
+        std::fs::write(&root, "#include <stdio.h>\nint main(void) { return 0; }\n").unwrap();
+        let result = file(&root, &[OsString::from("-E")]);
+        let _ = std::fs::remove_dir_all(dir);
+        let output = result.unwrap();
+        assert!(output.contains("printf"), "stdio declarations missing");
+        assert!(output.contains("main"), "user source lost");
+    }
+
+    #[test]
+    fn nostdinc_skips_implicit_system_header_search() {
+        if !cfg!(target_os = "linux") || !Path::new("/usr/include/stdio.h").is_file() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!(
+            "mini-c-rcc-no-stdinc-{}-{}", std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.join("main.c");
+        std::fs::write(&root, "#include <stdio.h>\n").unwrap();
+        let result = file(&root, &[
+            OsString::from("-E"), OsString::from("-nostdinc"),
+        ]);
+        let _ = std::fs::remove_dir_all(dir);
+        let failure = result.unwrap_err();
+        assert!(failure.contains("stdio.h"), "{failure}");
     }
 
     #[test]

@@ -34,6 +34,19 @@ impl CppOptions {
         } else if let Some(value) = arg.strip_prefix("--cpp-arg=") {
             if value.is_empty() { return Err("--cpp-arg requires a value".into()); }
             self.arguments.push(value.into());
+        } else if arg == "-nostdinc" {
+            self.arguments.push(arg.into());
+        } else if matches!(arg, "-isystem" | "--sysroot") {
+            let value = remaining.next().ok_or_else(|| format!("{arg} requires a directory"))?;
+            if value.is_empty() { return Err(format!("{arg} requires a directory")); }
+            let joined = if arg == "--sysroot" {
+                format!("{arg}={value}")
+            } else {
+                format!("{arg}{value}")
+            };
+            self.arguments.push(joined.into());
+        } else if arg.starts_with("-isystem") || arg.starts_with("--sysroot=") {
+            self.arguments.push(arg.into());
         } else if matches!(arg, "-I" | "-D" | "-U") {
             let value = remaining.next().ok_or_else(|| format!("{arg} requires a value"))?;
             if value.is_empty() { return Err(format!("{arg} requires a nonempty value")); }
@@ -49,7 +62,7 @@ impl CppOptions {
     pub fn finish(self) -> Result<Option<Config>, String> {
         if self.executable.is_none() && self.arguments.len() != 1 {
             return Err(
-                "preprocessor options -I/-D/-U/--cpp-arg cannot be used with --cpp=none".into(),
+                "preprocessor options -I/-D/-U/-isystem/--sysroot/-nostdinc/--cpp-arg cannot be used with --cpp=none".into(),
             );
         }
         Ok(self.executable.map(|executable| Config {
@@ -77,6 +90,19 @@ mod tests {
             "-E", "-Iinclude dir", "-DWITH=1", "-UOLD", "-undef",
             "-DTEXT=x;$(touch /tmp/never)",
         ].into_iter().map(OsString::from).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn accepts_system_header_root_options_without_shell() {
+        let mut cpp = CppOptions::default();
+        let mut args = ["my system headers".to_string(), "/tmp/test root".to_string()].into_iter();
+        for arg in ["-isystem", "--sysroot", "-nostdinc", "-Iproject"] {
+            assert!(cpp.consume(arg, &mut args).unwrap());
+        }
+        assert_eq!(cpp.finish().unwrap().unwrap().args,
+            vec!["-E", "-isystemmy system headers", "--sysroot=/tmp/test root",
+                 "-nostdinc", "-Iproject"].into_iter().map(OsString::from)
+                .collect::<Vec<_>>());
     }
 
     #[test]
