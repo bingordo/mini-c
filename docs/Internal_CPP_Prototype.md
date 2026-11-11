@@ -36,14 +36,24 @@ It is now a permanent scheduled/manual validation gate in
 The unmodified musl `strcmp.c` using host `<string.h>` was also checked and
 emitted as an ELF object with internal preprocessing in
 [compiler-ci #42934545452](https://github.com/bingordo/compiler-ci/actions/runs/42934545452).
-A further audit of 11 unmodified musl string/memory sources found 5 passing
-the current checked frontend, 5 failing in frontend type/name/extension
-handling, and one preprocessing rejection: `strcasestr.c` defines
-`_GNU_SOURCE` after the driver supplies `-D_GNU_SOURCE`. A narrow GNU
-compatibility exception now warns instead of rejecting this exact
-command-line feature-test redefinition; unrelated macro redefinitions
-remain strict errors (pending CI verification). Broader real-source and
-cross-distribution coverage is still needed.
+An audit of 11 unmodified musl S10 string/memory implementations now
+finds **6 passing the checked frontend** via `--cpp=internal -D_GNU_SOURCE`:
+`memcmp`, `memchr`, `strcat`, `strcmp`, `strcpy`, and `strcasestr`.
+The sixth was enabled by [Mini-C PR #131](https://github.com/bingordo/mini-c/pull/131):
+upstream `strcasestr.c` redefines `_GNU_SOURCE` already supplied by
+`-D_GNU_SOURCE`. This one command-line feature-test redefinition now emits
+a warning rather than a fatal error; unrelated macro redefinitions remain
+strict errors. The change and original `strcasestr.c` check passed
+[compiler-ci #42951222617](https://github.com/bingordo/compiler-ci/actions/runs/42951222617).
+
+The six passing files are permanent regression gates in
+[compiler-ci PR #349](https://github.com/bingordo/compiler-ci/pull/349);
+[compiler-ci #42951414886](https://github.com/bingordo/compiler-ci/actions/runs/42951414886)
+passed the complete scheduled validation including this new gate. The five
+remaining files (`memmove`, `memcpy`, `memset`, `strchr`, `strcasecmp`)
+currently fail in checker type/name/extension handling, not reported as
+internal CPP failures. These are not silently counted as passing.
+Broader real-source and cross-distribution coverage is still needed.
 The external `cc -E` path remains the default fallback; F5 is deferred and
 Csmith end-to-end checks are planned separately under #116.
 
