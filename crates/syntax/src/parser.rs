@@ -98,6 +98,14 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Peek past the cached token without consuming it or changing typedef scopes.
+    /// C labels use their own namespace even when spelled as typedef names.
+    fn followed_by_colon(&mut self) -> Result<bool, Diagnostic> {
+        self.peek()?;
+        let mut probe = self.scanner.clone();
+        Ok(probe.next_token(Some(&self.scopes))?.is_some_and(|token| token.text == ":"))
+    }
+
     // A missing token belongs at the actual end of input, not byte zero.
     // In particular this must handle UTF-8 source preceding a truncated item.
     fn eof_span(&self) -> Span {
@@ -1076,6 +1084,16 @@ impl<'a> Parser<'a> {
         match token.text {
             "{" => Ok(self.parse_block()?.0),
             ";" => { self.take()?; Ok(Stmt::Expr(None)) },
+            "goto" => {
+                self.take()?;
+                let target = self.take()?.ok_or_else(||
+                    Diagnostic::new(self.eof_span(), "goto requires a label identifier"))?;
+                if !matches!(target.kind, TokenKind::Identifier | TokenKind::TypedefName) {
+                    return Err(Diagnostic::new(target.span, "goto requires a label identifier"));
+                }
+                self.expect(";")?;
+                Ok(Stmt::Goto { target: target.text.to_owned(), span: target.span })
+            }
             "return" => {
                 self.take()?;
                 let value = if self.peek()?.is_some_and(|t| t.text == ";") { None } else { Some(self.parse_expr()?) };
@@ -1183,6 +1201,23 @@ impl<'a> Parser<'a> {
             "struct" | "union" | "enum" => self.parse_tag_or_decl(),
             "int" | "_Bool" | "char" | "short" | "long" | "_Float128" | "float" | "double" | "void" | "unsigned" | "signed"
                 | "const" | "restrict" | "__restrict" | "__restrict__" => Ok(Stmt::Decl(self.parse_decl(false)?)),
+            _ if matches!(token.kind, TokenKind::Identifier | TokenKind::TypedefName)
+                && self.followed_by_colon()? => {
+                let name = self.take()?.expect("peeked label");
+                self.expect(":")?;
+                // ISO C99 permits labels on statements, not declarations.
+                if self.peek()?.is_some_and(|next| matches!(next.text,
+                    "typedef" | "static" | "extern" | "register" | "struct" | "union" | "enum" |
+                    "int" | "_Bool" | "char" | "short" | "long" | "_Float128" |
+                    "float" | "double" | "void" | "unsigned" | "signed" |
+                    "const" | "restrict" | "__restrict" | "__restrict__")
+                    || next.kind == TokenKind::TypedefName && !self.followed_by_colon().unwrap_or(false))
+                {
+                    return Err(Diagnostic::new(name.span, "C99 label must precede a statement, not a declaration"));
+                }
+                Ok(Stmt::Label { name: name.text.to_owned(), span: name.span,
+                    body: Box::new(self.parse_stmt()?) })
+            }
             _ if token.kind == TokenKind::TypedefName => Ok(Stmt::Decl(self.parse_decl(false)?)),
             _ => { let expr = self.parse_expr()?; self.expect(";")?; Ok(Stmt::Expr(Some(expr))) }
         }
@@ -1218,7 +1253,8 @@ impl<'a> Parser<'a> {
                     | "long" | "_Float128" | "float" | "double" | "void"
                     | "unsigned" | "signed" | "const" | "restrict"
                     | "__restrict" | "__restrict__" => Some(false),
-                    _ if token.kind == TokenKind::TypedefName => Some(false),
+                    _ if token.kind == TokenKind::TypedefName
+                        && !self.followed_by_colon()? => Some(false),
                     _ => None,
                 };
                 if let Some(is_typedef) = declaration {
@@ -1557,6 +1593,24 @@ mod tests {
         fn function(&mut self, _: crate::ast::Function) -> Result<(), Self::Error> {
             unreachable!()
         }
+    }
+
+    #[test]
+    fn c99_goto_and_labels_preserve_forward_references() {
+        let item = Parser::new("int f(void) { start: ; goto done; done: return 0; }")
+            .next_item().unwrap().unwrap();
+        let ExternalItem::Function(function) = item else { panic!("function expected") };
+        let Stmt::Block(stmts) = function.body else { panic!("block expected") };
+        assert!(matches!(&stmts[0], Stmt::Label { name, .. } if name == "start"));
+        assert!(matches!(&stmts[1], Stmt::Goto { target, .. } if target == "done"));
+        assert!(matches!(&stmts[2], Stmt::Label { name, .. } if name == "done"));
+
+        let mut parser = Parser::new("typedef int T; int f(void) { T: goto T; }");
+        parser.next_item().unwrap().unwrap();
+        let item = parser.next_item().unwrap().unwrap();
+        let ExternalItem::Function(function) = item else { panic!("function expected") };
+        let Stmt::Block(stmts) = function.body else { panic!("block expected") };
+        assert!(matches!(&stmts[0], Stmt::Label { name, .. } if name == "T"));
     }
 
     #[test]
