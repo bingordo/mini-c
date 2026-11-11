@@ -494,9 +494,8 @@ impl Compiler {
         }
     }
 
-    /// A first, deliberately bounded native CFG slice. General labels nested
-    /// inside blocks/conditionals/loops and jumps across skipped local object
-    /// declarations need a wider scope/stack-slot lowering pass.
+    /// Discover user labels in control constructs. Native switch's
+    /// case/default lowering still needs its own general entry-edge plan.
     fn has_nested_label(stmt: &CheckedStmt) -> bool {
         match stmt {
             CheckedStmt::Label { .. } => true,
@@ -542,9 +541,10 @@ impl Compiler {
         }
     }
 
-    /// Source-order label collection, including nested lexical blocks. A
-    /// label under if/loop/switch still needs full cross-construct CFG entry
-    /// modeling; reject that form *before* creating any native functions.
+    /// Preallocate label blocks in lexical source order, regardless of
+    /// whether their containing control construct has a natural predecessor.
+    /// Labels within switch arms remain separately gated until native switch
+    /// handles arbitrary source-label entry without bypassing case dispatch.
     fn collect_native_labels(stmt: &CheckedStmt, ordered: &mut Vec<String>) -> Result<()> {
         match stmt {
             CheckedStmt::Label { name, body } => {
@@ -556,9 +556,24 @@ impl Compiler {
                     Self::collect_native_labels(stmt, ordered)?;
                 }
             }
-            _ if Self::has_nested_label(stmt) => {
-                return Err("native goto does not yet support labels nested in conditional, loop or switch control flow".into());
+            CheckedStmt::If { then, otherwise, .. } => {
+                Self::collect_native_labels(then, ordered)?;
+                if let Some(otherwise) = otherwise {
+                    Self::collect_native_labels(otherwise, ordered)?;
+                }
             }
+            CheckedStmt::While { body, .. } | CheckedStmt::DoWhile { body, .. } =>
+                Self::collect_native_labels(body, ordered)?,
+            CheckedStmt::For(for_loop) => {
+                if let Some(init) = &for_loop.init {
+                    Self::collect_native_labels(init, ordered)?;
+                }
+                Self::collect_native_labels(&for_loop.body, ordered)?;
+            }
+            CheckedStmt::Switch { body, .. } if Self::has_nested_label(body) =>
+                return Err("native goto labels inside switch arms are not yet supported".into()),
+            _ if Self::has_nested_label(stmt) =>
+                return Err("native goto labels inside switch arms are not yet supported".into()),
             _ => {}
         }
         Ok(())
@@ -1556,21 +1571,32 @@ impl Lower<'_> {
         }
     }
 
-    /// Does a nested compound contain a label targeted by any goto?
+    /// Does this subtree have a label targeted by a goto from any source?
+    /// Switch labels are rejected during the prepass until general native
+    /// switch-arm dispatch and goto entry are modeled together.
     fn contains_referenced_label(&self, stmt: &CheckedStmt) -> bool {
         match stmt {
             CheckedStmt::Label { name, body } =>
                 self.referenced_labels.contains(name) || self.contains_referenced_label(body),
             CheckedStmt::Block(stmts) => stmts.iter()
                 .any(|stmt| self.contains_referenced_label(stmt)),
-            _ => false, // other control constructs with labels fail planning
+            CheckedStmt::If { then, otherwise, .. } =>
+                self.contains_referenced_label(then)
+                    || otherwise.as_ref().is_some_and(|s| self.contains_referenced_label(s)),
+            CheckedStmt::While { body, .. } | CheckedStmt::DoWhile { body, .. } =>
+                self.contains_referenced_label(body),
+            CheckedStmt::For(for_loop) =>
+                for_loop.init.as_ref().is_some_and(|s| self.contains_referenced_label(s))
+                    || self.contains_referenced_label(&for_loop.body),
+            _ => false,
         }
     }
 
     /// Lower a lexical block even if it has no natural incoming fallthrough:
-    /// a goto may land on a label in one of its descendant compound blocks.
-    /// Dead declarations must still register their stack slots, but do not
-    /// execute initializers, default stores or other runtime side effects.
+    /// a goto may enter a label inside nested compounds or control constructs.
+    /// Dead declarations still register storage, but never execute initializers
+    /// or default stores. Unreachable control entries are kept disconnected
+    /// from normal execution while their nested label blocks remain reachable.
     fn lower_block(
         &mut self, b: &mut FunctionBuilder<'_>,
         stmts: &[CheckedStmt], mut live: bool,
@@ -1595,6 +1621,18 @@ impl Lower<'_> {
                     }
                     CheckedStmt::Block(inner) if self.contains_referenced_label(tail) => {
                         live = self.lower_block(b, inner, false)?;
+                    }
+                    CheckedStmt::If { .. } | CheckedStmt::While { .. }
+                    | CheckedStmt::DoWhile { .. } | CheckedStmt::For(_)
+                        if self.contains_referenced_label(tail) =>
+                    {
+                        // The source entry of this construct was skipped by a
+                        // return/goto. Emit a disconnected entry block for
+                        // the ordinary condition/init edges; incoming gotos
+                        // can only enter at explicit nested label blocks.
+                        let dead_entry = b.create_block();
+                        b.switch_to_block(dead_entry);
+                        live = self.statement(b, tail)?;
                     }
                     _ => {}
                 }
@@ -1628,8 +1666,16 @@ impl Lower<'_> {
                 b.ins().jump(block, &[]);
                 Ok(false)
             }
-            CheckedStmt::Label { .. } =>
-                Err("native goto label must be a direct function-body statement".into()),
+            CheckedStmt::Label { name, body } => {
+                // Direct label child of if/while/do/for. Compound-statement
+                // label chains are handled by lower_block, which can resume
+                // after a preceding terminator.
+                let target = *self.labels.get(name)
+                    .ok_or_else(|| format!("unplanned native label '{name}'"))?;
+                b.ins().jump(target, &[]);
+                b.switch_to_block(target);
+                self.statement(b, body)
+            },
             CheckedStmt::Decl(CheckedDecl { name, ty, storage, initializer, .. }) => {
                 if !matches!(*storage, StorageClass::Default | StorageClass::Register) {
                     return Err(format!("M2.5 does not emit storage-class local '{name}'"));
@@ -1809,10 +1855,24 @@ mod tests {
     }
 
     #[test]
-    fn native_goto_rejects_control_construct_labels() {
-        let source = "int f(int x) { goto done; if(x) { done: return 2; } return 0; }";
-        let error = compile_source(source).expect_err("unsupported goto must reject");
-        assert!(error.contains("labels nested in conditional"), "{error}");
+    fn native_goto_supports_nested_if_and_loop_labels() {
+        for source in [
+            "int f(int x) { goto done; if(x) { done: return 2; } return 0; }",
+            "int f(int x) { if(x) here: return 3; goto here; }",
+            "int f(void) { goto here; while(0) { here: return 3; } return 0; }",
+            "int f(void) { goto here; do { here: return 4; } while(0); return 0; }",
+            "int f(void) { goto here; for(int i=0;i<2;i++) { here: i=1; break; } return 5; }",
+            "int f(void) { if(1) goto here; while(0) { here: break; } return 3; }",
+        ] {
+            compile_source(source).unwrap_or_else(|why| panic!("{why}: {source}"));
+        }
+    }
+
+    #[test]
+    fn native_goto_rejects_labels_inside_switch_arms() {
+        let source = "int f(int x) { goto done; switch(x) {case 1: done: return 2; default: return 0;} }";
+        let error = compile_source(source).expect_err("unsupported switch goto must reject");
+        assert!(error.contains("labels inside switch arms"), "{error}");
     }
 
     #[test]
