@@ -2,7 +2,7 @@
 
 A small, embeddable Rust frontend for a deliberately limited subset of C, modeled in part on [bingundu/oberon](https://github.com/bingundu/oberon).
 
-**C99 frontend priorities:** The active source-audited roadmap is [C99 Frontend Plan](docs/C99_Frontend_Plan.md). F1 and practical F2/F3/F4 work continue; **F5 advanced numeric/lexical work is deferred**, while completing the internal C99 preprocessor is an active P0 milestone ([CPP-C99 #110](https://github.com/bingordo/mini-c/issues/110), slices #111–#114). Parser/semantic C99 coverage and CPP conformance are tracked independently of native and Cranelift codegen.
+**C99 frontend priorities:** The active source-audited roadmap is [C99 Frontend Plan](docs/C99_Frontend_Plan.md). **F1–F4 practical C frontend functionality is the active priority**, including switch/_Bool and real-source expression/type support. **F5 advanced numeric/lexical work remains deferred.** The internal preprocessor is the pragmatic driver default after [#138](https://github.com/bingordo/mini-c/pull/138); further CPP-C99 conformance/resource work under [#110](https://github.com/bingordo/mini-c/issues/110)–#114 is nonblocking follow-up. Parser/semantic C99 coverage and CPP conformance are tracked independently of native and Cranelift codegen.
 
 ## Implemented functionality
 
