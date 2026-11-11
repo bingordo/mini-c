@@ -130,7 +130,7 @@ fn hosted_target_integer_predefines_match_gcc_and_clang() {
     // and type; compare ABI integer values rather than textual spelling.
     fn literal_value(tokens: &[String]) -> u128 {
         assert_eq!(tokens.len(), 1, "expected one integer literal: {tokens:?}");
-        let literal = tokens[0].trim_end_matches(|c: char| matches!(c, 'u' | 'U' | 'l' | 'L'));
+        let literal = tokens[0].trim_end_matches(['u', 'U', 'l', 'L']);
         if let Some(hex) = literal.strip_prefix("0x").or_else(|| literal.strip_prefix("0X")) {
             u128::from_str_radix(hex, 16).expect("hex macro value")
         } else {
