@@ -901,7 +901,7 @@ impl Lower<'_> {
         // _Bool conversion is truth-value normalization, not integer
         // truncation: both 2 and 256 must become 1, never 2 or 0.
         if matches!(to.unqualified(), CType::Integer { rank: IntRank::Bool, .. }) {
-            let nonzero = b.ins().icmp_imm(IntCC::NotEqual, value, 0);
+            let nonzero = b.ins().icmp_imm_s(IntCC::NotEqual, value, 0);
             let one = b.ins().iconst(types::I8, 1);
             let zero = b.ins().iconst(types::I8, 0);
             return Ok(b.ins().select(nonzero, one, zero));
