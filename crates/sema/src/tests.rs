@@ -2001,7 +2001,7 @@ fn c99_sizeof_named_aggregate_type_name_uses_visible_tag() {
     check("struct A { int x; }; int f(void) { \
         struct A { long y; }; return sizeof(struct A) == 8; }").unwrap();
     reject("struct Forward; int f(void) { return sizeof(struct Forward); }",
-        "complete object type");
+        "incomplete struct, union or enum tag");
     reject("int f(void) { return sizeof(struct Missing); }",
         "unknown aggregate tag");
 }
