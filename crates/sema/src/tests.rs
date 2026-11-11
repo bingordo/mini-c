@@ -101,6 +101,24 @@ fn scoping_and_shadowing() {
 }
 
 #[test]
+fn c99_function_scope_goto_labels_and_constraints() {
+    let items = check("int f(int x) { goto done; x = 99; { done: return x; } }")
+        .expect("forward goto and nested label");
+    let CheckedItem::Function(function) = &items[0] else { panic!("expected function") };
+    let CheckedStmt::Block(stmts) = &function.body else { panic!("expected body") };
+    assert!(matches!(&stmts[0], CheckedStmt::Goto { target } if target == "done"));
+    assert!(matches!(&stmts[2], CheckedStmt::Block(nested)
+        if matches!(&nested[0], CheckedStmt::Label { name, .. } if name == "done")));
+
+    // C has separate label and typedef namespaces.
+    check("typedef int T; int f(void) { goto T; { T: return 1; } }").unwrap();
+    check("int f(void) { again: goto again; } int g(void) { again: return 0; }").unwrap();
+    reject("int f(void) { goto missing; return 0; }", "undefined label");
+    reject("int f(void) { x: ; { x: ; } return 0; }", "duplicate label");
+    reject("int f(void) { goto x; } int g(void) { x: return 0; }", "undefined label");
+}
+
+#[test]
 fn return_and_control_flow_legality() {
     check("void run(void) { int x = 2; while (x) { x = x - 1; if (x) continue; break; } return; }").unwrap();
     reject("void f(void) { return 3; }", "void function cannot return a value");
