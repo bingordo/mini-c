@@ -1662,6 +1662,12 @@ impl Checker {
                 let value = self.check_expr(operand, span)?.rvalue();
                 match &dest {
                     CType::Integer { .. } if value.ty.is_integer() => {},
+                    // C99 6.3.2.3 permits explicit pointer-to-integer casts.
+                    // The resulting integer is implementation-defined; on
+                    // our current LP64 target the checked IR preserves an
+                    // explicit Convert, which Cranelift lowers as a same-width
+                    // bit-pattern conversion (or integer truncation).
+                    CType::Integer { .. } if matches!(value.ty.unqualified(), CType::Pointer(_)) => {},
                     CType::Pointer(_) if matches!(value.ty.unqualified(), CType::Pointer(_)) => {},
                     CType::Pointer(_) if value.ty.is_integer()
                         && const_eval::evaluate(&value, self.target) == Ok(0) => {},
