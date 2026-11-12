@@ -1400,12 +1400,24 @@ impl<'a> Parser<'a> {
                     // named function member or unsupported bit-field admitted.
                     let first = members.len();
                     loop {
+                        let unnamed_bitfield = self.peek()?.is_some_and(|t| t.text == ":");
                         let (name, ty, params, name_span) =
-                            self.parse_declarator_shape(false)?.finish(base.clone());
+                            if unnamed_bitfield {
+                                (String::new(), base.clone(), None, None)
+                            } else {
+                                self.parse_declarator_shape(false)?.finish(base.clone())
+                            };
                         if params.is_some() || matches!(ty, Type::Function { .. } | Type::VariadicFunction { .. }) {
                             return Err(Diagnostic::new(Span { lo: start, hi: start },
                                 "struct member cannot have function type"));
                         }
+                        let ty = if self.peek()?.is_some_and(|t| t.text == ":") {
+                            self.take()?;
+                            let width = self.parse_assign()?;
+                            Type::BitField(Box::new(ty), Box::new(width))
+                        } else {
+                            ty
+                        };
                         members.push(Decl {
                             storage: StorageClass::Default, name, name_span, ty,
                             asm_label: None, init: None,
