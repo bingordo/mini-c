@@ -187,6 +187,10 @@ pub enum Expr {
     Assign(Box<Expr>, Box<Expr>),
     /// C comma operator, evaluated left to right with the value of the right operand.
     Comma(Box<Expr>, Box<Expr>),
+    /// C99 compound literal: an addressable object with the named type and
+    /// initializer-list. Its lifetime is the enclosing block at block scope,
+    /// unlike a cast, which yields a non-lvalue.
+    CompoundLiteral(Type, Box<Expr>),
     /// Explicit C scalar cast; the type name is resolved during semantic analysis.
     Cast(Type, Box<Expr>),
     /// C conditional operator, evaluating only the selected arm.
