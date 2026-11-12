@@ -63,7 +63,7 @@ fn c99_pointer_difference_is_signed_element_count_with_strict_pointee_constraint
 #[test]
 fn c99_designated_initializer_single_level_types_order_and_bounds() {
     let result = check(concat!(
-        "struct S { int a,b,c; };",
+        "struct S { int a; int b; int c; };",
         "struct S s = {.c=7, .a=3, .b=9};",
         "int numbers[] = {[4]=5, [1]=2, 8};",
         "int f(void) { struct S local={.b=4, .a=1}; return local.a+local.b; }",
@@ -79,7 +79,7 @@ fn c99_designated_initializer_single_level_types_order_and_bounds() {
     check("int f(void) { int a[9]={[8]=2,[1]=3}; return a[8]+a[1]; }").unwrap();
     check("union U { int a; long b; }; union U u={.b=9};").unwrap();
     check(concat!(
-        "struct Inner {int left,right;}; struct Outer {struct Inner inner; int count;};",
+        "struct Inner {int left; int right;}; struct Outer {struct Inner inner; int count;};",
         "struct Outer o={.count=7, .inner={.right=3, .left=1}};"
     )).unwrap();
     check("enum E { FIVE=5 }; int a[8]={[FIVE]=7};").unwrap();
