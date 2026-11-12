@@ -250,10 +250,37 @@
       "id": "compound-literal-static",
       "feature": "F3",
       "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_file_scope_compound_literals_have_unique_static_objects_and_checked_initializers",
+      "source": "int *global = (int[]){@N@,2};"
+    },
+    {
+      "id": "compound-literal-static-pointer",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_file_scope_compound_literals_have_unique_static_objects_and_checked_initializers",
+      "source": "int *p=&(int){@N@}; int f(void){return *p;}"
+    },
+    {
+      "id": "compound-literal-static-nested",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_file_scope_compound_literals_have_unique_static_objects_and_checked_initializers",
+      "source": "struct S{int *p;};struct S s={.p=(int[]){@N@,2}};"
+    },
+    {
+      "id": "compound-literal-inline-anonymous-type",
+      "feature": "F3",
+      "expect": "accept",
       "mini": "gap",
       "kind": "valid",
       "test_ref": "docs/C99_Frontend_Plan.md:F3",
-      "source": "int *global = (int[]){@N@,2};"
+      "source": "int f(void){return ((struct {int a;}){.a=@N@}).a;}"
     },
     {
       "id": "vla-auto",
