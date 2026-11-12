@@ -1507,7 +1507,9 @@ impl Checker {
                 CheckedExprKind::Unary(UnOp::Address, inner) |
                 CheckedExprKind::ArrayDecay(inner) =>
                     Self::static_compound_lvalue(inner),
-                _ => false,
+                // Static array compound literals decay only after this
+                // validator; the raw checked expression is still an lvalue.
+                _ => Self::static_compound_lvalue(constant),
             };
             if !null && !address_of_global && !static_compound_address {
                 return Err(type_error(span, "pointer initializer requires a null constant or address of global symbol"));
