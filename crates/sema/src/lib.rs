@@ -43,6 +43,11 @@ pub enum CheckedExprKind {
     /// Its initializer runs when control evaluates this expression; each
     /// syntactic occurrence owns its own stack storage.
     CompoundLiteral(Box<CheckedExpr>),
+    /// File-scope C99 compound literal with static storage duration. The
+    /// private symbol uniquely identifies the object across initializers;
+    /// unlike an automatic literal, this object must be emitted into ELF
+    /// data, not materialized in a stack slot on evaluation.
+    StaticCompoundLiteral { symbol: String, initializer: Box<CheckedExpr> },
     Name(String),
     Unary(UnOp, Box<CheckedExpr>),
     Binary(BinOp, Box<CheckedExpr>, Box<CheckedExpr>),
@@ -207,6 +212,7 @@ struct SwitchContext {
 pub struct Checker {
     target: Target,
     next_tag_identity: Cell<u64>,
+    next_static_compound_identity: Cell<u64>,
     /// Independent tag namespace, parallel to ordinary identifier scopes.
     tags: RefCell<Vec<HashMap<String, TagEntry>>>,
     /// Stable definition lookup independent of currently visible shadowing tags.
@@ -231,7 +237,7 @@ pub struct Checker {
 
 impl Checker {
     pub fn new(target: Target) -> Result<Self, Diagnostic> {
-        Ok(Self { target: target.validate()?, next_tag_identity: Cell::new(1), tags: RefCell::new(vec![HashMap::new()]), tag_definitions: RefCell::new(HashMap::new()), globals: HashMap::new(), locals: Vec::new(), result_ty: None, loop_depth: 0, switches: Vec::new(), function_labels: HashMap::new(), rollback_log: None, statement_undo: Vec::new(),
+        Ok(Self { target: target.validate()?, next_tag_identity: Cell::new(1), next_static_compound_identity: Cell::new(1), tags: RefCell::new(vec![HashMap::new()]), tag_definitions: RefCell::new(HashMap::new()), globals: HashMap::new(), locals: Vec::new(), result_ty: None, loop_depth: 0, switches: Vec::new(), function_labels: HashMap::new(), rollback_log: None, statement_undo: Vec::new(),
             recovery_errors: None, recovery_limit: 0 })
     }
 
@@ -1440,6 +1446,18 @@ impl Checker {
         Ok(typed)
     }
 
+    /// Only file-scope compound literal objects can contribute static
+    /// object addresses to another file-scope pointer initializer. A block
+    /// compound literal is automatic even inside a block-scope static
+    /// declaration; its address cannot be a static initializer.
+    fn static_compound_lvalue(expr: &CheckedExpr) -> bool {
+        match &expr.kind {
+            CheckedExprKind::StaticCompoundLiteral { .. } => true,
+            CheckedExprKind::Member(base, _) => Self::static_compound_lvalue(base),
+            _ => false,
+        }
+    }
+
     fn validate_static_initializer(
         &self, expression: &CheckedExpr, original: &Expr, ty: &CType, span: Span
     ) -> Result<(), Diagnostic> {
@@ -1485,7 +1503,15 @@ impl Checker {
                     if matches!(element.as_ref(), CType::Integer { rank: IntRank::Char, .. } | CType::Void)),
                 _ => false,
             };
-            if !null && !address_of_global {
+            let static_compound_address = match &constant.kind {
+                CheckedExprKind::Unary(UnOp::Address, inner) |
+                CheckedExprKind::ArrayDecay(inner) =>
+                    Self::static_compound_lvalue(inner),
+                // Static array compound literals decay only after this
+                // validator; the raw checked expression is still an lvalue.
+                _ => Self::static_compound_lvalue(constant),
+            };
+            if !null && !address_of_global && !static_compound_address {
                 return Err(type_error(span, "pointer initializer requires a null constant or address of global symbol"));
             }
         }
@@ -1705,13 +1731,6 @@ impl Checker {
             Expr::Initializer(_) | Expr::Designated { .. } => Err(type_error(span,
                 "brace initializer is only valid in an object declaration")),
             Expr::CompoundLiteral(type_name, initializer) => {
-                if self.result_ty.is_none() {
-                    // File-scope compound literals require static storage and
-                    // a separate anonymous ELF data symbol. Do not turn
-                    // them into temporary stack objects or lose relocations.
-                    return Err(type_error(span,
-                        "file-scope compound literal static storage is not yet supported"));
-                }
                 if !matches!(initializer.without_location(), Expr::Initializer(_)) {
                     return Err(type_error(span,
                         "compound literal requires braced initializer list"));
@@ -1726,11 +1745,24 @@ impl Checker {
                     return Err(type_error(span,
                         "compound literal requires a complete object type"));
                 }
-                let value = self.check_object_initializer(initializer, &ty, span, false)?;
-                Ok(CheckedExpr {
-                    ty, category: Category::LValue,
-                    kind: CheckedExprKind::CompoundLiteral(Box::new(value)),
-                })
+                let static_storage = self.result_ty.is_none();
+                let value = self.check_object_initializer(initializer, &ty, span, static_storage)?;
+                let kind = if static_storage {
+                    // Checker::check_expr is read-only by design, so allocate
+                    // per-occurrence IDs using the same Cell pattern as tag
+                    // identities. The prefix contains '.' and cannot collide
+                    // with a valid C source identifier.
+                    let id = self.next_static_compound_identity.get();
+                    self.next_static_compound_identity.set(id.checked_add(1)
+                        .ok_or_else(|| type_error(span, "too many static compound literals"))?);
+                    CheckedExprKind::StaticCompoundLiteral {
+                        symbol: format!(".Lmini_c_compound_{id}"),
+                        initializer: Box::new(value),
+                    }
+                } else {
+                    CheckedExprKind::CompoundLiteral(Box::new(value))
+                };
+                Ok(CheckedExpr { ty, category: Category::LValue, kind })
             },
             Expr::StringLiteral(bytes) => {
                 let len = u64::try_from(bytes.len())

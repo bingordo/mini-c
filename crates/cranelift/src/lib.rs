@@ -79,13 +79,13 @@ struct PendingFunction {
 
 #[derive(Clone)]
 enum RelocationSource {
-    Object(String),
+    Object(String, i64),
     Literal(Vec<u8>),
 }
 
 #[derive(Clone)]
 enum RelocationTarget {
-    Object(String),
+    Object(String, i64),
     Literal(DataId),
 }
 
@@ -94,7 +94,7 @@ struct KnownData {
     ty: CType,
     linkage: Linkage,
     initialized: Option<Vec<u8>>,
-    address_of: Option<String>,
+    address_of: Option<(String, i64)>,
     string_address: Option<DataId>,
     /// Multiple pointer fields can carry independent ELF data relocations.
     aggregate_relocations: Vec<(u32, RelocationTarget)>,
@@ -158,6 +158,24 @@ fn initializer_subobject(ty: &CType, path: &[usize]) -> Result<(CType, u64)> {
         current = next;
     }
     Ok((current.clone(), offset))
+}
+
+/// Resolve a checked constant-address lvalue, preserving an optional
+/// struct/union member displacement for ELF data relocations. Arrays decay
+/// to their first element (zero displacement). Only the checker can permit
+/// these operands into a static pointer initializer.
+fn static_object_address(expr: &CheckedExpr) -> Option<(String, i64)> {
+    match &expr.kind {
+        CheckedExprKind::Name(name) => Some((name.clone(), 0)),
+        CheckedExprKind::StaticCompoundLiteral { symbol, .. } =>
+            Some((symbol.clone(), 0)),
+        CheckedExprKind::Member(base, offset) => {
+            let (name, base_offset) = static_object_address(base)?;
+            let offset = i64::try_from(*offset).ok()?;
+            Some((name, base_offset.checked_add(offset)?))
+        }
+        _ => None,
+    }
 }
 
 /// Flatten a checked aggregate constant initializer into ELF bytes.
@@ -254,10 +272,14 @@ fn static_initializer_bytes(
                             CheckedExprKind::ArrayDecay(inner) => inner.as_ref(),
                             _ => return Err("aggregate pointer initializer requires constant address".into()),
                         };
-                        let target = match &target.kind {
-                            CheckedExprKind::Name(name) => RelocationSource::Object(name.clone()),
-                            CheckedExprKind::StringLiteral(bytes) => RelocationSource::Literal(bytes.clone()),
-                            _ => return Err("aggregate pointer initializer requires named object or string".into()),
+                        let target = if let Some((name, addend)) =
+                            static_object_address(target)
+                        {
+                            RelocationSource::Object(name, addend)
+                        } else if let CheckedExprKind::StringLiteral(bytes) = &target.kind {
+                            RelocationSource::Literal(bytes.clone())
+                        } else {
+                            return Err("aggregate pointer initializer requires constant object address".into());
                         };
                         let offset = u32::try_from(offset)
                             .map_err(|_| "aggregate relocation offset overflow")?;
@@ -389,7 +411,49 @@ impl Compiler {
         Ok(id)
     }
 
+    /// Discover anonymous static compound literals in a checked initializer
+    /// before packing bytes/relocations for the containing global. Each
+    /// expression occurrence receives one private data symbol from sema,
+    /// independent of identical initializer contents or other declarations.
+    fn register_static_compounds(&mut self, expr: &CheckedExpr) -> Result<()> {
+        match &expr.kind {
+            CheckedExprKind::StaticCompoundLiteral { symbol, initializer } => {
+                if !self.data.contains_key(symbol) {
+                    self.declare_object(CheckedDecl {
+                        name: symbol.clone(),
+                        storage: StorageClass::Static,
+                        ty: expr.ty.clone(),
+                        linkage: Linkage::Internal,
+                        asm_label: None,
+                        initializer: Some((**initializer).clone()),
+                        span: Default::default(),
+                    })?;
+                }
+            }
+            CheckedExprKind::Initializer(values) => {
+                for value in values { self.register_static_compounds(value)?; }
+            }
+            CheckedExprKind::SparseInitializer(values) => {
+                for (_, value) in values { self.register_static_compounds(value)?; }
+            }
+            CheckedExprKind::DeepInitializer(values) => {
+                for (_, value) in values { self.register_static_compounds(value)?; }
+            }
+            CheckedExprKind::ArrayDecay(inner) |
+            CheckedExprKind::Unary(_, inner) |
+            CheckedExprKind::Convert(inner) |
+            CheckedExprKind::Load(inner) |
+            CheckedExprKind::Member(inner, _) =>
+                self.register_static_compounds(inner)?,
+            _ => {}
+        }
+        Ok(())
+    }
+
     fn declare_object(&mut self, decl: CheckedDecl) -> Result<()> {
+        if let Some(init) = &decl.initializer {
+            self.register_static_compounds(init)?;
+        }
         let name = decl.name.clone();
         let mut address_of = None;
         let mut string_address = None;
@@ -402,7 +466,8 @@ impl Compiler {
             {
                 for (offset, source) in relocations {
                     let target = match source {
-                        RelocationSource::Object(name) => RelocationTarget::Object(name),
+                        RelocationSource::Object(name, addend) =>
+                            RelocationTarget::Object(name, addend),
                         RelocationSource::Literal(bytes) => RelocationTarget::Literal(
                             intern_string(&mut self.module, &mut self.strings, &bytes)?),
                     };
@@ -428,16 +493,18 @@ impl Compiler {
                             | CheckedExprKind::ArrayDecay(target) => Some(target.as_ref()),
                             _ => None,
                         };
-                        match target.map(|expr| &expr.kind) {
-                            Some(CheckedExprKind::Name(symbol)) => {
-                                address_of = Some(symbol.clone());
-                                0
-                            }
-                            Some(CheckedExprKind::StringLiteral(bytes)) => {
-                                string_address = Some(intern_string(&mut self.module, &mut self.strings, bytes)?);
-                                0
-                            }
-                            _ => return Err(format!("global initializer for '{name}' requires a null pointer or constant object address")),
+                        if let Some((symbol, addend)) =
+                            target.and_then(static_object_address)
+                        {
+                            address_of = Some((symbol, addend));
+                            0
+                        } else if let Some(CheckedExprKind::StringLiteral(bytes)) =
+                            target.map(|expr| &expr.kind)
+                        {
+                            string_address = Some(intern_string(&mut self.module, &mut self.strings, bytes)?);
+                            0
+                        } else {
+                            return Err(format!("global initializer for '{name}' requires a null pointer or constant object address"));
                         }
                     }
                 }
@@ -706,6 +773,10 @@ impl Compiler {
     /// the entire translation unit or update prior checked items.
     pub fn complete_file_object_types(&mut self, checker: &Checker) -> Result<()> {
         for (name, data) in &mut self.data {
+            // Anonymous C99 compound literals have no source-level name in
+            // the checker's global symbol table, and their object type was
+            // already completed and validated at the initializer site.
+            if name.starts_with(".Lmini_c_compound_") { continue; }
             let resolved = checker.completed_global_type(name)
                 .ok_or_else(|| format!("missing semantic declaration for global '{name}'"))?;
             data.ty = data.ty.composite(&resolved)
@@ -738,11 +809,14 @@ impl Compiler {
             // Cranelift expects alignment in bytes, unlike stack-slot log2 alignment.
             let alignment = data.ty.align_bytes(Target::default()).unwrap_or(1);
             desc.set_align(alignment);
-            if let Some(symbol) = &data.address_of {
+            if let Some((symbol, addend)) = &data.address_of {
                 if let Some(target) = self.data.get(symbol) {
                     let gv = self.module.declare_data_in_data(target.id, &mut desc);
-                    desc.write_data_addr(0, gv, 0);
+                    desc.write_data_addr(0, gv, *addend);
                 } else if let Some(target) = self.functions.get(symbol) {
+                    if *addend != 0 {
+                        return Err(format!("function address for '{name}' cannot have data addend"));
+                    }
                     let func = self.module.declare_func_in_data(target.id, &mut desc);
                     desc.write_function_addr(0, func);
                 } else {
@@ -754,11 +828,14 @@ impl Compiler {
             }
             for (offset, target) in &data.aggregate_relocations {
                 match target {
-                    RelocationTarget::Object(symbol) => {
+                    RelocationTarget::Object(symbol, addend) => {
                         if let Some(target) = self.data.get(symbol) {
                             let gv = self.module.declare_data_in_data(target.id, &mut desc);
-                            desc.write_data_addr(*offset, gv, 0);
+                            desc.write_data_addr(*offset, gv, *addend);
                         } else if let Some(target) = self.functions.get(symbol) {
+                            if *addend != 0 {
+                                return Err(format!("function address for '{name}' cannot have data addend"));
+                            }
                             let func = self.module.declare_func_in_data(target.id, &mut desc);
                             desc.write_function_addr(*offset, func);
                         } else {
@@ -1080,6 +1157,8 @@ impl Lower<'_> {
     fn place(&mut self, b: &mut FunctionBuilder<'_>, expr: &CheckedExpr) -> Result<Value> {
         match &expr.kind {
             CheckedExprKind::Name(name) => self.object_address(b, name),
+            CheckedExprKind::StaticCompoundLiteral { .. } =>
+                Err("file-scope compound literal cannot become an automatic stack object".into()),
             CheckedExprKind::CompoundLiteral(initializer) => {
                 // The C99 object is addressable for the entire enclosing
                 // block. Allocate one fixed stack slot at this expression
@@ -1231,6 +1310,8 @@ impl Lower<'_> {
                 Err("native floating-point literal code generation is unsupported".into()),
             CheckedExprKind::EnumConstant(n) => Ok(b.ins().iconst(scalar_type(&expr.ty)?, *n)),
             CheckedExprKind::StringLiteral(_) | CheckedExprKind::Member(..) => self.place(b, expr),
+            CheckedExprKind::StaticCompoundLiteral { .. } =>
+                Err("static compound literal may not be evaluated as an automatic expression".into()),
             CheckedExprKind::CompoundLiteral(_) => {
                 let address = self.place(b, expr)?;
                 if matches!(expr.ty.unqualified(), CType::Array(..) |
