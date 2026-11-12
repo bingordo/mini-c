@@ -79,8 +79,8 @@ fn c99_designated_initializer_single_level_types_order_and_bounds() {
     check("int f(void) { int a[9]={[8]=2,[1]=3}; return a[8]+a[1]; }").unwrap();
     check("union U { int a; long b; }; union U u={.b=9};").unwrap();
     check(concat!(
-        "struct Inner {int left; int right;}; struct Outer {struct Inner inner; int count;};",
-        "struct Outer o={.count=7, .inner={.right=3, .left=1}};"
+        "struct Outer {int inner[2]; int count;};",
+        "struct Outer o={.count=7, .inner={[1]=3, [0]=1}};"
     )).unwrap();
     check("enum E { FIVE=5 }; int a[8]={[FIVE]=7};").unwrap();
 
