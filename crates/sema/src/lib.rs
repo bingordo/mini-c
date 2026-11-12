@@ -840,7 +840,9 @@ impl Checker {
                         .ok_or_else(|| type_error(span, "too many union initializers"))?,
                     CType::Array(element, Some(count)) => {
                         if u64::try_from(slot).map_or(true, |i| i >= *count) {
-                            return Err(type_error(span, "array designator index exceeds bound"));
+                            return Err(type_error(span, if has_designators {
+                                "array designator index exceeds bound"
+                            } else { "too many array initializers" }));
                         }
                         element.as_ref()
                     }
@@ -862,8 +864,9 @@ impl Checker {
                         "duplicate initializer target requires override handling"));
                 }
                 if !array && matches!(ty.unqualified(), CType::Union { .. }) && !entries.is_empty() {
-                    return Err(type_error(span,
-                        "multiple union member initializers require override handling"));
+                    return Err(type_error(span, if has_designators {
+                        "multiple union member initializers require override handling"
+                    } else { "union initializer selects only its first member" }));
                 }
                 let checked = self.check_object_initializer(input, element, span, is_static)?;
                 entries.push((slot, checked));
