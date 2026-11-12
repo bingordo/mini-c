@@ -840,7 +840,7 @@ impl Checker {
                     CType::Union { members, .. } => members.get(slot).map(|m| &m.ty)
                         .ok_or_else(|| type_error(span, "too many union initializers"))?,
                     CType::Array(element, Some(count)) => {
-                        if u64::try_from(slot).is_err_or(|i| i >= *count) {
+                        if u64::try_from(slot).map_or(true, |i| i >= *count) {
                             return Err(type_error(span, "array designator index exceeds bound"));
                         }
                         element.as_ref()
