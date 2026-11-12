@@ -1162,14 +1162,14 @@ impl Lower<'_> {
     ) -> Value {
         let raw = b.ins().load(types::I32, ir::MemFlagsData::new(), address, 0);
         let shifted = if shift == 0 { raw } else {
-            b.ins().ushr_imm(raw, i64::from(shift))
+            b.ins().ushr_imm_s(raw, i64::from(shift))
         };
         let mask = if width == 32 { u32::MAX } else { (1u32 << width) - 1 };
-        let value = b.ins().band_imm(shifted, i64::from(mask));
+        let value = b.ins().band_imm_s(shifted, i64::from(mask));
         if signed && width < 32 {
             let pad = i64::from(32 - width);
-            let high = b.ins().ishl_imm(value, pad);
-            b.ins().sshr_imm(high, pad)
+            let high = b.ins().ishl_imm_s(value, pad);
+            b.ins().sshr_imm_s(high, pad)
         } else {
             value
         }
@@ -1185,18 +1185,18 @@ impl Lower<'_> {
         let mask = if width == 32 { u32::MAX } else { (1u32 << width) - 1 };
         let word_mask = mask << shift;
         let old = b.ins().load(types::I32, ir::MemFlagsData::new(), address, 0);
-        let cleared = b.ins().band_imm(old, i64::from(!word_mask));
-        let truncated = b.ins().band_imm(value, i64::from(mask));
+        let cleared = b.ins().band_imm_s(old, i64::from(!word_mask));
+        let truncated = b.ins().band_imm_s(value, i64::from(mask));
         let shifted = if shift == 0 { truncated } else {
-            b.ins().ishl_imm(truncated, i64::from(shift))
+            b.ins().ishl_imm_s(truncated, i64::from(shift))
         };
         let packed = b.ins().bor(cleared, shifted);
         b.ins().store(ir::MemFlagsData::new(), packed, address, 0);
         // Avoid another memory load, but preserve the sign-extension rules.
         if signed && width < 32 {
             let pad = i64::from(32 - width);
-            let high = b.ins().ishl_imm(truncated, pad);
-            b.ins().sshr_imm(high, pad)
+            let high = b.ins().ishl_imm_s(truncated, pad);
+            b.ins().sshr_imm_s(high, pad)
         } else { truncated }
     }
 
