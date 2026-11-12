@@ -93,7 +93,48 @@ fn c99_designated_initializer_single_level_types_order_and_bounds() {
     reject("int a[9]={[1.5]=3};", "integer constant expression");
     reject("int a[9]={.field=3};", "field designator requires");
     reject("struct S {int a;}; struct S s={[0]=3};", "array designator requires");
-    reject("int a[5]={[1][2]=3};", "nested designator paths are not yet supported");
+    check("int a[2][3]={[1][2]=3};").unwrap();
+}
+
+#[test]
+fn c99_nested_designators_resolve_paths_preserve_siblings_and_reject_overlap() {
+    let items = check(concat!(
+        "struct Record {int numbers[3]; int marker;};",
+        "struct Record r={.numbers[2]=8,.numbers[0]=3,.marker=11};",
+        "struct Record a[3]={[2].numbers[1]=5,[2].marker=7,[0].marker=9};"
+    )).expect("mixed field/array designators should type check");
+    let CheckedItem::Declaration(record) = &items[1] else { panic!("record expected") };
+    let Some(init) = &record.initializer else { panic!("initializer expected") };
+    let CheckedExprKind::DeepInitializer(entries) = &init.kind else {
+        panic!("expected nested path representation");
+    };
+    assert_eq!(entries.iter().map(|(path, _)| path.clone()).collect::<Vec<_>>(),
+        vec![vec![0,2], vec![0,0], vec![1]]);
+    let CheckedItem::Declaration(array) = &items[2] else { panic!("array expected") };
+    let Some(init) = &array.initializer else { panic!("initializer expected") };
+    let CheckedExprKind::DeepInitializer(entries) = &init.kind else {
+        panic!("expected nested array paths");
+    };
+    assert_eq!(entries.iter().map(|(path, _)| path.clone()).collect::<Vec<_>>(),
+        vec![vec![2,0,1], vec![2,1], vec![0,1]]);
+
+    check("int a[3][4]={[2][3]=7,[0][2]=3};").unwrap();
+    check("int a[][2]={[5][1]=3,[1][0]=8};").unwrap();
+    check("struct S {int a[2];int b;}; struct S x={.a[1]=7,.b=9};").unwrap();
+    check("struct S {int a;int b;}; struct S x[2]={[1].a=3,[1].b=7};").unwrap();
+    reject("int a[2][2]={[1][2]=4};", "exceeds bound");
+    reject("int a[2][2]={[1][1]=4,[1][1]=5};",
+        "overlapping initializer targets require override handling");
+    reject("int a[2][2]={[1]={3,4},[1][0]=5};",
+        "overlapping initializer targets require override handling");
+    reject("struct S {int a;int b;}; struct S x={.a=1,.b.field=3};",
+        "field designator requires struct or union initializer");
+    reject("struct S {int a;int b;}; struct S x[2]={[0].missing=3};",
+        "unknown initializer member");
+    reject("union U {int a[2]; long b;}; union U x={.a[0]=3,.b=4};",
+        "overlapping initializer targets require override handling");
+    reject("struct S {int a[3];int b;}; struct S x={.a[0]=3,4};",
+        "positional continuation after nested designator is not yet supported");
 }
 
 #[test]
