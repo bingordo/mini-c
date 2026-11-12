@@ -958,6 +958,20 @@ impl Checker {
     ) -> Result<CheckedExpr, Diagnostic> {
         let span = original.location().unwrap_or(span);
         let original = original.without_location();
+        // Braced aggregate initialization requires packing multiple logical
+        // fields into shared storage units, rather than writing entire int
+        // words at each member offset. Until that path is implemented, reject
+        // it explicitly rather than clobber neighboring bit-fields.
+        if matches!(original, Expr::Initializer(_))
+            && match ty.unqualified() {
+                CType::Struct { members, .. } | CType::Union { members, .. } =>
+                    members.iter().any(|m| m.bit_field.is_some()),
+                _ => false,
+            }
+        {
+            return Err(type_error(span,
+                "bit-field aggregate brace initialization is not yet supported"));
+        }
         if let Expr::Initializer(values) = original {
             if values.iter().any(|value| matches!(
                 value.without_location(), Expr::Designated { path, .. } if path.len() > 1
@@ -1918,6 +1932,9 @@ impl Checker {
                 // do not call .rvalue(), which would decay an array to pointer,
                 // or evaluate side effects from function calls and ++/--.
                 let typed = self.check_expr(operand, span)?;
+                if matches!(typed.kind, CheckedExprKind::BitFieldMember(..)) {
+                    return Err(type_error(span, "sizeof cannot be applied to a bit-field"));
+                }
                 let ty = self.complete_tag_type(typed.ty, span)?;
                 let size = ty.size_bytes(self.target).ok_or_else(|| type_error(
                     span, "sizeof requires a complete object type (not void or function)"
