@@ -2014,6 +2014,35 @@ mod tests {
         assert_eq!(stmts[0], Stmt::Expr(Some(Expr::StringLiteral(b"hi\n\0".to_vec()))));
     }
     #[test]
+    fn c99_bitfield_member_declarators_preserve_integer_width_expressions() {
+        let mut p = Parser::new(concat!(
+            "struct Flags {unsigned int a:3, b:5; signed int c:7; int tail;};",
+            "union Choice {unsigned int x:4;long y;};",
+            "struct Pending {unsigned int:0;unsigned int x:2;};"
+        ));
+        let Some(ExternalItem::Tag(Type::Struct { members, .. })) =
+            p.next_item().unwrap() else { panic!("struct definition expected") };
+        assert_eq!(members.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(),
+            ["a","b","c","tail"]);
+        for (member, width) in members[..3].iter().zip([3,5,7]) {
+            let Type::BitField(_, size) = &member.ty else {
+                panic!("bit-field syntax must retain its width expression");
+            };
+            assert!(matches!(size.as_ref(), Expr::Int(v) if *v == width));
+        }
+        assert!(matches!(&members[3].ty, Type::Int));
+        let Some(ExternalItem::Tag(Type::Union { members, .. })) =
+            p.next_item().unwrap() else { panic!("union expected") };
+        assert!(matches!(&members[0].ty, Type::BitField(_, width)
+            if matches!(width.as_ref(), Expr::Int(4))));
+        let Some(ExternalItem::Tag(Type::Struct { members, .. })) =
+            p.next_item().unwrap() else { panic!("unnamed field parsed") };
+        assert_eq!(members[0].name, "");
+        assert!(matches!(&members[0].ty, Type::BitField(_, width)
+            if matches!(width.as_ref(), Expr::Int(0))));
+    }
+
+    #[test]
     fn inline_structs_and_members_parse() {
         let mut p = Parser::new("struct Pair { char a; int b; long c; } item; int f(void) { struct { int x; char y; } obj; obj.x=7; return obj.x; }");
         let item = match p.next_item().unwrap().unwrap() {
