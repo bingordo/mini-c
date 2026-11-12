@@ -1344,16 +1344,35 @@ impl<'a> Parser<'a> {
                 while !self.peek()?.is_some_and(|t| t.text == "}") {
                     let (base, start) = self.parse_type()?.ok_or_else(||
                         Diagnostic::new(self.eof_span(), "unterminated struct definition"))?;
-                    let (name, ty, params, name_span) = self.parse_declarator_shape(false)?.finish(base);
-                    if params.is_some() || matches!(ty, Type::Function { .. } | Type::VariadicFunction { .. }) {
-                        return Err(Diagnostic::new(Span { lo: start, hi: start },
-                            "struct member cannot have function type"));
+                    // A C struct/union member declaration has a *shared* base
+                    // specifier but independently bound pointer/array declarators:
+                    //   intmax_t quot, rem;   int *p, a[3];
+                    // Preserve their source order for checked layout. Each
+                    // member is parsed and checked; no implicit initializer,
+                    // named function member or unsupported bit-field admitted.
+                    let first = members.len();
+                    loop {
+                        let (name, ty, params, name_span) =
+                            self.parse_declarator_shape(false)?.finish(base.clone());
+                        if params.is_some() || matches!(ty, Type::Function { .. } | Type::VariadicFunction { .. }) {
+                            return Err(Diagnostic::new(Span { lo: start, hi: start },
+                                "struct member cannot have function type"));
+                        }
+                        members.push(Decl {
+                            storage: StorageClass::Default, name, name_span, ty,
+                            asm_label: None, init: None,
+                            span: Span { lo: start, hi: start },
+                        });
+                        if self.peek()?.is_some_and(|t| t.text == ",") {
+                            self.take()?;
+                            continue;
+                        }
+                        let end = self.expect(";")?.span.hi;
+                        for member in &mut members[first..] {
+                            member.span.hi = end;
+                        }
+                        break;
                     }
-                    let end = self.expect(";")?.span.hi;
-                    members.push(Decl {
-                        storage: StorageClass::Default, name, name_span, ty, asm_label: None, init: None,
-                        span: Span { lo: start, hi: end },
-                    });
                 }
                 self.expect("}")?;
                 if members.is_empty() {
