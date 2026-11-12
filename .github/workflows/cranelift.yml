@@ -14,6 +14,7 @@ on:
       - 'tools/test_switch_native.py'
       - 'tools/test_goto_native.py'
       - 'tools/test_ptrdiff_native.py'
+      - 'tools/test_designated_native.py'
       - 'tools/test_musl_s9_native.py'
       - 'tests/fixtures/musl-s9/**'
       - '.github/workflows/cranelift.yml'
@@ -31,6 +32,7 @@ on:
       - 'tools/test_switch_native.py'
       - 'tools/test_goto_native.py'
       - 'tools/test_ptrdiff_native.py'
+      - 'tools/test_designated_native.py'
       - 'tools/test_musl_s9_native.py'
       - 'tests/fixtures/musl-s9/**'
       - '.github/workflows/cranelift.yml'
@@ -142,6 +144,8 @@ jobs:
         run: python3 tools/test_goto_native.py --backend target/debug/mini-c-cranelift
       - name: C99 pointer difference native execution against GCC
         run: python3 tools/test_ptrdiff_native.py --backend target/debug/mini-c-cranelift
+      - name: C99 designated initializer native execution against GCC
+        run: python3 tools/test_designated_native.py --backend target/debug/mini-c-cranelift
       - name: Compare exact pinned musl S9 objects with GCC
         run: python3 tools/test_musl_s9_native.py
       - name: Preserve S9 object differential summary and failures

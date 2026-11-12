@@ -116,8 +116,8 @@ The CI syntax job runs this independently of native backend/FP execution. Every 
 
 The immediate objective is a **usable C compiler on unchanged source**, not perfect missing-return diagnostics. Track [#154](https://github.com/bingordo/mini-c/issues/154) as low-priority optional diagnostic/CFG analysis follow-up; do not allocate the next development milestone to it. C99 permits reaching the end of a non-`void` function, although using that call's unspecified return value is undefined behavior; a hard backend rejection is a practical acceptance limitation, not a new language feature.
 
-1. **F2 now:** pointer subtraction and remaining scalar/qualifier conversions that block real libc algorithms; retain strict C99 invalid-operand diagnostics
-2. **F3 next:** designated initializers (`.member`, `[index]`, nested and mixed chains), compound literals and correct default zero initialization, validated with native execution
+1. **F2 landed:** pointer subtraction and bounded scalar/qualifier conversions; retain strict C99 invalid-operand diagnostics
+2. **F3 active:** single-level designated initializers with sparse zero-filling, followed by nested/mixed chains, compound literals and override semantics, validated with native GCC execution
 3. **F3/F4 afterward:** bit-fields, flexible array members, qualifiers/`volatile`, VLA where encountered, old-style declarations and function compatibility driven by actual programs
 4. **Backend parallel work:** native floating-point operations, calls/returns and by-value aggregate ABI; preserve checked frontend typing while independently tracking unsupported native ABI
 5. **Low priority:** warnings, source-only C99 edge cases, complete lexical conformance and broad fuzz tuning until practical C programs benefit
@@ -146,7 +146,8 @@ backend floating-point work remains independent.
 
 ## F3 — Initializers and aggregates
 
-- [ ] Nested designated initializers (`[index]`, `.member` and mixed chains), overlapping designator semantics and array-bound inference.
+- [x] **F3.1 bounded single-level designated initializers:** `[index]`, `.member` and positional continuation following a designator, sparse zero-filling, automatic/static struct/union/array storage, incomplete-array bound inference, recursively braced inner aggregates, native ELF and GCC execution validation. Explicitly reject repeated targets until override semantics are implemented.
+- [ ] **F3.2 full designated initialization:** multi-component paths such as `.member[index]` and `[index].member`, brace elision and overlapping designator override/evaluation semantics. Do not silently accept and miscompile these forms.
 - [ ] Compound literals with correct lvalue and storage-duration semantics, including nested aggregate forms.
 - [ ] Struct/union bit-field widths/layout, zero-width fields, unnamed fields and address-of constraints; compare target layout to GCC/Clang.
 - [ ] Flexible array members and restrictions, flexible aggregate size/initialization.

@@ -160,10 +160,28 @@
       "id": "designated-init",
       "feature": "F3",
       "expect": "accept",
-      "mini": "gap",
+      "mini": "supported",
       "kind": "valid",
-      "test_ref": "docs/C99_Frontend_Plan.md:F3",
-      "source": "struct S{int a,b;};int f(void){struct S x={.b=@N@,.a=1};return x.b;}"
+      "test_ref": "crates/sema/src/tests.rs:c99_designated_initializer_single_level_types_order_and_bounds",
+      "source": "struct S{int a;int b;};int f(void){struct S x={.b=@N@,.a=1};return x.b;}"
+    },
+    {
+      "id": "designated-sparse-array",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_designated_initializer_single_level_types_order_and_bounds",
+      "source": "int a[32]={[12]=@N@,[2]=7};int f(void){return a[12];}"
+    },
+    {
+      "id": "designated-unknown-member",
+      "feature": "F3",
+      "expect": "reject",
+      "mini": "supported",
+      "kind": "constraint",
+      "test_ref": "crates/sema/src/tests.rs:c99_designated_initializer_single_level_types_order_and_bounds",
+      "source": "struct S{int x;};struct S s={.missing=@N@};"
     },
     {
       "id": "compound-literal",

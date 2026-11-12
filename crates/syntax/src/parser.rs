@@ -1,6 +1,6 @@
 //! Incremental parser for the first supported subset of external declarations.
 //! Each complete function body is returned separately; earlier bodies are not retained.
-use crate::ast::{BinOp, Decl, Expr, FloatRank, Function, Qualifiers, Span, Stmt, StorageClass, TagKind, Type, UnOp};
+use crate::ast::{BinOp, Decl, Designator, Expr, FloatRank, Function, Qualifiers, Span, Stmt, StorageClass, TagKind, Type, UnOp};
 use crate::diag::{Diagnostic, DiagnosticCode};
 use crate::lexer::{Scanner, Token, TokenKind};
 use crate::stream::{ExternalItem, ItemSource};
@@ -983,7 +983,37 @@ impl<'a> Parser<'a> {
                 "empty aggregate initializers are unsupported"));
         }
         loop {
-            values.push(self.parse_initializer()?);
+            let mut path = Vec::new();
+            let start = self.peek()?.map_or(self.eof_span(), |t| t.span);
+            while let Some(token) = self.peek()? {
+                match token.text {
+                    "." => {
+                        self.take()?;
+                        let field = self.take()?.ok_or_else(||
+                            Diagnostic::new(self.eof_span(), "expected field designator name"))?;
+                        if !matches!(field.kind, TokenKind::Identifier | TokenKind::TypedefName) {
+                            return Err(Diagnostic::new(field.span, "expected field designator name"));
+                        }
+                        path.push(Designator::Field(field.text.to_owned()));
+                    }
+                    "[" => {
+                        self.take()?;
+                        let expr = self.parse_conditional()?;
+                        self.expect("]")?;
+                        path.push(Designator::Index(Box::new(expr)));
+                    }
+                    _ => break,
+                }
+            }
+            let value = if path.is_empty() {
+                self.parse_initializer()?
+            } else {
+                self.expect("=")?;
+                let value = self.parse_initializer()?;
+                self.located(Expr::Designated { path, value: Box::new(value) },
+                    Span { lo: start.lo, hi: start.hi })
+            };
+            values.push(value);
             if !self.peek()?.is_some_and(|t| t.text == ",") { break; }
             self.take()?;
             if self.peek()?.is_some_and(|t| t.text == "}") { break; }
