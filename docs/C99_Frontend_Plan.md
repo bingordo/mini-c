@@ -22,7 +22,7 @@ This milestone should not prevent progressing to a usable C compiler and C++ sup
 
 **Separation of responsibility:** The CPP milestone owns preprocessing translation phases, directive parsing, `_Pragma`, macro expansion, include search, predefines, source origins and resource limits. F5 retains wide character/string and numeric *language* semantics plus post-preprocessing lexical constraints. CPP must not block on native code generation or the deferred F5 language work. Do not call the entire C99 frontend conformant until F5 and final F6 validation eventually close.
 
-**Near-term order:** F1 switch is checked and the practical native subset passes; implement the distinct C99 `_Bool` type and scalar conversion rules ([#144](https://github.com/bingordo/mini-c/issues/144)), then continue practical F2 arithmetic conversions, F3 initializers, and F4 declarator/compatibility support driven by unmodified real programs. Pointer-to-integer cast slice [#139](https://github.com/bingordo/mini-c/pull/139) is merged; it does not establish complete `memmove`/`memset` acceptance. Follow-up CPP fixes only when they block an actual program. Leave F5 deferred and F6 final language conformance last.
+**Near-term order (updated 2026-11-11):** With practical F1 `switch`/`goto` lowering and distinct `_Bool` merged, **stop treating F1 CFG diagnostics as the next milestone**. Prioritize real-program blockers: F2 pointer difference/conversions, F3 designated initializers and compound literals, F3 bit-fields/flexible members, and F4 function/type compatibility and qualifiers. Evaluate runtime support and ABI gaps separately. Pointer-to-integer cast slice [#139](https://github.com/bingordo/mini-c/pull/139) is merged; it does not establish complete `memmove`/`memset` acceptance. Keep C99 incomplete features visible but do not block usable C and initial C++ on exhaustive conformance. Follow-up CPP fixes only for real source blockers.
 
 ## Immediate CPP-C99 focus — usable programs (2026-11-10)
 
@@ -74,7 +74,7 @@ The CI syntax job runs this independently of native backend/FP execution. Every 
 
 - [x] **F1 switch checked semantics:** integral promotions, integer constant-expression cases, duplicate case/default rejection after conversion, nested-switch label ownership, case fallthrough, break/continue scope. Parser [#109](https://github.com/bingordo/mini-c/pull/109), checker [#141](https://github.com/bingordo/mini-c/pull/141), and initial native dispatch [#142](https://github.com/bingordo/mini-c/pull/142) are merged. The native implementation now maps each `case/default` source node to a CFG entry block (including labels inside nested compound/`if`/loop bodies) and permits dispatch to skip local declarations without executing initializers; nested `switch` retains its own case namespace. GCC/Mini-C native differential tests exercise fallthrough, control-flow entry, nested switch, and side-effecting skipped declarations. **Integration:** ordinary function-scoped `goto` labels inside `switch` arms now have their own entry blocks; jumping to one bypasses switch control-expression evaluation and case dispatch. General reachable-end analysis remains a separate follow-up ([#143](https://github.com/bingordo/mini-c/issues/143), [#154](https://github.com/bingordo/mini-c/issues/154)).
 - [x] **Checked F1 labels and `goto`:** function-scope label namespace, forward/backward references, duplicate/missing label diagnostics, typedef-label disambiguation, and checked-IR jump/label preservation. Native Cranelift lowers label chains inside plain compounds, `if`/`else`, `while`, `do-while`, and `for`, including entry into normally unreachable constructs. It binds local stack slots separately from executing initializers and rematerializes addresses at their use block. GCC differential execution covers skipped condition/initializer side effects, resumed loop iterations, arrays, shadowed locals and nested scopes. **Native switch integration:** ordinary labels inside switch arms are supported as function-scoped jump targets independently of `case/default` dispatch, including switches with no case labels and jumps entering nested switches. Continue separate CFG reachability work tracked by [#154](https://github.com/bingordo/mini-c/issues/154).
-- [ ] `_Bool` distinct from unsigned char, including 0/1 conversion, promotions, `sizeof`, parameters/returns and aggregate layout.
+- [x] `_Bool` distinct from unsigned char: C99 conversions, integer promotions, `sizeof`, pointer normalization and native one-byte object/aggregate layout were merged in #146–#148.
 - [ ] `volatile` qualifier preservation/compatibility, qualified lvalue accesses and compound operations. No loss of observable access semantics.
 - [ ] `inline` function specifier and C99 external-definition / linkage compatibility (not optimization inlining).
 - [ ] `__func__` predefined per-function string object with correct scope and array semantics.
@@ -106,10 +106,23 @@ The CI syntax job runs this independently of native backend/FP execution. Every 
 ## F2 — Expressions and conversions (start immediately; independent slices)
 
 - [x] **F2.1:** `sizeof unary-expression`, including `sizeof x` and `sizeof(x)`, no operand evaluation or array decay, incomplete/function/void rejection, and constant-bounded abstract arrays. Implemented in PR #105, verified by syntax/semantics plus Cranelift/glibc compatibility CI. Runtime VLA `sizeof` remains F4.
-- [ ] General arithmetic casts, including integer↔float, float↔float, scalar→`_Bool`; preserve target conversions in checked IR.
-- [ ] C99 pointer subtraction, relational comparison constraints, conditional expression types, null pointer constant subtleties and qualified composite pointer types.
+- [ ] General arithmetic casts, including integer↔float and float↔float; preserve explicit target conversions in checked IR. Integral/pointer→`_Bool` conversion is already supported.
+- [x] C99 pointer difference with compatible complete object pointees: LP64 `ptrdiff_t` checked result type and element-scaled signed native subtraction, including negative differences, one-past pointers, qualified pointer operands, and GCC executable differential.
+- [ ] Remaining pointer/composite-type details: subtle null pointer constants, qualifier unions beyond `const`, and full relational/conditional constraints.
 - [ ] Complete usual arithmetic conversions, default promotions at varargs/non-prototype calls and complex types, without requiring executable codegen.
 - [ ] `sizeof`/alignment and compile-time constant-expression rules for every scalar/aggregate category.
+
+### Practical language-feature priority after F1 CFG (2026-11-11)
+
+The immediate objective is a **usable C compiler on unchanged source**, not perfect missing-return diagnostics. Track [#154](https://github.com/bingordo/mini-c/issues/154) as low-priority optional diagnostic/CFG analysis follow-up; do not allocate the next development milestone to it. C99 permits reaching the end of a non-`void` function, although using that call's unspecified return value is undefined behavior; a hard backend rejection is a practical acceptance limitation, not a new language feature.
+
+1. **F2 now:** pointer subtraction and remaining scalar/qualifier conversions that block real libc algorithms; retain strict C99 invalid-operand diagnostics
+2. **F3 next:** designated initializers (`.member`, `[index]`, nested and mixed chains), compound literals and correct default zero initialization, validated with native execution
+3. **F3/F4 afterward:** bit-fields, flexible array members, qualifiers/`volatile`, VLA where encountered, old-style declarations and function compatibility driven by actual programs
+4. **Backend parallel work:** native floating-point operations, calls/returns and by-value aggregate ABI; preserve checked frontend typing while independently tracking unsupported native ABI
+5. **Low priority:** warnings, source-only C99 edge cases, complete lexical conformance and broad fuzz tuning until practical C programs benefit
+
+Do not confuse a feature-matrix entry with implementation status; update stale baselines as features actually land.
 
 ### F2.1a — Named aggregate type-names in sizeof (2026-11-11)
 
@@ -176,4 +189,4 @@ Do not schedule new F5-specific work now. Preserve all acceptance criteria for l
 
 ## Execution order and first slice
 
-**Updated:** F1 `switch` syntax/checking and practical native execution are merged ([#109](https://github.com/bingordo/mini-c/pull/109), [#141](https://github.com/bingordo/mini-c/pull/141), [#142](https://github.com/bingordo/mini-c/pull/142)); F2.1 `sizeof` and F2 pointer-to-integer casts are merged. Focus on F1 `_Bool` ([#144](https://github.com/bingordo/mini-c/issues/144)) and practical F2/F3/F4; CPP-C99 #110–#114 is nonblocking follow-up because internal preprocessing is now the driver default for usable programs. F5 remains deferred. F6 remains the final language conformance gate after F5 is resumed. Do not conflate FP frontend typing with native FP codegen or a practical CPP default with complete ISO C99 preprocessing.
+**Updated:** F1 `switch`/`goto` (including native general entry blocks) and `_Bool` are merged (#142, #146–#148, #150–#156). F2 `sizeof`, pointer-to-integer casts and pointer subtraction are implemented. **Focus on F3 designated initializers/compound literals and targeted F2/F4 blockers**, not further F1 reachability diagnostics. CPP-C99 #110–#114 is nonblocking follow-up; F5 remains deferred; F6 remains the final conformance gate. Keep native floating-point/aggregate ABI separate from frontend type acceptance.
