@@ -138,6 +138,47 @@ fn c99_nested_designators_resolve_paths_preserve_siblings_and_reject_overlap() {
 }
 
 #[test]
+fn c99_compound_literals_have_object_types_lvalues_and_inferred_array_bounds() {
+    let checked = check(concat!(
+        "typedef int Word;",
+        "struct Pair {int x;int y;};",
+        "int f(void){",
+        "  int *p=(int[]){3,4,5};",
+        "  int *q=&(int){6};",
+        "  struct Pair pair=(struct Pair){.y=9,.x=2};",
+        "  return p[1]+*q+pair.x + sizeof (int[]){1,2,3};",
+        "}",
+    )).expect("C99 automatic compound literals should be accepted");
+    let CheckedItem::Function(function) = &checked[2] else { panic!("function expected") };
+    let CheckedStmt::Block(stmts) = &function.body else { panic!("block expected") };
+    let CheckedStmt::Decl(pointer) = &stmts[0] else { panic!("pointer expected") };
+    let Some(initializer) = &pointer.initializer else { panic!("pointer initializer") };
+    let CheckedExprKind::ArrayDecay(compound) = &initializer.kind else {
+        panic!("expected array-to-pointer decay of compound literal");
+    };
+    assert_eq!(compound.ty, CType::Array(Box::new(CType::int()), Some(3)));
+    assert_eq!(compound.category, Category::LValue);
+    assert!(matches!(&compound.kind, CheckedExprKind::CompoundLiteral(_)));
+    let CheckedStmt::Decl(pair) = &stmts[2] else { panic!("pair declaration") };
+    let Some(initializer) = &pair.initializer else { panic!("struct initializer") };
+    assert!(matches!(&initializer.kind, CheckedExprKind::Load(inner)
+        if matches!(&inner.kind, CheckedExprKind::CompoundLiteral(_))));
+
+    check("int f(void){ return (int){9}; }").unwrap();
+    check("int f(void){ return (int[]){1,2,3}[1]; }").unwrap();
+    check("struct P{int a;int b;}; int f(void){ return (struct P){.b=7,.a=3}.b; }").unwrap();
+    check("int f(void){ const int *p=&(const int){5};return *p; }").unwrap();
+    check("int f(void){ int (*p)[3]=&(int[3]){1,2,3}; return (*p)[2]; }").unwrap();
+    check("int counter;int bump(void){ counter++; return 6; } int f(void){ return sizeof (int[]){bump(),bump()}; }").unwrap();
+
+    reject("int f(void){ return (void){1}; }", "complete object type");
+    reject("int f(void){ return (int[2]){1,2,3}[0]; }", "too many array initializers");
+    reject("int f(void){ return (int[]){[2]=4,[2]=5}[0]; }",
+        "duplicate initializer target");
+    reject("int *global=(int[]){1,2};", "file-scope compound literal static storage");
+}
+
+#[test]
 fn array_types_and_parameter_adjustments() {
     let items = check("int a[3]; typedef int Matrix[2][4]; Matrix m; int use(int v[3]) { int *p = v; return *p; }").unwrap();
     let CheckedItem::Declaration(a) = &items[0] else { panic!("array declaration expected"); };
