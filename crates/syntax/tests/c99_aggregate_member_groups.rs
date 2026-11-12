@@ -25,8 +25,8 @@ fn original_musl_imaxdiv_member_group_preserves_both_layout_fields() {
     assert_eq!(members.len(), 2);
     assert_eq!(members[0].name, "quot");
     assert_eq!(members[1].name, "rem");
-    assert_eq!(members[0].ty, Type::LongLong);
-    assert_eq!(members[1].ty, Type::LongLong);
+    assert_eq!(members[0].ty, Type::Alias("intmax_t".into()));
+    assert_eq!(members[1].ty, Type::Alias("intmax_t".into()));
     assert_eq!(members[0].span, members[1].span,
         "all members from the same declaration share its original span");
     let Some(ExternalItem::Declaration(value)) = parser.next_item().unwrap() else {
