@@ -310,6 +310,33 @@
       "source": "int f(void){return (int)@N@.25;}"
     },
     {
+      "id": "tagged-byvalue-member",
+      "feature": "F4",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_completed_tagged_aggregate_members_have_full_layout_and_type_identity",
+      "source": "struct A{int x;};struct B{struct A inner;int y;};int f(void){struct B b={{@N@},7};return b.inner.x;}"
+    },
+    {
+      "id": "tagged-union-member",
+      "feature": "F4",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_completed_tagged_aggregate_members_have_full_layout_and_type_identity",
+      "source": "union A{int x;long y;};struct B{union A value;};int f(void){struct B b={.value={.x=@N@}};return b.value.x;}"
+    },
+    {
+      "id": "tagged-byvalue-incomplete",
+      "feature": "F4",
+      "expect": "reject",
+      "mini": "supported",
+      "kind": "constraint",
+      "test_ref": "crates/sema/src/tests.rs:c99_completed_tagged_aggregate_members_have_full_layout_and_type_identity",
+      "source": "struct Unknown;struct B{struct Unknown x;};int f(void){return @N@;}"
+    },
+    {
       "id": "bitfield-struct",
       "feature": "F3",
       "expect": "accept",
