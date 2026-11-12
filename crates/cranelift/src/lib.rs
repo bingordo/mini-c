@@ -128,6 +128,38 @@ fn char_array_initializer_bytes(
     Ok(Some(bytes))
 }
 
+/// Resolve a fully checked initializer path to the target aggregate
+/// subobject and its byte displacement. Both global packing and stack
+/// initialization use this to keep mixed struct/array designators identical.
+fn initializer_subobject(ty: &CType, path: &[usize]) -> Result<(CType, u64)> {
+    let mut current = ty;
+    let mut offset = 0u64;
+    for &index in path {
+        let (next, delta) = match current.unqualified() {
+            CType::Struct { members, .. } | CType::Union { members, .. } => {
+                let field = members.get(index).ok_or("invalid checked initializer field")?;
+                (&field.ty, field.offset)
+            }
+            CType::Array(element, Some(bound)) => {
+                if u64::try_from(index).map_or(true, |i| i >= *bound) {
+                    return Err("invalid checked initializer array index".into());
+                }
+                let stride = element.size_bytes(Target::default())
+                    .ok_or("incomplete nested initializer element")?;
+                (element.as_ref(), u64::try_from(index)
+                    .map_err(|_| "nested initializer array index too large")?
+                    .checked_mul(stride)
+                    .ok_or("nested initializer array offset overflow")?)
+            }
+            _ => return Err("nested initializer path enters a nonaggregate".into()),
+        };
+        offset = offset.checked_add(delta)
+            .ok_or("nested initializer byte offset overflow")?;
+        current = next;
+    }
+    Ok((current.clone(), offset))
+}
+
 /// Flatten a checked aggregate constant initializer into ELF bytes.
 /// Dynamic nonconstant expressions and objects exceeding the codegen guard
 /// are rejected explicitly. Relocations remain separate from raw bytes.
@@ -137,7 +169,8 @@ fn static_initializer_bytes(
     ty: &CType, init: &CheckedExpr,
 ) -> Result<Option<StaticAggregate>> {
     if !matches!(&init.kind,
-        CheckedExprKind::Initializer(_) | CheckedExprKind::SparseInitializer(_))
+        CheckedExprKind::Initializer(_) | CheckedExprKind::SparseInitializer(_)
+        | CheckedExprKind::DeepInitializer(_))
     { return Ok(None); }
     let size = ty.size_bytes(Target::default()).ok_or("incomplete aggregate initializer")?;
     let size = usize::try_from(size).map_err(|_| "oversized aggregate initializer")?;
@@ -191,6 +224,16 @@ fn static_initializer_bytes(
                     let displacement = index.checked_mul(stride).ok_or("array offset overflow")?;
                     fill(out, relocations, element, value,
                         offset.checked_add(displacement).ok_or("array offset overflow")?)?;
+                }
+            }
+            (CheckedExprKind::DeepInitializer(entries), _) => {
+                for (path, value) in entries {
+                    let (element, displacement) = initializer_subobject(ty, path)?;
+                    let displacement = usize::try_from(displacement)
+                        .map_err(|_| "oversized nested initializer byte offset")?;
+                    fill(out, relocations, &element, value,
+                        offset.checked_add(displacement)
+                            .ok_or("nested initializer byte offset overflow")?)?;
                 }
             }
             _ => {
@@ -910,6 +953,23 @@ impl Lower<'_> {
         if let Some(bytes) = char_array_initializer_bytes(ty, initializer)? {
             return Self::store_array_bytes(b, address, &bytes);
         }
+        if let CheckedExprKind::DeepInitializer(entries) = &initializer.kind {
+            let size = usize::try_from(ty.size_bytes(Target::default())
+                .ok_or("incomplete deep aggregate initializer")?)
+                .map_err(|_| "oversized deep aggregate initializer")?;
+            if size > 1_048_576 {
+                return Err("aggregate initializer exceeds 1 MiB codegen limit".into());
+            }
+            Self::store_array_bytes(b, address, &vec![0u8; size])?;
+            for (path, value) in entries {
+                let (element, offset) = initializer_subobject(ty, path)?;
+                let offset = i64::try_from(offset)
+                    .map_err(|_| "nested initializer offset exceeds i64")?;
+                let addr = b.ins().iadd_imm_s(address, offset);
+                self.initialize_object(b, addr, &element, value)?;
+            }
+            return Ok(());
+        }
         if let CheckedExprKind::SparseInitializer(entries) = &initializer.kind {
             let size = usize::try_from(ty.size_bytes(Target::default())
                 .ok_or("incomplete sparse aggregate initializer")?)
@@ -1143,7 +1203,8 @@ impl Lower<'_> {
 
     fn expression(&mut self, b: &mut FunctionBuilder<'_>, expr: &CheckedExpr) -> Result<Value> {
         match &expr.kind {
-            CheckedExprKind::Initializer(_) | CheckedExprKind::SparseInitializer(_) =>
+            CheckedExprKind::Initializer(_) | CheckedExprKind::SparseInitializer(_)
+            | CheckedExprKind::DeepInitializer(_) =>
                 Err("braced initializer cannot be evaluated as an expression".into()),
             CheckedExprKind::Literal(n) => Ok(b.ins().iconst(scalar_type(&expr.ty)?, *n as i64)),
             CheckedExprKind::FloatLiteral(_) =>
