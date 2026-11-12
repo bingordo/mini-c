@@ -222,6 +222,21 @@ CASES = {
             return run(1)!=8 || run(2)!=8 || run(3)!=9 || run(4)!=7;
         }
     """,
+    "goto_into_case_arm": r"""
+        int calls=0;
+        int choose(void) { calls++; return 1; }
+        int run(void) {
+            int result=0;
+            goto skip_control;
+            switch(choose()) {
+                case 1: result=20;
+                skip_control: result+=3; break;
+                default: result=40;
+            }
+            return result;
+        }
+        int main(void) { return run()!=3 || calls!=0; }
+    """,
     "branch_in_arm": r"""
         int test(int x) {
             int v=0;
@@ -236,10 +251,9 @@ CASES = {
     """,
 }
 UNSUPPORTED = {
-    "goto_into_switch_arm_pending": (
-        "int test(int x){goto done; switch(x){case 1: done: return 1;"
-        "default: return 0;}}",
-        "native goto labels inside switch arms are not yet supported",
+    "duplicate_case_value": (
+        "int test(int x){switch(x){case 1: return 1;case 1: return 2;default: return 0;}}",
+        "duplicate case",
     ),
 }
 
