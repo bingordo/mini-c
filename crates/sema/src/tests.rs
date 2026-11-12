@@ -61,6 +61,42 @@ fn c99_pointer_difference_is_signed_element_count_with_strict_pointee_constraint
 }
 
 #[test]
+fn c99_designated_initializer_single_level_types_order_and_bounds() {
+    let result = check(concat!(
+        "struct S { int a,b,c; };",
+        "struct S s = {.c=7, .a=3, .b=9};",
+        "int numbers[] = {[4]=5, [1]=2, 8};",
+        "int f(void) { struct S local={.b=4, .a=1}; return local.a+local.b; }",
+    )).expect("valid designated aggregates");
+    let CheckedItem::Declaration(array) = &result[2] else { panic!("array expected") };
+    assert_eq!(array.ty, CType::Array(Box::new(CType::int()), Some(5)));
+    let Some(init) = &array.initializer else { panic!("array initializer expected") };
+    let CheckedExprKind::SparseInitializer(entries) = &init.kind else {
+        panic!("sparse initializer expected");
+    };
+    assert_eq!(entries.iter().map(|(index, _)| *index).collect::<Vec<_>>(), vec![4, 1, 2]);
+
+    check("int f(void) { int a[9]={[8]=2,[1]=3}; return a[8]+a[1]; }").unwrap();
+    check("union U { int a; long b; }; union U u={.b=9};").unwrap();
+    check(concat!(
+        "struct Inner {int left,right;}; struct Outer {struct Inner inner; int count;};",
+        "struct Outer o={.count=7, .inner={.right=3, .left=1}};"
+    )).unwrap();
+    check("enum E { FIVE=5 }; int a[8]={[FIVE]=7};").unwrap();
+
+    reject("struct S {int x;}; struct S s={.missing=1};",
+        "unknown initializer member");
+    reject("int a[3]={[4]=8};", "exceeds bound");
+    reject("int a[4]={[2]=8,[2]=9};", "duplicate initializer target");
+    reject("struct S {int x;}; struct S s={.x=1,.x=2};", "duplicate initializer target");
+    reject("int n; int a[9]={[n]=3};", "integer constant expression");
+    reject("int a[9]={[1.5]=3};", "integer constant expression");
+    reject("int a[9]={.field=3};", "field designator requires");
+    reject("struct S {int a;}; struct S s={[0]=3};", "array designator requires");
+    reject("int a[5]={[1][2]=3};", "nested designator paths are not yet supported");
+}
+
+#[test]
 fn array_types_and_parameter_adjustments() {
     let items = check("int a[3]; typedef int Matrix[2][4]; Matrix m; int use(int v[3]) { int *p = v; return *p; }").unwrap();
     let CheckedItem::Declaration(a) = &items[0] else { panic!("array declaration expected"); };
