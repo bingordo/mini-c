@@ -175,6 +175,42 @@
       "source": "int a[32]={[12]=@N@,[2]=7};int f(void){return a[12];}"
     },
     {
+      "id": "designated-nested-array",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_nested_designators_resolve_paths_preserve_siblings_and_reject_overlap",
+      "source": "int a[3][20]={[1][@N@]=7,[2][0]=3};int f(void){return a[1][@N@];}"
+    },
+    {
+      "id": "designated-nested-mixed",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_nested_designators_resolve_paths_preserve_siblings_and_reject_overlap",
+      "source": "struct S{int a[20];int b;};struct S x={.a[@N@]=5,.b=3};int f(void){return x.a[@N@];}"
+    },
+    {
+      "id": "designated-nested-overlap",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "gap",
+      "kind": "valid",
+      "test_ref": "docs/C99_Frontend_Plan.md:F3.2",
+      "source": "int a[2][20]={[1][@N@]=3,[1][@N@]=5};"
+    },
+    {
+      "id": "designated-nested-positional",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "gap",
+      "kind": "valid",
+      "test_ref": "docs/C99_Frontend_Plan.md:F3.2",
+      "source": "int a[2][20]={[1][@N@]=3,5};"
+    },
+    {
       "id": "designated-unknown-member",
       "feature": "F3",
       "expect": "reject",
