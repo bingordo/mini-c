@@ -1284,6 +1284,26 @@ impl Lower<'_> {
                 {
                     return self.pointer_offset(b, *op, lhs, rhs);
                 }
+                if *op == BinOp::Sub {
+                    if let (CType::Pointer(element), CType::Pointer(_)) = (&lhs.ty, &rhs.ty) {
+                        // The checker establishes compatible complete object
+                        // pointees. Cranelift addresses are byte offsets;
+                        // pointer difference is a signed element count.
+                        let width = element.size_bytes(Target::default())
+                            .ok_or("native ptrdiff requires a complete object type")?;
+                        let width = i64::try_from(width)
+                            .map_err(|_| "native ptrdiff element size exceeds i64")?;
+                        let left = self.expression(b, lhs)?;
+                        let right = self.expression(b, rhs)?;
+                        let bytes = b.ins().isub(left, right);
+                        return Ok(if width == 1 {
+                            bytes
+                        } else {
+                            let scale = b.ins().iconst(types::I64, width);
+                            b.ins().sdiv(bytes, scale)
+                        });
+                    }
+                }
                 // Checked pointer comparisons are represented using integer-valued
                 // Cranelift addresses. The type checker has already validated the
                 // operands and converted null pointer constants to pointer type.
