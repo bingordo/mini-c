@@ -22,7 +22,7 @@ CASES = {
         }
     """,
     "struct_out_of_order_and_cursor": r"""
-        struct S { int a,b,c,d; };
+        struct S { int a; int b; int c; int d; };
         int main(void) {
             struct S s={.c=5,.a=1,2};
             return s.a!=1 || s.b!=2 || s.c!=5 || s.d!=0;
@@ -37,7 +37,7 @@ CASES = {
         }
     """,
     "nested_brace_designators": r"""
-        struct Inner { int a,b,c; };
+        struct Inner { int a; int b; int c; };
         struct Outer { int count; struct Inner inner; int tail; };
         int main(void) {
             struct Outer o={.inner={.c=8,.a=2},.count=4};
