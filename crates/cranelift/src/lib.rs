@@ -494,25 +494,6 @@ impl Compiler {
         }
     }
 
-    /// Discover user labels in control constructs. Native switch's
-    /// case/default lowering still needs its own general entry-edge plan.
-    fn has_nested_label(stmt: &CheckedStmt) -> bool {
-        match stmt {
-            CheckedStmt::Label { .. } => true,
-            CheckedStmt::Block(stmts) => stmts.iter().any(Self::has_nested_label),
-            CheckedStmt::If { then, otherwise, .. } =>
-                Self::has_nested_label(then)
-                    || otherwise.as_ref().is_some_and(|s| Self::has_nested_label(s)),
-            CheckedStmt::While { body, .. } | CheckedStmt::DoWhile { body, .. }
-            | CheckedStmt::Switch { body, .. } | CheckedStmt::Case { body, .. }
-            | CheckedStmt::Default(body) => Self::has_nested_label(body),
-            CheckedStmt::For(for_loop) =>
-                for_loop.init.as_ref().is_some_and(|s| Self::has_nested_label(s))
-                    || Self::has_nested_label(&for_loop.body),
-            _ => false,
-        }
-    }
-
     fn collect_goto_targets(stmt: &CheckedStmt, targets: &mut Vec<String>) {
         match stmt {
             CheckedStmt::Goto { target } => targets.push(target.clone()),
@@ -541,10 +522,10 @@ impl Compiler {
         }
     }
 
-    /// Preallocate label blocks in lexical source order, regardless of
-    /// whether their containing control construct has a natural predecessor.
-    /// Labels within switch arms remain separately gated until native switch
-    /// handles arbitrary source-label entry without bypassing case dispatch.
+    /// Preallocate ordinary C label blocks in lexical source order, even when
+    /// they are nested in switch arms and their enclosing control constructs
+    /// have no ordinary incoming predecessor. Switch case/default labels are
+    /// planned separately by the innermost switch.
     fn collect_native_labels(stmt: &CheckedStmt, ordered: &mut Vec<String>) -> Result<()> {
         match stmt {
             CheckedStmt::Label { name, body } => {
@@ -570,10 +551,9 @@ impl Compiler {
                 }
                 Self::collect_native_labels(&for_loop.body, ordered)?;
             }
-            CheckedStmt::Switch { body, .. } if Self::has_nested_label(body) =>
-                return Err("native goto labels inside switch arms are not yet supported".into()),
-            _ if Self::has_nested_label(stmt) =>
-                return Err("native goto labels inside switch arms are not yet supported".into()),
+            CheckedStmt::Switch { body, .. } | CheckedStmt::Case { body, .. }
+            | CheckedStmt::Default(body) => Self::collect_native_labels(body, ordered)?,
+            _ => {},
             _ => {}
         }
         Ok(())
@@ -1504,9 +1484,10 @@ impl Lower<'_> {
         let control_type = scalar_type(&control.ty)?;
         let mut source_labels = Vec::new();
         Self::collect_switch_cases(body, &mut source_labels);
-        if source_labels.is_empty() {
-            // No case/default can be selected. The controlling expression
-            // still executes, but the body has no possible entry.
+        if source_labels.is_empty() && !self.contains_referenced_label(body) {
+            // The switch dispatch cannot enter a body without cases. A
+            // function-scoped goto label inside it is a separate legal entry
+            // and is handled below even if no case/default exists.
             return Ok(true);
         }
 
@@ -1587,9 +1568,9 @@ impl Lower<'_> {
         walk(stmt, mapping)
     }
 
-    /// Does this subtree have a label targeted by a goto from any source?
-    /// Switch labels are rejected during the prepass until general native
-    /// switch-arm dispatch and goto entry are modeled together.
+    /// Does this subtree have an ordinary C label targeted by a goto?
+    /// A goto can enter a switch without evaluating its control expression;
+    /// case/default dispatch remains independent and scoped per switch.
     fn contains_referenced_label(&self, stmt: &CheckedStmt) -> bool {
         match stmt {
             CheckedStmt::Label { name, body } =>
@@ -1599,8 +1580,9 @@ impl Lower<'_> {
             CheckedStmt::If { then, otherwise, .. } =>
                 self.contains_referenced_label(then)
                     || otherwise.as_ref().is_some_and(|s| self.contains_referenced_label(s)),
-            CheckedStmt::While { body, .. } | CheckedStmt::DoWhile { body, .. } =>
-                self.contains_referenced_label(body),
+            CheckedStmt::While { body, .. } | CheckedStmt::DoWhile { body, .. }
+            | CheckedStmt::Switch { body, .. } | CheckedStmt::Case { body, .. }
+            | CheckedStmt::Default(body) => self.contains_referenced_label(body),
             CheckedStmt::For(for_loop) =>
                 for_loop.init.as_ref().is_some_and(|s| self.contains_referenced_label(s))
                     || self.contains_referenced_label(&for_loop.body),
@@ -1642,18 +1624,21 @@ impl Lower<'_> {
                     }
                     CheckedStmt::If { .. } | CheckedStmt::While { .. }
                     | CheckedStmt::DoWhile { .. } | CheckedStmt::For(_)
+                    | CheckedStmt::Switch { .. }
                         if self.contains_referenced_label(tail)
                             || self.contains_active_switch_case(tail) =>
                     {
                         // The lexical entry is bypassed. Build its normal
-                        // condition/init paths on a disconnected block while
-                        // the case/goto entry receives its real CFG edge.
+                        // condition/init/switch-dispatch paths on a
+                        // disconnected block while the nested goto or case
+                        // entry receives its own real CFG edge.
                         let dead_entry = b.create_block();
                         b.switch_to_block(dead_entry);
                         live = self.statement(b, tail)?;
                     }
                     CheckedStmt::Case { .. } | CheckedStmt::Default(_)
-                        if self.contains_active_switch_case(tail) =>
+                        if self.contains_active_switch_case(tail)
+                            || self.contains_referenced_label(tail) =>
                     {
                         let dead_entry = b.create_block();
                         b.switch_to_block(dead_entry);
