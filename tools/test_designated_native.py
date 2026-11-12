@@ -37,12 +37,11 @@ CASES = {
         }
     """,
     "nested_brace_designators": r"""
-        struct Inner { int a; int b; int c; };
-        struct Outer { int count; struct Inner inner; int tail; };
+        struct Outer { int count; int inner[3]; int tail; };
         int main(void) {
-            struct Outer o={.inner={.c=8,.a=2},.count=4};
-            return o.count!=4 || o.inner.a!=2 || o.inner.b!=0
-                || o.inner.c!=8 || o.tail!=0;
+            struct Outer o={.inner={[2]=8,[0]=2},.count=4};
+            return o.count!=4 || o.inner[0]!=2 || o.inner[1]!=0
+                || o.inner[2]!=8 || o.tail!=0;
         }
     """,
     "union_selected_member": r"""
