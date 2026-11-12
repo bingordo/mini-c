@@ -39,6 +39,10 @@ pub enum CheckedExprKind {
     /// object; disjoint paths can share an outer aggregate without erasing
     /// previous writes or re-zeroing the enclosing subobject.
     DeepInitializer(Vec<(Vec<usize>, CheckedExpr)>),
+    /// An addressable C99 compound literal with automatic block storage.
+    /// Its initializer runs when control evaluates this expression; each
+    /// syntactic occurrence owns its own stack storage.
+    CompoundLiteral(Box<CheckedExpr>),
     Name(String),
     Unary(UnOp, Box<CheckedExpr>),
     Binary(BinOp, Box<CheckedExpr>, Box<CheckedExpr>),
@@ -1700,6 +1704,34 @@ impl Checker {
             },
             Expr::Initializer(_) | Expr::Designated { .. } => Err(type_error(span,
                 "brace initializer is only valid in an object declaration")),
+            Expr::CompoundLiteral(type_name, initializer) => {
+                if self.result_ty.is_none() {
+                    // File-scope compound literals require static storage and
+                    // a separate anonymous ELF data symbol. Do not turn
+                    // them into temporary stack objects or lose relocations.
+                    return Err(type_error(span,
+                        "file-scope compound literal static storage is not yet supported"));
+                }
+                if !matches!(initializer.without_location(), Expr::Initializer(_)) {
+                    return Err(type_error(span,
+                        "compound literal requires braced initializer list"));
+                }
+                // Read-only type-name lookup handles typedefs, visible tags
+                // and abstract declarators. Defining a new tag *within* the
+                // compound literal type name is a separate parser/sema slice.
+                let resolved = self.resolve_sizeof_type(type_name, span)?;
+                let ty = self.complete_string_array(
+                    self.try_complete_tag_type(resolved)?, Some(initializer), span)?;
+                if !ty.is_object() || ty.size_bytes(self.target).is_none() {
+                    return Err(type_error(span,
+                        "compound literal requires a complete object type"));
+                }
+                let value = self.check_object_initializer(initializer, &ty, span, false)?;
+                Ok(CheckedExpr {
+                    ty, category: Category::LValue,
+                    kind: CheckedExprKind::CompoundLiteral(Box::new(value)),
+                })
+            },
             Expr::StringLiteral(bytes) => {
                 let len = u64::try_from(bytes.len())
                     .map_err(|_| type_error(span, "string literal exceeds target object size"))?;
