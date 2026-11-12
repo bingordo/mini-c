@@ -54,7 +54,7 @@ fn c99_pointer_difference_is_signed_element_count_with_strict_pointee_constraint
     reject("long f(int *p, char *q) { return p-q; }", "compatible pointed-to types");
     reject("long f(void *p, void *q) { return p-q; }", "complete object type");
     reject("struct Missing; long f(struct Missing *p, struct Missing *q) { return p-q; }",
-        "complete object type");
+        "incomplete struct");
     reject("int id(int x) { return x; } long f(void) { return &id - &id; }",
         "complete object type");
     reject("long f(int *p, int *q) { return p+q; }", "compatible integer operands");
