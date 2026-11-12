@@ -7,11 +7,21 @@ use mini_c_syntax::integer_literal::IntegerLiteral;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum IntRank { Bool, Char, Short, Int, Long, LongLong }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BitField {
+    /// Bit position within the 32-bit little-endian storage unit.
+    pub shift: u8,
+    pub width: u8,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructMember {
     pub name: String,
     pub ty: CType,
     pub offset: u64,
+    /// C99 bit-field storage information. The declared scalar type stays
+    /// ordinary int/unsigned int; bit-fields cannot be addressed.
+    pub bit_field: Option<BitField>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -209,16 +219,24 @@ pub fn align_up(value: u64, alignment: u64) -> Option<u64> {
 }
 
 /// Resolve ordered structure members using the selected target's alignment.
-/// No packing, bitfields, or flexible-array members are supported yet.
+/// Only named C99 int/unsigned int bit-fields are supported in this slice.
 pub fn layout_struct(
     tag: Option<String>, fields: Vec<(String, CType)>, target: Target,
+) -> Result<CType, &'static str> {
+    layout_struct_with_bits(tag,
+        fields.into_iter().map(|(name, ty)| (name, ty, None)).collect(), target)
+}
+
+pub fn layout_struct_with_bits(
+    tag: Option<String>, fields: Vec<(String, CType, Option<u8>)>, target: Target,
 ) -> Result<CType, &'static str> {
     if fields.is_empty() { return Err("empty structures are unsupported"); }
     let mut size = 0u64;
     let mut align = 1u64;
+    let mut bit_cursor: Option<u64> = None;
     let mut members = Vec::with_capacity(fields.len());
     let mut seen = std::collections::HashSet::new();
-    for (name, ty) in fields {
+    for (name, ty, bit_width) in fields {
         if !seen.insert(name.clone()) { return Err("duplicate structure member"); }
         let field_size = ty.size_bytes(target).ok_or("structure member has incomplete type")?;
         let field_align = ty.align_bytes(target).ok_or("structure member has incomplete type")?;
@@ -226,9 +244,42 @@ pub fn layout_struct(
             return Err("structure member must have a complete object type");
         }
         align = align.max(field_align);
-        let offset = align_up(size, field_align).ok_or("structure member layout overflow")?;
-        size = offset.checked_add(field_size).ok_or("structure size overflow")?;
-        members.push(StructMember { name, ty, offset });
+        if let Some(width) = bit_width {
+            if !matches!(ty.unqualified(), CType::Integer { rank: IntRank::Int, .. })
+                || width == 0 || width > 32
+            {
+                return Err("unsupported bit-field type or width");
+            }
+            // x86-64 SysV/GCC packs low bits first, and can use remaining
+            // bits of an aligned 32-bit unit after preceding byte fields.
+            // Never allow a field to cross its declared 32-bit unit.
+            let mut position = bit_cursor.unwrap_or_else(|| size * 8);
+            let end = position.checked_add(u64::from(width))
+                .ok_or("bit-field position overflow")?;
+            if position / 32 != (end - 1) / 32 {
+                position = align_up(position, 32)
+                    .ok_or("bit-field position overflow")?;
+            }
+            let end = position.checked_add(u64::from(width))
+                .ok_or("bit-field position overflow")?;
+            let offset = position / 32 * 4;
+            size = size.max(end.checked_add(7)
+                .ok_or("bit-field position overflow")? / 8);
+            bit_cursor = Some(end);
+            members.push(StructMember {
+                name, ty, offset,
+                bit_field: Some(BitField {
+                    shift: u8::try_from(position % 32).map_err(|_| "bit shift overflow")?,
+                    width,
+                }),
+            });
+        } else {
+            bit_cursor = None;
+            let offset = align_up(size, field_align)
+                .ok_or("structure member layout overflow")?;
+            size = offset.checked_add(field_size).ok_or("structure size overflow")?;
+            members.push(StructMember { name, ty, offset, bit_field: None });
+        }
     }
     size = align_up(size, align).ok_or("structure size overflow")?;
     Ok(CType::Struct { identity: 0, tag, members, size, align })
@@ -239,21 +290,37 @@ pub fn layout_struct(
 pub fn layout_union(
     tag: Option<String>, fields: Vec<(String, CType)>, target: Target,
 ) -> Result<CType, &'static str> {
+    layout_union_with_bits(tag,
+        fields.into_iter().map(|(name, ty)| (name, ty, None)).collect(), target)
+}
+
+pub fn layout_union_with_bits(
+    tag: Option<String>, fields: Vec<(String, CType, Option<u8>)>, target: Target,
+) -> Result<CType, &'static str> {
     if fields.is_empty() { return Err("empty unions are unsupported"); }
     let mut size = 0u64;
     let mut align = 1u64;
     let mut members = Vec::with_capacity(fields.len());
     let mut seen = std::collections::HashSet::new();
-    for (name, ty) in fields {
+    for (name, ty, bit_width) in fields {
         if !seen.insert(name.clone()) { return Err("duplicate union member"); }
         let field_size = ty.size_bytes(target).ok_or("union member has incomplete type")?;
         let field_align = ty.align_bytes(target).ok_or("union member has incomplete type")?;
         if field_size == 0 || !ty.is_object() {
             return Err("union member must have a complete object type");
         }
+        if let Some(width) = bit_width {
+            if !matches!(ty.unqualified(), CType::Integer { rank: IntRank::Int, .. })
+                || width == 0 || width > 32 {
+                return Err("unsupported bit-field type or width");
+            }
+        }
         align = align.max(field_align);
         size = size.max(field_size);
-        members.push(StructMember { name, ty, offset: 0 });
+        members.push(StructMember {
+            name, ty, offset: 0,
+            bit_field: bit_width.map(|width| BitField { shift: 0, width }),
+        });
     }
     size = align_up(size, align).ok_or("union size overflow")?;
     Ok(CType::Union { identity: 0, tag, members, size, align })

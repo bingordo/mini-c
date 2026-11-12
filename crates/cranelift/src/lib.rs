@@ -1154,6 +1154,63 @@ impl Lower<'_> {
         Ok(b.ins().symbol_value(types::I64, gv))
     }
 
+    /// Load the logical value from a 32-bit little-endian C bit-field.
+    /// The signed case sign-extends from its declared width.
+    fn load_bit_field(
+        b: &mut FunctionBuilder<'_>, address: Value,
+        shift: u8, width: u8, signed: bool,
+    ) -> Value {
+        let raw = b.ins().load(types::I32, ir::MemFlagsData::new(), address, 0);
+        let shifted = if shift == 0 { raw } else {
+            b.ins().ushr_imm_s(raw, i64::from(shift))
+        };
+        let mask = if width == 32 { u32::MAX } else { (1u32 << width) - 1 };
+        let value = b.ins().band_imm_s(shifted, i64::from(mask));
+        if signed && width < 32 {
+            let pad = i64::from(32 - width);
+            let high = b.ins().ishl_imm_s(value, pad);
+            b.ins().sshr_imm_s(high, pad)
+        } else {
+            value
+        }
+    }
+
+    /// Read-modify-write one bit-field's containing int unit, preserving
+    /// adjacent fields and ordinary bytes in the same word. Return the
+    /// *stored and narrowed* logical value, not the untruncated RHS.
+    fn store_bit_field(
+        b: &mut FunctionBuilder<'_>, address: Value, value: Value,
+        shift: u8, width: u8, signed: bool,
+    ) -> Value {
+        let mask = if width == 32 { u32::MAX } else { (1u32 << width) - 1 };
+        let word_mask = mask << shift;
+        let old = b.ins().load(types::I32, ir::MemFlagsData::new(), address, 0);
+        let cleared = b.ins().band_imm_s(old, i64::from(!word_mask));
+        let truncated = b.ins().band_imm_s(value, i64::from(mask));
+        let shifted = if shift == 0 { truncated } else {
+            b.ins().ishl_imm_s(truncated, i64::from(shift))
+        };
+        let packed = b.ins().bor(cleared, shifted);
+        b.ins().store(ir::MemFlagsData::new(), packed, address, 0);
+        // Avoid another memory load, but preserve the sign-extension rules.
+        if signed && width < 32 {
+            let pad = i64::from(32 - width);
+            let high = b.ins().ishl_imm_s(truncated, pad);
+            b.ins().sshr_imm_s(high, pad)
+        } else { truncated }
+    }
+
+    fn bit_field_details(expr: &CheckedExpr) -> Option<(u8, u8, bool)> {
+        let CheckedExprKind::BitFieldMember(_, _, shift, width) = &expr.kind else {
+            return None;
+        };
+        let signed = match expr.ty.unqualified() {
+            CType::Integer { unsigned, .. } => !unsigned,
+            _ => return None,
+        };
+        Some((*shift, *width, signed))
+    }
+
     fn place(&mut self, b: &mut FunctionBuilder<'_>, expr: &CheckedExpr) -> Result<Value> {
         match &expr.kind {
             CheckedExprKind::Name(name) => self.object_address(b, name),
@@ -1179,7 +1236,8 @@ impl Lower<'_> {
                 self.initialize_object(b, address, &expr.ty, initializer)?;
                 Ok(address)
             }
-            CheckedExprKind::Member(base, offset) => {
+            CheckedExprKind::Member(base, offset) |
+            CheckedExprKind::BitFieldMember(base, offset, ..) => {
                 let address = self.place(b, base)?;
                 let offset = i64::try_from(*offset)
                     .map_err(|_| "struct member offset exceeds supported address range")?;
@@ -1309,7 +1367,8 @@ impl Lower<'_> {
             CheckedExprKind::FloatLiteral(_) =>
                 Err("native floating-point literal code generation is unsupported".into()),
             CheckedExprKind::EnumConstant(n) => Ok(b.ins().iconst(scalar_type(&expr.ty)?, *n)),
-            CheckedExprKind::StringLiteral(_) | CheckedExprKind::Member(..) => self.place(b, expr),
+            CheckedExprKind::StringLiteral(_) | CheckedExprKind::Member(..) |
+            CheckedExprKind::BitFieldMember(..) => self.place(b, expr),
             CheckedExprKind::StaticCompoundLiteral { .. } =>
                 Err("static compound literal may not be evaluated as an automatic expression".into()),
             CheckedExprKind::CompoundLiteral(_) => {
@@ -1325,6 +1384,9 @@ impl Lower<'_> {
             CheckedExprKind::Name(name) => self.object_address(b, name),
             CheckedExprKind::Load(inner) => {
                 let address = self.place(b, inner)?;
+                if let Some((shift, width, signed)) = Self::bit_field_details(inner) {
+                    return Ok(Self::load_bit_field(b, address, shift, width, signed));
+                }
                 if matches!(&expr.ty, CType::Struct { .. } | CType::Union { .. }) {
                     // Aggregate values are represented by their source address
                     // until the explicit copy in assignment/initialization.
@@ -1423,6 +1485,8 @@ impl Lower<'_> {
                         .ok_or("incomplete struct assignment")?;
                     Self::copy_bytes(b, address, rhs_value, size)?;
                     Ok(address)
+                } else if let Some((shift, width, signed)) = Self::bit_field_details(lhs) {
+                    Ok(Self::store_bit_field(b, address, rhs_value, shift, width, signed))
                 } else {
                     b.ins().store(ir::MemFlagsData::new(), rhs_value, address, 0);
                     Ok(rhs_value)
@@ -1432,8 +1496,13 @@ impl Lower<'_> {
                 // ++ and -- must evaluate the lvalue's address exactly once.
                 // Postfix yields the loaded old value; prefix the stored new one.
                 let address = self.place(b, target)?;
-                let old = b.ins().load(scalar_type(&target.ty)?,
-                    ir::MemFlagsData::new(), address, 0);
+                let details = Self::bit_field_details(target);
+                let old = if let Some((shift, width, signed)) = details {
+                    Self::load_bit_field(b, address, shift, width, signed)
+                } else {
+                    b.ins().load(scalar_type(&target.ty)?,
+                        ir::MemFlagsData::new(), address, 0)
+                };
                 let stored = if let CType::Pointer(element) = computation_ty {
                     let width = element.size_bytes(Target::default())
                         .ok_or("increment/decrement requires complete pointer element")?;
@@ -1450,15 +1519,25 @@ impl Lower<'_> {
                     };
                     Self::convert(b, computed, computation_ty, &target.ty)?
                 };
-                b.ins().store(ir::MemFlagsData::new(), stored, address, 0);
+                let stored = if let Some((shift, width, signed)) = details {
+                    Self::store_bit_field(b, address, stored, shift, width, signed)
+                } else {
+                    b.ins().store(ir::MemFlagsData::new(), stored, address, 0);
+                    stored
+                };
                 Ok(if *postfix { old } else { stored })
             }
             CheckedExprKind::CompoundAssign(op, lhs, rhs, computation_ty) => {
                 // Never lower as lhs = lhs op rhs: a subscript, dereference,
                 // or member expression may compute an address with side effects.
                 let address = self.place(b, lhs)?;
-                let old = b.ins().load(scalar_type(&lhs.ty)?,
-                    ir::MemFlagsData::new(), address, 0);
+                let details = Self::bit_field_details(lhs);
+                let old = if let Some((shift, width, signed)) = details {
+                    Self::load_bit_field(b, address, shift, width, signed)
+                } else {
+                    b.ins().load(scalar_type(&lhs.ty)?,
+                        ir::MemFlagsData::new(), address, 0)
+                };
                 if let CType::Pointer(element) = computation_ty {
                     // C pointer +=/-= scales by the complete element size.
                     // The lvalue address above and right expression below
@@ -1499,7 +1578,12 @@ impl Lower<'_> {
                     _ => return Err("unsupported compound assignment operator".into()),
                 };
                 let stored = Self::convert(b, computed, computation_ty, &lhs.ty)?;
-                b.ins().store(ir::MemFlagsData::new(), stored, address, 0);
+                let stored = if let Some((shift, width, signed)) = details {
+                    Self::store_bit_field(b, address, stored, shift, width, signed)
+                } else {
+                    b.ins().store(ir::MemFlagsData::new(), stored, address, 0);
+                    stored
+                };
                 // Assignment expressions yield the value actually stored,
                 // including narrowing back to char or another small type.
                 Ok(stored)

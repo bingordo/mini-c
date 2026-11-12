@@ -131,7 +131,8 @@ pub fn evaluate(expr: &CheckedExpr, target: Target) -> Result<i128, &'static str
         CheckedExprKind::Initializer(_) | CheckedExprKind::SparseInitializer(_) |
         CheckedExprKind::DeepInitializer(_) | CheckedExprKind::CompoundLiteral(_) |
         CheckedExprKind::StaticCompoundLiteral { .. } |
-        CheckedExprKind::Member(..) | CheckedExprKind::StringLiteral(_) | CheckedExprKind::Name(_) | CheckedExprKind::Load(_) |
+        CheckedExprKind::Member(..) | CheckedExprKind::BitFieldMember(..) |
+        CheckedExprKind::StringLiteral(_) | CheckedExprKind::Name(_) | CheckedExprKind::Load(_) |
         CheckedExprKind::ArrayDecay(_) | CheckedExprKind::Comma(..) |
         CheckedExprKind::Assign(..) |
         CheckedExprKind::CompoundAssign(..) | CheckedExprKind::Update { .. } |

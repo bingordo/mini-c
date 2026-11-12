@@ -382,6 +382,42 @@
       "source": "struct Unknown;struct B{struct Unknown x;};int f(void){return @N@;}"
     },
     {
+      "id": "bitfield-named-unsigned",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_named_int_bitfields_layout_signedness_and_constraints",
+      "source": "struct S{unsigned int a:3,b:5;};int f(void){struct S s;s.a=@N@%8;s.b=5;return s.a+s.b;}"
+    },
+    {
+      "id": "bitfield-named-signed",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_named_int_bitfields_layout_signedness_and_constraints",
+      "source": "struct S{signed int a:5;};int f(void){struct S s;s.a=-(@N@%10);return s.a;}"
+    },
+    {
+      "id": "bitfield-width-overflow",
+      "feature": "F3",
+      "expect": "reject",
+      "mini": "supported",
+      "kind": "constraint",
+      "test_ref": "crates/sema/src/tests.rs:c99_named_int_bitfields_layout_signedness_and_constraints",
+      "source": "struct S{unsigned int a:33;};int f(void){return @N@;}"
+    },
+    {
+      "id": "bitfield-address-of",
+      "feature": "F3",
+      "expect": "reject",
+      "mini": "supported",
+      "kind": "constraint",
+      "test_ref": "crates/sema/src/tests.rs:c99_named_int_bitfields_layout_signedness_and_constraints",
+      "source": "struct S{unsigned int a:3;};int f(void){struct S s;return &s.a!=0 && @N@;}"
+    },
+    {
       "id": "bitfield-struct",
       "feature": "F3",
       "expect": "accept",

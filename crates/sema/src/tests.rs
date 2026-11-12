@@ -943,6 +943,67 @@ fn c99_completed_tagged_aggregate_members_have_full_layout_and_type_identity() {
 }
 
 #[test]
+fn c99_named_int_bitfields_layout_signedness_and_constraints() {
+    let checked = check(concat!(
+        "struct Flags {unsigned int a:3, b:5;signed int c:7;int tail;};",
+        "struct Flags global;",
+        "int f(void){struct Flags x; x.a=5;x.b=17;x.c=-7;x.tail=9;",
+        " return x.a+x.b+x.c+x.tail;}"
+    )).expect("named int bit-fields should type-check");
+    let CheckedItem::Declaration(global) = &checked[1] else {
+        panic!("global object required");
+    };
+    let CType::Struct { size, align, members, .. } = &global.ty else {
+        panic!("struct layout");
+    };
+    assert_eq!((*size, *align), (8, 4));
+    assert_eq!(members.iter().map(|m| m.offset).collect::<Vec<_>>(), [0, 0, 0, 4]);
+    assert_eq!(members.iter().map(|m| m.bit_field.map(|i| (i.shift,i.width)))
+        .collect::<Vec<_>>(), [Some((0,3)),Some((3,5)),Some((8,7)),None]);
+
+    let checked = check("struct Mix {char prefix;unsigned int a:3,b:5;int tail;};struct Mix m;")
+        .expect("bit-field after a byte should share remaining storage bits");
+    let CheckedItem::Declaration(m) = &checked[1] else { panic!("Mix") };
+    let CType::Struct { members, size, align, .. } = &m.ty else { panic!("Mix type") };
+    assert_eq!((*size, *align), (8,4));
+    assert_eq!(members.iter().map(|m| m.offset).collect::<Vec<_>>(), [0,0,0,4]);
+    assert_eq!(members[1].bit_field.map(|i| (i.shift,i.width)), Some((8,3)));
+    assert_eq!(members[2].bit_field.map(|i| (i.shift,i.width)), Some((11,5)));
+
+    let checked = check(concat!(
+        "union Bits {unsigned int low:4;signed int high:7;long full;};",
+        "union Bits u;"
+    )).expect("union bit-fields share their storage start");
+    let CheckedItem::Declaration(u) = &checked[1] else { panic!("union") };
+    let CType::Union { members, size, align, .. } = &u.ty else { panic!("union layout") };
+    assert_eq!((*size, *align), (8,8));
+    assert_eq!(members[0].bit_field.map(|i| (i.shift,i.width)), Some((0,4)));
+    assert_eq!(members[1].bit_field.map(|i| (i.shift,i.width)), Some((0,7)));
+
+    check("struct B {unsigned int a:32;};int f(void){struct B b;b.a=3;return b.a;}").unwrap();
+    check("enum W{BITS=5};struct B{unsigned int x:BITS;};").unwrap();
+    check("struct B{signed int a:5;};int f(void){struct B b;b.a=-7;return b.a;}").unwrap();
+    check("struct B{unsigned int a:4;};int f(void){struct B b;b.a=2;b.a++;b.a+=3;return b.a;}").unwrap();
+    check("struct B{unsigned int a:4;};int f(void){struct B b;return sizeof b;}").unwrap();
+
+    reject("struct B{unsigned int a:0;};", "named bit-field width must be between 1 and 32");
+    reject("struct B{unsigned int a:33;};", "named bit-field width must be between 1 and 32");
+    reject("struct B{int a:-2;};", "named bit-field width must be between 1 and 32");
+    reject("struct B{unsigned int a:3.5;};", "integer constant expression");
+    reject("int width;struct B{unsigned int a:width;};", "integer constant expression");
+    reject("struct B{unsigned char a:3;};",
+        "bit-field requires signed or unsigned int");
+    reject("struct B{unsigned int :0;unsigned int a:3;};",
+        "unnamed/zero-width bit-fields require separate layout support");
+    reject("struct B{unsigned int a:3;};int f(void){struct B b;return &b.a!=0;}",
+        "cannot take the address of a bit-field");
+    reject("struct B{unsigned int a:3;};int f(void){struct B b;return sizeof b.a;}",
+        "sizeof cannot be applied to a bit-field");
+    reject("struct B{unsigned int a:3;};struct B b={5};",
+        "bit-field aggregate brace initialization is not yet supported");
+}
+
+#[test]
 fn inline_struct_member_errors() {
     reject("struct X { int a; int a; } x;", "duplicate structure member");
     reject("struct X { void a; } x;", "incomplete");

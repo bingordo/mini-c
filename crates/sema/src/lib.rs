@@ -72,6 +72,9 @@ pub enum CheckedExprKind {
     ArrayDecay(Box<CheckedExpr>),
     /// Addressable member of a structure, with its checked byte offset.
     Member(Box<CheckedExpr>, u64),
+    /// A non-addressable C bit-field member, stored in one 32-bit unit.
+    /// It retains integer lvalue semantics for assignment and ++/--.
+    BitFieldMember(Box<CheckedExpr>, u64, u8, u8),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -532,14 +535,27 @@ impl Checker {
                     // self-referential `struct Node *next` fields do not
                     // require completing the enclosing Node prematurely.
                     // Truly incomplete by-value members still fail below.
-                    let resolved = self.resolve(&member.ty, member.span)?;
+                    let (declared, bit_width) = match &member.ty {
+                        Type::BitField(base, width) => {
+                            if member.name.is_empty() {
+                                return Err(type_error(member.span,
+                                    "unnamed/zero-width bit-fields require separate layout support"));
+                            }
+                            (base.as_ref(), Some(width.as_ref()))
+                        }
+                        _ => (&member.ty, None),
+                    };
+                    let resolved = self.resolve(declared, member.span)?;
                     let resolved = self.try_complete_tag_type(resolved)?;
-                    fields.push((member.name.clone(), resolved));
+                    let width = bit_width.map(|width| {
+                        self.check_bit_width(width, &resolved, member.span)
+                    }).transpose()?;
+                    fields.push((member.name.clone(), resolved, width));
                 }
                 let mut complete = if kind == TagKind::Union {
-                    types::layout_union(tag.clone(), fields, self.target)
+                    types::layout_union_with_bits(tag.clone(), fields, self.target)
                 } else {
-                    types::layout_struct(tag.clone(), fields, self.target)
+                    types::layout_struct_with_bits(tag.clone(), fields, self.target)
                 }.map_err(|reason| type_error(span, reason))?;
                 match &mut complete {
                     CType::Struct { identity: id, .. } |
@@ -557,6 +573,8 @@ impl Checker {
                 }
                 complete
             }
+            Type::BitField(..) => return Err(type_error(span,
+                "bit-field declaration is only valid inside a struct or union")),
             Type::Pointer(inner) => CType::Pointer(Box::new(self.resolve(inner, span)?)),
             Type::Function { result, params } | Type::VariadicFunction { result, params } => {
                 let result = self.resolve(result, span)?;
@@ -940,6 +958,20 @@ impl Checker {
     ) -> Result<CheckedExpr, Diagnostic> {
         let span = original.location().unwrap_or(span);
         let original = original.without_location();
+        // Braced aggregate initialization requires packing multiple logical
+        // fields into shared storage units, rather than writing entire int
+        // words at each member offset. Until that path is implemented, reject
+        // it explicitly rather than clobber neighboring bit-fields.
+        if matches!(original, Expr::Initializer(_))
+            && match ty.unqualified() {
+                CType::Struct { members, .. } | CType::Union { members, .. } =>
+                    members.iter().any(|m| m.bit_field.is_some()),
+                _ => false,
+            }
+        {
+            return Err(type_error(span,
+                "bit-field aggregate brace initialization is not yet supported"));
+        }
         if let Expr::Initializer(values) = original {
             if values.iter().any(|value| matches!(
                 value.without_location(), Expr::Designated { path, .. } if path.len() > 1
@@ -1648,6 +1680,29 @@ impl Checker {
     /// type; each anonymous definition must have a fresh nominal identity.
     /// Declared member types are recursively resolved and *completed* before
     /// layout, while pointers to the tag under construction stay nominal.
+    fn check_bit_width(
+        &self, width: &Expr, ty: &CType, span: Span,
+    ) -> Result<u8, Diagnostic> {
+        if !matches!(ty.unqualified(),
+            CType::Integer { rank: IntRank::Int, .. })
+        {
+            return Err(type_error(span,
+                "bit-field requires signed or unsigned int in this milestone"));
+        }
+        let typed = self.check_expr(width, span)?.rvalue();
+        if !typed.ty.is_integer() {
+            return Err(type_error(span, "bit-field width must be an integer constant expression"));
+        }
+        let value = const_eval::evaluate(&typed, self.target)
+            .map_err(|why| type_error(span, format!(
+                "bit-field width requires integer constant expression: {why}")))?;
+        if !(1..=32).contains(&value) {
+            return Err(type_error(span,
+                "named bit-field width must be between 1 and 32"));
+        }
+        u8::try_from(value).map_err(|_| type_error(span, "bit-field width overflow"))
+    }
+
     fn resolve_typename_aggregate(
         &self, ty: &Type, span: Span,
     ) -> Result<CType, Diagnostic> {
@@ -1687,14 +1742,27 @@ impl Checker {
                 return Err(type_error(member.span,
                     "aggregate members cannot have initializers or storage classes"));
             }
-            let member_ty = self.resolve_sizeof_type(&member.ty, member.span)?;
+            let (declared, bit_width) = match &member.ty {
+                Type::BitField(base, width) => {
+                    if member.name.is_empty() {
+                        return Err(type_error(member.span,
+                            "unnamed/zero-width bit-fields require separate layout support"));
+                    }
+                    (base.as_ref(), Some(width.as_ref()))
+                }
+                _ => (&member.ty, None),
+            };
+            let member_ty = self.resolve_sizeof_type(declared, member.span)?;
             let member_ty = self.try_complete_tag_type(member_ty)?;
-            fields.push((member.name.clone(), member_ty));
+            let width = bit_width.map(|width| {
+                self.check_bit_width(width, &member_ty, member.span)
+            }).transpose()?;
+            fields.push((member.name.clone(), member_ty, width));
         }
         let mut complete = if kind == TagKind::Struct {
-            types::layout_struct(tag.clone(), fields, self.target)
+            types::layout_struct_with_bits(tag.clone(), fields, self.target)
         } else {
-            types::layout_union(tag.clone(), fields, self.target)
+            types::layout_union_with_bits(tag.clone(), fields, self.target)
         }.map_err(|why| type_error(span, why))?;
         match &mut complete {
             CType::Struct { identity: id, .. } |
@@ -1864,6 +1932,9 @@ impl Checker {
                 // do not call .rvalue(), which would decay an array to pointer,
                 // or evaluate side effects from function calls and ++/--.
                 let typed = self.check_expr(operand, span)?;
+                if matches!(typed.kind, CheckedExprKind::BitFieldMember(..)) {
+                    return Err(type_error(span, "sizeof cannot be applied to a bit-field"));
+                }
                 let ty = self.complete_tag_type(typed.ty, span)?;
                 let size = ty.size_bytes(self.target).ok_or_else(|| type_error(
                     span, "sizeof requires a complete object type (not void or function)"
@@ -1951,10 +2022,15 @@ impl Checker {
                     }
                 } else { field.ty.clone() };
                 let offset = field.offset;
+                let kind = match field.bit_field {
+                    Some(info) => CheckedExprKind::BitFieldMember(
+                        Box::new(object), offset, info.shift, info.width),
+                    None => CheckedExprKind::Member(Box::new(object), offset),
+                };
                 Ok(CheckedExpr {
                     ty: field_ty,
                     category: Category::LValue,
-                    kind: CheckedExprKind::Member(Box::new(object), offset),
+                    kind,
                 })
             }
             Expr::Index(base, offset) => {
@@ -1989,6 +2065,10 @@ impl Checker {
                                     DiagnosticCode::SemanticInvalidOperatorOperands,
                                     "cannot take address of register object"));
                             }
+                        }
+                        if matches!(typed.kind, CheckedExprKind::BitFieldMember(..)) {
+                            return Err(Diagnostic::coded(span, DiagnosticCode::SemanticInvalidOperatorOperands,
+                                "cannot take the address of a bit-field"));
                         }
                         if typed.category == Category::Value {
                             return Err(Diagnostic::coded(span, DiagnosticCode::SemanticInvalidOperatorOperands, "address-of requires an lvalue or function"));
