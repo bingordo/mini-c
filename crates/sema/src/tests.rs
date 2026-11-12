@@ -224,7 +224,7 @@ fn c99_file_scope_compound_literals_have_unique_static_objects_and_checked_initi
 
     reject("int *bad=(int[2]){1,2,3};", "too many array initializers");
     reject("int *bad=(int[]){[1]=2,[1]=3};", "duplicate initializer target");
-    reject("int *bad=(void[]){1};", "array element requires");
+    reject("int *bad=(void[]){1};", "complete object type");
     reject("int *bad=&(int){1+unknown};", "undeclared identifier");
 }
 
