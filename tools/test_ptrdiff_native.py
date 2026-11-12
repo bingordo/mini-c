@@ -97,7 +97,7 @@ def main() -> int:
                         f"code={completed.returncode}, stdout={completed.stdout!r}, "
                         f"stderr={completed.stderr!r}"
                     )
-            if not obj.read_bytes().startswith(b"\\x7fELF"):
+            if not obj.read_bytes().startswith(b"\x7fELF"):
                 raise AssertionError(f"{name}: expected native ELF object")
             print(f"{name}: GCC/Mini-C native ptrdiff execution PASS")
     print(f"C99 native pointer subtraction: {len(CASES)} cases passed")
