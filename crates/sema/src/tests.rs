@@ -575,6 +575,48 @@ fn inline_struct_member_types_and_layout() {
 }
 
 #[test]
+fn c99_comma_group_aggregate_fields_keep_layout_and_member_legality() {
+    // The exact declarator pattern in musl <inttypes.h>:
+    // typedef struct { intmax_t quot, rem; } imaxdiv_t;
+    let src = "typedef long long intmax_t; \
+               typedef struct { intmax_t quot, rem; } imaxdiv_t; \
+               imaxdiv_t value;";
+    let items = check(src).unwrap();
+    let CheckedItem::Declaration(value) = &items[2] else {
+        panic!("musl imaxdiv_t object expected")
+    };
+    let CType::Struct { size, align, members, .. } = &value.ty else {
+        panic!("musl imaxdiv_t must retain a checked struct layout")
+    };
+    assert_eq!((*size, *align), (16, 8));
+    assert_eq!(members.iter().map(|m| (m.name.as_str(), m.offset))
+        .collect::<Vec<_>>(), [("quot", 0), ("rem", 8)]);
+    assert!(members.iter().all(|m|
+        m.ty == CType::Integer {rank:IntRank::LongLong,unsigned:false}));
+
+    let items = check("struct Mixed { char a, b; int *p, count[3]; long z; } x;").unwrap();
+    let CheckedItem::Declaration(value) = &items[0] else { panic!("struct expected") };
+    let CType::Struct { size, align, members, .. } = &value.ty else {
+        panic!("struct layout expected")
+    };
+    assert_eq!((*size, *align), (32, 8));
+    assert_eq!(members.iter().map(|m| (m.name.as_str(), m.offset))
+        .collect::<Vec<_>>(),
+        [("a",0), ("b",1), ("p",8), ("count",16), ("z", 28)]);
+    // Expected size is actually rounded up to the 8-byte alignment.
+    let items = check("union Data { int a, b; long c; } value;").unwrap();
+    let CheckedItem::Declaration(value) = &items[0] else { panic!("union expected") };
+    let CType::Union { members, size, align, .. } = &value.ty else {
+        panic!("union layout expected")
+    };
+    assert_eq!((*size,*align),(8,8));
+    assert_eq!(members.iter().map(|m| m.offset).collect::<Vec<_>>(), [0,0,0]);
+
+    reject("struct S { int a, a; } value;", "duplicate structure member");
+    reject("union U { int x, x; } value;", "duplicate union member");
+}
+
+#[test]
 fn inline_struct_member_errors() {
     reject("struct X { int a; int a; } x;", "duplicate structure member");
     reject("struct X { void a; } x;", "incomplete");
