@@ -175,7 +175,7 @@ fn c99_compound_literals_have_object_types_lvalues_and_inferred_array_bounds() {
     reject("int f(void){ return (int[2]){1,2,3}[0]; }", "too many array initializers");
     reject("int f(void){ return (int[]){[2]=4,[2]=5}[0]; }",
         "duplicate initializer target");
-    reject("int *global=(int[]){1,2};", "file-scope compound literal static storage");
+    check("int *global=(int[]){1,2};").unwrap();
 }
 
 #[test]
@@ -195,12 +195,17 @@ fn c99_file_scope_compound_literals_have_unique_static_objects_and_checked_initi
         let Some(value) = &decl.initializer else { continue };
         // Direct typed pointer references retain the static compound lvalue
         // under an array decay or address-of operation.
+        let mut ptr = value;
+        while let CheckedExprKind::Convert(inner) = &ptr.kind {
+            ptr = inner;
+        }
         if let CheckedExprKind::ArrayDecay(inner) |
-            CheckedExprKind::Unary(UnOp::Address, inner) = &value.kind
+            CheckedExprKind::Unary(UnOp::Address, inner) = &ptr.kind
         {
             if let CheckedExprKind::StaticCompoundLiteral { symbol, initializer } = &inner.kind {
                 symbols.push(symbol.clone());
                 assert!(matches!(initializer.kind,
+                    CheckedExprKind::Literal(_) |
                     CheckedExprKind::Initializer(_) |
                     CheckedExprKind::SparseInitializer(_) |
                     CheckedExprKind::DeepInitializer(_)));
