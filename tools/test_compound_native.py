@@ -105,6 +105,100 @@ CASES = {
         }
         int main(void) {return choose(1)!=11 || choose(0)!=5;}
     """,
+    "inline_anonymous_struct": r"""
+        int main(void) {
+            return ((struct {int a;long b;}){.a=3,.b=7}).a!=3
+                || ((struct {int a;long b;}){.a=3,.b=7}).b!=7;
+        }
+    """,
+    "inline_anonymous_union": r"""
+        int main(void) {
+            return ((union {int a;long b;}){.b=17}).b!=17;
+        }
+    """,
+    "inline_typename_with_existing_tag_member": r"""
+        struct Field {int value;};
+        int main(void) {
+            return ((struct {struct Field field;int tag;})
+                {.field={.value=9},.tag=5}).field.value!=9;
+        }
+    """,
+    "inline_named_tag_reused_after_compound": r"""
+        int main(void) {
+            int first=((struct Introduced {int a;long b;})
+                {.a=3,.b=5}).a;
+            struct Introduced second={7,11};
+            return first!=3 || second.a!=7 || second.b!=11;
+        }
+    """,
+    "inline_named_union_reused_after_compound": r"""
+        int main(void) {
+            long first=((union Introduced {int a;long b;}){.b=13}).b;
+            union Introduced second={.b=17};
+            return first!=13 || second.b!=17;
+        }
+    """,
+    "inline_tag_shadows_enclosing_scope": r"""
+        struct Outer {long a;};
+        int main(void) {
+            struct Outer old={3};
+            {
+                int inner=((struct Outer {int b;}){.b=5}).b;
+                struct Outer other={7};
+                if (inner!=5 || other.b!=7 || sizeof(other)!=4) return 1;
+            }
+            return old.a!=3 || sizeof(old)!=8;
+        }
+    """,
+    "sizeof_inline_anonymous_type": r"""
+        int main(void) {
+            return sizeof(struct {char c;long n;})!=16
+                || sizeof(union {char c;long n;})!=8;
+        }
+    """,
+    "sizeof_named_tag_defines_type": r"""
+        int main(void) {
+            int count=sizeof(struct Foo {int x;long y;});
+            struct Foo value={3,5};
+            return count!=16 || value.x!=3 || value.y!=5;
+        }
+    """,
+    "inline_scalar_field_address": r"""
+        int main(void) {
+            int *p=&((struct {int a;int b;}){.a=3,.b=8}).b;
+            long *q=&((union {int a;long b;}){.b=17}).b;
+            return *p!=8 || *q!=17;
+        }
+    """,
+    "inline_dynamic_initializer_order": r"""
+        int calls;
+        int bump(void) {calls++;return calls;}
+        int main(void) {
+            int first=((struct {int x;int y;}){.y=bump(),.x=bump()}).x;
+            /* C99 does not specify initializer evaluation order. Verify each
+               call occurs once, not which field GCC chooses to initialize
+               first; both 1 and 2 are conforming results here. */
+            return calls!=2 || (first!=1 && first!=2);
+        }
+    """,
+    "sizeof_inline_compound_skips_calls": r"""
+        int calls;
+        int bump(void) {calls++;return 4;}
+        int main(void) {
+            unsigned long size=sizeof (struct {int x;int y;})
+                {.x=bump(),.y=bump()};
+            return size!=8 || calls!=0;
+        }
+    """,
+    "nested_inline_aggregate_types": r"""
+        int main(void) {
+            int result=((struct {
+                struct {int left;int right;} nested;
+                int extra;
+            }){.nested={.left=3,.right=7},.extra=9}).nested.right;
+            return result!=7;
+        }
+    """,
 }
 
 

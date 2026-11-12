@@ -112,6 +112,66 @@ CASES = {
             return root.flag!=7 || *root.ptr!=9;
         }
     """,
+    "static_inline_anonymous_struct_member": r"""
+        int *field=&((struct {int a;int b;}){.a=3,.b=8}).b;
+        int main(void) {
+            if (*field!=8) return 1;
+            *field=11;
+            return *field!=11;
+        }
+    """,
+    "static_inline_anonymous_union_member": r"""
+        long *field=&((union {int a;long b;}){.b=17}).b;
+        int main(void) {return *field!=17;}
+    """,
+    "static_inline_nested_member_addend": r"""
+        int *value=&((struct {
+            struct {int x;int y;} nested;
+            int tag;
+        }){.nested={.x=2,.y=9},.tag=4}).nested.y;
+        int main(void) {return *value!=9;}
+    """,
+    "static_inline_anonymous_distinct_objects": r"""
+        int *first=&((struct {int x;}){.x=7}).x;
+        int *second=&((struct {int x;}){.x=7}).x;
+        int main(void) {
+            if (first==second) return 1;
+            *first=11;
+            return *second!=7 || *first!=11;
+        }
+    """,
+    "static_named_tag_created_by_compound": r"""
+        int *p=&((struct Defined {int x;int y;}){.x=3,.y=5}).y;
+        struct Defined other={7,9};
+        int main(void) {
+            return *p!=5 || other.x!=7 || other.y!=9;
+        }
+    """,
+    "static_inline_aggregate_pointer_relocation": r"""
+        struct Box {int *p;int flag;};
+        struct Box box={
+            .p=&((struct {int x;int y;}){.x=3,.y=13}).y,
+            .flag=7
+        };
+        int main(void) {
+            return *box.p!=13 || box.flag!=7;
+        }
+    """,
+    "static_inline_named_tag_sizeof": r"""
+        int size=sizeof(struct Defined {int x;long y;});
+        struct Defined value={3,5};
+        int main(void) {
+            return size!=16 || value.x!=3 || value.y!=5;
+        }
+    """,
+    "static_inline_aggregate_with_existing_member": r"""
+        struct Inner {long value;};
+        long *value=&((struct {
+            int marker;
+            struct Inner nested;
+        }){.marker=4,.nested={.value=19}}).nested.value;
+        int main(void) {return *value!=19;}
+    """,
 }
 
 

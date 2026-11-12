@@ -179,6 +179,99 @@ fn c99_compound_literals_have_object_types_lvalues_and_inferred_array_bounds() {
 }
 
 #[test]
+fn c99_inline_aggregate_compound_literal_typenames_have_distinct_nominal_layouts() {
+    let checked = check(concat!(
+        "int f(void){",
+        " int a=((struct {char c;long n;}){.c=3,.n=9}).c;",
+        " int b=((union {int i;long n;}){.n=11}).n;",
+        " int c=sizeof(struct {char c;long n;});",
+        " return a+b+c;",
+        "}"
+    )).expect("anonymous inline aggregate definitions in expressions");
+    let CheckedItem::Function(fun) = &checked[0] else { panic!("function expected") };
+    let CheckedStmt::Block(stmts) = &fun.body else { panic!("body expected") };
+    let CheckedStmt::Decl(a) = &stmts[0] else { panic!("first declaration") };
+    let mut value = a.initializer.as_ref().expect("init");
+    while let CheckedExprKind::Convert(inner) = &value.kind {
+        value = inner;
+    }
+    let CheckedExprKind::Load(member) = &value.kind else {
+        panic!("aggregate field is converted to scalar value: {value:?}");
+    };
+    let CheckedExprKind::Member(compound, offset) = &member.kind else {
+        panic!("member access on inline compound literal");
+    };
+    assert_eq!(*offset, 0);
+    let CType::Struct { identity: first_identity, members, size, align, .. } = &compound.ty else {
+        panic!("inline structure type");
+    };
+    assert_ne!(*first_identity, 0);
+    assert_eq!((*size, *align), (16, 8));
+    assert_eq!(members.iter().map(|m| m.offset).collect::<Vec<_>>(), [0, 8]);
+
+    // Separate identical-looking anonymous declarations have different
+    // nominal identities, including when neither has a source-level tag.
+    let second = check(concat!(
+        "int f(void){",
+        " int x=((struct {int a;}){.a=2}).a;",
+        " int y=((struct {int a;}){.a=3}).a;",
+        " return x+y;",
+        "}"
+    )).unwrap();
+    let CheckedItem::Function(fun) = &second[0] else { panic!("function") };
+    let CheckedStmt::Block(stmts) = &fun.body else { panic!("block") };
+    let identities = stmts[..2].iter().map(|stmt| {
+        let CheckedStmt::Decl(d) = stmt else { panic!("declaration") };
+        let CheckedExprKind::Load(inner) =
+            &d.initializer.as_ref().expect("init").kind else { panic!("load") };
+        let CheckedExprKind::Member(inner, _) = &inner.kind else { panic!("member") };
+        let CType::Struct { identity, .. } = inner.ty.unqualified() else {
+            panic!("anonymous struct");
+        };
+        *identity
+    }).collect::<Vec<_>>();
+    assert_ne!(identities[0], identities[1]);
+
+    check("int f(void){ return ((struct {int a;long b;}){.a=2,.b=5}).b; }").unwrap();
+    check("int f(void){ return ((union {int a;long b;}){.b=5}).b; }").unwrap();
+    check("int f(void){return sizeof(struct {int a;long b;})==16;}").unwrap();
+    check(concat!(
+        "int f(void){ int s=sizeof(struct Declared {int x;long y;});",
+        "struct Declared d={3,7};return s==16 && d.x==3 && d.y==7; }"
+    )).unwrap();
+    check(concat!(
+        "int f(void){ int x=((struct New {int a;}){.a=7}).a;",
+        "struct New y={9}; return x+y.a; }"
+    )).unwrap();
+    check(concat!(
+        "struct Outer {long a;};",
+        "int f(void){struct Outer old={3};{",
+        "int x=((struct Outer {int b;}){.b=5}).b;",
+        "struct Outer inner={7};if(x!=5||inner.b!=7)return 1;}",
+        "return old.a!=3;}"
+    )).unwrap();
+    check(concat!(
+        "struct Holder {int x;};",
+        "int f(void){ return ((struct {struct Holder h;int y;})",
+        "{.h={.x=7},.y=3}).h.x; }"
+    )).unwrap();
+    check("int *p=&((struct {int a;int b;}){.a=4,.b=8}).b;").unwrap();
+    check("long *p=&((union {int a;long b;}){.b=11}).b;").unwrap();
+
+    reject("int f(void){return ((struct {int a;int a;}){.a=5}).a;}",
+        "duplicate structure member");
+    reject("int f(void){return ((union {int a;int a;}){.a=5}).a;}",
+        "duplicate union member");
+    reject("int f(void){return ((struct {void x;}){.x=5}).x;}",
+        "structure member has incomplete type");
+    reject("int f(void){struct Tag x={3};return x.a;}", "incomplete");
+    reject("int f(void){sizeof(struct X {int a;});sizeof(struct X {long b;});return 0;}",
+        "redefinition of aggregate tag");
+    reject("int f(void){sizeof(struct X {int a;});sizeof(union X {int a;});return 0;}",
+        "conflicting tag kind");
+}
+
+#[test]
 fn c99_file_scope_compound_literals_have_unique_static_objects_and_checked_initializers() {
     let checked = check(concat!(
         "int *first=(int[]){2,5,9};",

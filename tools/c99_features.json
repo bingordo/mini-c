@@ -277,10 +277,55 @@
       "id": "compound-literal-inline-anonymous-type",
       "feature": "F3",
       "expect": "accept",
-      "mini": "gap",
+      "mini": "supported",
       "kind": "valid",
-      "test_ref": "docs/C99_Frontend_Plan.md:F3",
+      "test_ref": "crates/sema/src/tests.rs:c99_inline_aggregate_compound_literal_typenames_have_distinct_nominal_layouts",
       "source": "int f(void){return ((struct {int a;}){.a=@N@}).a;}"
+    },
+    {
+      "id": "compound-literal-inline-anonymous-union",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_inline_aggregate_compound_literal_typenames_have_distinct_nominal_layouts",
+      "source": "int f(void){return ((union {int a;long b;}){.a=@N@}).a;}"
+    },
+    {
+      "id": "compound-literal-inline-static",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_inline_aggregate_compound_literal_typenames_have_distinct_nominal_layouts",
+      "source": "int *p=&((struct {int a;int b;}){.a=3,.b=@N@}).b;int f(void){return *p;}"
+    },
+    {
+      "id": "compound-literal-inline-tag-scope",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_inline_aggregate_compound_literal_typenames_have_distinct_nominal_layouts",
+      "source": "int f(void){int x=((struct New {int a;}){.a=@N@}).a;struct New n={3};return x+n.a;}"
+    },
+    {
+      "id": "compound-literal-sizeof-inline-struct",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_inline_aggregate_compound_literal_typenames_have_distinct_nominal_layouts",
+      "source": "int f(void){return sizeof(struct {int a;long b;}) == 16 && @N@ >= 0;}"
+    },
+    {
+      "id": "compound-literal-inline-duplicate-member",
+      "feature": "F3",
+      "expect": "reject",
+      "mini": "supported",
+      "kind": "constraint",
+      "test_ref": "crates/sema/src/tests.rs:c99_inline_aggregate_compound_literal_typenames_have_distinct_nominal_layouts",
+      "source": "int f(void){return ((struct {int a;int a;}){.a=@N@}).a;}"
     },
     {
       "id": "vla-auto",

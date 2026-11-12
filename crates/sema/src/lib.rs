@@ -1642,8 +1642,80 @@ impl Checker {
         )))
     }
 
-    /// Read-only resolution for sizeof type-names. Unlike an ordinary
-    /// declaration, this cannot create tags or enumerators as a side effect.
+    /// Resolve an inline aggregate definition in an expression type-name.
+    /// C99 compound literals and sizeof(type-name) may introduce new struct
+    /// or union tags. Use the current tag namespace, not a copied/structural
+    /// type; each anonymous definition must have a fresh nominal identity.
+    /// Declared member types are recursively resolved and *completed* before
+    /// layout, while pointers to the tag under construction stay nominal.
+    fn resolve_typename_aggregate(
+        &self, ty: &Type, span: Span,
+    ) -> Result<CType, Diagnostic> {
+        let (kind, tag, members) = match ty {
+            Type::Struct { tag, members } => (TagKind::Struct, tag, members),
+            Type::Union { tag, members } => (TagKind::Union, tag, members),
+            _ => return Err(type_error(span,
+                "inline aggregate type-name requires struct or union definition")),
+        };
+        let identity = if let Some(name) = tag {
+            let existing = self.tags.borrow().last()
+                .and_then(|scope| scope.get(name)).cloned();
+            if let Some(entry) = existing {
+                if entry.kind != kind {
+                    return Err(type_error(span,
+                        format!("conflicting tag kind for '{name}'")));
+                }
+                if entry.complete.is_some() {
+                    return Err(type_error(span,
+                        format!("redefinition of aggregate tag '{name}'")));
+                }
+                entry.identity
+            } else {
+                let id = self.new_tag_identity();
+                self.tags.borrow_mut().last_mut().expect("tag scope")
+                    .insert(name.clone(), TagEntry {
+                        kind, identity: id, complete: None,
+                    });
+                id
+            }
+        } else {
+            self.new_tag_identity()
+        };
+        let mut fields = Vec::with_capacity(members.len());
+        for member in members {
+            if member.init.is_some() || member.storage != StorageClass::Default {
+                return Err(type_error(member.span,
+                    "aggregate members cannot have initializers or storage classes"));
+            }
+            let member_ty = self.resolve_sizeof_type(&member.ty, member.span)?;
+            let member_ty = self.try_complete_tag_type(member_ty)?;
+            fields.push((member.name.clone(), member_ty));
+        }
+        let mut complete = if kind == TagKind::Struct {
+            types::layout_struct(tag.clone(), fields, self.target)
+        } else {
+            types::layout_union(tag.clone(), fields, self.target)
+        }.map_err(|why| type_error(span, why))?;
+        match &mut complete {
+            CType::Struct { identity: id, .. } |
+            CType::Union { identity: id, .. } => *id = identity,
+            _ => unreachable!(),
+        }
+        if let Some(name) = tag {
+            self.tags.borrow_mut().last_mut().expect("tag scope")
+                .insert(name.clone(), TagEntry {
+                    kind, identity, complete: Some(complete.clone()),
+                });
+            self.tag_definitions.borrow_mut()
+                .insert(identity, complete.clone());
+        }
+        Ok(complete)
+    }
+
+    /// Type-name resolution in sizeof, casts and compound literals.
+    /// References to existing tags are read-only, but an *explicit* inline
+    /// struct/union definition introduces its tag in the current C scope.
+    /// Enumerator definitions remain handled by declaration processing.
     fn resolve_sizeof_type(&self, ty: &Type, span: Span) -> Result<CType, Diagnostic> {
         Ok(match ty {
             Type::Void => CType::Void,
@@ -1656,6 +1728,8 @@ impl Checker {
             Type::Long => CType::Integer { rank: IntRank::Long, unsigned: false },
             Type::LongLong => CType::Integer { rank: IntRank::LongLong, unsigned: false },
             Type::Floating(rank) => CType::Floating(*rank),
+            Type::Struct { .. } | Type::Union { .. } =>
+                self.resolve_typename_aggregate(ty, span)?,
             Type::TagRef(kind, name) => {
                 // sizeof(struct Tag) needs the *visible* tag definition, not
                 // an ordinary identifier lookup. This is deliberately
@@ -1714,7 +1788,7 @@ impl Checker {
                 CType::Array(Box::new(element), count)
             }
             _ => return Err(type_error(span,
-                "unsupported sizeof type-name; requires a non-defining complete type")),
+                "unsupported type-name in sizeof, cast or compound literal")),
         })
     }
 
@@ -1745,9 +1819,9 @@ impl Checker {
                     return Err(type_error(span,
                         "compound literal requires braced initializer list"));
                 }
-                // Read-only type-name lookup handles typedefs, visible tags
-                // and abstract declarators. Defining a new tag *within* the
-                // compound literal type name is a separate parser/sema slice.
+                // Resolve visible tags, typedefs and inline C99 struct/union
+                // definitions, preserving a fresh nominal identity for each
+                // anonymous type. Their member offsets use ordinary layout.
                 let resolved = self.resolve_sizeof_type(type_name, span)?;
                 let ty = self.complete_string_array(
                     self.try_complete_tag_type(resolved)?, Some(initializer), span)?;

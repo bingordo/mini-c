@@ -2215,6 +2215,45 @@ mod tests {
 
 
     #[test]
+    fn c99_inline_aggregate_type_names_in_compound_literals_and_sizeof_parse() {
+        let source = concat!(
+            "int first(void){return ((struct {int a;long b;})",
+            "{.a=3,.b=5}).a;}",
+            "int second(void){return ((union NewTag {int x;long y;})",
+            "{.y=9}).y;}",
+            "int third(void){return sizeof(struct {int x;long y;});}",
+        );
+        let mut parser = Parser::new(source);
+        let Some(ExternalItem::Function(first)) = parser.next_item().unwrap() else {
+            panic!("first function");
+        };
+        let Stmt::Block(stmts) = first.body else { panic!("body") };
+        let Stmt::Return(Some(Expr::Member(base, name, false))) = &stmts[0] else {
+            panic!("member from inline aggregate literal");
+        };
+        assert_eq!(name, "a");
+        assert!(matches!(base.as_ref(), Expr::CompoundLiteral(
+            Type::Struct { tag: None, members }, _
+        ) if members.len() == 2));
+        let Some(ExternalItem::Function(second)) = parser.next_item().unwrap() else {
+            panic!("second function");
+        };
+        let Stmt::Block(stmts) = second.body else { panic!("body") };
+        assert!(matches!(&stmts[0], Stmt::Return(Some(Expr::Member(base, name, false)))
+            if name == "y" && matches!(base.as_ref(), Expr::CompoundLiteral(
+                Type::Union { tag: Some(name), members }, _
+            ) if name == "NewTag" && members.len() == 2)));
+        let Some(ExternalItem::Function(third)) = parser.next_item().unwrap() else {
+            panic!("third function");
+        };
+        let Stmt::Block(stmts) = third.body else { panic!("body") };
+        assert!(matches!(&stmts[0], Stmt::Return(Some(Expr::SizeofType(
+            Type::Struct { tag: None, members }
+        ))) if members.len() == 2));
+        assert!(parser.next_item().unwrap().is_none());
+    }
+
+    #[test]
     fn c99_compound_literals_parse_as_postfix_lvalues_and_sizeof_expressions() {
         let src = concat!(
             "typedef int Word;",
