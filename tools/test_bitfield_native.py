@@ -111,7 +111,8 @@ CASES = {
         struct S {unsigned int a:3; signed int b:5;};
         int main(void) {
             struct S s;
-            int first=(s.a=11);
+            int source=11;
+            int first=(s.a=source);
             int second=(s.b=7);
             return first!=3 || s.a!=3 || second!=7 || s.b!=7;
         }
