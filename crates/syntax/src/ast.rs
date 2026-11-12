@@ -88,6 +88,9 @@ pub enum Type {
     Unsigned(Box<Type>),
     Pointer(Box<Type>),
     Array(Box<Type>, Option<Box<Expr>>),
+    /// C99 structure/union bit-field declaration. Valid only as a member.
+    /// The width remains an expression until semantic constant evaluation.
+    BitField(Box<Type>, Box<Expr>),
     /// Complete structure definition, initially inlined into its declarator.
     /// Separate tag-only declarations and references are a follow-up.
     Struct { tag: Option<Ident>, members: Vec<Decl> },
