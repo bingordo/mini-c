@@ -786,12 +786,11 @@ impl Checker {
         }
         let value = const_eval::evaluate(&typed, self.target)
             .map_err(|_| type_error(span, "array designator requires integer constant expression"))?;
-        let signed = !matches!(typed.ty.unqualified(),
-            CType::Integer { unsigned: true, .. });
-        if (signed && (value as i64) < 0) || value > 1_048_576 {
+        if !(0..=1_048_576).contains(&value) {
             return Err(type_error(span, "array designator index out of supported range"));
         }
-        Ok(value)
+        u64::try_from(value)
+            .map_err(|_| type_error(span, "array designator index out of supported range"))
     }
 
     fn check_object_initializer(
