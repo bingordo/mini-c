@@ -147,6 +147,13 @@ pub enum Stmt {
     /// A forward reference is allowed; the checker resolves it in function scope.
     Goto { target: Ident, span: Span },
 }
+/// A C99 initializer designator; multiple entries form a nested chain.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Designator {
+    Field(Ident),
+    Index(Box<Expr>),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     /// Opt-in precise source span, only produced by Parser::new_with_spans.
@@ -162,6 +169,9 @@ pub enum Expr {
     StringLiteral(Vec<u8>),
     /// Braced initializer, valid only in an object declaration.
     Initializer(Vec<Expr>),
+    /// One initializer-list entry with a C99 designation. The path is kept
+    /// explicit; semantic analysis must not confuse it with an expression.
+    Designated { path: Vec<Designator>, value: Box<Expr> },
     Name(Ident),
     /// C sizeof(type-name): operand is a type, never evaluated at runtime.
     SizeofType(Type),
