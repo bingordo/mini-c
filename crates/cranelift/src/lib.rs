@@ -1080,6 +1080,26 @@ impl Lower<'_> {
     fn place(&mut self, b: &mut FunctionBuilder<'_>, expr: &CheckedExpr) -> Result<Value> {
         match &expr.kind {
             CheckedExprKind::Name(name) => self.object_address(b, name),
+            CheckedExprKind::CompoundLiteral(initializer) => {
+                // The C99 object is addressable for the entire enclosing
+                // block. Allocate one fixed stack slot at this expression
+                // site, then execute its initializer at each evaluation;
+                // use site-local stack_addr so no CFG edge reuses an SSA
+                // address defined in a different predecessor block.
+                let size = expr.ty.size_bytes(Target::default())
+                    .ok_or("compound literal requires complete object type")?;
+                let size = u32::try_from(size)
+                    .map_err(|_| "compound literal stack object exceeds 4GiB")?;
+                if size > 1_048_576 {
+                    return Err("compound literal exceeds 1 MiB codegen limit".into());
+                }
+                let slot = b.create_sized_stack_slot(ir::StackSlotData::new(
+                    ir::StackSlotKind::ExplicitSlot, size, Self::alignment(&expr.ty),
+                ));
+                let address = b.ins().stack_addr(types::I64, slot, 0);
+                self.initialize_object(b, address, &expr.ty, initializer)?;
+                Ok(address)
+            }
             CheckedExprKind::Member(base, offset) => {
                 let address = self.place(b, base)?;
                 let offset = i64::try_from(*offset)
@@ -1211,6 +1231,16 @@ impl Lower<'_> {
                 Err("native floating-point literal code generation is unsupported".into()),
             CheckedExprKind::EnumConstant(n) => Ok(b.ins().iconst(scalar_type(&expr.ty)?, *n)),
             CheckedExprKind::StringLiteral(_) | CheckedExprKind::Member(..) => self.place(b, expr),
+            CheckedExprKind::CompoundLiteral(_) => {
+                let address = self.place(b, expr)?;
+                if matches!(expr.ty.unqualified(), CType::Array(..) |
+                    CType::Struct { .. } | CType::Union { .. })
+                {
+                    Ok(address)
+                } else {
+                    Ok(b.ins().load(scalar_type(&expr.ty)?, ir::MemFlagsData::new(), address, 0))
+                }
+            }
             CheckedExprKind::Name(name) => self.object_address(b, name),
             CheckedExprKind::Load(inner) => {
                 let address = self.place(b, inner)?;

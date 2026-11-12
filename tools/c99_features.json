@@ -223,10 +223,37 @@
       "id": "compound-literal",
       "feature": "F3",
       "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_compound_literals_have_object_types_lvalues_and_inferred_array_bounds",
+      "source": "struct S{int x;};int f(void){return ((struct S){.x=@N@}).x;}"
+    },
+    {
+      "id": "compound-literal-array",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_compound_literals_have_object_types_lvalues_and_inferred_array_bounds",
+      "source": "int f(void){int *p=(int[]){@N@,2,3};return p[0];}"
+    },
+    {
+      "id": "compound-literal-sizeof",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_compound_literals_have_object_types_lvalues_and_inferred_array_bounds",
+      "source": "int f(void){return sizeof (int[]){@N@,2,3} == 3*sizeof(int);}"
+    },
+    {
+      "id": "compound-literal-static",
+      "feature": "F3",
+      "expect": "accept",
       "mini": "gap",
       "kind": "valid",
       "test_ref": "docs/C99_Frontend_Plan.md:F3",
-      "source": "struct S{int x;};int f(void){return ((struct S){.x=@N@}).x;}"
+      "source": "int *global = (int[]){@N@,2};"
     },
     {
       "id": "vla-auto",

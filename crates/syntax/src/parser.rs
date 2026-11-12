@@ -408,6 +408,17 @@ impl<'a> Parser<'a> {
                             "sizeof requires an abstract type-name declarator"));
                     }
                     let close = self.expect(")")?;
+                    if self.peek()?.is_some_and(|token| token.text == "{") {
+                        // sizeof (type){initializer} applies to the compound
+                        // literal expression, not sizeof(type). The object
+                        // itself remains unevaluated during sizeof.
+                        let initializer = self.parse_initializer()?;
+                        let hi = initializer.location().map_or(close.span.hi, |s| s.hi);
+                        return Ok(self.located(Expr::SizeofExpr(Box::new(
+                            self.located(Expr::CompoundLiteral(ty, Box::new(initializer)),
+                                Span { lo: close.span.lo, hi }),
+                        )), Span { lo: keyword.span.lo, hi }));
+                    }
                     return Ok(self.located(Expr::SizeofType(ty),
                         Span { lo: keyword.span.lo, hi: close.span.hi }));
                 }
@@ -503,10 +514,17 @@ impl<'a> Parser<'a> {
                             "cast requires an abstract type-name declarator"));
                     }
                     let close = self.expect(")")?;
-                    let operand = self.parse_unary()?;
-                    let hi = operand.location().map_or(close.span.hi, |span| span.hi);
-                    self.located(Expr::Cast(ty, Box::new(operand)),
-                        Span { lo: t.span.lo, hi })
+                    if self.peek()?.is_some_and(|token| token.text == "{") {
+                        let initializer = self.parse_initializer()?;
+                        let hi = initializer.location().map_or(close.span.hi, |span| span.hi);
+                        self.located(Expr::CompoundLiteral(ty, Box::new(initializer)),
+                            Span { lo: t.span.lo, hi })
+                    } else {
+                        let operand = self.parse_unary()?;
+                        let hi = operand.location().map_or(close.span.hi, |span| span.hi);
+                        self.located(Expr::Cast(ty, Box::new(operand)),
+                            Span { lo: t.span.lo, hi })
+                    }
                 } else {
                     let e = self.parse_expr()?;
                     let close = self.expect(")")?;
@@ -2195,6 +2213,39 @@ mod tests {
             .next_item().is_err());
     }
 
+
+    #[test]
+    fn c99_compound_literals_parse_as_postfix_lvalues_and_sizeof_expressions() {
+        let src = concat!(
+            "typedef int Word;",
+            "struct Pair {int left; int right;};",
+            "int f(void) {",
+            "  int *p=(int[]){1,2,3};",
+            "  int x=(struct Pair){.right=7,.left=2}.right;",
+            "  int y=sizeof (int[]){1,2,3};",
+            "  return ((Word){5}) + p[1] + x + y;",
+            "}",
+        );
+        let mut parser = Parser::new(src);
+        assert!(matches!(parser.next_item().unwrap(), Some(ExternalItem::Typedef(_))));
+        assert!(matches!(parser.next_item().unwrap(), Some(ExternalItem::Tag(_))));
+        let Some(ExternalItem::Function(function)) = parser.next_item().unwrap() else {
+            panic!("expected function");
+        };
+        let Stmt::Block(statements) = function.body else { panic!("body"); };
+        let Stmt::Decl(pointer) = &statements[0] else { panic!("pointer declaration"); };
+        assert!(matches!(pointer.init.as_ref(), Some(Expr::CompoundLiteral(
+            Type::Array(_, None), initializer
+        )) if matches!(initializer.as_ref(), Expr::Initializer(values) if values.len()==3)));
+        let Stmt::Decl(member) = &statements[1] else { panic!("member declaration"); };
+        assert!(matches!(member.init.as_ref(), Some(Expr::Member(base, field, false))
+            if field == "right" &&
+            matches!(base.as_ref(), Expr::CompoundLiteral(Type::TagRef(..), _))));
+        let Stmt::Decl(size) = &statements[2] else { panic!("sizeof declaration"); };
+        assert!(matches!(size.init.as_ref(), Some(Expr::SizeofExpr(inner))
+            if matches!(inner.as_ref(), Expr::CompoundLiteral(..))));
+        assert!(parser.next_item().unwrap().is_none());
+    }
 
     #[test]
     fn m10_decimal_float_literals_keep_type_rank_and_full_lexeme() {
