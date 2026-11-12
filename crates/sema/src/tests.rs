@@ -191,8 +191,12 @@ fn c99_inline_aggregate_compound_literal_typenames_have_distinct_nominal_layouts
     let CheckedItem::Function(fun) = &checked[0] else { panic!("function expected") };
     let CheckedStmt::Block(stmts) = &fun.body else { panic!("body expected") };
     let CheckedStmt::Decl(a) = &stmts[0] else { panic!("first declaration") };
-    let CheckedExprKind::Load(member) = &a.initializer.as_ref().expect("init").kind else {
-        panic!("aggregate field is converted to scalar value");
+    let mut value = a.initializer.as_ref().expect("init");
+    while let CheckedExprKind::Convert(inner) = &value.kind {
+        value = inner;
+    }
+    let CheckedExprKind::Load(member) = &value.kind else {
+        panic!("aggregate field is converted to scalar value: {value:?}");
     };
     let CheckedExprKind::Member(compound, offset) = &member.kind else {
         panic!("member access on inline compound literal");
