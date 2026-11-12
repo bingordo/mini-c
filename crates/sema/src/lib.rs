@@ -1689,9 +1689,40 @@ impl Checker {
                             || (matches!(right.ty, CType::Pointer(_)) && const_eval::evaluate(&left, self.target) == Ok(0))))) {
                     return Ok(CheckedExpr::value(CType::int(), CheckedExprKind::Binary(*op, Box::new(left), Box::new(right))));
                 }
-                // C pointer arithmetic allows p + n, n + p, and p - n.
-                // Pointer difference p - q and relational pointer semantics are
-                // separate follow-ups; never treat addresses as ordinary ints.
+                // C99 pointer subtraction yields ptrdiff_t, not a pointer.
+                // Both pointers must refer to compatible complete object
+                // types; only differences within the same array (or one past
+                // it) are defined at runtime. The LP64 target uses signed long
+                // for ptrdiff_t. Preserve pointers in checked IR so native
+                // lowering can divide the byte delta by the element size.
+                if *op == BinOp::Sub {
+                    if let (CType::Pointer(lhs), CType::Pointer(rhs)) = (&left.ty, &right.ty) {
+                        let left_element = self.complete_tag_type(lhs.as_ref().clone(), span)?;
+                        let right_element = self.complete_tag_type(rhs.as_ref().clone(), span)?;
+                        if !left_element.unqualified().same_type(right_element.unqualified()) {
+                            return Err(Diagnostic::coded(span,
+                                DiagnosticCode::SemanticInvalidOperatorOperands,
+                                "pointer subtraction requires compatible pointed-to types"));
+                        }
+                        if left_element.size_bytes(self.target).is_none() {
+                            return Err(Diagnostic::coded(span,
+                                DiagnosticCode::SemanticInvalidOperatorOperands,
+                                "pointer subtraction requires a complete object type"));
+                        }
+                        let left_ty = CType::Pointer(Box::new(left_element));
+                        let right_ty = CType::Pointer(Box::new(right_element));
+                        let left = self.convert(left, &left_ty);
+                        let right = self.convert(right, &right_ty);
+                        let ptrdiff = CType::Integer {
+                            rank: IntRank::Long, unsigned: false,
+                        };
+                        return Ok(CheckedExpr::value(ptrdiff, CheckedExprKind::Binary(
+                            BinOp::Sub, Box::new(left), Box::new(right),
+                        )));
+                    }
+                }
+                // Pointer + integer and pointer - integer retain pointer
+                // type and scale offsets by the complete pointee's size.
                 if matches!(op, BinOp::Add | BinOp::Sub) {
                     if matches!(left.ty, CType::Pointer(_)) && right.ty.is_integer() {
                         return self.pointer_offset(*op, left, right, span);

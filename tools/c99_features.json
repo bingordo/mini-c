@@ -67,6 +67,24 @@
       "source": "int f(int *p){return p[@N@];}"
     },
     {
+      "id": "pointer-difference",
+      "feature": "F2",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_pointer_difference_is_signed_element_count_with_strict_pointee_constraints",
+      "source": "long f(void){int a[20];return &a[@N@] - &a[0];}"
+    },
+    {
+      "id": "pointer-difference-incompatible",
+      "feature": "F2",
+      "expect": "reject",
+      "mini": "supported",
+      "kind": "constraint",
+      "test_ref": "crates/sema/src/tests.rs:c99_pointer_difference_is_signed_element_count_with_strict_pointee_constraints",
+      "source": "long f(int *p, char *q){return p-q;}"
+    },
+    {
       "id": "const-reassignment",
       "feature": "F1",
       "expect": "reject",
@@ -124,9 +142,9 @@
       "id": "bool-type",
       "feature": "F1",
       "expect": "accept",
-      "mini": "gap",
+      "mini": "supported",
       "kind": "valid",
-      "test_ref": "docs/C99_Frontend_Plan.md:F1",
+      "test_ref": "crates/sema/src/tests.rs:c99_bool_is_distinct_promoted_and_normalized",
       "source": "int f(void){_Bool b=@N@;return b;}"
     },
     {
@@ -232,18 +250,18 @@
       "id": "bool-conversion",
       "feature": "F1",
       "expect": "accept",
-      "mini": "gap",
+      "mini": "supported",
       "kind": "valid",
-      "test_ref": "docs/C99_Frontend_Plan.md:F1",
+      "test_ref": "crates/sema/src/tests.rs:c99_bool_is_distinct_promoted_and_normalized",
       "source": "int f(int x){_Bool b=x;return b==(x!=0);}"
     },
     {
       "id": "bool-sizeof",
       "feature": "F1",
       "expect": "accept",
-      "mini": "gap",
+      "mini": "supported",
       "kind": "valid",
-      "test_ref": "docs/C99_Frontend_Plan.md:F1",
+      "test_ref": "crates/sema/src/tests.rs:c99_bool_is_distinct_promoted_and_normalized",
       "source": "int f(void){_Bool b=@N@;return sizeof b==sizeof(_Bool);}"
     },
     {
