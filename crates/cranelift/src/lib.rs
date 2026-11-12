@@ -136,7 +136,9 @@ type StaticAggregate = (Vec<u8>, Vec<(u32, RelocationSource)>);
 fn static_initializer_bytes(
     ty: &CType, init: &CheckedExpr,
 ) -> Result<Option<StaticAggregate>> {
-    if !matches!(&init.kind, CheckedExprKind::Initializer(_)) { return Ok(None); }
+    if !matches!(&init.kind,
+        CheckedExprKind::Initializer(_) | CheckedExprKind::SparseInitializer(_))
+    { return Ok(None); }
     let size = ty.size_bytes(Target::default()).ok_or("incomplete aggregate initializer")?;
     let size = usize::try_from(size).map_err(|_| "oversized aggregate initializer")?;
     if size > 1_048_576 { return Err("aggregate initializer exceeds 1 MiB codegen limit".into()); }
@@ -165,6 +167,27 @@ fn static_initializer_bytes(
                 let stride = usize::try_from(element.size_bytes(Target::default())
                     .ok_or("incomplete array element")?).map_err(|_| "oversized array element")?;
                 for (index, value) in values.iter().enumerate() {
+                    let displacement = index.checked_mul(stride).ok_or("array offset overflow")?;
+                    fill(out, relocations, element, value,
+                        offset.checked_add(displacement).ok_or("array offset overflow")?)?;
+                }
+            }
+            (CheckedExprKind::SparseInitializer(entries),
+             CType::Struct { members, .. } | CType::Union { members, .. }) => {
+                for (index, value) in entries {
+                    let member = members.get(*index)
+                        .ok_or("invalid checked initializer member index")?;
+                    let displacement = usize::try_from(member.offset)
+                        .map_err(|_| "oversized aggregate member offset")?;
+                    fill(out, relocations, &member.ty, value,
+                        offset.checked_add(displacement).ok_or("aggregate member offset overflow")?)?;
+                }
+            }
+            (CheckedExprKind::SparseInitializer(entries),
+             CType::Array(element, Some(_))) => {
+                let stride = usize::try_from(element.size_bytes(Target::default())
+                    .ok_or("incomplete array element")?).map_err(|_| "oversized array element")?;
+                for (index, value) in entries {
                     let displacement = index.checked_mul(stride).ok_or("array offset overflow")?;
                     fill(out, relocations, element, value,
                         offset.checked_add(displacement).ok_or("array offset overflow")?)?;
@@ -887,6 +910,40 @@ impl Lower<'_> {
         if let Some(bytes) = char_array_initializer_bytes(ty, initializer)? {
             return Self::store_array_bytes(b, address, &bytes);
         }
+        if let CheckedExprKind::SparseInitializer(entries) = &initializer.kind {
+            let size = usize::try_from(ty.size_bytes(Target::default())
+                .ok_or("incomplete sparse aggregate initializer")?)
+                .map_err(|_| "oversized sparse aggregate initializer")?;
+            if size > 1_048_576 {
+                return Err("aggregate initializer exceeds 1 MiB codegen limit".into());
+            }
+            Self::store_array_bytes(b, address, &vec![0u8; size])?;
+            match ty.unqualified() {
+                CType::Struct { members, .. } | CType::Union { members, .. } => {
+                    for (index, value) in entries {
+                        let member = members.get(*index)
+                            .ok_or("invalid checked sparse member index")?;
+                        let offset = i64::try_from(member.offset)
+                            .map_err(|_| "oversized sparse member offset")?;
+                        let addr = b.ins().iadd_imm_s(address, offset);
+                        self.initialize_object(b, addr, &member.ty, value)?;
+                    }
+                }
+                CType::Array(element, Some(_)) => {
+                    let stride = element.size_bytes(Target::default())
+                        .ok_or("incomplete sparse array element")?;
+                    for (index, value) in entries {
+                        let offset = i64::try_from(*index).ok()
+                            .and_then(|i| i.checked_mul(i64::try_from(stride).ok()?))
+                            .ok_or("oversized sparse array offset")?;
+                        let addr = b.ins().iadd_imm_s(address, offset);
+                        self.initialize_object(b, addr, element, value)?;
+                    }
+                }
+                _ => return Err("sparse initializer requires aggregate type".into()),
+            }
+            return Ok(());
+        }
         if let CheckedExprKind::Initializer(values) = &initializer.kind {
             let size = usize::try_from(ty.size_bytes(Target::default())
                 .ok_or("incomplete aggregate initializer")?)
@@ -1086,7 +1143,7 @@ impl Lower<'_> {
 
     fn expression(&mut self, b: &mut FunctionBuilder<'_>, expr: &CheckedExpr) -> Result<Value> {
         match &expr.kind {
-            CheckedExprKind::Initializer(_) =>
+            CheckedExprKind::Initializer(_) | CheckedExprKind::SparseInitializer(_) =>
                 Err("braced initializer cannot be evaluated as an expression".into()),
             CheckedExprKind::Literal(n) => Ok(b.ins().iconst(scalar_type(&expr.ty)?, *n as i64)),
             CheckedExprKind::FloatLiteral(_) =>
