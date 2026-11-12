@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Compile, link and execute original C99 designated-initializer programs with GCC and Mini-C.
 
-This bounded F3 slice supports single-level field and array designators,
+This F3 suite covers single-level and nested mixed field/array designators,
 sparse omitted subobjects, and recursively braced nested aggregates.
 """
 from __future__ import annotations
@@ -77,6 +77,75 @@ CASES = {
             return entries[3].key!=4 || entries[3].value!=12
                 || entries[1].key!=8 || entries[1].value!=9
                 || entries[0].key!=0 || entries[4].value!=0;
+        }
+    """,
+    "deep_struct_auto": r"""
+        struct Record { int data[3]; int tag; };
+        int main(void) {
+            struct Record r={.data[2]=9,.data[0]=3,.tag=7};
+            return r.data[0]!=3 || r.data[1]!=0 || r.data[2]!=9 || r.tag!=7;
+        }
+    """,
+    "deep_multidimensional_array": r"""
+        int main(void) {
+            int a[3][4]={[2][3]=9,[0][1]=5,[2][0]=7};
+            return a[2][3]!=9 || a[0][1]!=5 || a[2][0]!=7
+                || a[2][1]!=0 || a[1][3]!=0;
+        }
+    """,
+    "deep_global_array_of_structs": r"""
+        struct Item { int id; int flags[2]; };
+        struct Item items[4]={
+            [2].id=12,
+            [2].flags[1]=8,
+            [0].flags[0]=3,
+        };
+        int main(void) {
+            return items[2].id!=12 || items[2].flags[0]!=0
+                || items[2].flags[1]!=8 || items[0].flags[0]!=3
+                || items[1].id!=0 || items[3].id!=0;
+        }
+    """,
+    "deep_inferred_first_bound": r"""
+        int values[][2]={[4][1]=7,[1][0]=2};
+        int main(void) {
+            return sizeof(values)!=5*2*sizeof(int)
+                || values[4][1]!=7 || values[1][0]!=2
+                || values[4][0]!=0 || values[0][0]!=0;
+        }
+    """,
+    "deep_global_pointer_relocation": r"""
+        int target=23;
+        struct Holder { int *items[2]; int tag; };
+        struct Holder holder={.items[1]=&target,.tag=4};
+        int main(void) {
+            return holder.tag!=4 || holder.items[0]!=0
+                || *holder.items[1]!=23;
+        }
+    """,
+    "deep_dynamic_side_effects_once": r"""
+        int calls;
+        int side(void) { calls++; return calls*3; }
+        struct Object { int values[3]; int tag; };
+        int main(void) {
+            struct Object a={.values[2]=side(),.tag=side(),.values[0]=side()};
+            return calls!=3 || a.values[0]+a.values[2]+a.tag!=18
+                || a.values[1]!=0;
+        }
+    """,
+    "deep_union_array_member": r"""
+        union U { int numbers[3]; long wide; };
+        int main(void) {
+            union U u={.numbers[2]=4,.numbers[0]=1};
+            return u.numbers[0]!=1 || u.numbers[1]!=0 || u.numbers[2]!=4;
+        }
+    """,
+    "deep_three_level_path": r"""
+        struct Grid { int cells[2][3]; int tag; };
+        int main(void) {
+            struct Grid g={.cells[1][2]=13,.cells[0][1]=8,.tag=4};
+            return g.cells[1][2]!=13 || g.cells[0][1]!=8
+                || g.cells[1][1]!=0 || g.tag!=4;
         }
     """,
 }

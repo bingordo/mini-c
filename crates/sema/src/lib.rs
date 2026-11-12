@@ -34,6 +34,11 @@ pub enum CheckedExprKind {
     /// Duplicate target selection is currently rejected rather than
     /// silently applying implementation-defined override side effects.
     SparseInitializer(Vec<(usize, CheckedExpr)>),
+    /// F3 nested field/array designators. Each complete path contains
+    /// checked subobject indices from the outer aggregate to the initialized
+    /// object; disjoint paths can share an outer aggregate without erasing
+    /// previous writes or re-zeroing the enclosing subobject.
+    DeepInitializer(Vec<(Vec<usize>, CheckedExpr)>),
     Name(String),
     Unary(UnOp, Box<CheckedExpr>),
     Binary(BinOp, Box<CheckedExpr>, Box<CheckedExpr>),
@@ -750,10 +755,8 @@ impl Checker {
             for entry in values {
                 let designated = match entry.without_location() {
                     Expr::Designated { path, .. } => {
-                        if path.len() != 1 {
-                            return Err(type_error(span, "nested designator paths are not yet supported"));
-                        }
-                        match &path[0] {
+                        match path.first().ok_or_else(|| type_error(
+                            span, "empty initializer designation"))? {
                             Designator::Index(index) => {
                                 Some(self.initializer_index(index, span)?)
                             }
@@ -793,12 +796,136 @@ impl Checker {
             .map_err(|_| type_error(span, "array designator index out of supported range"))
     }
 
+    /// Resolve one C99 designator path through the current aggregate, with
+    /// strict bounds and member-name constraints at *every* level.
+    fn initializer_path(
+        &self, ty: &CType, path: &[Designator], span: Span,
+    ) -> Result<(Vec<usize>, CType), Diagnostic> {
+        let mut current = ty;
+        let mut slots = Vec::with_capacity(path.len());
+        for part in path {
+            let (index, next) = match (part, current.unqualified()) {
+                (Designator::Field(name), CType::Struct { members, .. } |
+                    CType::Union { members, .. }) => {
+                    let i = members.iter().position(|m| m.name == *name)
+                        .ok_or_else(|| type_error(span,
+                            format!("unknown initializer member '{name}'")))?;
+                    (i, &members[i].ty)
+                }
+                (Designator::Index(expr), CType::Array(element, Some(count))) => {
+                    let i = self.initializer_index(expr, span)?;
+                    if i >= *count {
+                        return Err(type_error(span, "array designator index exceeds bound"));
+                    }
+                    (usize::try_from(i).map_err(|_| type_error(
+                        span, "array designator index too large"))?, element.as_ref())
+                }
+                (Designator::Field(_), _) => return Err(type_error(span,
+                    "field designator requires struct or union initializer")),
+                (Designator::Index(_), _) => return Err(type_error(span,
+                    "array designator requires array initializer")),
+            };
+            slots.push(index);
+            current = next;
+        }
+        Ok((slots, current.clone()))
+    }
+
+    /// Overlapping whole subobjects and distinct members of the *same union*
+    /// must not be accepted until override semantics are modeled. Independent
+    /// paths to members of a struct/array are safe to emit in source order.
+    fn initializer_paths_overlap(ty: &CType, a: &[usize], b: &[usize]) -> bool {
+        let mut current = ty;
+        for (left, right) in a.iter().zip(b) {
+            if left != right {
+                return matches!(current.unqualified(), CType::Union { .. });
+            }
+            current = match current.unqualified() {
+                CType::Struct { members, .. } | CType::Union { members, .. } =>
+                    match members.get(*left) {
+                        Some(member) => &member.ty,
+                        None => return true,
+                    },
+                CType::Array(element, _) => element.as_ref(),
+                _ => return true,
+            };
+        }
+        // Exact duplicate or parent/child overwrite.
+        true
+    }
+
+    /// Use flat source-order paths for nested designations so two writes like
+    /// `[1].a=3,[1].b=4` do not each reset the other's struct storage.
+    /// C99 positional continuation *after* a multi-component designation
+    /// needs a subobject cursor and stays fail-closed in this bounded slice.
+    fn check_deep_initializer(
+        &self, values: &[Expr], ty: &CType, span: Span, is_static: bool,
+    ) -> Result<CheckedExpr, Diagnostic> {
+        let mut checked_paths: Vec<(Vec<usize>, CheckedExpr)> = Vec::new();
+        let mut cursor = 0usize;
+        let mut last_nested = false;
+        for value in values {
+            let located = value.location().unwrap_or(span);
+            let (path, initializer) = match value.without_location() {
+                Expr::Designated { path, value } => {
+                    let (slots, _) = self.initializer_path(ty, path, located)?;
+                    (slots, value.as_ref())
+                }
+                _ => {
+                    if last_nested {
+                        return Err(type_error(located,
+                            "positional continuation after nested designator is not yet supported"));
+                    }
+                    (vec![cursor], value)
+                }
+            };
+            if path.is_empty() {
+                return Err(type_error(located, "empty initializer designation"));
+            }
+            // Resolve positional elements with the same aggregate checks.
+            let mut current = ty;
+            for &slot in &path {
+                current = match current.unqualified() {
+                    CType::Struct { members, .. } | CType::Union { members, .. } =>
+                        &members.get(slot).ok_or_else(|| type_error(located,
+                            "too many struct or union initializers"))?.ty,
+                    CType::Array(element, Some(count)) => {
+                        if u64::try_from(slot).map_or(true, |i| i >= *count) {
+                            return Err(type_error(located, "too many array initializers"));
+                        }
+                        element.as_ref()
+                    }
+                    _ => return Err(type_error(located,
+                        "initializer designator requires aggregate subobject")),
+                };
+            }
+            if checked_paths.iter().any(|(prior, _)|
+                Self::initializer_paths_overlap(ty, prior, &path))
+            {
+                return Err(type_error(located,
+                    "overlapping initializer targets require override handling"));
+            }
+            let checked = self.check_object_initializer(initializer, current, span, is_static)?;
+            cursor = path[0].checked_add(1)
+                .ok_or_else(|| type_error(located, "initializer cursor overflow"))?;
+            last_nested = path.len() > 1;
+            checked_paths.push((path, checked));
+        }
+        Ok(CheckedExpr::value(ty.clone(),
+            CheckedExprKind::DeepInitializer(checked_paths)))
+    }
+
     fn check_object_initializer(
         &self, original: &Expr, ty: &CType, span: Span, is_static: bool
     ) -> Result<CheckedExpr, Diagnostic> {
         let span = original.location().unwrap_or(span);
         let original = original.without_location();
         if let Expr::Initializer(values) = original {
+            if values.iter().any(|value| matches!(
+                value.without_location(), Expr::Designated { path, .. } if path.len() > 1
+            )) {
+                return self.check_deep_initializer(values, ty, span, is_static);
+            }
             // Every entry has a source-order position. Designators can change
             // the current object; the next undesignated entry follows that
             // element, not the previous positional index.
