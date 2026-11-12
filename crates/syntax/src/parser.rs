@@ -408,6 +408,17 @@ impl<'a> Parser<'a> {
                             "sizeof requires an abstract type-name declarator"));
                     }
                     let close = self.expect(")")?;
+                    if self.peek()?.is_some_and(|token| token.text == "{") {
+                        // sizeof (type){initializer} applies to the compound
+                        // literal expression, not sizeof(type). The object
+                        // itself remains unevaluated during sizeof.
+                        let initializer = self.parse_initializer()?;
+                        let hi = initializer.location().map_or(close.span.hi, |s| s.hi);
+                        return Ok(self.located(Expr::SizeofExpr(Box::new(
+                            self.located(Expr::CompoundLiteral(ty, Box::new(initializer)),
+                                Span { lo: close.span.lo, hi }),
+                        )), Span { lo: keyword.span.lo, hi }));
+                    }
                     return Ok(self.located(Expr::SizeofType(ty),
                         Span { lo: keyword.span.lo, hi: close.span.hi }));
                 }
@@ -503,10 +514,17 @@ impl<'a> Parser<'a> {
                             "cast requires an abstract type-name declarator"));
                     }
                     let close = self.expect(")")?;
-                    let operand = self.parse_unary()?;
-                    let hi = operand.location().map_or(close.span.hi, |span| span.hi);
-                    self.located(Expr::Cast(ty, Box::new(operand)),
-                        Span { lo: t.span.lo, hi })
+                    if self.peek()?.is_some_and(|token| token.text == "{") {
+                        let initializer = self.parse_initializer()?;
+                        let hi = initializer.location().map_or(close.span.hi, |span| span.hi);
+                        self.located(Expr::CompoundLiteral(ty, Box::new(initializer)),
+                            Span { lo: t.span.lo, hi })
+                    } else {
+                        let operand = self.parse_unary()?;
+                        let hi = operand.location().map_or(close.span.hi, |span| span.hi);
+                        self.located(Expr::Cast(ty, Box::new(operand)),
+                            Span { lo: t.span.lo, hi })
+                    }
                 } else {
                     let e = self.parse_expr()?;
                     let close = self.expect(")")?;
