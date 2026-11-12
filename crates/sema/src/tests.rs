@@ -784,6 +784,72 @@ fn c99_comma_group_aggregate_fields_keep_layout_and_member_legality() {
 }
 
 #[test]
+fn c99_completed_tagged_aggregate_members_have_full_layout_and_type_identity() {
+    let checked = check(concat!(
+        "struct Inner {int low;long high;};",
+        "struct Outer {char tag;struct Inner one;struct Inner many[2];};",
+        "struct Outer outer={.one={.low=3,.high=9},",
+        ".many={{1,2},{4,5}},.tag=7};"
+    )).expect("previously completed struct tag is a legal by-value member");
+    let CheckedItem::Declaration(outer) = &checked[2] else {
+        panic!("expected completed Outer declaration");
+    };
+    let CType::Struct { size, align, members, .. } = &outer.ty else {
+        panic!("expected structure layout")
+    };
+    assert_eq!((*size, *align), (56, 8));
+    assert_eq!(members.iter().map(|m| (m.name.as_str(), m.offset))
+        .collect::<Vec<_>>(), [("tag",0),("one",8),("many",24)]);
+    let CType::Struct { size: inner_size, align: inner_align, identity, .. } =
+        &members[1].ty else { panic!("by-value Inner must be completed") };
+    assert_eq!((*inner_size, *inner_align), (16, 8));
+    assert_ne!(*identity, 0, "completed member keeps its nominal tag identity");
+    let CType::Array(element, Some(2)) = &members[2].ty else {
+        panic!("expected array of previously completed tagged structures")
+    };
+    assert!(element.same_type(&members[1].ty));
+
+    let checked = check(concat!(
+        "union Value {char c; long l;};",
+        "struct Slot {int id;union Value item;};",
+        "struct Slot slot={.id=5,.item={.l=11}};"
+    )).expect("completed tagged union nested as member");
+    let CheckedItem::Declaration(slot) = &checked[2] else { panic!("slot expected") };
+    let CType::Struct { members, size, align, .. } = &slot.ty else {
+        panic!("slot layout expected")
+    };
+    assert_eq!((*size,*align),(16,8));
+    assert_eq!(members[1].offset,8);
+    assert!(matches!(&members[1].ty, CType::Union { size: 8, align: 8, .. }));
+
+    check(concat!(
+        "typedef struct Tag {int a;long b;} Tag;",
+        "struct Container {Tag nested;const Tag fixed;Tag many[2];};",
+        "int f(void){struct Container c={.nested={1,2},.fixed={3,4},",
+        ".many={{5,6},{7,8}}};return c.nested.a+c.fixed.a+c.many[1].a;}"
+    )).expect("typedef and const-qualified tag fields retain complete layout");
+    check(concat!(
+        "struct A{int x;}; struct B{struct A a;};",
+        "struct C{struct B b;};",
+        "int f(void){struct C c={{{19}}};return c.b.a.x;}"
+    )).expect("transitively nested completed structs");
+    check(concat!(
+        "struct Node;struct Node{struct Node *next;int key;};",
+        "struct Node n;int f(void){n.next=&n;return n.next->key;}"
+    )).expect("self-referential pointers must remain legal");
+
+    reject("struct Missing; struct Holder{struct Missing value;};",
+        "structure member has incomplete type");
+    reject("union Missing; struct Holder{union Missing value;};",
+        "structure member has incomplete type");
+    reject("struct Self{struct Self member;};", "structure member has incomplete type");
+    reject("struct Incomplete; struct Holder{struct Incomplete items[2];};",
+        "structure member has incomplete type");
+    reject("struct Node{int x;};struct Holder{struct Node node;struct Node node;};",
+        "duplicate structure member");
+}
+
+#[test]
 fn inline_struct_member_errors() {
     reject("struct X { int a; int a; } x;", "duplicate structure member");
     reject("struct X { void a; } x;", "incomplete");

@@ -524,7 +524,17 @@ impl Checker {
                     if member.init.is_some() || member.storage != StorageClass::Default {
                         return Err(type_error(member.span, "aggregate members cannot have initializers or storage classes"));
                     }
-                    fields.push((member.name.clone(), self.resolve(&member.ty, member.span)?));
+                    // A member's written type can refer to a tag or typedef
+                    // completed earlier in this translation unit. Resolve its
+                    // nominal reference to that completed layout *before*
+                    // layout_struct/layout_union inspect its byte size and
+                    // alignment. Keep pointer targets nominal, so legal
+                    // self-referential `struct Node *next` fields do not
+                    // require completing the enclosing Node prematurely.
+                    // Truly incomplete by-value members still fail below.
+                    let resolved = self.resolve(&member.ty, member.span)?;
+                    let resolved = self.try_complete_tag_type(resolved)?;
+                    fields.push((member.name.clone(), resolved));
                 }
                 let mut complete = if kind == TagKind::Union {
                     types::layout_union(tag.clone(), fields, self.target)

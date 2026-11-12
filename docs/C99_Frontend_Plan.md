@@ -35,6 +35,12 @@ The priority is **a working self-contained C99 preprocessor for practical progra
 
 Csmith original-program native execution remains scheduled under [#116](https://github.com/bingordo/mini-c/issues/116). **F5 remains deferred**; do not delay a usable C compiler or initial C++ support for exhaustive C99 conformance.
 
+## F4 practical aggregate member compatibility — completed tags
+
+- [x] **Comma-separated struct/union members** (`int quot, rem;`, mixed `int *p, values[3];`) were **already implemented and tested** before issue #161; do not duplicate the parser work.
+- [x] **Complete known tagged by-value members at aggregate layout:** translate `struct Outer { struct Inner nested; };` and tagged unions, arrays, typedefs and qualified member types to their completed nominal definitions before computing size/alignment/offsets, preserving tag identity. Pointer-to-self fields remain nominal and legal; by-value incomplete and recursive fields remain errors. Original C99 GCC native differentials cover completed members, copies, global initializers, and nested designated paths.
+- [ ] Remaining independent F4 issues: broader full type compatibility, qualifiers and real-program blockers; the completed-tag fix is not full C99 F4 conformance.
+
 ## Ground truth and validation rules
 
 This plan supersedes stale feature-gap sections in `docs/Semantics.md`, `docs/Specification.md` and `docs/Next_Gaps.md`; those files still describe parts of the already implemented enums, aggregates, decimal/hex floating tokens, arithmetic conversions, variadic declarations and nested recovery as missing. Validate each milestone against **current source**, not milestone completion claims.
