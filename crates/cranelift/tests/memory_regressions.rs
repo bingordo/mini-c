@@ -59,11 +59,16 @@ fn c99_switch_nested_case_and_skipped_local_emit_elf() {
 }
 
 #[test]
-fn c99_switch_goto_arm_label_still_fails_closed() {
-    let error = compile_source(
+fn c99_switch_goto_arm_labels_emit_elf() {
+    emits_elf(
         "int f(int x){goto done;switch(x){case 1: done: return 1;default:return 0;}}"
-    ).unwrap_err();
-    assert!(error.contains("native goto labels inside switch arms"), "{error}");
+    );
+    emits_elf(
+        "int f(int x){goto done;switch(x){int y=8; done: y=3; break;}return 3;}"
+    );
+    emits_elf(
+        "int f(int x){goto done;switch(x){case 1: if(x){done: return 9;} break;}return 0;}"
+    );
 }
 
 #[test]
