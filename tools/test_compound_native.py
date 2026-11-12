@@ -175,7 +175,10 @@ CASES = {
         int bump(void) {calls++;return calls;}
         int main(void) {
             int first=((struct {int x;int y;}){.y=bump(),.x=bump()}).x;
-            return calls!=2 || first!=2;
+            /* C99 does not specify initializer evaluation order. Verify each
+               call occurs once, not which field GCC chooses to initialize
+               first; both 1 and 2 are conforming results here. */
+            return calls!=2 || (first!=1 && first!=2);
         }
     """,
     "sizeof_inline_compound_skips_calls": r"""
