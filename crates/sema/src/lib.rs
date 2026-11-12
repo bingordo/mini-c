@@ -6,7 +6,7 @@ pub mod const_eval;
 
 use std::collections::{HashMap, HashSet};
 use std::cell::{Cell, RefCell};
-use mini_c_syntax::ast::{BinOp, Decl, Expr, Function, Span, Stmt, StorageClass, TagKind, Type, UnOp};
+use mini_c_syntax::ast::{BinOp, Decl, Designator, Expr, Function, Span, Stmt, StorageClass, TagKind, Type, UnOp};
 use mini_c_syntax::diag::{Diagnostic, DiagnosticCode};
 use mini_c_syntax::stream::{ExternalItem, ItemSource};
 
@@ -29,6 +29,11 @@ pub enum CheckedExprKind {
     StringLiteral(Vec<u8>),
     /// Typed, positional aggregate initializer values, in member order.
     Initializer(Vec<CheckedExpr>),
+    /// Source-order explicit member/array-element initializers. Missing
+    /// entries are zero-filled by codegen, without materializing huge holes.
+    /// Duplicate target selection is currently rejected rather than
+    /// silently applying implementation-defined override side effects.
+    SparseInitializer(Vec<(usize, CheckedExpr)>),
     Name(String),
     Unary(UnOp, Box<CheckedExpr>),
     Binary(BinOp, Box<CheckedExpr>, Box<CheckedExpr>),
@@ -740,11 +745,53 @@ impl Checker {
         }
         if let (CType::Array(element, None), Some(Expr::Initializer(values))) =
             (&ty, initializer.map(Expr::without_location)) {
-            let count = u64::try_from(values.len())
-                .map_err(|_| type_error(span, "array initializer exceeds supported bounds"))?;
-            return Ok(CType::Array(element.clone(), Some(count)));
+            let mut next = 0u64;
+            let mut bound = 0u64;
+            for entry in values {
+                let designated = match entry.without_location() {
+                    Expr::Designated { path, .. } => {
+                        if path.len() != 1 {
+                            return Err(type_error(span, "nested designator paths are not yet supported"));
+                        }
+                        match &path[0] {
+                            Designator::Index(index) => {
+                                Some(self.initializer_index(index, span)?)
+                            }
+                            Designator::Field(_) => return Err(type_error(span,
+                                "field designator requires struct or union initializer")),
+                        }
+                    }
+                    _ => None,
+                };
+                let index = designated.unwrap_or(next);
+                next = index.checked_add(1)
+                    .ok_or_else(|| type_error(span, "array designator index overflow"))?;
+                bound = bound.max(next);
+            }
+            if bound > 1_048_576 {
+                return Err(type_error(span, "array initializer exceeds 1 MiB element guard"));
+            }
+            return Ok(CType::Array(element.clone(), Some(bound)));
         }
         Ok(ty)
+    }
+
+    /// Evaluate a C99 designator index as an integer constant expression.
+    /// Negative indices and enormous sparse arrays are diagnosed before
+    /// converting to host indexes or allocating initializer vectors.
+    fn initializer_index(&self, expr: &Expr, span: Span) -> Result<u64, Diagnostic> {
+        let typed = self.check_expr(expr, expr.location().unwrap_or(span))?;
+        if !typed.ty.is_integer() {
+            return Err(type_error(span, "array designator requires integer constant expression"));
+        }
+        let value = const_eval::evaluate(&typed, self.target)
+            .map_err(|_| type_error(span, "array designator requires integer constant expression"))?;
+        let signed = !matches!(typed.ty.unqualified(),
+            CType::Integer { unsigned: true, .. });
+        if (signed && (value as i64) < 0) || value > 1_048_576 {
+            return Err(type_error(span, "array designator index out of supported range"));
+        }
+        Ok(value)
     }
 
     fn check_object_initializer(
@@ -753,43 +800,87 @@ impl Checker {
         let span = original.location().unwrap_or(span);
         let original = original.without_location();
         if let Expr::Initializer(values) = original {
-            // Braced initialization follows the aggregate shape even when
-            // the destination object itself is const-qualified.
-            let elements: Vec<&CType> = match ty.unqualified() {
-                CType::Struct { members, .. } => {
-                    if values.len() > members.len() {
-                        return Err(type_error(span, "too many struct initializers"));
+            // Every entry has a source-order position. Designators can change
+            // the current object; the next undesignated entry follows that
+            // element, not the previous positional index.
+            let mut entries = Vec::with_capacity(values.len());
+            let mut seen = HashSet::new();
+            let mut cursor = 0usize;
+            let mut has_designators = false;
+            let array = matches!(ty.unqualified(), CType::Array(..));
+            for value in values {
+                let (slot, input) = match value.without_location() {
+                    Expr::Designated { path, value: inner } => {
+                        has_designators = true;
+                        if path.len() != 1 {
+                            return Err(type_error(value.location().unwrap_or(span),
+                                "nested designator paths are not yet supported"));
+                        }
+                        let slot = match (&path[0], ty.unqualified()) {
+                            (Designator::Index(index), CType::Array(_, _)) =>
+                                usize::try_from(self.initializer_index(index, span)?)
+                                    .map_err(|_| type_error(span, "array designator index too large"))?,
+                            (Designator::Field(field), CType::Struct { members, .. } |
+                                CType::Union { members, .. }) =>
+                                members.iter().position(|m| &m.name == field)
+                                    .ok_or_else(|| type_error(span,
+                                        format!("unknown initializer member '{field}'")))?,
+                            (Designator::Field(_), _) => return Err(type_error(span,
+                                "field designator requires struct or union initializer")),
+                            (Designator::Index(_), _) => return Err(type_error(span,
+                                "array designator requires array initializer")),
+                        };
+                        (slot, inner.as_ref())
                     }
-                    members.iter().map(|m| &m.ty).collect()
-                }
-                CType::Union { members, .. } => {
-                    if values.len() > 1 {
-                        return Err(type_error(span, "union initializer selects only its first member"));
+                    _ => (cursor, value),
+                };
+                let element = match ty.unqualified() {
+                    CType::Struct { members, .. } => members.get(slot).map(|m| &m.ty)
+                        .ok_or_else(|| type_error(span, "too many struct initializers"))?,
+                    CType::Union { members, .. } => members.get(slot).map(|m| &m.ty)
+                        .ok_or_else(|| type_error(span, "too many union initializers"))?,
+                    CType::Array(element, Some(count)) => {
+                        if u64::try_from(slot).is_err_or(|i| i >= *count) {
+                            return Err(type_error(span, "array designator index exceeds bound"));
+                        }
+                        element.as_ref()
                     }
-                    members.iter().take(1).map(|m| &m.ty).collect()
-                }
-                CType::Array(element, Some(count)) => {
-                    let count = usize::try_from(*count)
-                        .map_err(|_| type_error(span, "array initializer exceeds supported bounds"))?;
-                    if values.len() > count {
-                        return Err(type_error(span, "too many array initializers"));
+                    CType::Array(_, None) => return Err(type_error(span,
+                        "incomplete array initializer")),
+                    _ => {
+                        if has_designators {
+                            return Err(type_error(span,
+                                "designated initializer requires aggregate type"));
+                        }
+                        if values.len() != 1 {
+                            return Err(type_error(span, "scalar initializer requires one expression"));
+                        }
+                        return self.check_object_initializer(value, ty, span, is_static);
                     }
-                    vec![element.as_ref(); values.len()]
+                };
+                if !seen.insert(slot) {
+                    return Err(type_error(span,
+                        "duplicate initializer target requires override handling"));
                 }
-                CType::Array(_, None) => {
-                    return Err(type_error(span, "incomplete array initializer"));
+                if !array && matches!(ty.unqualified(), CType::Union { .. }) && !entries.is_empty() {
+                    return Err(type_error(span,
+                        "multiple union member initializers require override handling"));
                 }
-                _ => {
-                    if values.len() != 1 {
-                        return Err(type_error(span, "scalar initializer requires one expression"));
-                    }
-                    return self.check_object_initializer(&values[0], ty, span, is_static);
-                }
-            };
-            let checked = values.iter().zip(elements).map(|(value, element)|
-                self.check_object_initializer(value, element, span, is_static))
-                .collect::<Result<Vec<_>, _>>()?;
-            return Ok(CheckedExpr::value(ty.clone(), CheckedExprKind::Initializer(checked)));
+                let checked = self.check_object_initializer(input, element, span, is_static)?;
+                entries.push((slot, checked));
+                cursor = slot.checked_add(1)
+                    .ok_or_else(|| type_error(span, "initializer cursor overflow"))?;
+            }
+            return Ok(CheckedExpr::value(ty.clone(),
+                if has_designators {
+                    CheckedExprKind::SparseInitializer(entries)
+                } else {
+                    CheckedExprKind::Initializer(
+                        entries.into_iter().map(|(_, value)| value).collect())
+                }));
+        }
+        if matches!(original, Expr::Designated { .. }) {
+            return Err(type_error(span, "initializer designator requires enclosing braces"));
         }
         let expression = self.check_expr(original, span)?;
         if is_static {
@@ -799,8 +890,8 @@ impl Checker {
             (CType::Array(element, Some(_)), Expr::StringLiteral(_))
             if matches!(element.unqualified(), CType::Integer { rank: IntRank::Char, .. }))
         {
-            // Retain literal bytes in checked IR; generic array-to-pointer
-            // decay would lose the value needed to initialize the array.
+            // Retain literal bytes; array-to-pointer decay would lose the
+            // source bytes needed to initialize the array.
             Ok(expression)
         } else {
             self.convert_for_assignment(expression, ty, original, span)
@@ -1478,7 +1569,7 @@ impl Checker {
                     error
                 })
             },
-            Expr::Initializer(_) => Err(type_error(span,
+            Expr::Initializer(_) | Expr::Designated { .. } => Err(type_error(span,
                 "brace initializer is only valid in an object declaration")),
             Expr::StringLiteral(bytes) => {
                 let len = u64::try_from(bytes.len())
