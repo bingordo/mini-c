@@ -179,6 +179,51 @@ fn c99_compound_literals_have_object_types_lvalues_and_inferred_array_bounds() {
 }
 
 #[test]
+fn c99_file_scope_compound_literals_have_unique_static_objects_and_checked_initializers() {
+    let checked = check(concat!(
+        "int *first=(int[]){2,5,9};",
+        "int *second=(int[]){2,5,9};",
+        "int *scalar=&(int){7};",
+        "struct Pair {int x;int y;};",
+        "struct Pair *pair=&(struct Pair){.y=8,.x=4};",
+        "int *member=&((struct Pair){.x=3,.y=6}).y;",
+        "int *nested[]={(int[]){3,4},&(int){10}};",
+    )).expect("file-scope compound literal static storage");
+    let mut symbols = Vec::new();
+    for item in &checked {
+        let CheckedItem::Declaration(decl) = item else { continue };
+        let Some(value) = &decl.initializer else { continue };
+        // Direct typed pointer references retain the static compound lvalue
+        // under an array decay or address-of operation.
+        if let CheckedExprKind::ArrayDecay(inner) |
+            CheckedExprKind::Unary(UnOp::Address, inner) = &value.kind
+        {
+            if let CheckedExprKind::StaticCompoundLiteral { symbol, initializer } = &inner.kind {
+                symbols.push(symbol.clone());
+                assert!(matches!(initializer.kind,
+                    CheckedExprKind::Initializer(_) |
+                    CheckedExprKind::SparseInitializer(_) |
+                    CheckedExprKind::DeepInitializer(_)));
+            }
+        }
+    }
+    assert_eq!(symbols.len(), 4);
+    assert_ne!(symbols[0], symbols[1], "distinct occurrences need independent objects");
+    assert!(symbols.iter().all(|name| name.starts_with(".Lmini_c_compound_")));
+
+    check("int target=7; int **p=(int*[]){&target,&(int){3}};").unwrap();
+    check("char *letters=(char[]){'o','k',0};").unwrap();
+    check("struct P{int x;int y;};struct P *p=&(struct P){.x=4,.y=8};").unwrap();
+    check("int *values=(int[]){[6]=3,[1]=9};").unwrap();
+    check("int f(void){int *p=(int[]){1,2};return p[0];}").unwrap();
+
+    reject("int *bad=(int[2]){1,2,3};", "too many array initializers");
+    reject("int *bad=(int[]){[1]=2,[1]=3};", "duplicate initializer target");
+    reject("int *bad=(void[]){1};", "array element requires");
+    reject("int *bad=&(int){1+unknown};", "undeclared identifier");
+}
+
+#[test]
 fn array_types_and_parameter_adjustments() {
     let items = check("int a[3]; typedef int Matrix[2][4]; Matrix m; int use(int v[3]) { int *p = v; return *p; }").unwrap();
     let CheckedItem::Declaration(a) = &items[0] else { panic!("array declaration expected"); };
