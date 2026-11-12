@@ -163,7 +163,7 @@
       "mini": "supported",
       "kind": "valid",
       "test_ref": "crates/sema/src/tests.rs:c99_designated_initializer_single_level_types_order_and_bounds",
-      "source": "struct S{int a,b;};int f(void){struct S x={.b=@N@,.a=1};return x.b;}"
+      "source": "struct S{int a;int b;};int f(void){struct S x={.b=@N@,.a=1};return x.b;}"
     },
     {
       "id": "designated-sparse-array",
