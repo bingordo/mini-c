@@ -599,11 +599,10 @@ fn c99_comma_group_aggregate_fields_keep_layout_and_member_legality() {
     let CType::Struct { size, align, members, .. } = &value.ty else {
         panic!("struct layout expected")
     };
-    assert_eq!((*size, *align), (32, 8));
+    assert_eq!((*size, *align), (40, 8));
     assert_eq!(members.iter().map(|m| (m.name.as_str(), m.offset))
         .collect::<Vec<_>>(),
-        [("a",0), ("b",1), ("p",8), ("count",16), ("z", 28)]);
-    // Expected size is actually rounded up to the 8-byte alignment.
+        [("a",0), ("b",1), ("p",8), ("count",16), ("z", 32)]);
     let items = check("union Data { int a, b; long c; } value;").unwrap();
     let CheckedItem::Declaration(value) = &items[0] else { panic!("union expected") };
     let CType::Union { members, size, align, .. } = &value.ty else {
