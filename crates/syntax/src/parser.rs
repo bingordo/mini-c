@@ -2215,6 +2215,39 @@ mod tests {
 
 
     #[test]
+    fn c99_compound_literals_parse_as_postfix_lvalues_and_sizeof_expressions() {
+        let src = concat!(
+            "typedef int Word;",
+            "struct Pair {int left; int right;};",
+            "int f(void) {",
+            "  int *p=(int[]){1,2,3};",
+            "  int x=(struct Pair){.right=7,.left=2}.right;",
+            "  int y=sizeof (int[]){1,2,3};",
+            "  return ((Word){5}) + p[1] + x + y;",
+            "}",
+        );
+        let mut parser = Parser::new(src);
+        assert!(matches!(parser.next_item().unwrap(), Some(ExternalItem::Typedef(_))));
+        assert!(matches!(parser.next_item().unwrap(), Some(ExternalItem::Tag(_))));
+        let Some(ExternalItem::Function(function)) = parser.next_item().unwrap() else {
+            panic!("expected function");
+        };
+        let Stmt::Block(statements) = function.body else { panic!("body"); };
+        let Stmt::Decl(pointer) = &statements[0] else { panic!("pointer declaration"); };
+        assert!(matches!(pointer.init.as_ref(), Some(Expr::CompoundLiteral(
+            Type::Array(_, None), initializer
+        )) if matches!(initializer.as_ref(), Expr::Initializer(values) if values.len()==3)));
+        let Stmt::Decl(member) = &statements[1] else { panic!("member declaration"); };
+        assert!(matches!(member.init.as_ref(), Some(Expr::Member(base, field, false))
+            if field == "right" &&
+            matches!(base.as_ref(), Expr::CompoundLiteral(Type::TagRef(..), _))));
+        let Stmt::Decl(size) = &statements[2] else { panic!("sizeof declaration"); };
+        assert!(matches!(size.init.as_ref(), Some(Expr::SizeofExpr(inner))
+            if matches!(inner.as_ref(), Expr::CompoundLiteral(..))));
+        assert!(parser.next_item().unwrap().is_none());
+    }
+
+    #[test]
     fn m10_decimal_float_literals_keep_type_rank_and_full_lexeme() {
         for (literal, rank) in [
             ("0.5f", FloatRank::Float),
