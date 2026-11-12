@@ -2,7 +2,7 @@
 """C99 native goto differential: compile/link/execute unchanged programs with GCC and Mini-C.
 
 Supports forward jumps over locals, plain compound scopes and labels inside
-if/while/do-while/for. Switch-arm labels remain fail-closed.
+if/while/do-while/for and labels inside switch arms (with or without cases).
 """
 from __future__ import annotations
 
@@ -175,11 +175,92 @@ CASES = {
         int test(void) { goto inside; if(0) inside: return 12; return 0; }
         int main(void) { return test()!=12; }
     """,
+    "goto_into_switch_arm_skips_control": r"""
+        int calls=0;
+        int control(void) { calls++; return 1; }
+        int test(void) {
+            int value=1;
+            goto enter;
+            switch(control()) {
+                case 1: value=100;
+                enter: value+=5; break;
+                default: value=200;
+            }
+            return value;
+        }
+        int main(void) { return test()!=6 || calls!=0; }
+    """,
+    "goto_into_switch_without_cases": r"""
+        int calls=0;
+        int control(void) { calls++; return 9; }
+        int init(void) { calls++; return 6; }
+        int test(void) {
+            int result=0;
+            goto enter;
+            switch(control()) {
+                int skipped=init();
+                enter: result=7; break;
+            }
+            return result;
+        }
+        int main(void) { return test()!=7 || calls!=0; }
+    """,
+    "goto_into_nested_switch": r"""
+        int calls=0;
+        int control(void) { calls++; return 1; }
+        int test(void) {
+            int value=0;
+            goto enter;
+            switch(control()) {
+                case 1:
+                    switch(control()) {
+                        case 2:
+                            enter: value=7; break;
+                        default: value=50;
+                    }
+                    value+=3; break;
+                default: value=70;
+            }
+            return value;
+        }
+        int main(void) { return test()!=10 || calls!=0; }
+    """,
+    "goto_between_switch_arms": r"""
+        int test(int x) {
+            int value=0;
+            switch(x) {
+                case 1: goto after_second;
+                case 2: value=100;
+                after_second: value+=4; break;
+                default: value=9;
+            }
+            return value;
+        }
+        int main(void) { return test(1)!=4 || test(2)!=104 || test(3)!=9; }
+    """,
+    "goto_into_switch_nested_loop": r"""
+        int calls=0;
+        int control(void) { calls++; return 1; }
+        int test(void) {
+            int count=0;
+            goto enter;
+            switch(control()) {
+                case 1:
+                    while(count<3) {
+                        enter: count++;
+                    }
+                    break;
+                default: count=9;
+            }
+            return count;
+        }
+        int main(void) { return test()!=3 || calls!=0; }
+    """,
 }
 UNSUPPORTED = {
-    "label_inside_switch_arm": (
-        "int main(void) {goto end; switch(1) {case 1: end: return 0; default: return 1;} }",
-        "labels inside switch arms",
+    "undefined_function_label": (
+        "int main(void) {goto missing; switch(1) {case 1: return 0;} }",
+        "undefined",
     ),
 }
 
