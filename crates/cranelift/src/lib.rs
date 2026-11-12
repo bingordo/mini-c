@@ -553,7 +553,6 @@ impl Compiler {
             }
             CheckedStmt::Switch { body, .. } | CheckedStmt::Case { body, .. }
             | CheckedStmt::Default(body) => Self::collect_native_labels(body, ordered)?,
-            _ => {},
             _ => {}
         }
         Ok(())
