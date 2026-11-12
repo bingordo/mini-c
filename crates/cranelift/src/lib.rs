@@ -1886,10 +1886,15 @@ mod tests {
     }
 
     #[test]
-    fn native_goto_rejects_labels_inside_switch_arms() {
-        let source = "int f(int x) { goto done; switch(x) {case 1: done: return 2; default: return 0;} }";
-        let error = compile_source(source).expect_err("unsupported switch goto must reject");
-        assert!(error.contains("labels inside switch arms"), "{error}");
+    fn native_goto_supports_switch_arm_labels_and_no_case_switch() {
+        for source in [
+            "int f(int x) { goto done; switch(x) {case 1: done: return 2; default: return 0;} }",
+            "int f(int x) { goto done; switch(x) {done: return 2;} return 0; }",
+            "int f(int x) { goto done; switch(x) {case 1: while(x) {done: return 2;} break;} return 0; }",
+            "int f(int x) { switch(x) {case 1: goto done; case 2: done: return 2;} return 0; }",
+        ] {
+            compile_source(source).unwrap_or_else(|why| panic!("{why}: {source}"));
+        }
     }
 
     #[test]
