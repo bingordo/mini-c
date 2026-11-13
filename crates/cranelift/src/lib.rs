@@ -3264,6 +3264,35 @@ mod tests {
     }
 
     #[test]
+    fn emits_sse_and_mixed_aggregate_calls_and_returns() {
+        let sources = [
+            "struct F { float v; }; struct F echo(struct F p) { return p; } \
+             int main(void) { struct F f; f.v=1.75f; f=echo(f); return f.v!=1.75f; }",
+            "struct FF { float a,b; }; struct FF echo(struct FF p) { return p; } \
+             int main(void) { struct FF f; f.a=1.25f; f.b=2.5f; \
+                 f=echo(f); return f.a!=1.25f || f.b!=2.5f; }",
+            "struct M { double d; long n; }; struct M echo(struct M p) { return p; } \
+             int main(void) { struct M x; x.d=3.25; x.n=11; \
+                 x=echo(x); return x.d!=3.25 || x.n!=11; }",
+            "struct D { double a,b; }; struct D echo(struct D p) { return p; } \
+             int main(void) { struct D x; x.a=2.0; x.b=5.0; \
+                 x=echo(x); return x.a!=2.0 || x.b!=5.0; }",
+            "struct M { long n; double d; }; struct M echo(struct M p) { return p; } \
+             int main(void) { struct M x; x.n=7; x.d=2.5; \
+                 x=echo(x); return x.n!=7 || x.d!=2.5; }",
+        ];
+        for source in sources {
+            let object = compile_source(source).unwrap_or_else(|e|
+                panic!("SSE aggregate ABI lowering failed: {source}: {e}"));
+            assert_eq!(&object[..4], b"\x7fELF");
+        }
+        assert!(compile_source(
+            "struct D { double a,b; }; int f(double a,double b,double c,double d, \
+             double e,double f,double g,struct D x) { return 0; }"
+        ).is_err(), "SSE register exhaustion must not silently split an aggregate");
+    }
+
+    #[test]
     fn emits_small_integer_aggregate_calls_and_returns() {
         let sources = [
             "struct Pair { long a; long b; }; \
