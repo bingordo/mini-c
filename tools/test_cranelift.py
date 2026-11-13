@@ -14,6 +14,22 @@ import subprocess
 import sys
 
 PROGRAMS = {
+    # SysV variadic SSE calls must set AL to the count of XMM registers
+    # occupied by both fixed and ellipsis arguments; GCC formats the values.
+    "sysv_varargs_printf_double_one": """extern int printf(const char *, ...);
+        int main(void) { printf("%.2f|%.1f\\n", 1.25, -2.5); return 0; }""",
+    "sysv_varargs_printf_float_promoted": """extern int printf(const char *, ...);
+        int main(void) { float x=2.25f; printf("%.2f\\n", x); return 0; }""",
+    "sysv_varargs_printf_nine_doubles": """extern int printf(const char *, ...);
+        int main(void) { printf("%.0f|%.0f|%.0f|%.0f|%.0f|%.0f|%.0f|%.0f|%.0f\\n",
+            1.0,2.0,3.0,4.0,5.0,6.0,7.0,8.0,9.0); return 0; }""",
+    "sysv_varargs_mixed_gp_fp": """extern int printf(const char *, ...);
+        int main(void) { printf("%d|%.2f|%ld|%.1f|%s|%d\\n",
+            -17, 1.25, 1234567890L, 3.5, "ok", 9); return 0; }""",
+    "sysv_varargs_snprintf_mixed_fp": """extern int snprintf(char *, unsigned long, const char *, ...);
+        int main(void) { char buf[80];
+            int n=snprintf(buf,80,"%.1f/%d/%.1f",1.5,7,2.5);
+            return n!=9 || buf[0]!='1' || buf[3]!='/' || buf[8]!='5'; }""",
     # SysV MEMORY-class by-value arguments and hidden structure returns.
     "sysv_memory_stack_arg_padded_twenty_bytes": """struct Odd { int a,b,c,d,e; };
         int sum(struct Odd x) { return x.a+x.b+x.c+x.d+x.e; }
@@ -755,6 +771,14 @@ def main() -> int:
     mixed = [
         # Verify both directions of the native SysV ABI, not only whole-TU
         # Mini-C compilation (which can hide symmetric ABI mistakes).
+        # GCC-defined variadic functions explicitly inspect va_arg(double).
+        # The fixed SSE argument must also be counted in AL.
+        ("mini_calls_gcc_variadic_fixed_sse_and_ellipsis",
+         "extern int sum_variadic(double fixed, ...); int main(void) { return sum_variadic(1.5,2.5)!=4; }",
+         "#include <stdarg.h>\nint sum_variadic(double fixed, ...) { va_list ap; va_start(ap,fixed); double x=va_arg(ap,double); va_end(ap); return (int)(fixed+x); }"),
+        ("mini_calls_gcc_variadic_mixed_stack_gp_sse",
+         "extern int accumulate(int fixed, ...); int main(void) { return accumulate(1,2.5,3,4.5)!=11; }",
+         "#include <stdarg.h>\nint accumulate(int fixed, ...) { va_list ap; va_start(ap,fixed); double a=va_arg(ap,double); int b=va_arg(ap,int); double c=va_arg(ap,double); va_end(ap); return fixed+(int)a+b+(int)c; }"),
         # Cross-object SSE float/double scalar calls and returns.
         ("gcc_calls_mini_f64",
          "double twice(double x) { return x*2.0; }",
