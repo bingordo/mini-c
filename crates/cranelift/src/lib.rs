@@ -3430,6 +3430,15 @@ mod tests {
              struct L roundtrip(struct L x) { x.c+=5; return x; } \
              int main(void) { struct L x={2,3,7}; x=roundtrip(x); \
                  return x.a!=2 || x.b!=3 || x.c!=12; }",
+            // 20-byte object: Cranelift copies a rounded 24-byte stack
+            // argument, so the source must have a padded temporary.
+            "struct Odd { int a,b,c,d,e; }; \
+             int sum(struct Odd x) { return x.a+x.b+x.c+x.d+x.e; } \
+             int main(void) { struct Odd x={1,2,3,4,5}; return sum(x)!=15; }",
+            "struct Odd { int a,b,c,d,e; }; \
+             struct Odd echo(struct Odd x) { x.e+=2; return x; } \
+             int main(void) { struct Odd x={1,2,3,4,5}; x=echo(x); \
+                 return x.a!=1 || x.e!=7; }",
             // Six consumed GP registers force an otherwise two-register
             // aggregate wholly onto the outgoing stack.
             "struct P { long a,b; }; \
