@@ -15,6 +15,13 @@ import sys
 
 PROGRAMS = {
     # SysV MEMORY-class by-value arguments and hidden structure returns.
+    "sysv_memory_stack_arg_padded_twenty_bytes": """struct Odd { int a,b,c,d,e; };
+        int sum(struct Odd x) { return x.a+x.b+x.c+x.d+x.e; }
+        int main(void) { struct Odd x={1,2,3,4,5}; return sum(x)!=15; }""",
+    "sysv_memory_sret_twenty_bytes": """struct Odd { int a,b,c,d,e; };
+        struct Odd echo(struct Odd x) { x.e+=4; return x; }
+        int main(void) { struct Odd x={1,2,3,4,5};
+            x=echo(x); return x.a!=1 || x.e!=9; }""",
     "sysv_memory_large_struct_argument": """struct Large { long a,b,c; };
         long sum(struct Large x) { x.a+=4; return x.a+x.b+x.c; }
         int main(void) { struct Large x={2,3,5};
@@ -759,6 +766,12 @@ def main() -> int:
          "double combine(int a,double b,float c) { return (double)a+b+(double)c; }",
          "double combine(int,double,float); int main(void) { return combine(3,2.5,4.5f)!=10.0; }"),
         # Independently compiled GCC/Mini-C MEMORY-aggregate ABI in both directions.
+        ("gcc_calls_mini_twenty_byte_stack_struct",
+         "struct Odd { int a,b,c,d,e; }; int sum(struct Odd x) { return x.a+x.b+x.c+x.d+x.e; }",
+         "struct Odd { int a,b,c,d,e; }; int sum(struct Odd); int main(void) { struct Odd x={1,2,3,4,5}; return sum(x)!=15; }"),
+        ("mini_calls_gcc_twenty_byte_stack_struct",
+         "struct Odd { int a,b,c,d,e; }; extern int sum(struct Odd); int main(void) { struct Odd x={1,2,3,4,5}; return sum(x)!=15; }",
+         "struct Odd { int a,b,c,d,e; }; int sum(struct Odd x) { return x.a+x.b+x.c+x.d+x.e; }"),
         ("gcc_calls_mini_sret_large",
          "struct Large { long a,b,c; }; struct Large make(long x,long y,long z) { struct Large a={x,y,z}; return a; }",
          "struct Large { long a,b,c; }; struct Large make(long,long,long); int main(void) { struct Large x=make(7,11,13); return x.a!=7 || x.b!=11 || x.c!=13; }"),
