@@ -1,8 +1,8 @@
-# M2.5 — Cranelift executable reference backend
+# Cranelift executable reference backend
 
 Mini-C has an **optional, leaf-only** Cranelift lowering crate:
 [`crates/cranelift`](../crates/cranelift). This is an executable oracle
-independent of the planned `bingundu/compiler` backend, not the production
+independent of the `bingordo/compiler` backend, not the production
 code generator. It consumes `mini_c_sema::CheckedFunction`, never the raw
 parser AST; neither syntax nor sema depend on Cranelift.
 
@@ -20,59 +20,69 @@ python3 tools/test_cranelift.py --seed-count 4 --steps 100
 ```
 
 `mini-c-cranelift --emit-obj OUTPUT.o INPUT.c` is the standalone CLI.
-It reads C source directly, **not** through a preprocessor. For macros and
-includes, preprocess separately with `cc -E`, supplying the resulting
-`.i` file to the CLI. The embedded API
+The standalone CLI uses Mini-C's internal C preprocessor by default and offers
+the external `--cpp=cc` fallback for hosted compatibility. The embedded API
 `mini_c_cranelift::compile_source(&str) -> Result<Vec<u8>, String>` emits
 the exact same relocatable ELF object bytes in memory. Advanced users can
 construct a `mini_c_cranelift::Compiler` and call `add(CheckedItem)`
 for one top-level item at a time, followed by `finish()`.
 
-**Supported now:** x86-64 Linux System V calling convention; signed and
-unsigned 32-bit `int` and 64-bit `long`; local variables, arguments,
-assignments, arithmetic, signed/unsigned division and remainder,
-comparisons, unary minus, logical not, &&/|| with correct short-circuit
-evaluation; `if`/`else`, `while`, `break`, `continue`, `return`; direct
-function calls, forward prototypes, and recursion. Returning from
-the end of `main` emits zero. A nonvoid function (other than `main`)
-that can syntactically fall through is rejected. Each checked function
-is lowered and discarded before the next is accepted.
+## Current support — November 13, 2026
 
-**Now supported in the reference backend:** sized local scalar and array
-stack objects, address-of, dereference, array-to-pointer decay, scaled
-pointer + integer offsets and indexed reads/writes, including multidimensional
-fixed arrays. Local scalar objects use explicit stack storage to preserve
-aliasing, even across pointers and calls.
+This backend emits x86-64 Linux ELF object files interoperable with GCC under
+the System V ABI. It implements integer/pointer arithmetic, local/global
+objects, arrays, aggregate layout/field access/copy, control flow
+(including nested `switch`, `goto`, loops and recursion), checked function
+calls and returns, local/string/global initializers, and the supported C99
+declarator and initializer subset. See
+[`C99_Frontend_Plan.md`](C99_Frontend_Plan.md) for independent frontend gaps.
 
-**Deliberately unsupported:** file-scope data objects and their reads,
-incomplete local arrays, global data, full `char`/narrow integer ABI
-coverage, block-scope `extern` or `static`, aggregates,
-functions invoked via function pointers, non-x86-64 platforms and
-the full C expression/declarator grammar. Unsupported checked
-constructs produce backend errors rather than silently generating code.
-The current backend initializes uninitialized locals to zero as an
-internal Cranelift SSA convenience; this does not define the behavior
-of reading uninitialized variables in C.
+The reference backend now supports these additional native ABI slices:
 
-## C99 switch implementation
+- Scalar `float` (F32) and `double` (F64): constants, local storage,
+  unary and binary arithmetic, comparisons, conditional tests, conversions
+  and direct/indirect nonvariadic calls and returns using SSE registers.
+- `struct`/`union` by-value **register-class** arguments and returns on
+  x86-64 SysV when their complete representation occupies at most two
+  eightbytes. The classifier supports INTEGER, SSE, and mixed INTEGER/SSE
+  classes, including two `float` fields packed into one SSE eightbyte.
+- Correct register allocation for the supported aggregate classes with
+  independent 6-GP and 8-SSE argument limits; when an aggregate cannot fit,
+  code generation rejects it rather than silently splitting it incorrectly.
+- Direct GCC executable differentials and GCC/Mini-C mixed-object linking
+  in both directions for scalar FP, one/two-register integer aggregates,
+  packed-float aggregates, two-double aggregates, and mixed GP/SSE aggregates.
 
-The F1 checked frontend now supports integer-promoted `switch`, typed
-constant cases, duplicate detection after conversion, nested switches,
-fallthrough labels and correct switch/loop break and continue constraints.
-The Cranelift reference backend handles **direct case/default arm labels**,
-shared labels, source-order fallthrough, default-only and no-label switches,
-nested switches, integer/unsigned-long dispatch and nearest break/continue
-targets. It evaluates the control once and uses a correct comparator-chain
-dispatch; optimizing dense cases into jump tables is optional future work.
+**Still unsupported, fail-closed:** MEMORY-class aggregate arguments/returns
+(e.g., larger than 16 bytes, including hidden sret handling), aggregate
+register exhaustion that requires stack passing, unaligned aggregate members,
+extended/x87 floating-point types (`long double` and `_Float128`),
+hexadecimal FP literal code generation, and full SysV variadic calls with
+SSE arguments (`%al` vector register count). Floating-point global/static
+constant initializers and some C99 language/CPP features also remain work.
+The Cranelift backend does not target AArch64. Some missing-return
+diagnostics remain stricter than ISO C permits; a zero-initialization
+convenience for otherwise-indeterminate automatic locals does not change
+the C undefined-behavior rules.
 
-[CI #43023065658](https://github.com/bingordo/mini-c/actions/runs/43023065658)
-ran six source-pinned C99 programs via both GCC and Mini-C native ELF, all
-with matching successful execution. Unsupported case labels inside deeper
-conditional/loop/compound statements or a switch-block declaration jumped
-over by another case **fail explicitly**, not by silent miscompilation.
-These general CFG/storage cases remain tracked by [#143](https://github.com/bingordo/mini-c/issues/143).
-Syntax/semantics and the native reference backend have separate completion
-criteria.
+Current validation (source branch
+[`cranelift-sysv-aggregate-abi-foundation`](https://github.com/bingordo/mini-c/pull/173)):
+[compiler-ci run #43518580978](https://github.com/bingordo/compiler-ci/actions/runs/43518580978)
+passed targeted Rust tests, Clippy, preprocessor/hosted-header checks, and
+GCC executable and cross-object ABI differentials. The hardcoded branch
+override in [compiler-ci PR #669](https://github.com/bingordo/compiler-ci/pull/669)
+is temporary validation only and must not be merged.
+
+## C99 switch and goto
+
+The checked frontend handles integer promotions, duplicate/default
+diagnostics, fallthrough and nested switch constraints. The Cranelift
+backend has CFG-entry blocks for case/default labels inside nested
+statements, allows switch dispatches to jump over local declarations,
+and preserves ordinary function-scoped goto labels, including jumps
+entering a switch. Runtime comparisons against GCC exercise these cases;
+switch dispatch currently uses comparator chains rather than dense
+jump tables. The final-return gate is based on CFG reachability.
 
 ## Independent reference tests
 
