@@ -3097,7 +3097,7 @@ mod tests {
         for source in sources {
             let object = compile_source(source).unwrap_or_else(|e|
                 panic!("integer aggregate ABI lowering failed: {source}: {e}"));
-            assert_eq!(&object[..4], b"\\x7fELF");
+            assert_eq!(&object[..4], b"\x7fELF");
         }
     }
 
