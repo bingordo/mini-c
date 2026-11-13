@@ -3,7 +3,7 @@
 //!
 //! Supports native x86-64 ELF functions, stack objects, and integer-initialized
 //! or zero-initialized global objects. Unsupported features fail explicitly.
-use cranelift_codegen::ir::{self, condcodes::IntCC, types, AbiParam, InstBuilder, Value};
+use cranelift_codegen::ir::{self, condcodes::{FloatCC, IntCC}, types, AbiParam, InstBuilder, Value};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{default_libcall_names, DataId, FuncId, Linkage as ClLinkage, Module};
@@ -15,7 +15,7 @@ use mini_c_sema::{
     CType, CheckedDecl, CheckedExpr, CheckedExprKind, CheckedFunction,
     CheckedItem, CheckedStmt, Checker, IntRank, Linkage, Target,
 };
-use mini_c_syntax::{ast::{BinOp, UnOp, StorageClass}, parser::Parser, stream::ItemSource};
+use mini_c_syntax::{ast::{BinOp, FloatRank, UnOp, StorageClass}, parser::Parser, stream::ItemSource};
 use std::collections::{HashMap, HashSet};
 
 mod sysv_aggregate;
@@ -29,6 +29,8 @@ fn scalar_type(ty: &CType) -> Result<ir::Type> {
         CType::Integer { rank: IntRank::Short, .. } => Ok(types::I16),
         CType::Integer { rank: IntRank::Int, .. } => Ok(types::I32),
         CType::Integer { rank: IntRank::Long | IntRank::LongLong, .. } | CType::Pointer(_) => Ok(types::I64),
+        CType::Floating(FloatRank::Float) => Ok(types::F32),
+        CType::Floating(FloatRank::Double) => Ok(types::F64),
         CType::Struct { .. } | CType::Union { .. } | CType::TagRef { .. } |
         CType::Array(..) => Err(format!(
             "unsupported SysV aggregate-by-value ABI for {ty:?}; use pointer parameters/returns"
@@ -83,7 +85,9 @@ fn signature(module: &ObjectModule, ty: &CType) -> Result<ir::Signature> {
             sig.params.extend(registers.into_iter().map(AbiParam::new));
         } else {
             let scalar = scalar_type(param)?;
-            gp_used = (gp_used + 1).min(6);
+            if scalar != types::F32 && scalar != types::F64 {
+                gp_used = (gp_used + 1).min(6);
+            }
             sig.params.push(AbiParam::new(scalar));
         }
     }
@@ -1121,7 +1125,13 @@ impl Lower<'_> {
         } else if !matches!(ty.unqualified(), CType::Array(..) | CType::Struct { .. } | CType::Union { .. }) {
             // Deterministic choice for otherwise-indeterminate scalar locals,
             // not a promise about C uninitialized reads.
-            let zero = b.ins().iconst(scalar_type(ty)?, 0);
+            let zero = match ty.unqualified() {
+                CType::Floating(FloatRank::Float) =>
+                    b.ins().f32const(ir::immediates::Ieee32::with_bits(0)),
+                CType::Floating(FloatRank::Double) =>
+                    b.ins().f64const(ir::immediates::Ieee64::with_bits(0)),
+                _ => b.ins().iconst(scalar_type(ty)?, 0),
+            };
             b.ins().store(ir::MemFlagsData::new(), zero, address, 0);
         }
         Ok(())
@@ -1481,8 +1491,19 @@ impl Lower<'_> {
         }
         let value = self.expression(b, expr)?;
         let ty = b.func.dfg.value_type(value);
-        let zero = b.ins().iconst(ty, 0);
-        Ok(b.ins().icmp(IntCC::NotEqual, value, zero))
+        let cond = if ty == types::F32 || ty == types::F64 {
+            let zero = if ty == types::F32 {
+                b.ins().f32const(ir::immediates::Ieee32::with_bits(0))
+            } else {
+                b.ins().f64const(ir::immediates::Ieee64::with_bits(0))
+            };
+            // NaN converts to true in a C scalar condition.
+            b.ins().fcmp(FloatCC::NotEqual, value, zero)
+        } else {
+            let zero = b.ins().iconst(ty, 0);
+            b.ins().icmp(IntCC::NotEqual, value, zero)
+        };
+        Ok(cond)
     }
 
     fn boolean(b: &mut FunctionBuilder<'_>, value: Value) -> Value {
@@ -1494,17 +1515,56 @@ impl Lower<'_> {
     fn convert(b: &mut FunctionBuilder<'_>, value: Value, from: &CType, to: &CType) -> Result<Value> {
         let src_ty = scalar_type(from)?;
         let dst_ty = scalar_type(to)?;
-        // _Bool conversion is truth-value normalization, not integer
-        // truncation: both 2 and 256 must become 1, never 2 or 0.
+        let src_fp = src_ty == types::F32 || src_ty == types::F64;
+        let dst_fp = dst_ty == types::F32 || dst_ty == types::F64;
+        // _Bool conversion normalizes all nonzero values, including FP NaNs.
         if matches!(to.unqualified(), CType::Integer { rank: IntRank::Bool, .. }) {
-            let nonzero = b.ins().icmp_imm_s(IntCC::NotEqual, value, 0);
+            let nonzero = if src_fp {
+                let zero = if src_ty == types::F32 {
+                    b.ins().f32const(ir::immediates::Ieee32::with_bits(0))
+                } else {
+                    b.ins().f64const(ir::immediates::Ieee64::with_bits(0))
+                };
+                b.ins().fcmp(FloatCC::NotEqual, value, zero)
+            } else {
+                b.ins().icmp_imm_s(IntCC::NotEqual, value, 0)
+            };
             let one = b.ins().iconst(types::I8, 1);
             let zero = b.ins().iconst(types::I8, 0);
             return Ok(b.ins().select(nonzero, one, zero));
         }
         if src_ty == dst_ty { return Ok(value); }
+        if src_fp && dst_fp {
+            return Ok(if src_ty == types::F32 {
+                b.ins().fpromote(types::F64, value)
+            } else {
+                b.ins().fdemote(types::F32, value)
+            });
+        }
+        if src_fp {
+            let target = if dst_ty.bits() < 32 { types::I32 } else { dst_ty };
+            let unsigned = matches!(to.unqualified(), CType::Integer { unsigned: true, .. });
+            let converted = if unsigned {
+                b.ins().fcvt_to_uint(target, value)
+            } else {
+                b.ins().fcvt_to_sint(target, value)
+            };
+            return Ok(if target == dst_ty { converted } else { b.ins().ireduce(dst_ty, converted) });
+        }
+        if dst_fp {
+            let signed = matches!(from.unqualified(), CType::Integer { unsigned: false, .. });
+            let widened = if src_ty.bits() < 32 {
+                if signed { b.ins().sextend(types::I32, value) }
+                else { b.ins().uextend(types::I32, value) }
+            } else { value };
+            return Ok(if signed {
+                b.ins().fcvt_from_sint(dst_ty, widened)
+            } else {
+                b.ins().fcvt_from_uint(dst_ty, widened)
+            });
+        }
         if src_ty.bits() < dst_ty.bits() {
-            let signed = matches!(from, CType::Integer { unsigned: false, .. });
+            let signed = matches!(from.unqualified(), CType::Integer { unsigned: false, .. });
             Ok(if signed { b.ins().sextend(dst_ty, value) } else { b.ins().uextend(dst_ty, value) })
         } else {
             Ok(b.ins().ireduce(dst_ty, value))
@@ -1579,8 +1639,27 @@ impl Lower<'_> {
             | CheckedExprKind::DeepInitializer(_) =>
                 Err("braced initializer cannot be evaluated as an expression".into()),
             CheckedExprKind::Literal(n) => Ok(b.ins().iconst(scalar_type(&expr.ty)?, *n as i64)),
-            CheckedExprKind::FloatLiteral(_) =>
-                Err("native floating-point literal code generation is unsupported".into()),
+            CheckedExprKind::FloatLiteral(text) => {
+                // Keep rounding at the declared C rank; fail closed on C99
+                // hexadecimal forms until a correctly rounded parser exists.
+                if text.starts_with("0x") || text.starts_with("0X") {
+                    return Err("hexadecimal floating-point literal lowering is unsupported".into());
+                }
+                match expr.ty.unqualified() {
+                    CType::Floating(FloatRank::Float) => {
+                        let digits = text.trim_end_matches(['f', 'F']);
+                        let value = digits.parse::<f32>()
+                            .map_err(|e| format!("invalid binary32 literal '{text}': {e}"))?;
+                        Ok(b.ins().f32const(ir::immediates::Ieee32::with_bits(value.to_bits())))
+                    }
+                    CType::Floating(FloatRank::Double) => {
+                        let value = text.parse::<f64>()
+                            .map_err(|e| format!("invalid binary64 literal '{text}': {e}"))?;
+                        Ok(b.ins().f64const(ir::immediates::Ieee64::with_bits(value.to_bits())))
+                    }
+                    _ => Err("unsupported extended floating-point literal ABI".into()),
+                }
+            },
             CheckedExprKind::EnumConstant(n) => Ok(b.ins().iconst(scalar_type(&expr.ty)?, *n)),
             CheckedExprKind::StringLiteral(_) | CheckedExprKind::Member(..) |
             CheckedExprKind::BitFieldMember(..) => self.place(b, expr),
@@ -1644,15 +1723,30 @@ impl Lower<'_> {
                 if *op == UnOp::Deref {
                     return self.expression(b, inner);
                 }
-                let val = self.integer_value(b, inner)?;
+                let floating = matches!(inner.ty.unqualified(), CType::Floating(_));
+                let val = if floating {
+                    self.expression(b, inner)?
+                } else {
+                    self.integer_value(b, inner)?
+                };
                 match op {
                     UnOp::Plus => Ok(val),
-                    UnOp::Neg => Ok(b.ins().ineg(val)),
-                    UnOp::BitNot => Ok(b.ins().bnot(val)),
+                    UnOp::Neg => Ok(if floating { b.ins().fneg(val) } else { b.ins().ineg(val) }),
+                    UnOp::BitNot if !floating => Ok(b.ins().bnot(val)),
+                    UnOp::BitNot => Err("bitwise negation requires integer".into()),
                     UnOp::Not => {
                         let ty = b.func.dfg.value_type(val);
-                        let zero = b.ins().iconst(ty, 0);
-                        let cond = b.ins().icmp(IntCC::Equal, val, zero);
+                        let cond = if floating {
+                            let zero = if ty == types::F32 {
+                                b.ins().f32const(ir::immediates::Ieee32::with_bits(0))
+                            } else {
+                                b.ins().f64const(ir::immediates::Ieee64::with_bits(0))
+                            };
+                            b.ins().fcmp(FloatCC::Equal, val, zero)
+                        } else {
+                            let zero = b.ins().iconst(ty, 0);
+                            b.ins().icmp(IntCC::Equal, val, zero)
+                        };
                         Ok(Self::boolean(b, cond))
                     }
                     UnOp::Address | UnOp::Deref => unreachable!(),
