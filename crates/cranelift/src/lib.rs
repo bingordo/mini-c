@@ -2860,20 +2860,29 @@ mod tests {
 
     #[test]
     fn used_hosted_prototype_does_not_get_an_incorrect_native_signature() {
+        // INTEGER-class aggregate imports are now legal, including function
+        // addresses; the independent GCC link tests verify their machine ABI.
         let src = concat!(
             "struct Cookie { long first; long second; }; ",
             "extern struct Cookie cookie_open(void); ",
             "int main(void) { cookie_open(); return 0; }"
         );
-        let error = compile_source(src).unwrap_err();
-        assert!(error.contains("missing function declaration"), "{error}");
+        assert!(compile_source(src).is_ok());
 
         let src = concat!(
             "struct Cookie { long first; long second; }; ",
             "extern int cookie_consume(struct Cookie); ",
             "int main(void) { return &cookie_consume != 0; }"
         );
-        assert!(compile_source(src).is_err(), "function address must not become an invalid relocation");
+        assert!(compile_source(src).is_ok());
+
+        // MEMORY-class aggregate imports still fail closed when used.
+        let src = concat!(
+            "struct Large { long first; long second; long third; }; ",
+            "extern struct Large large_open(void); ",
+            "int main(void) { large_open(); return 0; }"
+        );
+        assert!(compile_source(src).is_err());
 
         // Declarations must still agree semantically even if Cranelift
         // cannot materialize their signatures.
