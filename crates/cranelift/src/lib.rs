@@ -171,12 +171,14 @@ struct KnownFunction {
     defined: bool,
 }
 
-/// A callsite-specific fixed-ABI wrapper, emitted as a tiny x86-64 tail jump.
-/// Its entry sees the normal SysV GP/stack arguments and sets AL=0 before
-/// jumping into the real C variadic function. No SSE arguments are supported.
-struct SysvGpVarargThunk {
+/// One per-callsite SysV variadic tail thunk. Cranelift puts all fixed CLIF
+/// arguments in their ordinary GP/XMM registers and stack slots, but has no
+/// special AL register-value operand on a variadic call. The wrapper sets
+/// AL to the number of vector argument registers used, then tail-jumps.
+struct SysvVarargThunk {
     wrapper: FuncId,
     target: FuncId,
+    sse_count: u8,
 }
 
 /// Fully checked external function prototype waiting for its first
@@ -478,7 +480,7 @@ pub struct Compiler {
     module: ObjectModule,
     functions: HashMap<String, KnownFunction>,
     pending_functions: HashMap<String, PendingFunction>,
-    gp_vararg_thunks: Vec<SysvGpVarargThunk>,
+    vararg_thunks: Vec<SysvVarargThunk>,
     data: HashMap<String, KnownData>,
     strings: HashMap<Vec<u8>, DataId>,
 }
@@ -499,7 +501,7 @@ impl Compiler {
         Ok(Self {
             module: ObjectModule::new(object),
             functions: HashMap::new(), pending_functions: HashMap::new(),
-            gp_vararg_thunks: Vec::new(),
+            vararg_thunks: Vec::new(),
             data: HashMap::new(), strings: HashMap::new(),
         })
     }
@@ -901,7 +903,7 @@ impl Compiler {
                 .collect();
             let mut lower = Lower {
                 module: &mut self.module, functions: &self.functions,
-                gp_vararg_thunks: &mut self.gp_vararg_thunks,
+                vararg_thunks: &mut self.vararg_thunks,
                 data: &self.data,
                 strings: &mut self.strings,
                 scopes: vec![HashMap::new()], loops: Vec::new(), breaks: Vec::new(),
@@ -1069,20 +1071,25 @@ impl Compiler {
                 .map_err(|e| format!("defining global '{name}': {e}"))?;
         }
         let mut product = self.module.finish();
-        if !self.gp_vararg_thunks.is_empty() {
+        if !self.vararg_thunks.is_empty() {
             let text = product.object.section_id(StandardSection::Text);
-            for thunk in self.gp_vararg_thunks {
+            for thunk in self.vararg_thunks {
                 let wrapper = product.function_symbol(thunk.wrapper);
                 let destination = product.function_symbol(thunk.target);
-                // x86-64: xor eax,eax ; jmp rel32. The tail jump preserves
-                // every incoming GP register, stack argument, return address,
-                // and alignment while setting the SysV SSE-register count AL=0.
+                // x86-64: xor eax,eax (0) or mov al,imm8 (1..8), then
+                // jmp rel32. Both prologues take two bytes; preserve GP/XMM
+                // arguments, stack argument area, return address and alignment.
                 // An undefined Cranelift import has Unknown scope in the
                 // object writer. Set a concrete local scope before defining
                 // the code bytes, as required by object::write.
                 product.object.symbol_mut(wrapper).scope = SymbolScope::Compilation;
+                let prologue = if thunk.sse_count == 0 {
+                    [0x31, 0xc0] // xor eax, eax
+                } else {
+                    [0xb0, thunk.sse_count] // mov al, imm8
+                };
                 let start = product.object.add_symbol_data(
-                    wrapper, text, &[0x31, 0xc0, 0xe9, 0, 0, 0, 0], 16
+                    wrapper, text, &[prologue[0], prologue[1], 0xe9, 0, 0, 0, 0], 16
                 );
                 product.object.add_relocation(text, Relocation {
                     offset: start + 3,
@@ -1150,7 +1157,7 @@ struct Local {
 struct Lower<'a> {
     module: &'a mut ObjectModule,
     functions: &'a HashMap<String, KnownFunction>,
-    gp_vararg_thunks: &'a mut Vec<SysvGpVarargThunk>,
+    vararg_thunks: &'a mut Vec<SysvVarargThunk>,
     data: &'a HashMap<String, KnownData>,
     strings: &'a mut HashMap<Vec<u8>, DataId>,
     scopes: Vec<HashMap<String, Local>>,
@@ -2150,11 +2157,9 @@ impl Lower<'_> {
             }
             CheckedExprKind::Call(callee, args) => {
                 // Cranelift 0.136 has fixed-arity SystemV signatures but no
-                // variadic AL operand. Direct calls with only GP-class integer
-                // and pointer arguments can use a tiny per-callsite tail thunk:
-                // Cranelift places every actual argument normally, the thunk
-                // zeroes EAX (AL=0 SSE arguments), then jumps to libc without
-                // disturbing the caller's GP registers or stack arguments.
+                // variadic AL operand. The per-callsite tail thunk sets AL to
+                // the count of used vector argument registers, preserving
+                // GP, SSE and outgoing stack arguments before jumping to libc.
                 let variadic = match &callee.ty {
                     CType::VariadicFunction { .. } => true,
                     CType::Pointer(inner) =>
@@ -2235,24 +2240,22 @@ impl Lower<'_> {
                         .map(|known| known.id)
                         .ok_or_else(|| format!("missing variadic function declaration for '{name}'"))?;
                     let mut sig = self.module.make_signature();
+                    let mut sse_count = 0u8;
                     for arg in args {
-                        if !matches!(arg.ty.unqualified(),
-                            CType::Integer { .. } | CType::Pointer(_))
-                        {
-                            return Err(format!(
-                                "SysV variadic call '{name}' requires GP-class arguments only; SSE and aggregate ABI unsupported"
-                            ));
+                        let ty = scalar_type(&arg.ty)?;
+                        if ty == types::F32 || ty == types::F64 {
+                            sse_count = sse_count.saturating_add(1).min(8);
                         }
-                        sig.params.push(AbiParam::new(scalar_type(&arg.ty)?));
+                        sig.params.push(AbiParam::new(ty));
                     }
                     if result.unqualified() != &CType::Void {
                         sig.returns.push(AbiParam::new(scalar_type(result)?));
                     }
-                    let wrapper_name = format!("__mini_c_sysv_gpvar_{}", self.gp_vararg_thunks.len());
+                    let wrapper_name = format!("__mini_c_sysv_gpvar_{}", self.vararg_thunks.len());
                     let wrapper = self.module.declare_function(
                         &wrapper_name, ClLinkage::Import, &sig
                     ).map_err(|e| format!("declaring SysV variadic thunk: {e}"))?;
-                    self.gp_vararg_thunks.push(SysvGpVarargThunk { wrapper, target });
+                    self.vararg_thunks.push(SysvVarargThunk { wrapper, target, sse_count });
                     let reference = self.module.declare_func_in_func(wrapper, b.func);
                     b.ins().call(reference, &values)
                 } else if let (CheckedExprKind::Name(name), CType::Function { .. }) =
