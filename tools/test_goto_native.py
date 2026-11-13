@@ -256,8 +256,40 @@ CASES = {
         }
         int main(void) { return test()!=3 || calls!=0; }
     """,
+    "dead_if_return_without_fallback": r"""
+        int f(void) { goto target; if(0) { target: return 11; } }
+        int main(void) { return f()!=11; }
+    """,
+    "dead_while_return_without_fallback": r"""
+        int f(void) { goto target; while(0) { target: return 12; } }
+        int main(void) { return f()!=12; }
+    """,
+    "dead_do_while_return_without_fallback": r"""
+        int f(void) { goto target; do { target: return 13; } while(0); }
+        int main(void) { return f()!=13; }
+    """,
+    "dead_for_return_without_fallback": r"""
+        int f(void) { goto target; for(int i=0;i<3;i++) { target: return 14; } }
+        int main(void) { return f()!=14; }
+    """,
+    "dead_switch_case_return_without_fallback": r"""
+        int calls=0;
+        int control(void) { calls++; return 0; }
+        int f(void) { goto target; switch(control()) {case 0: target: return 15;} }
+        int main(void) { return f()!=15 || calls!=0; }
+    """,
+    "dead_switch_no_case_return_without_fallback": r"""
+        int calls=0;
+        int control(void) { calls++; return 0; }
+        int f(void) { goto target; switch(control()) {target: return 16;} }
+        int main(void) { return f()!=16 || calls!=0; }
+    """,
 }
 UNSUPPORTED = {
+    "reachable_missing_return": (
+        "int f(int x) { if(x) return 1; }",
+        "may reach its end without a return",
+    ),
     "undefined_function_label": (
         "int main(void) {goto missing; switch(1) {case 1: return 0;} }",
         "undefined",

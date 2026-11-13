@@ -756,6 +756,24 @@ impl Compiler {
         Ok((ordered_labels, referenced))
     }
 
+    /// Report whether a CFG block is reachable from the real function entry.
+    /// Synthetic entries used to represent goto/case targets are deliberately
+    /// disconnected; lexical fallthrough from them must not make a non-void
+    /// function appear to fall off the end.
+    fn block_reachable_from_entry(
+        function: &ir::Function, entry: ir::Block, target: ir::Block,
+    ) -> bool {
+        let cfg = cranelift_codegen::flowgraph::ControlFlowGraph::with_function(function);
+        let mut visited = HashSet::new();
+        let mut worklist = vec![entry];
+        while let Some(block) = worklist.pop() {
+            if !visited.insert(block) { continue; }
+            if block == target { return true; }
+            worklist.extend(cfg.succ_iter(block));
+        }
+        false
+    }
+
     fn define(&mut self, function: CheckedFunction) -> Result<()> {
         let (label_names, referenced_labels) = Self::native_goto_plan(&function.body)?;
         self.flush_pending_imports()?;
@@ -795,7 +813,15 @@ impl Compiler {
             }
             let live = lower.statement(&mut builder, &function.body)?;
             if live {
-                if lower.result_ty == CType::Void {
+                let end = builder.current_block()
+                    .ok_or("native lowering has no current end block")?;
+                if !Self::block_reachable_from_entry(builder.func, entry, end) {
+                    // Lowering a dead if/loop/switch around an externally
+                    // referenced label can create a syntactically live exit.
+                    // Terminate it for Cranelift, but do not treat it as an
+                    // actual missing return from the function entry.
+                    builder.ins().trap(ir::TrapCode::unwrap_user(1));
+                } else if lower.result_ty == CType::Void {
                     builder.ins().return_(&[]);
                 } else if function.name == "main" {
                     // Reaching the closing brace of C main means return 0.
@@ -2291,6 +2317,31 @@ mod tests {
             "int f(int x) { switch(x) {case 1: goto done; case 2: done: return 2;} return 0; }",
         ] {
             compile_source(source).unwrap_or_else(|why| panic!("{why}: {source}"));
+        }
+    }
+
+    #[test]
+    fn native_goto_dead_control_exits_do_not_require_fallback_return() {
+        for source in [
+            "int f(void) { goto inside; if(0) { inside: return 11; } }",
+            "int f(void) { goto inside; while(0) { inside: return 12; } }",
+            "int f(void) { goto inside; do { inside: return 13; } while(0); }",
+            "int f(void) { goto inside; for(int i=0;i<3;i++) { inside: return 14; } }",
+            "int f(void) { goto inside; switch(0) { case 0: inside: return 15; } }",
+            "int f(void) { goto inside; switch(0) { inside: return 16; } }",
+        ] {
+            compile_source(source).unwrap_or_else(|why| panic!("{why}: {source}"));
+        }
+    }
+
+    #[test]
+    fn native_reachable_end_still_rejects_missing_return() {
+        for source in [
+            "int f(int x) { if(x) return 1; }",
+            "int f(int x) { if(x) goto inside; return 1; while(x) { inside: if(x==2) return 2; break; } }",
+        ] {
+            let error = compile_source(source).unwrap_err();
+            assert!(error.contains("may reach its end without a return"), "{error}: {source}");
         }
     }
 
