@@ -148,8 +148,9 @@ fn signature(module: &ObjectModule, ty: &CType) -> Result<ir::Signature> {
     }
     if result.unqualified() != &CType::Void {
         if has_sret {
-            // x86-64 SysV requires the original sret address in RAX.
-            sig.returns.push(AbiParam::new(types::I64));
+            // Cranelift's SysV ABI implementation handles the hidden sret
+            // pointer and its machine-level result convention; IR returns
+            // must be empty when the StructReturn parameter is present.
         } else if is_aggregate(result) {
             sig.returns.extend(aggregate_abi_types(result)?.into_iter().map(AbiParam::new));
         } else {
@@ -2562,7 +2563,7 @@ impl Lower<'_> {
                         let size = self.result_ty.size_bytes(Target::default())
                             .ok_or("incomplete SysV MEMORY return aggregate")?;
                         Self::copy_bytes(b, destination, v, size)?;
-                        b.ins().return_(&[destination]);
+                        b.ins().return_(&[]);
                     } else if is_aggregate(&self.result_ty) {
                         let values = Self::load_aggregate_registers(b, v, &self.result_ty)?;
                         b.ins().return_(&values);
@@ -3018,11 +3019,18 @@ mod tests {
         );
         assert!(compile_source(src).is_ok());
 
-        // MEMORY-class aggregate imports still fail closed when used.
+        // Small MEMORY-class aggregate imports are now supported via
+        // hidden return slots, but very large stack objects are bounded.
         let src = concat!(
             "struct Large { long first; long second; long third; }; ",
             "extern struct Large large_open(void); ",
             "int main(void) { large_open(); return 0; }"
+        );
+        assert!(compile_source(src).is_ok());
+        let src = concat!(
+            "struct Huge { long entries[600]; }; ",
+            "extern struct Huge huge_open(void); ",
+            "int main(void) { huge_open(); return 0; }"
         );
         assert!(compile_source(src).is_err());
 
@@ -3445,7 +3453,7 @@ mod tests {
         assert!(compile_source(
             "struct D { double a,b; }; int f(double a,double b,double c,double d, \
              double e,double f,double g,struct D x) { return 0; }"
-        ).is_err(), "SSE register exhaustion must not silently split an aggregate");
+        ).is_ok(), "SSE register exhaustion must stack-pass the entire aggregate");
     }
 
     #[test]
