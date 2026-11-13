@@ -14,6 +14,21 @@ import subprocess
 import sys
 
 PROGRAMS = {
+    "sysv_sse_one_float_struct": """struct F { float v; };
+        struct F twice(struct F a) { a.v*=2.0f; return a; }
+        int main(void) { struct F f; f.v=1.25f; f=twice(f); return f.v!=2.5f; }""",
+    "sysv_sse_packed_two_floats": """struct F { float x,y; };
+        struct F swap(struct F a) { float t=a.x; a.x=a.y; a.y=t; return a; }
+        int main(void) { struct F f; f.x=1.25f; f.y=2.5f;
+            f=swap(f); return f.x!=2.5f || f.y!=1.25f; }""",
+    "sysv_sse_two_double_eightbytes": """struct D { double x,y; };
+        struct D adjust(struct D a) { a.x+=2.0; a.y-=1.0; return a; }
+        int main(void) { struct D d; d.x=1.5; d.y=5.0;
+            d=adjust(d); return d.x!=3.5 || d.y!=4.0; }""",
+    "sysv_mixed_integer_sse_aggregate": """struct M { long n; double d; };
+        struct M adjust(struct M x) { x.n+=3; x.d+=1.0; return x; }
+        int main(void) { struct M m; m.n=7; m.d=2.5;
+            m=adjust(m); return m.n!=10 || m.d!=3.5; }""",
     # Independent native F32/F64 execution and SysV SSE scalar call gates.
     "sysv_scalar_float_return_and_call": """float twice(float x) { return x*2.0f; }
         int main(void) { return twice(3.25f)!=6.5f; }""",
@@ -719,6 +734,19 @@ def main() -> int:
         ("gcc_calls_mini_gp_sse_mix",
          "double combine(int a,double b,float c) { return (double)a+b+(double)c; }",
          "double combine(int,double,float); int main(void) { return combine(3,2.5,4.5f)!=10.0; }"),
+        # Cross-object SysV SSE and mixed integer/SSE aggregate cases.
+        ("gcc_calls_mini_mixed_sse_integer_struct",
+         "struct Mix { double d; long n; }; struct Mix apply(struct Mix x) { x.d+=1.5; x.n+=4; return x; }",
+         "struct Mix { double d; long n; }; struct Mix apply(struct Mix); int main(void) { struct Mix x; x.d=2.5; x.n=7; x=apply(x); return x.d!=4.0 || x.n!=11; }"),
+        ("mini_calls_gcc_mixed_integer_sse_struct",
+         "struct Mix { long n; double d; }; extern struct Mix apply(struct Mix); int main(void) { struct Mix x; x.n=7; x.d=2.5; x=apply(x); return x.n!=11 || x.d!=4.0; }",
+         "struct Mix { long n; double d; }; struct Mix apply(struct Mix x) { x.d+=1.5; x.n+=4; return x; }"),
+        ("gcc_calls_mini_two_float_struct",
+         "struct PairF { float a,b; }; struct PairF flip(struct PairF x) { float t=x.a; x.a=x.b; x.b=t; return x; }",
+         "struct PairF { float a,b; }; struct PairF flip(struct PairF); int main(void) { struct PairF x; x.a=1.5f; x.b=3.25f; x=flip(x); return x.a!=3.25f || x.b!=1.5f; }"),
+        ("mini_calls_gcc_double_pair_struct",
+         "struct PairD { double a,b; }; extern struct PairD adjust(struct PairD); int main(void) { struct PairD x; x.a=1.25; x.b=3.5; x=adjust(x); return x.a!=2.25 || x.b!=5.5; }",
+         "struct PairD { double a,b; }; struct PairD adjust(struct PairD x) { x.a+=1.0; x.b+=2.0; return x; }"),
         # Genuine GCC interop of C by-value aggregate arguments and returns.
         ("gcc_calls_mini_aggregate_two_registers",
          "struct Pair { long a,b; }; struct Pair adjust(struct Pair p) { p.a+=5; p.b-=3; return p; }",
