@@ -14,6 +14,30 @@ import subprocess
 import sys
 
 PROGRAMS = {
+    # SysV MEMORY-class by-value arguments and hidden structure returns.
+    "sysv_memory_large_struct_argument": """struct Large { long a,b,c; };
+        long sum(struct Large x) { x.a+=4; return x.a+x.b+x.c; }
+        int main(void) { struct Large x={2,3,5};
+            return sum(x)!=14 || x.a!=2; }""",
+    "sysv_memory_large_struct_return": """struct Large { long a,b,c; };
+        struct Large make(long a,long b,long c) {
+            struct Large x={a,b,c}; return x;
+        } int main(void) { struct Large x=make(7,11,13);
+            return x.a!=7 || x.b!=11 || x.c!=13; }""",
+    "sysv_memory_large_struct_roundtrip": """struct Large { long a,b,c; };
+        struct Large roundtrip(struct Large x) { x.c+=9; return x; }
+        int main(void) { struct Large x={2,3,5};
+            x=roundtrip(x); return x.a!=2 || x.b!=3 || x.c!=14; }""",
+    "sysv_register_exhaustion_struct_arg": """struct Pair { long a,b; };
+        long sum(long a,long b,long c,long d,long e,long f,
+                 struct Pair p) { return a+b+c+d+e+f+p.a+p.b; }
+        int main(void) { struct Pair p={7,11}; return sum(1,2,3,4,5,6,p)!=39; }""",
+    "sysv_sret_consumes_gp_register": """struct Large { long a,b,c; };
+        struct Pair { long a,b; };
+        struct Large f(long a,long b,long c,long d,long e,struct Pair p) {
+            struct Large x={a+p.a,b+p.b,c+d+e}; return x;
+        } int main(void) { struct Pair p={7,11}; struct Large x=f(1,2,3,4,5,p);
+            return x.a!=8 || x.b!=13 || x.c!=12; }""",
     "sysv_sse_one_float_struct": """struct F { float v; };
         struct F twice(struct F a) { a.v*=2.0f; return a; }
         int main(void) { struct F f; f.v=1.25f; f=twice(f); return f.v!=2.5f; }""",
@@ -734,6 +758,25 @@ def main() -> int:
         ("gcc_calls_mini_gp_sse_mix",
          "double combine(int a,double b,float c) { return (double)a+b+(double)c; }",
          "double combine(int,double,float); int main(void) { return combine(3,2.5,4.5f)!=10.0; }"),
+        # Independently compiled GCC/Mini-C MEMORY-aggregate ABI in both directions.
+        ("gcc_calls_mini_sret_large",
+         "struct Large { long a,b,c; }; struct Large make(long x,long y,long z) { struct Large a={x,y,z}; return a; }",
+         "struct Large { long a,b,c; }; struct Large make(long,long,long); int main(void) { struct Large x=make(7,11,13); return x.a!=7 || x.b!=11 || x.c!=13; }"),
+        ("mini_calls_gcc_sret_large",
+         "struct Large { long a,b,c; }; extern struct Large make(long,long,long); int main(void) { struct Large x=make(7,11,13); return x.a!=7 || x.b!=11 || x.c!=13; }",
+         "struct Large { long a,b,c; }; struct Large make(long x,long y,long z) { struct Large a={x,y,z}; return a; }"),
+        ("gcc_calls_mini_stack_struct",
+         "struct Large { long a,b,c; }; long sum(struct Large x) { return x.a*2+x.b*3+x.c; }",
+         "struct Large { long a,b,c; }; long sum(struct Large); int main(void) { struct Large x={7,11,13}; return sum(x)!=60; }"),
+        ("mini_calls_gcc_stack_struct",
+         "struct Large { long a,b,c; }; extern long sum(struct Large); int main(void) { struct Large x={7,11,13}; return sum(x)!=60; }",
+         "struct Large { long a,b,c; }; long sum(struct Large x) { return x.a*2+x.b*3+x.c; }"),
+        ("gcc_calls_mini_memory_roundtrip",
+         "struct Large { long a,b,c; }; struct Large rotate(struct Large x) { struct Large y={x.b,x.c,x.a}; return y; }",
+         "struct Large { long a,b,c; }; struct Large rotate(struct Large); int main(void) { struct Large x={7,11,13}; x=rotate(x); return x.a!=11 || x.b!=13 || x.c!=7; }"),
+        ("mini_calls_gcc_register_exhaustion_struct",
+         "struct Pair { long a,b; }; extern long f(long,long,long,long,long,long,struct Pair); int main(void) { struct Pair p={7,11}; return f(1,2,3,4,5,6,p)!=39; }",
+         "struct Pair { long a,b; }; long f(long a,long b,long c,long d,long e,long g,struct Pair p) { return a+b+c+d+e+g+p.a+p.b; }"),
         # Cross-object SysV SSE and mixed integer/SSE aggregate cases.
         ("gcc_calls_mini_mixed_sse_integer_struct",
          "struct Mix { double d; long n; }; struct Mix apply(struct Mix x) { x.d+=1.5; x.n+=4; return x; }",
