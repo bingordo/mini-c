@@ -351,6 +351,18 @@ impl Checker {
                 .unwrap_or(CType::TagRef { kind, name, identity })),
             CType::Array(element, count) => Ok(CType::Array(
                 Box::new(self.try_complete_tag_type(*element)?), count)),
+            CType::Function { result, params } => Ok(CType::Function {
+                result: Box::new(self.try_complete_tag_type(*result)?),
+                params: params.into_iter()
+                    .map(|ty| self.try_complete_tag_type(ty))
+                    .collect::<Result<Vec<_>, _>>()?,
+            }),
+            CType::VariadicFunction { result, params } => Ok(CType::VariadicFunction {
+                result: Box::new(self.try_complete_tag_type(*result)?),
+                params: params.into_iter()
+                    .map(|ty| self.try_complete_tag_type(ty))
+                    .collect::<Result<Vec<_>, _>>()?,
+            }),
             other => Ok(other),
         }
     }
@@ -2342,6 +2354,15 @@ impl Checker {
                     return Err(Diagnostic::coded(lhs_span,
                         DiagnosticCode::SemanticInvalidAssignmentTarget,
                         "compound assignment requires a modifiable arithmetic lvalue or pointer +=/-="));
+                }
+                // Bitwise, shifts and remainder require integer operands on
+                // *both* sides, even if the right side happens to be integer.
+                let integer_only = matches!(op, BinOp::Mod | BinOp::BitAnd
+                    | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr);
+                if integer_only && !lhs.ty.is_integer() {
+                    return Err(Diagnostic::coded(lhs_span,
+                        DiagnosticCode::SemanticInvalidOperatorOperands,
+                        "integer compound operator requires integer lvalue"));
                 }
                 let rhs_checked = self.check_expr(rhs, span)?.rvalue();
                 let rhs_float = matches!(rhs_checked.ty.unqualified(), CType::Floating(_));
