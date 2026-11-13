@@ -67,11 +67,24 @@ fn signature(module: &ObjectModule, ty: &CType) -> Result<ir::Signature> {
         _ => return Err("function declaration requires a function type".into()),
     };
     let mut sig = module.make_signature();
+    // SysV spills the *whole* aggregate if its register classes cannot all
+    // be allocated. Flattening it blindly could incorrectly split a two-GP
+    // struct between R9 and the outgoing stack. Reject that case for now.
+    let mut gp_used = 0usize;
     for param in params {
         if is_aggregate(param) {
-            sig.params.extend(aggregate_abi_types(param)?.into_iter().map(AbiParam::new));
+            let registers = aggregate_abi_types(param)?;
+            if registers.len() > 6usize.saturating_sub(gp_used) {
+                return Err(format!(
+                    "unsupported SysV aggregate-by-value ABI: register exhaustion for {param:?}"
+                ));
+            }
+            gp_used += registers.len();
+            sig.params.extend(registers.into_iter().map(AbiParam::new));
         } else {
-            sig.params.push(AbiParam::new(scalar_type(param)?));
+            let scalar = scalar_type(param)?;
+            gp_used = (gp_used + 1).min(6);
+            sig.params.push(AbiParam::new(scalar));
         }
     }
     if result.unqualified() != &CType::Void {
@@ -3063,6 +3076,29 @@ mod tests {
         assert!(compile_source(
             "double f(void) { return 3.40282346638528859811704183484516925e+38; }"
         ).is_err());
+    }
+
+    #[test]
+    fn emits_small_integer_aggregate_calls_and_returns() {
+        let sources = [
+            "struct Pair { long a; long b; }; \
+             struct Pair make(long x,long y) { struct Pair p={x,y}; return p; } \
+             long sum(struct Pair p) { return p.a*3+p.b; } \
+             int main(void) { struct Pair p=make(5,11); return sum(p)!=26; }",
+            "struct Tiny { char a; short b; }; \
+             struct Tiny echo(struct Tiny x) { return x; } \
+             int main(void) { struct Tiny t={7,23}; \
+                 struct Tiny copy=echo(t); return copy.a!=7 || copy.b!=23; }",
+            "struct Triple { int a,b,c; }; \
+             struct Triple next(struct Triple x) { x.a+=1; x.c+=2; return x; } \
+             int main(void) { struct Triple t={3,5,7}; t=next(t); \
+                 return t.a!=4 || t.b!=5 || t.c!=9; }",
+        ];
+        for source in sources {
+            let object = compile_source(source).unwrap_or_else(|e|
+                panic!("integer aggregate ABI lowering failed: {source}: {e}"));
+            assert_eq!(&object[..4], b"\\x7fELF");
+        }
     }
 
 }
