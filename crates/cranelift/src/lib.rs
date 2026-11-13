@@ -2141,16 +2141,64 @@ impl Lower<'_> {
                 ) {
                     return Err("indirect SysV variadic calls are unsupported".into());
                 }
-                let mut values = Vec::with_capacity(args.len());
+                let function_ty = match callee.ty.unqualified() {
+                    CType::Function { .. } | CType::VariadicFunction { .. } => callee.ty.unqualified(),
+                    CType::Pointer(inner) if matches!(inner.unqualified(),
+                        CType::Function { .. } | CType::VariadicFunction { .. }) => inner.unqualified(),
+                    _ => return Err("call target is not a function".into()),
+                };
+                let result_ty = match function_ty {
+                    CType::Function { result, .. } | CType::VariadicFunction { result, .. } =>
+                        result.as_ref(),
+                    _ => unreachable!(),
+                };
+                let call_sig = if variadic { None } else {
+                    Some(signature(self.module, function_ty)?)
+                };
+                // Hidden MEMORY-class return address must be the first ABI
+                // argument (RDI). Allocate before evaluating source args.
+                let sret_address = if returns_in_memory(result_ty)? {
+                    let size = u32::try_from(result_ty.size_bytes(Target::default())
+                        .ok_or("incomplete SysV MEMORY return aggregate")?)
+                        .map_err(|_| "oversized SysV MEMORY call result")?;
+                    if size > 4096 {
+                        return Err("unsupported SysV MEMORY return object larger than 4096 bytes".into());
+                    }
+                    let slot = b.create_sized_stack_slot(ir::StackSlotData::new(
+                        ir::StackSlotKind::ExplicitSlot, size, Self::alignment(result_ty),
+                    ));
+                    Some(b.ins().stack_addr(types::I64, slot, 0))
+                } else { None };
+                let mut values = Vec::with_capacity(args.len() + usize::from(sret_address.is_some()));
+                if let Some(address) = sret_address { values.push(address); }
+                let mut abi_index = values.len();
                 for arg in args {
                     let value = self.expression(b, arg)?;
                     if is_aggregate(&arg.ty) {
                         if variadic {
                             return Err("unsupported SysV aggregate-by-value ABI in variadic call".into());
                         }
-                        values.extend(Self::load_aggregate_registers(b, value, &arg.ty)?);
+                        if matches!(call_sig.as_ref().and_then(|sig| sig.params.get(abi_index))
+                            .map(|p| p.purpose),
+                            Some(ir::ArgumentPurpose::StructArgument(_)))
+                        {
+                            // StructArgument's CLIF value is a source address;
+                            // Cranelift copies the bytes to the outgoing stack.
+                            values.push(value);
+                            abi_index += 1;
+                        } else {
+                            let packed = Self::load_aggregate_registers(b, value, &arg.ty)?;
+                            abi_index += packed.len();
+                            values.extend(packed);
+                        }
                     } else {
                         values.push(value);
+                        abi_index += 1;
+                    }
+                }
+                if let Some(sig) = &call_sig {
+                    if abi_index != sig.params.len() {
+                        return Err("internal SysV aggregate argument count mismatch".into());
                     }
                 }
                 let inst = if let (CheckedExprKind::Name(name),
@@ -2201,17 +2249,11 @@ impl Lower<'_> {
                     b.ins().call_indirect(sigref, address, &values)
                 };
                 let results = b.inst_results(inst).to_vec();
-                let result_ty = match callee.ty.unqualified() {
-                    CType::Function { result, .. } | CType::VariadicFunction { result, .. } =>
-                        result.as_ref(),
-                    CType::Pointer(inner) => match inner.unqualified() {
-                        CType::Function { result, .. } | CType::VariadicFunction { result, .. } =>
-                            result.as_ref(),
-                        _ => return Err("call target is not a function pointer".into()),
-                    },
-                    _ => return Err("call target is not a function".into()),
-                };
-                if is_aggregate(result_ty) {
+                if let Some(address) = sret_address {
+                    // A MEMORY-class call writes directly into the allocated
+                    // C result object. RAX also contains the same pointer.
+                    Ok(address)
+                } else if is_aggregate(result_ty) {
                     let size = u32::try_from(result_ty.size_bytes(Target::default())
                         .ok_or("incomplete aggregate call result")?)
                         .map_err(|_| "aggregate call result too large")?;
