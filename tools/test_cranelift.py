@@ -14,6 +14,25 @@ import subprocess
 import sys
 
 PROGRAMS = {
+    # Register-class SysV aggregate calls and returns. Mixed GCC object tests
+    # below validate the ABI independently from Mini-C's own caller/callee.
+    "sysv_aggregate_two_integer_eightbytes": """struct Pair { long a; long b; };
+        struct Pair make(long a,long b) { struct Pair p={a,b}; return p; }
+        long use(struct Pair p) { return p.a * 3 + p.b; }
+        int main(void) { struct Pair p=make(5,11); return use(p)!=26; }""",
+    "sysv_aggregate_narrow_tail": """struct Tiny { char a; short b; };
+        struct Tiny copy(struct Tiny x) { return x; }
+        int main(void) { struct Tiny t={7,23}; struct Tiny v=copy(t);
+            return v.a!=7 || v.b!=23; }""",
+    "sysv_aggregate_twelve_bytes": """struct Three { int a,b,c; };
+        struct Three adjust(struct Three x) { x.a+=2; x.c+=5; return x; }
+        int main(void) { struct Three x={3,7,11}; x=adjust(x);
+            return x.a!=5 || x.b!=7 || x.c!=16; }""",
+    "sysv_aggregate_register_boundary": """struct Pair { long a,b; };
+        long use(long x,long y,long z,long w,struct Pair p) {
+            return x+y+z+w+p.a+p.b;
+        }
+        int main(void) { struct Pair p={6,7}; return use(1,2,3,4,p)!=23; }""",
     # FreeBSD ffs uses a zero guard around GCC __builtin_ctz(mask).
     # Compare defined negative/nonzero inputs and zero through the guard.
     "s21_ctz_guarded_ffs": """int ffs_like(int mask) {
@@ -675,6 +694,19 @@ def main() -> int:
     mixed = [
         # Verify both directions of the native SysV ABI, not only whole-TU
         # Mini-C compilation (which can hide symmetric ABI mistakes).
+        # Genuine GCC interop of C by-value aggregate arguments and returns.
+        ("gcc_calls_mini_aggregate_two_registers",
+         "struct Pair { long a,b; }; struct Pair adjust(struct Pair p) { p.a+=5; p.b-=3; return p; }",
+         "struct Pair { long a,b; }; struct Pair adjust(struct Pair); int main(void) { struct Pair p={7,23}; struct Pair q=adjust(p); return q.a!=12 || q.b!=20; }"),
+        ("mini_calls_gcc_aggregate_two_registers",
+         "struct Pair { long a,b; }; extern struct Pair adjust(struct Pair); int main(void) { struct Pair p={7,23}; struct Pair q=adjust(p); return q.a!=12 || q.b!=20; }",
+         "struct Pair { long a,b; }; struct Pair adjust(struct Pair p) { p.a+=5; p.b-=3; return p; }"),
+        ("gcc_calls_mini_aggregate_narrow",
+         "struct Tiny { char a; short b; }; struct Tiny adjust(struct Tiny p) { p.a+=1; p.b+=3; return p; }",
+         "struct Tiny { char a; short b; }; struct Tiny adjust(struct Tiny); int main(void) { struct Tiny p={7,23}; struct Tiny q=adjust(p); return q.a!=8 || q.b!=26; }"),
+        ("mini_calls_gcc_aggregate_twelve_bytes",
+         "struct Three { int a,b,c; }; extern struct Three add(struct Three); int main(void) { struct Three p={2,5,11}; struct Three q=add(p); return q.a!=3 || q.b!=5 || q.c!=14; }",
+         "struct Three { int a,b,c; }; struct Three add(struct Three x) { x.a++; x.c+=3; return x; }"),
         ("gcc_calls_mini_short_params",
          "int combine(short a, unsigned short b) { return a+b; }",
          "extern int combine(short,unsigned short); int main(void) { return combine(-5,65000)==64995; }"),
