@@ -217,8 +217,9 @@ fn static_initializer_bytes(
             (1u32 << info.width) - 1
         };
         let field_mask = mask << info.shift;
-        let old = u32::from_le_bytes(bytes.try_into()
-            .map_err(|_| "invalid bit-field storage width")?);
+        let mut previous = [0u8; 4];
+        previous.copy_from_slice(bytes);
+        let old = u32::from_le_bytes(previous);
         let packed = (old & !field_mask)
             | (((value as u32) & mask) << info.shift);
         bytes.copy_from_slice(&packed.to_le_bytes());
@@ -1065,6 +1066,24 @@ impl Lower<'_> {
         Ok(())
     }
 
+    /// Initialize a checked subobject. A bit-field leaf is a masked write
+    /// into its shared 32-bit unit, preserving preceding field values.
+    fn initialize_subobject(
+        &mut self, b: &mut FunctionBuilder<'_>, address: Value,
+        ty: &CType, init: &CheckedExpr,
+        bits: Option<mini_c_sema::types::BitField>,
+    ) -> Result<()> {
+        if let Some(info) = bits {
+            let value = self.expression(b, init)?;
+            let signed = matches!(ty.unqualified(),
+                CType::Integer { unsigned: false, .. });
+            Self::store_bit_field(b, address, value, info.shift, info.width, signed);
+            Ok(())
+        } else {
+            self.initialize_object(b, address, ty, init)
+        }
+    }
+
     /// Recursively initialize a stack aggregate, including zero-filling all
     /// omitted fields and padding before writing explicit elements.
     fn initialize_object(
@@ -1083,11 +1102,11 @@ impl Lower<'_> {
             }
             Self::store_array_bytes(b, address, &vec![0u8; size])?;
             for (path, value) in entries {
-                let (element, offset) = initializer_subobject(ty, path)?;
+                let (element, offset, bits) = initializer_subobject(ty, path)?;
                 let offset = i64::try_from(offset)
                     .map_err(|_| "nested initializer offset exceeds i64")?;
                 let addr = b.ins().iadd_imm_s(address, offset);
-                self.initialize_object(b, addr, &element, value)?;
+                self.initialize_subobject(b, addr, &element, value, bits)?;
             }
             return Ok(());
         }
@@ -1107,7 +1126,8 @@ impl Lower<'_> {
                         let offset = i64::try_from(member.offset)
                             .map_err(|_| "oversized sparse member offset")?;
                         let addr = b.ins().iadd_imm_s(address, offset);
-                        self.initialize_object(b, addr, &member.ty, value)?;
+                        self.initialize_subobject(
+                            b, addr, &member.ty, value, member.bit_field)?;
                     }
                 }
                 CType::Array(element, Some(_)) => {
@@ -1139,7 +1159,8 @@ impl Lower<'_> {
                         let offset = i64::try_from(member.offset)
                             .map_err(|_| "oversized structure offset")?;
                         let addr = b.ins().iadd_imm_s(address, offset);
-                        self.initialize_object(b, addr, &member.ty, value)?;
+                        self.initialize_subobject(
+                            b, addr, &member.ty, value, member.bit_field)?;
                     }
                 }
                 CType::Array(element, Some(_)) => {
