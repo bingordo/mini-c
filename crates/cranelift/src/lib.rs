@@ -18,7 +18,6 @@ use mini_c_sema::{
 use mini_c_syntax::{ast::{BinOp, UnOp, StorageClass}, parser::Parser, stream::ItemSource};
 use std::collections::{HashMap, HashSet};
 
-#[cfg(test)]
 mod sysv_aggregate;
 
 type Result<T> = std::result::Result<T, String>;
@@ -38,6 +37,29 @@ fn scalar_type(ty: &CType) -> Result<ir::Type> {
     }
 }
 
+fn is_aggregate(ty: &CType) -> bool {
+    matches!(ty.unqualified(), CType::Struct { .. } | CType::Union { .. })
+}
+
+/// C SysV INTEGER-class eightbytes use one I64 register each. Do not let a
+/// partially implemented SSE/MEMORY ABI silently produce wrong machine code.
+fn aggregate_abi_types(ty: &CType) -> Result<Vec<ir::Type>> {
+    use sysv_aggregate::{AggregateAbi, EightbyteClass};
+    match sysv_aggregate::classify_aggregate(ty)? {
+        AggregateAbi::Memory => Err(format!(
+            "unsupported SysV aggregate-by-value ABI: MEMORY class for {ty:?}"
+        )),
+        AggregateAbi::Registers(classes) => classes.into_iter().map(|class| {
+            match class {
+                EightbyteClass::Integer => Ok(types::I64),
+                EightbyteClass::Sse => Err(format!(
+                    "unsupported SysV aggregate-by-value ABI: SSE class for {ty:?}"
+                )),
+            }
+        }).collect(),
+    }
+}
+
 fn signature(module: &ObjectModule, ty: &CType) -> Result<ir::Signature> {
     let (params, result) = match ty {
         CType::Function { params, result } |
@@ -46,10 +68,18 @@ fn signature(module: &ObjectModule, ty: &CType) -> Result<ir::Signature> {
     };
     let mut sig = module.make_signature();
     for param in params {
-        sig.params.push(AbiParam::new(scalar_type(param)?));
+        if is_aggregate(param) {
+            sig.params.extend(aggregate_abi_types(param)?.into_iter().map(AbiParam::new));
+        } else {
+            sig.params.push(AbiParam::new(scalar_type(param)?));
+        }
     }
     if result.unqualified() != &CType::Void {
-        sig.returns.push(AbiParam::new(scalar_type(result)?));
+        if is_aggregate(result) {
+            sig.returns.extend(aggregate_abi_types(result)?.into_iter().map(AbiParam::new));
+        } else {
+            sig.returns.push(AbiParam::new(scalar_type(result)?));
+        }
     }
     Ok(sig)
 }
@@ -808,11 +838,25 @@ impl Compiler {
             builder.switch_to_block(entry);
             builder.seal_block(entry);
             let params = builder.block_params(entry).to_vec();
-            if params.len() != function.params.len() {
-                return Err(format!("ABI parameter mismatch for '{}'", function.name));
+            let mut next = 0;
+            for param in &function.params {
+                if is_aggregate(&param.ty) {
+                    let count = aggregate_abi_types(&param.ty)?.len();
+                    let values = params.get(next..next + count)
+                        .ok_or_else(|| format!("ABI parameter mismatch for '{}'", function.name))?;
+                    lower.bind_storage(&mut builder, &param.name, &param.ty)?;
+                    let address = lower.object_address(&mut builder, &param.name)?;
+                    Lower::store_aggregate_registers(&mut builder, address, &param.ty, values)?;
+                    next += count;
+                } else {
+                    let value = *params.get(next)
+                        .ok_or_else(|| format!("ABI parameter mismatch for '{}'", function.name))?;
+                    lower.bind(&mut builder, &param.name, &param.ty, Some(value))?;
+                    next += 1;
+                }
             }
-            for (param, value) in function.params.iter().zip(params) {
-                lower.bind(&mut builder, &param.name, &param.ty, Some(value))?;
+            if next != params.len() {
+                return Err(format!("ABI parameter mismatch for '{}'", function.name));
             }
             let live = lower.statement(&mut builder, &function.body)?;
             if live {
@@ -1066,6 +1110,70 @@ impl Lower<'_> {
             // not a promise about C uninitialized reads.
             let zero = b.ins().iconst(scalar_type(ty)?, 0);
             b.ins().store(ir::MemFlagsData::new(), zero, address, 0);
+        }
+        Ok(())
+    }
+
+    /// Pack a C aggregate's exact object bytes into INTEGER-class SysV
+    /// eightbytes without reading padding beyond the end of the object.
+    /// This intentionally excludes SSE and MEMORY classes until implemented.
+    fn load_aggregate_registers(
+        b: &mut FunctionBuilder<'_>, address: Value, ty: &CType,
+    ) -> Result<Vec<Value>> {
+        let count = aggregate_abi_types(ty)?.len();
+        let size = ty.size_bytes(Target::default()).ok_or("incomplete ABI aggregate")?;
+        let mut result = Vec::with_capacity(count);
+        for index in 0..count {
+            let start = index as u64 * 8;
+            let end = size.min(start + 8);
+            let mut packed = b.ins().iconst(types::I64, 0);
+            let mut offset = start;
+            while offset < end {
+                let remaining = end - offset;
+                let (width, chunk_ty) = if remaining >= 8 { (8, types::I64) }
+                    else if remaining >= 4 { (4, types::I32) }
+                    else if remaining >= 2 { (2, types::I16) }
+                    else { (1, types::I8) };
+                let at = i32::try_from(offset).map_err(|_| "aggregate register offset overflow")?;
+                let chunk = b.ins().load(chunk_ty, ir::MemFlagsData::new(), address, at);
+                let widened = if width == 8 { chunk } else { b.ins().uextend(types::I64, chunk) };
+                let shifted = if offset == start { widened } else {
+                    b.ins().ishl_imm_s(widened, ((offset - start) * 8) as i64)
+                };
+                packed = b.ins().bor(packed, shifted);
+                offset += width;
+            }
+            result.push(packed);
+        }
+        Ok(result)
+    }
+
+    /// Unpack INTEGER-class eightbytes into a stack-resident C aggregate.
+    /// Narrow final chunks are stored without clobbering adjacent objects.
+    fn store_aggregate_registers(
+        b: &mut FunctionBuilder<'_>, address: Value, ty: &CType, values: &[Value],
+    ) -> Result<()> {
+        let count = aggregate_abi_types(ty)?.len();
+        if values.len() != count { return Err("aggregate register count mismatch".into()); }
+        let size = ty.size_bytes(Target::default()).ok_or("incomplete ABI aggregate")?;
+        for (index, &value) in values.iter().enumerate() {
+            let start = index as u64 * 8;
+            let end = size.min(start + 8);
+            let mut offset = start;
+            while offset < end {
+                let remaining = end - offset;
+                let (width, chunk_ty) = if remaining >= 8 { (8, types::I64) }
+                    else if remaining >= 4 { (4, types::I32) }
+                    else if remaining >= 2 { (2, types::I16) }
+                    else { (1, types::I8) };
+                let shifted = if offset == start { value } else {
+                    b.ins().ushr_imm_s(value, ((offset - start) * 8) as i64)
+                };
+                let narrowed = if width == 8 { shifted } else { b.ins().ireduce(chunk_ty, shifted) };
+                let at = i32::try_from(offset).map_err(|_| "aggregate register offset overflow")?;
+                b.ins().store(ir::MemFlagsData::new(), narrowed, address, at);
+                offset += width;
+            }
         }
         Ok(())
     }
@@ -1786,7 +1894,17 @@ impl Lower<'_> {
                     return Err("indirect SysV variadic calls are unsupported".into());
                 }
                 let mut values = Vec::with_capacity(args.len());
-                for arg in args { values.push(self.expression(b, arg)?); }
+                for arg in args {
+                    let value = self.expression(b, arg)?;
+                    if is_aggregate(&arg.ty) {
+                        if variadic {
+                            return Err("unsupported SysV aggregate-by-value ABI in variadic call".into());
+                        }
+                        values.extend(Self::load_aggregate_registers(b, value, &arg.ty)?);
+                    } else {
+                        values.push(value);
+                    }
+                }
                 let inst = if let (CheckedExprKind::Name(name),
                     CType::VariadicFunction { result, .. }) = (&callee.kind, &callee.ty)
                 {
@@ -1834,8 +1952,28 @@ impl Lower<'_> {
                     let address = self.expression(b, callee)?;
                     b.ins().call_indirect(sigref, address, &values)
                 };
-                let results = b.inst_results(inst);
-                if let Some(&result) = results.first() {
+                let results = b.inst_results(inst).to_vec();
+                let result_ty = match callee.ty.unqualified() {
+                    CType::Function { result, .. } | CType::VariadicFunction { result, .. } =>
+                        result.as_ref(),
+                    CType::Pointer(inner) => match inner.unqualified() {
+                        CType::Function { result, .. } | CType::VariadicFunction { result, .. } =>
+                            result.as_ref(),
+                        _ => return Err("call target is not a function pointer".into()),
+                    },
+                    _ => return Err("call target is not a function".into()),
+                };
+                if is_aggregate(result_ty) {
+                    let size = u32::try_from(result_ty.size_bytes(Target::default())
+                        .ok_or("incomplete aggregate call result")?)
+                        .map_err(|_| "aggregate call result too large")?;
+                    let slot = b.create_sized_stack_slot(ir::StackSlotData::new(
+                        ir::StackSlotKind::ExplicitSlot, size, Self::alignment(result_ty),
+                    ));
+                    let address = b.ins().stack_addr(types::I64, slot, 0);
+                    Self::store_aggregate_registers(b, address, result_ty, &results)?;
+                    Ok(address)
+                } else if let Some(&result) = results.first() {
                     Ok(result)
                 } else {
                     // All valid uses of a void function are statement expressions.
@@ -2130,7 +2268,12 @@ impl Lower<'_> {
             CheckedStmt::Return(value) => {
                 if let Some(expr) = value {
                     let v = self.expression(b, expr)?;
-                    b.ins().return_(&[v]);
+                    if is_aggregate(&self.result_ty) {
+                        let values = Self::load_aggregate_registers(b, v, &self.result_ty)?;
+                        b.ins().return_(&values);
+                    } else {
+                        b.ins().return_(&[v]);
+                    }
                 } else {
                     b.ins().return_(&[]);
                 }
