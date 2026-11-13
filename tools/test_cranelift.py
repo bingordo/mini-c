@@ -777,7 +777,7 @@ def main() -> int:
          "extern int sum_variadic(double fixed, ...); int main(void) { return sum_variadic(1.5,2.5)!=4; }",
          "#include <stdarg.h>\nint sum_variadic(double fixed, ...) { va_list ap; va_start(ap,fixed); double x=va_arg(ap,double); va_end(ap); return (int)(fixed+x); }"),
         ("mini_calls_gcc_variadic_mixed_stack_gp_sse",
-         "extern int accumulate(int fixed, ...); int main(void) { return accumulate(1,2.5,3,4.5)!=11; }",
+         "extern int accumulate(int fixed, ...); int main(void) { return accumulate(1,2.5,3,4.5)!=10; }",
          "#include <stdarg.h>\nint accumulate(int fixed, ...) { va_list ap; va_start(ap,fixed); double a=va_arg(ap,double); int b=va_arg(ap,int); double c=va_arg(ap,double); va_end(ap); return fixed+(int)a+b+(int)c; }"),
         # Cross-object SSE float/double scalar calls and returns.
         ("gcc_calls_mini_f64",
