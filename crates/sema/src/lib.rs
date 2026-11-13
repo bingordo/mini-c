@@ -1166,6 +1166,7 @@ impl Checker {
             return Err(type_error(func.span, "function cannot have register storage class"));
         }
         let result = self.resolve(&func.result, func.span)?;
+        let result = self.complete_tag_type(result, func.span)?;
         if matches!(result, CType::Function { .. } | CType::VariadicFunction { .. }) {
             return Err(type_error(func.span, "function cannot return a function"));
         }
@@ -1176,13 +1177,12 @@ impl Checker {
             }
             let resolved = self.resolve(&param.ty, param.span)?;
             let ty = self.adjust_parameter(resolved);
+            let ty = self.complete_tag_type(ty, param.span)?;
             if !ty.is_object() {
                 return Err(type_error(param.span, "function parameter cannot have void or function type"));
             }
-            if param.storage == StorageClass::Register && !ty.is_integer()
-                && !matches!(ty.unqualified(), CType::Pointer(_))
-            {
-                return Err(type_error(param.span, "register parameter currently requires an integer or pointer type"));
+            if param.storage == StorageClass::Register && !ty.is_scalar() {
+                return Err(type_error(param.span, "register parameter requires a scalar type"));
             }
             params.push(CheckedDecl {
                 storage: param.storage, name: param.name.clone(), ty,
@@ -1624,7 +1624,9 @@ impl Checker {
             (CType::Integer { rank: IntRank::Bool, .. }, CType::Pointer(_)) => true,
             // Preserve exact-rank floating values in checked code. Implicit
             // FP conversions and native emission remain separately gated.
-            (CType::Floating(a), CType::Floating(b)) => a == b,
+            (CType::Floating(_), CType::Floating(_)) |
+            (CType::Floating(_), CType::Integer { .. }) |
+            (CType::Integer { .. }, CType::Floating(_)) => true,
             (CType::Pointer(lhs), CType::Pointer(rhs)) =>
                 CType::compatible_pointee_assignment(lhs, rhs),
             (CType::Pointer(_), CType::Integer { .. }) => const_eval::evaluate(&expr, self.target) == Ok(0),
@@ -2270,7 +2272,7 @@ impl Checker {
                 // ordinary C pointer type-name syntax without assuming that
                 // all integer-to-pointer conversions have portable meaning.
                 let dest = if matches!(ty, Type::Pointer(..) | Type::Alias(..)
-                    | Type::Qualified(..))
+                    | Type::Qualified(..) | Type::Floating(..))
                 {
                     self.resolve_sizeof_type(ty, span)?
                 } else {
@@ -2281,7 +2283,10 @@ impl Checker {
                 let dest = dest.unqualified().clone();
                 let value = self.check_expr(operand, span)?.rvalue();
                 match &dest {
-                    CType::Integer { .. } if value.ty.is_integer() => {},
+                    CType::Integer { .. } if value.ty.is_integer()
+                        || matches!(value.ty.unqualified(), CType::Floating(_)) => {},
+                    CType::Floating(_) if value.ty.is_integer()
+                        || matches!(value.ty.unqualified(), CType::Floating(_)) => {},
                     // C99 6.3.2.3 permits explicit pointer-to-integer casts.
                     // The resulting integer is implementation-defined; on
                     // our current LP64 target the checked IR preserves an
@@ -2330,17 +2335,23 @@ impl Checker {
                 let pointer_arithmetic = matches!(op, BinOp::Add | BinOp::Sub)
                     && matches!(&lhs.ty, CType::Pointer(_));
                 if lhs.category != Category::LValue || lhs.ty.is_const()
-                    || !(lhs.ty.is_integer() || pointer_arithmetic)
+                    || !(lhs.ty.is_integer()
+                        || matches!(lhs.ty.unqualified(), CType::Floating(_))
+                        || pointer_arithmetic)
                 {
                     return Err(Diagnostic::coded(lhs_span,
                         DiagnosticCode::SemanticInvalidAssignmentTarget,
-                        "compound assignment requires a modifiable integer lvalue or pointer +=/-="));
+                        "compound assignment requires a modifiable arithmetic lvalue or pointer +=/-="));
                 }
                 let rhs_checked = self.check_expr(rhs, span)?.rvalue();
-                if !rhs_checked.ty.is_integer() {
+                let rhs_float = matches!(rhs_checked.ty.unqualified(), CType::Floating(_));
+                let needs_integer = pointer_arithmetic || matches!(op,
+                    BinOp::Mod | BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr);
+                if !(rhs_checked.ty.is_integer() || (rhs_float && !needs_integer)) {
                     return Err(Diagnostic::coded(rhs_span,
                         DiagnosticCode::SemanticInvalidOperatorOperands,
-                        "compound assignment requires integer operands"));
+                        if needs_integer { "compound assignment requires integer operands" }
+                        else { "compound assignment requires arithmetic operands" }));
                 }
                 let computation_ty = if pointer_arithmetic {
                     // C only permits +/- a scalar integer offset for pointers
@@ -2352,11 +2363,12 @@ impl Checker {
                             "pointer arithmetic requires a complete object type"));
                     }
                     CType::Pointer(Box::new(complete))
-                } else if arithmetic || matches!(op,
-                    BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor)
-                {
-                    self.target.common_integer(&lhs.ty, &rhs_checked.ty)
+                } else if arithmetic && !matches!(op, BinOp::Mod) {
+                    self.target.common_arithmetic(&lhs.ty, &rhs_checked.ty)
                         .ok_or_else(|| type_error(span, "incompatible compound assignment operands"))?
+                } else if matches!(op, BinOp::Mod | BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor) {
+                    self.target.common_integer(&lhs.ty, &rhs_checked.ty)
+                        .ok_or_else(|| type_error(span, "incompatible integer compound assignment operands"))?
                 } else if matches!(op, BinOp::Shl | BinOp::Shr) {
                     self.target.promote(&lhs.ty)
                 } else {
@@ -2381,11 +2393,12 @@ impl Checker {
                 let target_span = target.location().unwrap_or(span);
                 let checked = self.check_expr(target, target_span)?;
                 if checked.category != Category::LValue || checked.ty.is_const()
-                    || !(checked.ty.is_integer() || matches!(checked.ty, CType::Pointer(_)))
+                    || !(checked.ty.is_integer()
+                        || matches!(checked.ty.unqualified(), CType::Floating(_) | CType::Pointer(_)))
                 {
                     return Err(Diagnostic::coded(target_span,
                         DiagnosticCode::SemanticInvalidAssignmentTarget,
-                        "increment/decrement requires a modifiable integer or pointer lvalue"));
+                        "increment/decrement requires a modifiable scalar lvalue"));
                 }
                 let computation_ty = if let CType::Pointer(pointee) = &checked.ty {
                     let complete = self.complete_tag_type(pointee.as_ref().clone(), target_span)?;
