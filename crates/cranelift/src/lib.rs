@@ -43,6 +43,30 @@ fn is_aggregate(ty: &CType) -> bool {
     matches!(ty.unqualified(), CType::Struct { .. } | CType::Union { .. })
 }
 
+/// An aggregate's ABI class, independent of whether it is returned or passed.
+/// Large objects and unaligned fields must use the MEMORY class.
+fn aggregate_class(ty: &CType) -> Result<sysv_aggregate::AggregateAbi> {
+    sysv_aggregate::classify_aggregate(ty)
+}
+
+/// The Cranelift x64 backend expects the stack argument size rounded to an
+/// eightbyte. Bound object size to avoid quadratic/huge inline copy emission
+/// until the memcpy builtin infrastructure is available.
+fn stack_aggregate_size(ty: &CType) -> Result<u32> {
+    let size = ty.size_bytes(Target::default())
+        .ok_or("incomplete stack-passed aggregate")?;
+    if size == 0 || size > 4096 {
+        return Err(format!("unsupported SysV aggregate-by-value ABI: stack object of {size} bytes (max 4096)"));
+    }
+    let aligned = size.checked_add(7).ok_or("stack aggregate size overflow")? / 8 * 8;
+    u32::try_from(aligned).map_err(|_| "stack aggregate size exceeds u32".into())
+}
+
+fn returns_in_memory(result: &CType) -> Result<bool> {
+    Ok(is_aggregate(result) &&
+        aggregate_class(result)? == sysv_aggregate::AggregateAbi::Memory)
+}
+
 /// Flatten x86-64 SysV aggregate eightbytes into ABI register values.
 ///
 /// SSE chunks containing two floats are transported as raw F64 bits; no FP
@@ -50,7 +74,7 @@ fn is_aggregate(ty: &CType) -> bool {
 /// SSE chunk uses F32 to avoid reading past the end of the C object.
 fn aggregate_abi_types(ty: &CType) -> Result<Vec<ir::Type>> {
     use sysv_aggregate::{AggregateAbi, EightbyteClass};
-    match sysv_aggregate::classify_aggregate(ty)? {
+    match aggregate_class(ty)? {
         AggregateAbi::Memory => Err(format!(
             "unsupported SysV aggregate-by-value ABI: MEMORY class for {ty:?}"
         )),
@@ -75,26 +99,43 @@ fn signature(module: &ObjectModule, ty: &CType) -> Result<ir::Signature> {
         _ => return Err("function declaration requires a function type".into()),
     };
     let mut sig = module.make_signature();
+    // MEMORY-class results are returned into a caller-provided object. The
+    // hidden pointer consumes RDI and the callee returns it in RAX.
+    let has_sret = returns_in_memory(result)?;
+    if has_sret {
+        sig.params.push(AbiParam::special(
+            types::I64, ir::ArgumentPurpose::StructReturn,
+        ));
+    }
     // SysV allocates independent GP (6) and SSE (8) argument registers.
-    // If either class is exhausted, the *entire* aggregate goes to memory,
-    // which is intentionally not implemented. Never split only part of it.
-    let mut gp_used = 0usize;
+    // If either class is exhausted, the *entire* aggregate goes to memory.
+    let mut gp_used = usize::from(has_sret);
     let mut sse_used = 0usize;
     for param in params {
         if is_aggregate(param) {
-            let registers = aggregate_abi_types(param)?;
-            let gp_count = registers.iter().filter(|&&ty| ty == types::I64).count();
-            let sse_count = registers.len() - gp_count;
-            if gp_count > 6usize.saturating_sub(gp_used)
-                || sse_count > 8usize.saturating_sub(sse_used)
-            {
-                return Err(format!(
-                    "unsupported SysV aggregate-by-value ABI: register exhaustion for {param:?}"
-                ));
+            match aggregate_class(param)? {
+                sysv_aggregate::AggregateAbi::Memory => {
+                    sig.params.push(AbiParam::special(types::I64,
+                        ir::ArgumentPurpose::StructArgument(stack_aggregate_size(param)?)));
+                }
+                sysv_aggregate::AggregateAbi::Registers(_) => {
+                    let registers = aggregate_abi_types(param)?;
+                    let gp_count = registers.iter().filter(|&&ty| ty == types::I64).count();
+                    let sse_count = registers.len() - gp_count;
+                    if gp_count > 6usize.saturating_sub(gp_used)
+                        || sse_count > 8usize.saturating_sub(sse_used)
+                    {
+                        // No partial register assignment: the complete
+                        // object is passed on the outgoing argument stack.
+                        sig.params.push(AbiParam::special(types::I64,
+                            ir::ArgumentPurpose::StructArgument(stack_aggregate_size(param)?)));
+                    } else {
+                        gp_used += gp_count;
+                        sse_used += sse_count;
+                        sig.params.extend(registers.into_iter().map(AbiParam::new));
+                    }
+                }
             }
-            gp_used += gp_count;
-            sse_used += sse_count;
-            sig.params.extend(registers.into_iter().map(AbiParam::new));
         } else {
             let scalar = scalar_type(param)?;
             if scalar == types::F32 || scalar == types::F64 {
@@ -106,7 +147,10 @@ fn signature(module: &ObjectModule, ty: &CType) -> Result<ir::Signature> {
         }
     }
     if result.unqualified() != &CType::Void {
-        if is_aggregate(result) {
+        if has_sret {
+            // x86-64 SysV requires the original sret address in RAX.
+            sig.returns.push(AbiParam::new(types::I64));
+        } else if is_aggregate(result) {
             sig.returns.extend(aggregate_abi_types(result)?.into_iter().map(AbiParam::new));
         } else {
             sig.returns.push(AbiParam::new(scalar_type(result)?));
@@ -863,22 +907,43 @@ impl Compiler {
                     CType::Function { result, .. } => result.as_ref().clone(),
                     _ => return Err("function signature expected".into()),
                 },
+                sret_address: None,
             };
             let entry = builder.create_block();
             builder.append_block_params_for_function_params(entry);
             builder.switch_to_block(entry);
             builder.seal_block(entry);
             let params = builder.block_params(entry).to_vec();
+            let abi_params = builder.func.signature.params.clone();
             let mut next = 0;
+            if returns_in_memory(&lower.result_ty)? {
+                lower.sret_address = Some(*params.first()
+                    .ok_or("missing hidden SysV sret parameter")?);
+                next += 1;
+            }
             for param in &function.params {
                 if is_aggregate(&param.ty) {
-                    let count = aggregate_abi_types(&param.ty)?.len();
-                    let values = params.get(next..next + count)
-                        .ok_or_else(|| format!("ABI parameter mismatch for '{}'", function.name))?;
                     lower.bind_storage(&mut builder, &param.name, &param.ty)?;
                     let address = lower.object_address(&mut builder, &param.name)?;
-                    Lower::store_aggregate_registers(&mut builder, address, &param.ty, values)?;
-                    next += count;
+                    if matches!(abi_params.get(next).map(|p| p.purpose),
+                        Some(ir::ArgumentPurpose::StructArgument(_)))
+                    {
+                        // The special Cranelift argument is a pointer into
+                        // the incoming stack argument area, not an object
+                        // pointer supplied by the C caller in a register.
+                        let source = *params.get(next)
+                            .ok_or("missing stack-passed struct argument")?;
+                        let size = param.ty.size_bytes(Target::default())
+                            .ok_or("incomplete stack-passed struct parameter")?;
+                        Lower::copy_bytes(&mut builder, address, source, size)?;
+                        next += 1;
+                    } else {
+                        let count = aggregate_abi_types(&param.ty)?.len();
+                        let values = params.get(next..next + count)
+                            .ok_or_else(|| format!("ABI parameter mismatch for '{}'", function.name))?;
+                        Lower::store_aggregate_registers(&mut builder, address, &param.ty, values)?;
+                        next += count;
+                    }
                 } else {
                     let value = *params.get(next)
                         .ok_or_else(|| format!("ABI parameter mismatch for '{}'", function.name))?;
@@ -1097,6 +1162,8 @@ struct Lower<'a> {
     /// Only these labels can revive code after an unconditional terminator.
     referenced_labels: HashSet<String>,
     result_ty: CType,
+    /// The caller-owned return object for a MEMORY-class aggregate.
+    sret_address: Option<Value>,
 }
 
 impl Lower<'_> {
@@ -2449,7 +2516,12 @@ impl Lower<'_> {
             CheckedStmt::Return(value) => {
                 if let Some(expr) = value {
                     let v = self.expression(b, expr)?;
-                    if is_aggregate(&self.result_ty) {
+                    if let Some(destination) = self.sret_address {
+                        let size = self.result_ty.size_bytes(Target::default())
+                            .ok_or("incomplete SysV MEMORY return aggregate")?;
+                        Self::copy_bytes(b, destination, v, size)?;
+                        b.ins().return_(&[destination]);
+                    } else if is_aggregate(&self.result_ty) {
                         let values = Self::load_aggregate_registers(b, v, &self.result_ty)?;
                         b.ins().return_(&values);
                     } else {
