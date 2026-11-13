@@ -315,22 +315,20 @@ fn aggregate_pointer_fields_emit_multiple_relocations() {
 }
 
 #[test]
-fn by_value_aggregate_abi_is_deferred_until_a_use() {
-    // Unused hosted prototypes may contain by-value aggregate signatures
-    // beyond the current SysV backend. Their declarations are harmless.
+fn by_value_aggregate_abi_accepts_register_classes_and_rejects_memory_class() {
+    // INTEGER-class one/two-eightbyte aggregate imports can now be
+    // referenced by address or called with their real ABI signatures.
     emits_elf("struct T { int x; }; struct T copy(struct T x);");
     emits_elf("union U { int x; long y; }; union U make(void);");
+    emits_elf("struct T { int x; }; struct T copy(struct T x); int main(void) { return &copy == 0; }");
+    emits_elf("union U { int x; long y; }; union U make(void); int main(void) { make(); return 0; }");
 
-    // Taking the address or calling one must still fail rather than
-    // emitting a native signature with incorrect argument passing.
+    // Unused hosted prototypes may still contain unsupported ABI classes.
+    emits_elf("struct Large { long a,b,c; }; struct Large make_large(void);");
     let err = compile_source(
-        "struct T { int x; }; struct T copy(struct T x); int main(void) { return &copy != 0; }"
+        "struct Large { long a,b,c; }; struct Large make_large(void); int main(void) { make_large(); return 0; }"
     ).unwrap_err();
-    assert!(err.contains("missing function declaration"), "{err}");
-    let err = compile_source(
-        "union U { int x; long y; }; union U make(void); int main(void) { make(); return 0; }"
-    ).unwrap_err();
-    assert!(err.contains("missing function declaration"), "{err}");
+    assert!(err.contains("missing function declaration") || err.contains("unsupported SysV"), "{err}");
 }
 
 #[test]
