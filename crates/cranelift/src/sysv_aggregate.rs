@@ -50,7 +50,7 @@ fn visit(ty: &CType, offset: u64, slots: &mut [Option<EightbyteClass>]) -> Resul
         CType::Floating(mini_c_syntax::ast::FloatRank::Float | mini_c_syntax::ast::FloatRank::Double) => {
             let size = ty.size_bytes(Target::default()).ok_or("invalid scalar size")?;
             let align = ty.align_bytes(Target::default()).ok_or("invalid scalar alignment")?;
-            if offset % align != 0 {
+            if !offset.is_multiple_of(align) {
                 return Ok(true);
             }
             if size == 0 { return Err("zero-sized field".into()); }
