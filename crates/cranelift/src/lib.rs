@@ -1512,6 +1512,30 @@ impl Lower<'_> {
         b.ins().select(value, one, zero)
     }
 
+    /// C floating arithmetic and comparisons, including unordered != for NaNs.
+    fn float_binary(b: &mut FunctionBuilder<'_>, op: BinOp, left: Value, right: Value) -> Result<Value> {
+        match op {
+            BinOp::Add => Ok(b.ins().fadd(left, right)),
+            BinOp::Sub => Ok(b.ins().fsub(left, right)),
+            BinOp::Mul => Ok(b.ins().fmul(left, right)),
+            BinOp::Div => Ok(b.ins().fdiv(left, right)),
+            BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+                let cc = match op {
+                    BinOp::Eq => FloatCC::Equal,
+                    BinOp::Ne => FloatCC::NotEqual,
+                    BinOp::Lt => FloatCC::LessThan,
+                    BinOp::Le => FloatCC::LessThanOrEqual,
+                    BinOp::Gt => FloatCC::GreaterThan,
+                    BinOp::Ge => FloatCC::GreaterThanOrEqual,
+                    _ => unreachable!(),
+                };
+                let flag = b.ins().fcmp(cc, left, right);
+                Ok(Self::boolean(b, flag))
+            }
+            _ => Err("floating-point operation is unsupported".into()),
+        }
+    }
+
     fn convert(b: &mut FunctionBuilder<'_>, value: Value, from: &CType, to: &CType) -> Result<Value> {
         let src_ty = scalar_type(from)?;
         let dst_ty = scalar_type(to)?;
@@ -1820,8 +1844,18 @@ impl Lower<'_> {
                     b.ins().iadd_imm_s(old, if *increment { width } else { -width })
                 } else {
                     let promoted = Self::convert(b, old, &target.ty, computation_ty)?;
-                    let one = b.ins().iconst(scalar_type(computation_ty)?, 1);
-                    let computed = if *increment {
+                    let floating = matches!(computation_ty.unqualified(), CType::Floating(_));
+                    let one = match computation_ty.unqualified() {
+                        CType::Floating(FloatRank::Float) =>
+                            b.ins().f32const(ir::immediates::Ieee32::with_bits(1.0f32.to_bits())),
+                        CType::Floating(FloatRank::Double) =>
+                            b.ins().f64const(ir::immediates::Ieee64::with_bits(1.0f64.to_bits())),
+                        _ => b.ins().iconst(scalar_type(computation_ty)?, 1),
+                    };
+                    let computed = if floating {
+                        if *increment { b.ins().fadd(promoted, one) }
+                        else { b.ins().fsub(promoted, one) }
+                    } else if *increment {
                         b.ins().iadd(promoted, one)
                     } else {
                         b.ins().isub(promoted, one)
@@ -1863,6 +1897,13 @@ impl Lower<'_> {
                     return Ok(result);
                 }
                 let left = Self::convert(b, old, &lhs.ty, computation_ty)?;
+                if matches!(computation_ty.unqualified(), CType::Floating(_)) {
+                    let right = self.expression(b, rhs)?;
+                    let computed = Self::float_binary(b, *op, left, right)?;
+                    let stored = Self::convert(b, computed, computation_ty, &lhs.ty)?;
+                    b.ins().store(ir::MemFlagsData::new(), stored, address, 0);
+                    return Ok(stored);
+                }
                 let mut right = self.integer_value(b, rhs)?;
                 if matches!(op, BinOp::Shl | BinOp::Shr) &&
                     b.func.dfg.value_type(right) != b.func.dfg.value_type(left)
@@ -1900,6 +1941,11 @@ impl Lower<'_> {
             CheckedExprKind::Binary(op, lhs, rhs) => {
                 if matches!(op, BinOp::And | BinOp::Or) {
                     return self.short_circuit(b, *op, lhs, rhs);
+                }
+                if matches!(lhs.ty.unqualified(), CType::Floating(_)) {
+                    let left = self.expression(b, lhs)?;
+                    let right = self.expression(b, rhs)?;
+                    return Self::float_binary(b, *op, left, right);
                 }
                 if matches!(op, BinOp::Add | BinOp::Sub)
                     && matches!(&expr.ty, CType::Pointer(_))
@@ -3163,13 +3209,21 @@ mod tests {
 
 
     #[test]
-    fn m10_native_float_literal_is_explicitly_unsupported() {
-        // Parse and check the source, but never misemit its FP value as an
-        // integer or use a fabricated SysV return convention.
-        assert!(compile_source("float f(void) { return 0.5f; }").is_err());
-        assert!(compile_source(
-            "double f(void) { return 3.40282346638528859811704183484516925e+38; }"
-        ).is_err());
+    fn native_float_and_double_scalar_operations_emit_elf() {
+        let sources = [
+            "float f(float x) { return x*1.5f + 0.5f; } int main(void) { return f(2.0f)!=3.5f; }",
+            "double f(double x) { return x/2.0-1.0; } int main(void) { return f(8.0)!=3.0; }",
+            "int main(void) { double x=2.5; double y=3.5; return (x+y)!=6.0; }",
+            "int main(void) { float x=1.5f; x+=2.0f; x++; return x!=4.5f; }",
+            "int main(void) { double x=2.75; int n=(int)x; return n!=2; }",
+        ];
+        for source in sources {
+            let object = compile_source(source).unwrap_or_else(|e|
+                panic!("scalar FP lowering failed: {source}: {e}"));
+            assert_eq!(&object[..4], b"\x7fELF");
+        }
+        assert!(compile_source("long double f(void) { return 1.0L; }").is_err());
+        assert!(compile_source("double f(void) { return 0x1.8p+1; }").is_err());
     }
 
     #[test]
