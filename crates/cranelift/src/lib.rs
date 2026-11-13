@@ -103,6 +103,8 @@ fn signature(module: &ObjectModule, ty: &CType) -> Result<ir::Signature> {
     // hidden pointer consumes RDI and the callee returns it in RAX.
     let has_sret = returns_in_memory(result)?;
     if has_sret {
+        // Bound the generated inline object copy on all call/return paths.
+        stack_aggregate_size(result)?;
         sig.params.push(AbiParam::special(
             types::I64, ir::ArgumentPurpose::StructReturn,
         ));
@@ -1297,6 +1299,29 @@ impl Lower<'_> {
         Ok(())
     }
 
+    /// Cranelift's StructArgument(size) copies the *rounded* stack size from
+    /// its CLIF pointer. Never expose padding beyond the source C object's
+    /// allocated bounds: make a padded temporary where necessary.
+    fn outgoing_stack_aggregate(
+        b: &mut FunctionBuilder<'_>, source: Value, ty: &CType,
+    ) -> Result<Value> {
+        let actual = ty.size_bytes(Target::default())
+            .ok_or("incomplete outgoing stack aggregate")?;
+        let rounded = stack_aggregate_size(ty)?;
+        if actual == u64::from(rounded) { return Ok(source); }
+        let slot = b.create_sized_stack_slot(ir::StackSlotData::new(
+            ir::StackSlotKind::ExplicitSlot, rounded, Self::alignment(ty).max(3),
+        ));
+        let address = b.ins().stack_addr(types::I64, slot, 0);
+        Self::copy_bytes(b, address, source, actual)?;
+        let zero = b.ins().iconst(types::I8, 0);
+        for i in actual..u64::from(rounded) {
+            b.ins().store(ir::MemFlagsData::new(), zero, address,
+                i32::try_from(i).map_err(|_| "stack aggregate padding exceeds offset range")?);
+        }
+        Ok(address)
+    }
+
     /// Initialize an automatic character array in native chunks rather than
     /// issuing one instruction for every byte of a string literal.
     /// Explicit byte-accurate struct copy. Copying the full representation,
@@ -2185,7 +2210,8 @@ impl Lower<'_> {
                         {
                             // StructArgument's CLIF value is a source address;
                             // Cranelift copies the bytes to the outgoing stack.
-                            values.push(value);
+                            let source = Self::outgoing_stack_aggregate(b, value, &arg.ty)?;
+                            values.push(source);
                             abi_index += 1;
                         } else {
                             let packed = Self::load_aggregate_registers(b, value, &arg.ty)?;
