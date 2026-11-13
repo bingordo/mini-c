@@ -999,8 +999,62 @@ fn c99_named_int_bitfields_layout_signedness_and_constraints() {
         "cannot take the address of a bit-field");
     reject("struct B{unsigned int a:3;};int f(void){struct B b;return sizeof b.a;}",
         "sizeof cannot be applied to a bit-field");
-    reject("struct B{unsigned int a:3;};struct B b={5};",
-        "bit-field aggregate brace initialization is not yet supported");
+    check("struct B{unsigned int a:3;};struct B b={5};").unwrap();
+}
+
+#[test]
+fn c99_bitfield_positional_sparse_and_nested_object_initializers_are_checked() {
+    let checked = check(concat!(
+        "struct S {unsigned int a:3,b:5;signed int c:7;int tail;};",
+        "struct S first={5,17,-11,9};",
+        "struct S second={.c=-3,.a=2,.tail=7,.b=19};",
+        "struct S sparse={.b=23};",
+        "struct S local[2]={{1,2,-3,4},{5,6,-7,8}};"
+    )).expect("static positional/designated and nested array bitfields");
+    let CheckedItem::Declaration(first) = &checked[1] else {panic!("first")};
+    assert!(matches!(&first.initializer,
+        Some(CheckedExpr {kind: CheckedExprKind::Initializer(values),..})
+            if values.len()==4));
+    let CheckedItem::Declaration(second) = &checked[2] else {panic!("second")};
+    assert!(matches!(&second.initializer,
+        Some(CheckedExpr {kind: CheckedExprKind::SparseInitializer(values),..})
+            if values.iter().map(|(i,_)| *i).collect::<Vec<_>>()==[2,0,3,1]));
+    let CheckedItem::Declaration(sparse) = &checked[3] else {panic!("sparse")};
+    assert!(matches!(&sparse.initializer,
+        Some(CheckedExpr {kind: CheckedExprKind::SparseInitializer(values),..})
+            if values.len()==1 && values[0].0==1));
+
+    check(concat!(
+        "struct Bits {unsigned int a:4,b:4;};",
+        "struct Box {int id;struct Bits bits;};",
+        "struct Box boxes[2]={{1,{3,5}},{2,{7,9}}};"
+    )).unwrap();
+    check(concat!(
+        "struct Bits {unsigned int a:4,b:4;};",
+        "struct Box {int id;struct Bits bits;};",
+        "struct Box boxes[2]={[1].bits.b=9,[0].bits.a=5};"
+    )).unwrap();
+    check(concat!(
+        "struct Bits {unsigned int a:4,b:4;};",
+        "int f(int x){struct Bits bits={x,3};return bits.a;}"
+    )).unwrap();
+    check(concat!(
+        "union U {unsigned int a:3;int regular;};",
+        "union U global={.a=5};"
+    )).unwrap();
+    check("struct B{unsigned int a:4,b:5;};int f(void){return ((struct B){.a=3,.b=8}).b;}").unwrap();
+    check("struct B{unsigned int a:3,b:5;};struct B global={.a=2,.b=19};").unwrap();
+
+    reject("struct B{unsigned int a:3;};struct B b={.a=unknown};",
+        "undeclared");
+    reject("struct B{unsigned int a:3;};struct B b={.a=1,.a=2};",
+        "duplicate initializer");
+    reject("struct B{unsigned int a:3;};struct B b={1,2};",
+        "too many struct initializers");
+    reject("struct B{unsigned int a:3;};struct B b={.missing=2};",
+        "unknown initializer member");
+    reject("struct B{unsigned int a:3;};struct B b={.a=1+foo};",
+        "undeclared");
 }
 
 #[test]

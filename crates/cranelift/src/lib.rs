@@ -131,14 +131,17 @@ fn char_array_initializer_bytes(
 /// Resolve a fully checked initializer path to the target aggregate
 /// subobject and its byte displacement. Both global packing and stack
 /// initialization use this to keep mixed struct/array designators identical.
-fn initializer_subobject(ty: &CType, path: &[usize]) -> Result<(CType, u64)> {
+fn initializer_subobject(
+    ty: &CType, path: &[usize],
+) -> Result<(CType, u64, Option<mini_c_sema::types::BitField>)> {
     let mut current = ty;
     let mut offset = 0u64;
+    let mut bits = None;
     for &index in path {
-        let (next, delta) = match current.unqualified() {
+        let (next, delta, field_bits) = match current.unqualified() {
             CType::Struct { members, .. } | CType::Union { members, .. } => {
                 let field = members.get(index).ok_or("invalid checked initializer field")?;
-                (&field.ty, field.offset)
+                (&field.ty, field.offset, field.bit_field)
             }
             CType::Array(element, Some(bound)) => {
                 if u64::try_from(index).map_or(true, |i| i >= *bound) {
@@ -149,15 +152,16 @@ fn initializer_subobject(ty: &CType, path: &[usize]) -> Result<(CType, u64)> {
                 (element.as_ref(), u64::try_from(index)
                     .map_err(|_| "nested initializer array index too large")?
                     .checked_mul(stride)
-                    .ok_or("nested initializer array offset overflow")?)
+                    .ok_or("nested initializer array offset overflow")?, None)
             }
             _ => return Err("nested initializer path enters a nonaggregate".into()),
         };
         offset = offset.checked_add(delta)
             .ok_or("nested initializer byte offset overflow")?;
         current = next;
+        bits = field_bits;
     }
-    Ok((current.clone(), offset))
+    Ok((current.clone(), offset, bits))
 }
 
 /// Resolve a checked constant-address lvalue, preserving an optional
@@ -195,6 +199,33 @@ fn static_initializer_bytes(
     if size > 1_048_576 { return Err("aggregate initializer exceeds 1 MiB codegen limit".into()); }
     let mut bytes = vec![0u8; size];
     let mut relocations = Vec::new();
+
+    /// Insert a constant field value into its shared 32-bit little-endian
+    /// storage word; do not overwrite adjacent bit-fields or padding.
+    fn fill_bits(
+        out: &mut [u8], at: usize, info: mini_c_sema::types::BitField,
+        init: &CheckedExpr,
+    ) -> Result<()> {
+        let end = at.checked_add(4).ok_or("bit-field offset overflow")?;
+        let bytes = out.get_mut(at..end)
+            .ok_or("bit-field storage extends beyond aggregate")?;
+        let value = mini_c_sema::const_eval::evaluate(init, Target::default())
+            .map_err(|why| format!("nonconstant bit-field initializer: {why}"))?;
+        let mask = if info.width == 32 {
+            u32::MAX
+        } else {
+            (1u32 << info.width) - 1
+        };
+        let field_mask = mask << info.shift;
+        let mut previous = [0u8; 4];
+        previous.copy_from_slice(bytes);
+        let old = u32::from_le_bytes(previous);
+        let packed = (old & !field_mask)
+            | (((value as u32) & mask) << info.shift);
+        bytes.copy_from_slice(&packed.to_le_bytes());
+        Ok(())
+    }
+
     fn fill(
         out: &mut [u8], relocations: &mut Vec<(u32, RelocationSource)>,
         ty: &CType, init: &CheckedExpr, offset: usize,
@@ -210,8 +241,13 @@ fn static_initializer_bytes(
                 for (value, member) in values.iter().zip(members) {
                     let displacement = usize::try_from(member.offset)
                         .map_err(|_| "oversized struct member offset")?;
-                    fill(out, relocations, &member.ty, value,
-                        offset.checked_add(displacement).ok_or("struct member offset overflow")?)?;
+                    let at = offset.checked_add(displacement)
+                        .ok_or("struct member offset overflow")?;
+                    if let Some(info) = member.bit_field {
+                        fill_bits(out, at, info, value)?;
+                    } else {
+                        fill(out, relocations, &member.ty, value, at)?;
+                    }
                 }
             }
             (CheckedExprKind::Initializer(values), CType::Array(element, Some(_))) => {
@@ -230,8 +266,13 @@ fn static_initializer_bytes(
                         .ok_or("invalid checked initializer member index")?;
                     let displacement = usize::try_from(member.offset)
                         .map_err(|_| "oversized aggregate member offset")?;
-                    fill(out, relocations, &member.ty, value,
-                        offset.checked_add(displacement).ok_or("aggregate member offset overflow")?)?;
+                    let at = offset.checked_add(displacement)
+                        .ok_or("aggregate member offset overflow")?;
+                    if let Some(info) = member.bit_field {
+                        fill_bits(out, at, info, value)?;
+                    } else {
+                        fill(out, relocations, &member.ty, value, at)?;
+                    }
                 }
             }
             (CheckedExprKind::SparseInitializer(entries),
@@ -246,12 +287,16 @@ fn static_initializer_bytes(
             }
             (CheckedExprKind::DeepInitializer(entries), _) => {
                 for (path, value) in entries {
-                    let (element, displacement) = initializer_subobject(ty, path)?;
+                    let (element, displacement, bits) = initializer_subobject(ty, path)?;
                     let displacement = usize::try_from(displacement)
                         .map_err(|_| "oversized nested initializer byte offset")?;
-                    fill(out, relocations, &element, value,
-                        offset.checked_add(displacement)
-                            .ok_or("nested initializer byte offset overflow")?)?;
+                    let at = offset.checked_add(displacement)
+                        .ok_or("nested initializer byte offset overflow")?;
+                    if let Some(info) = bits {
+                        fill_bits(out, at, info, value)?;
+                    } else {
+                        fill(out, relocations, &element, value, at)?;
+                    }
                 }
             }
             _ => {
@@ -1021,6 +1066,24 @@ impl Lower<'_> {
         Ok(())
     }
 
+    /// Initialize a checked subobject. A bit-field leaf is a masked write
+    /// into its shared 32-bit unit, preserving preceding field values.
+    fn initialize_subobject(
+        &mut self, b: &mut FunctionBuilder<'_>, address: Value,
+        ty: &CType, init: &CheckedExpr,
+        bits: Option<mini_c_sema::types::BitField>,
+    ) -> Result<()> {
+        if let Some(info) = bits {
+            let value = self.expression(b, init)?;
+            let signed = matches!(ty.unqualified(),
+                CType::Integer { unsigned: false, .. });
+            Self::store_bit_field(b, address, value, info.shift, info.width, signed);
+            Ok(())
+        } else {
+            self.initialize_object(b, address, ty, init)
+        }
+    }
+
     /// Recursively initialize a stack aggregate, including zero-filling all
     /// omitted fields and padding before writing explicit elements.
     fn initialize_object(
@@ -1039,11 +1102,11 @@ impl Lower<'_> {
             }
             Self::store_array_bytes(b, address, &vec![0u8; size])?;
             for (path, value) in entries {
-                let (element, offset) = initializer_subobject(ty, path)?;
+                let (element, offset, bits) = initializer_subobject(ty, path)?;
                 let offset = i64::try_from(offset)
                     .map_err(|_| "nested initializer offset exceeds i64")?;
                 let addr = b.ins().iadd_imm_s(address, offset);
-                self.initialize_object(b, addr, &element, value)?;
+                self.initialize_subobject(b, addr, &element, value, bits)?;
             }
             return Ok(());
         }
@@ -1063,7 +1126,8 @@ impl Lower<'_> {
                         let offset = i64::try_from(member.offset)
                             .map_err(|_| "oversized sparse member offset")?;
                         let addr = b.ins().iadd_imm_s(address, offset);
-                        self.initialize_object(b, addr, &member.ty, value)?;
+                        self.initialize_subobject(
+                            b, addr, &member.ty, value, member.bit_field)?;
                     }
                 }
                 CType::Array(element, Some(_)) => {
@@ -1095,7 +1159,8 @@ impl Lower<'_> {
                         let offset = i64::try_from(member.offset)
                             .map_err(|_| "oversized structure offset")?;
                         let addr = b.ins().iadd_imm_s(address, offset);
-                        self.initialize_object(b, addr, &member.ty, value)?;
+                        self.initialize_subobject(
+                            b, addr, &member.ty, value, member.bit_field)?;
                     }
                 }
                 CType::Array(element, Some(_)) => {

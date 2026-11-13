@@ -19,6 +19,7 @@ on:
       - 'tools/test_static_compound_native.py'
       - 'tools/test_completed_tag_members_native.py'
       - 'tools/test_bitfield_native.py'
+      - 'tools/test_bitfield_init_native.py'
       - 'tools/test_musl_s9_native.py'
       - 'tests/fixtures/musl-s9/**'
       - '.github/workflows/cranelift.yml'
@@ -41,6 +42,7 @@ on:
       - 'tools/test_static_compound_native.py'
       - 'tools/test_completed_tag_members_native.py'
       - 'tools/test_bitfield_native.py'
+      - 'tools/test_bitfield_init_native.py'
       - 'tools/test_musl_s9_native.py'
       - 'tests/fixtures/musl-s9/**'
       - '.github/workflows/cranelift.yml'
@@ -162,6 +164,8 @@ jobs:
         run: python3 tools/test_completed_tag_members_native.py --backend target/debug/mini-c-cranelift
       - name: C99 named bit-field native execution against GCC
         run: python3 tools/test_bitfield_native.py --backend target/debug/mini-c-cranelift
+      - name: C99 bit-field aggregate initializer native execution against GCC
+        run: python3 tools/test_bitfield_init_native.py --backend target/debug/mini-c-cranelift
       - name: Compare exact pinned musl S9 objects with GCC
         run: python3 tools/test_musl_s9_native.py
       - name: Preserve S9 object differential summary and failures
