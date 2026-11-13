@@ -421,10 +421,46 @@
       "id": "bitfield-struct",
       "feature": "F3",
       "expect": "accept",
-      "mini": "gap",
+      "mini": "supported",
       "kind": "valid",
-      "test_ref": "docs/C99_Frontend_Plan.md:F3",
+      "test_ref": "crates/sema/src/tests.rs:c99_bitfield_positional_sparse_and_nested_object_initializers_are_checked",
       "source": "struct S{unsigned int a:3;};int f(void){struct S s={@N@%8};return s.a;}"
+    },
+    {
+      "id": "bitfield-static-positional",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_bitfield_positional_sparse_and_nested_object_initializers_are_checked",
+      "source": "struct S{unsigned int a:3,b:5;};struct S s={@N@%8,19};int f(void){return s.a+s.b;}"
+    },
+    {
+      "id": "bitfield-static-designated",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_bitfield_positional_sparse_and_nested_object_initializers_are_checked",
+      "source": "struct S{unsigned int a:3,b:5;};struct S s={.b=19,.a=@N@%8};int f(void){return s.a+s.b;}"
+    },
+    {
+      "id": "bitfield-nested-designated",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_bitfield_positional_sparse_and_nested_object_initializers_are_checked",
+      "source": "struct S{unsigned int a:3,b:5;};struct T{struct S s;};struct T t={.s.a=@N@%8,.s.b=19};int f(void){return t.s.a;}"
+    },
+    {
+      "id": "bitfield-automatic-compound",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_bitfield_positional_sparse_and_nested_object_initializers_are_checked",
+      "source": "struct S{unsigned int a:3,b:5;};int f(void){return ((struct S){.a=@N@%8,.b=11}).a;}"
     },
     {
       "id": "complex-type",
