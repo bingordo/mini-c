@@ -3378,6 +3378,48 @@ mod tests {
     }
 
     #[test]
+    fn emits_sysv_memory_aggregate_arguments_and_hidden_sret() {
+        let sources = [
+            // SysV passes three eightbytes on the stack, including a
+            // by-value copy which cannot alias the caller's original.
+            "struct L { long a,b,c; }; \
+             long sum(struct L x) { x.a+=3; return x.a+x.b+x.c; } \
+             int main(void) { struct L x={2,5,11}; return sum(x)!=21 || x.a!=2; }",
+            // The caller provides a hidden result pointer in RDI; a callee
+            // consuming normal arguments must see them in shifted registers.
+            "struct L { long a,b,c; }; \
+             struct L make(long a,long b,long c) { \
+                 struct L x={a,b,c}; return x; } \
+             int main(void) { struct L x=make(7,11,13); \
+                 return x.a!=7 || x.b!=11 || x.c!=13; }",
+            "struct L { long a,b,c; }; \
+             struct L roundtrip(struct L x) { x.c+=5; return x; } \
+             int main(void) { struct L x={2,3,7}; x=roundtrip(x); \
+                 return x.a!=2 || x.b!=3 || x.c!=12; }",
+            // Six consumed GP registers force an otherwise two-register
+            // aggregate wholly onto the outgoing stack.
+            "struct P { long a,b; }; \
+             long f(long a,long b,long c,long d,long e,long g,struct P p) { \
+                 return a+b+c+d+e+g+p.a+p.b; } \
+             int main(void) { struct P x={7,11}; \
+                 return f(1,2,3,4,5,6,x)!=39; }",
+            // A hidden sret consumes one GP register; an aggregate that
+            // would otherwise fit at R9 must be stack-passed as a whole.
+            "struct L { long a,b,c; }; struct P { long a,b; }; \
+             struct L f(long a,long b,long c,long d,long e,struct P p) { \
+                 struct L v={a+p.a,b+p.b,c+d+e}; return v; } \
+             int main(void) { struct P x={7,11}; \
+                 struct L v=f(1,2,3,4,5,x); \
+                 return v.a!=8 || v.b!=13 || v.c!=12; }",
+        ];
+        for source in sources {
+            let object = compile_source(source)
+                .unwrap_or_else(|e| panic!("SysV MEMORY aggregate lowering failed: {source}: {e}"));
+            assert_eq!(&object[..4], b"\x7fELF");
+        }
+    }
+
+    #[test]
     fn emits_sse_and_mixed_aggregate_calls_and_returns() {
         let sources = [
             "struct F { float v; }; struct F echo(struct F p) { return p; } \
