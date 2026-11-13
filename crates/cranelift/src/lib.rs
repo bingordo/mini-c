@@ -2835,6 +2835,32 @@ mod tests {
     }
 
     #[test]
+    fn sysv_variadic_sse_thunk_sets_al_register_count() {
+        let one = concat!(
+            "extern int printf(const char *, ...); ",
+            "int main(void) { printf(\"%f\", 1.25); return 0; }"
+        );
+        let one = compile_source(one).expect("one SSE variadic argument");
+        assert!(one.windows(3).any(|w| w == [0xb0, 0x01, 0xe9]),
+            "one SSE argument needs mov al,1; jmp rel32");
+
+        let many = concat!(
+            "extern int printf(const char *, ...); ",
+            "int main(void) { ",
+            "printf(\"%f%f%f%f%f%f%f%f%f\", ",
+            "1.0,2.0,3.0,4.0,5.0,6.0,7.0,8.0,9.0); return 0; }"
+        );
+        let many = compile_source(many).expect("nine SSE arguments, eight in registers");
+        assert!(many.windows(3).any(|w| w == [0xb0, 0x08, 0xe9]),
+            "AL count must saturate at eight XMM registers");
+
+        assert!(compile_source(
+            "extern int printf(const char *, ...); int main(void) { float x=2.25f; \
+             return printf(\"%f\", x); }"
+        ).is_ok(), "default FP promotions must produce a double argument");
+    }
+
+    #[test]
     fn sysv_gp_variadic_callers_can_pass_stack_arguments() {
         let source = concat!(
             "extern int printf(const char *fmt, ...); ",
