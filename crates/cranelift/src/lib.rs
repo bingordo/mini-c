@@ -18,6 +18,9 @@ use mini_c_sema::{
 use mini_c_syntax::{ast::{BinOp, UnOp, StorageClass}, parser::Parser, stream::ItemSource};
 use std::collections::{HashMap, HashSet};
 
+#[cfg(test)]
+mod sysv_aggregate;
+
 type Result<T> = std::result::Result<T, String>;
 
 fn scalar_type(ty: &CType) -> Result<ir::Type> {
