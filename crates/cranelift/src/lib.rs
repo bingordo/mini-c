@@ -43,22 +43,28 @@ fn is_aggregate(ty: &CType) -> bool {
     matches!(ty.unqualified(), CType::Struct { .. } | CType::Union { .. })
 }
 
-/// C SysV INTEGER-class eightbytes use one I64 register each. Do not let a
-/// partially implemented SSE/MEMORY ABI silently produce wrong machine code.
+/// Flatten x86-64 SysV aggregate eightbytes into ABI register values.
+///
+/// SSE chunks containing two floats are transported as raw F64 bits; no FP
+/// arithmetic is performed on their packed representation. A final four-byte
+/// SSE chunk uses F32 to avoid reading past the end of the C object.
 fn aggregate_abi_types(ty: &CType) -> Result<Vec<ir::Type>> {
     use sysv_aggregate::{AggregateAbi, EightbyteClass};
     match sysv_aggregate::classify_aggregate(ty)? {
         AggregateAbi::Memory => Err(format!(
             "unsupported SysV aggregate-by-value ABI: MEMORY class for {ty:?}"
         )),
-        AggregateAbi::Registers(classes) => classes.into_iter().map(|class| {
-            match class {
-                EightbyteClass::Integer => Ok(types::I64),
-                EightbyteClass::Sse => Err(format!(
-                    "unsupported SysV aggregate-by-value ABI: SSE class for {ty:?}"
-                )),
-            }
-        }).collect(),
+        AggregateAbi::Registers(classes) => {
+            let size = ty.size_bytes(Target::default())
+                .ok_or("incomplete SysV aggregate")?;
+            Ok(classes.into_iter().enumerate().map(|(index, class)| {
+                match class {
+                    EightbyteClass::Integer => types::I64,
+                    EightbyteClass::Sse if size - index as u64 * 8 <= 4 => types::F32,
+                    EightbyteClass::Sse => types::F64,
+                }
+            }).collect())
+        }
     }
 }
 
@@ -69,23 +75,31 @@ fn signature(module: &ObjectModule, ty: &CType) -> Result<ir::Signature> {
         _ => return Err("function declaration requires a function type".into()),
     };
     let mut sig = module.make_signature();
-    // SysV spills the *whole* aggregate if its register classes cannot all
-    // be allocated. Flattening it blindly could incorrectly split a two-GP
-    // struct between R9 and the outgoing stack. Reject that case for now.
+    // SysV allocates independent GP (6) and SSE (8) argument registers.
+    // If either class is exhausted, the *entire* aggregate goes to memory,
+    // which is intentionally not implemented. Never split only part of it.
     let mut gp_used = 0usize;
+    let mut sse_used = 0usize;
     for param in params {
         if is_aggregate(param) {
             let registers = aggregate_abi_types(param)?;
-            if registers.len() > 6usize.saturating_sub(gp_used) {
+            let gp_count = registers.iter().filter(|&&ty| ty == types::I64).count();
+            let sse_count = registers.len() - gp_count;
+            if gp_count > 6usize.saturating_sub(gp_used)
+                || sse_count > 8usize.saturating_sub(sse_used)
+            {
                 return Err(format!(
                     "unsupported SysV aggregate-by-value ABI: register exhaustion for {param:?}"
                 ));
             }
-            gp_used += registers.len();
+            gp_used += gp_count;
+            sse_used += sse_count;
             sig.params.extend(registers.into_iter().map(AbiParam::new));
         } else {
             let scalar = scalar_type(param)?;
-            if scalar != types::F32 && scalar != types::F64 {
+            if scalar == types::F32 || scalar == types::F64 {
+                sse_used = (sse_used + 1).min(8);
+            } else {
                 gp_used = (gp_used + 1).min(6);
             }
             sig.params.push(AbiParam::new(scalar));
@@ -1137,18 +1151,23 @@ impl Lower<'_> {
         Ok(())
     }
 
-    /// Pack a C aggregate's exact object bytes into INTEGER-class SysV
-    /// eightbytes without reading padding beyond the end of the object.
-    /// This intentionally excludes SSE and MEMORY classes until implemented.
+    /// Pack a C aggregate's exact object bytes into SysV register eightbytes
+    /// without reading padding beyond the end of the object.
+    /// MEMORY-class arguments remain explicitly unsupported.
     fn load_aggregate_registers(
         b: &mut FunctionBuilder<'_>, address: Value, ty: &CType,
     ) -> Result<Vec<Value>> {
-        let count = aggregate_abi_types(ty)?.len();
+        let abi = aggregate_abi_types(ty)?;
         let size = ty.size_bytes(Target::default()).ok_or("incomplete ABI aggregate")?;
-        let mut result = Vec::with_capacity(count);
-        for index in 0..count {
+        let mut result = Vec::with_capacity(abi.len());
+        for (index, &reg_ty) in abi.iter().enumerate() {
             let start = index as u64 * 8;
             let end = size.min(start + 8);
+            if reg_ty == types::F32 || reg_ty == types::F64 {
+                let at = i32::try_from(start).map_err(|_| "aggregate SSE register offset overflow")?;
+                result.push(b.ins().load(reg_ty, ir::MemFlagsData::new(), address, at));
+                continue;
+            }
             let mut packed = b.ins().iconst(types::I64, 0);
             let mut offset = start;
             while offset < end {
@@ -1171,17 +1190,26 @@ impl Lower<'_> {
         Ok(result)
     }
 
-    /// Unpack INTEGER-class eightbytes into a stack-resident C aggregate.
+    /// Unpack GP/SSE eightbytes into a stack-resident C aggregate.
     /// Narrow final chunks are stored without clobbering adjacent objects.
     fn store_aggregate_registers(
         b: &mut FunctionBuilder<'_>, address: Value, ty: &CType, values: &[Value],
     ) -> Result<()> {
-        let count = aggregate_abi_types(ty)?.len();
-        if values.len() != count { return Err("aggregate register count mismatch".into()); }
+        let abi = aggregate_abi_types(ty)?;
+        if values.len() != abi.len() { return Err("aggregate register count mismatch".into()); }
         let size = ty.size_bytes(Target::default()).ok_or("incomplete ABI aggregate")?;
         for (index, &value) in values.iter().enumerate() {
             let start = index as u64 * 8;
             let end = size.min(start + 8);
+            let reg_ty = abi[index];
+            if reg_ty == types::F32 || reg_ty == types::F64 {
+                if b.func.dfg.value_type(value) != reg_ty {
+                    return Err("aggregate SSE register type mismatch".into());
+                }
+                let at = i32::try_from(start).map_err(|_| "aggregate SSE register offset overflow")?;
+                b.ins().store(ir::MemFlagsData::new(), value, address, at);
+                continue;
+            }
             let mut offset = start;
             while offset < end {
                 let remaining = end - offset;
