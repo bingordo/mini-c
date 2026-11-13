@@ -14,6 +14,21 @@ import subprocess
 import sys
 
 PROGRAMS = {
+    # Independent native F32/F64 execution and SysV SSE scalar call gates.
+    "sysv_scalar_float_return_and_call": """float twice(float x) { return x*2.0f; }
+        int main(void) { return twice(3.25f)!=6.5f; }""",
+    "sysv_scalar_double_return_and_call": """double f(double x,double y) { return x*y+0.5; }
+        int main(void) { return f(2.5,3.0)!=8.0; }""",
+    "sysv_scalar_fp_integer_register_mix": """double f(int x,double a,long y,float b) {
+            return (double)x+a+(double)y+(double)b;
+        } int main(void) { return f(3,2.5,7,1.5f)!=14.0; }""",
+    "sysv_scalar_fp_conversions": """double f(double a) { return (double)(int)a + 0.5; }
+        int main(void) { return f(4.75)!=4.5; }""",
+    "sysv_scalar_fp_comparison_and_condition": """int f(double a,double b) {
+            return a<b ? 1 : a>=b ? 2 : 3;
+        } int main(void) { return f(2.5,3.0)!=1 || f(4.0,4.0)!=2; }""",
+    "sysv_scalar_fp_compound_update": """int main(void) { float x=1.25f; x*=2.0f; x++;
+            return x!=3.5f; }""",
     # Register-class SysV aggregate calls and returns. Mixed GCC object tests
     # below validate the ABI independently from Mini-C's own caller/callee.
     "sysv_aggregate_two_integer_eightbytes": """struct Pair { long a; long b; };
@@ -694,6 +709,16 @@ def main() -> int:
     mixed = [
         # Verify both directions of the native SysV ABI, not only whole-TU
         # Mini-C compilation (which can hide symmetric ABI mistakes).
+        # Cross-object SSE float/double scalar calls and returns.
+        ("gcc_calls_mini_f64",
+         "double twice(double x) { return x*2.0; }",
+         "double twice(double); int main(void) { return twice(3.5)!=7.0; }"),
+        ("mini_calls_gcc_f32",
+         "extern float sum(float,float); int main(void) { return sum(2.5f,4.0f)!=6.5f; }",
+         "float sum(float a,float b) { return a+b; }"),
+        ("gcc_calls_mini_gp_sse_mix",
+         "double combine(int a,double b,float c) { return (double)a+b+(double)c; }",
+         "double combine(int,double,float); int main(void) { return combine(3,2.5,4.5f)!=10.0; }"),
         # Genuine GCC interop of C by-value aggregate arguments and returns.
         ("gcc_calls_mini_aggregate_two_registers",
          "struct Pair { long a,b; }; struct Pair adjust(struct Pair p) { p.a+=5; p.b-=3; return p; }",
