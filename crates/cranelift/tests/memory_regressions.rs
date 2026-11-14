@@ -315,22 +315,24 @@ fn aggregate_pointer_fields_emit_multiple_relocations() {
 }
 
 #[test]
-fn by_value_aggregate_abi_is_deferred_until_a_use() {
-    // Unused hosted prototypes may contain by-value aggregate signatures
-    // beyond the current SysV backend. Their declarations are harmless.
+fn by_value_aggregate_abi_accepts_register_and_memory_classes() {
+    // INTEGER-class one/two-eightbyte aggregate imports can now be
+    // referenced by address or called with their real ABI signatures.
     emits_elf("struct T { int x; }; struct T copy(struct T x);");
     emits_elf("union U { int x; long y; }; union U make(void);");
+    emits_elf("struct T { int x; }; struct T copy(struct T x); int main(void) { return &copy == 0; }");
+    emits_elf("union U { int x; long y; }; union U make(void); int main(void) { make(); return 0; }");
 
-    // Taking the address or calling one must still fail rather than
-    // emitting a native signature with incorrect argument passing.
+    // MEMORY-class results are passed via a hidden sret pointer. Unused
+    // hosted prototypes still need no code generation.
+    emits_elf("struct Large { long a,b,c; }; struct Large make_large(void);");
+    emits_elf("struct Large { long a,b,c; }; struct Large make_large(void); int main(void) { make_large(); return 0; }");
+    emits_elf("struct Large { long a,b,c; }; long consume(struct Large); int main(void) { struct Large x={1,2,3}; return consume(x); }");
+    // Until a generic memcpy lowering exists, cap giant arguments.
     let err = compile_source(
-        "struct T { int x; }; struct T copy(struct T x); int main(void) { return &copy != 0; }"
+        "struct Huge { long v[600]; }; long consume(struct Huge); int main(void) { struct Huge x; return consume(x); }"
     ).unwrap_err();
-    assert!(err.contains("missing function declaration"), "{err}");
-    let err = compile_source(
-        "union U { int x; long y; }; union U make(void); int main(void) { make(); return 0; }"
-    ).unwrap_err();
-    assert!(err.contains("missing function declaration"), "{err}");
+    assert!(err.contains("unsupported SysV"), "{err}");
 }
 
 #[test]

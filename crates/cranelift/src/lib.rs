@@ -3,7 +3,7 @@
 //!
 //! Supports native x86-64 ELF functions, stack objects, and integer-initialized
 //! or zero-initialized global objects. Unsupported features fail explicitly.
-use cranelift_codegen::ir::{self, condcodes::IntCC, types, AbiParam, InstBuilder, Value};
+use cranelift_codegen::ir::{self, condcodes::{FloatCC, IntCC}, types, AbiParam, InstBuilder, Value};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{default_libcall_names, DataId, FuncId, Linkage as ClLinkage, Module};
@@ -15,8 +15,10 @@ use mini_c_sema::{
     CType, CheckedDecl, CheckedExpr, CheckedExprKind, CheckedFunction,
     CheckedItem, CheckedStmt, Checker, IntRank, Linkage, Target,
 };
-use mini_c_syntax::{ast::{BinOp, UnOp, StorageClass}, parser::Parser, stream::ItemSource};
+use mini_c_syntax::{ast::{BinOp, FloatRank, UnOp, StorageClass}, parser::Parser, stream::ItemSource};
 use std::collections::{HashMap, HashSet};
+
+mod sysv_aggregate;
 
 type Result<T> = std::result::Result<T, String>;
 
@@ -27,11 +29,66 @@ fn scalar_type(ty: &CType) -> Result<ir::Type> {
         CType::Integer { rank: IntRank::Short, .. } => Ok(types::I16),
         CType::Integer { rank: IntRank::Int, .. } => Ok(types::I32),
         CType::Integer { rank: IntRank::Long | IntRank::LongLong, .. } | CType::Pointer(_) => Ok(types::I64),
+        CType::Floating(FloatRank::Float) => Ok(types::F32),
+        CType::Floating(FloatRank::Double) => Ok(types::F64),
         CType::Struct { .. } | CType::Union { .. } | CType::TagRef { .. } |
         CType::Array(..) => Err(format!(
             "unsupported SysV aggregate-by-value ABI for {ty:?}; use pointer parameters/returns"
         )),
         _ => Err(format!("unsupported scalar type {ty:?}")),
+    }
+}
+
+fn is_aggregate(ty: &CType) -> bool {
+    matches!(ty.unqualified(), CType::Struct { .. } | CType::Union { .. })
+}
+
+/// An aggregate's ABI class, independent of whether it is returned or passed.
+/// Large objects and unaligned fields must use the MEMORY class.
+fn aggregate_class(ty: &CType) -> Result<sysv_aggregate::AggregateAbi> {
+    sysv_aggregate::classify_aggregate(ty)
+}
+
+/// The Cranelift x64 backend expects the stack argument size rounded to an
+/// eightbyte. Bound object size to avoid quadratic/huge inline copy emission
+/// until the memcpy builtin infrastructure is available.
+fn stack_aggregate_size(ty: &CType) -> Result<u32> {
+    let size = ty.size_bytes(Target::default())
+        .ok_or("incomplete stack-passed aggregate")?;
+    if size == 0 || size > 4096 {
+        return Err(format!("unsupported SysV aggregate-by-value ABI: stack object of {size} bytes (max 4096)"));
+    }
+    let aligned = size.checked_add(7).ok_or("stack aggregate size overflow")? / 8 * 8;
+    u32::try_from(aligned).map_err(|_| "stack aggregate size exceeds u32".into())
+}
+
+fn returns_in_memory(result: &CType) -> Result<bool> {
+    Ok(is_aggregate(result) &&
+        aggregate_class(result)? == sysv_aggregate::AggregateAbi::Memory)
+}
+
+/// Flatten x86-64 SysV aggregate eightbytes into ABI register values.
+///
+/// SSE chunks containing two floats are transported as raw F64 bits; no FP
+/// arithmetic is performed on their packed representation. A final four-byte
+/// SSE chunk uses F32 to avoid reading past the end of the C object.
+fn aggregate_abi_types(ty: &CType) -> Result<Vec<ir::Type>> {
+    use sysv_aggregate::{AggregateAbi, EightbyteClass};
+    match aggregate_class(ty)? {
+        AggregateAbi::Memory => Err(format!(
+            "unsupported SysV aggregate-by-value ABI: MEMORY class for {ty:?}"
+        )),
+        AggregateAbi::Registers(classes) => {
+            let size = ty.size_bytes(Target::default())
+                .ok_or("incomplete SysV aggregate")?;
+            Ok(classes.into_iter().enumerate().map(|(index, class)| {
+                match class {
+                    EightbyteClass::Integer => types::I64,
+                    EightbyteClass::Sse if size - index as u64 * 8 <= 4 => types::F32,
+                    EightbyteClass::Sse => types::F64,
+                }
+            }).collect())
+        }
     }
 }
 
@@ -42,11 +99,65 @@ fn signature(module: &ObjectModule, ty: &CType) -> Result<ir::Signature> {
         _ => return Err("function declaration requires a function type".into()),
     };
     let mut sig = module.make_signature();
+    // MEMORY-class results are returned into a caller-provided object. The
+    // hidden pointer consumes RDI and the callee returns it in RAX.
+    let has_sret = returns_in_memory(result)?;
+    if has_sret {
+        // Bound the generated inline object copy on all call/return paths.
+        stack_aggregate_size(result)?;
+        sig.params.push(AbiParam::special(
+            types::I64, ir::ArgumentPurpose::StructReturn,
+        ));
+    }
+    // SysV allocates independent GP (6) and SSE (8) argument registers.
+    // If either class is exhausted, the *entire* aggregate goes to memory.
+    let mut gp_used = usize::from(has_sret);
+    let mut sse_used = 0usize;
     for param in params {
-        sig.params.push(AbiParam::new(scalar_type(param)?));
+        if is_aggregate(param) {
+            match aggregate_class(param)? {
+                sysv_aggregate::AggregateAbi::Memory => {
+                    sig.params.push(AbiParam::special(types::I64,
+                        ir::ArgumentPurpose::StructArgument(stack_aggregate_size(param)?)));
+                }
+                sysv_aggregate::AggregateAbi::Registers(_) => {
+                    let registers = aggregate_abi_types(param)?;
+                    let gp_count = registers.iter().filter(|&&ty| ty == types::I64).count();
+                    let sse_count = registers.len() - gp_count;
+                    if gp_count > 6usize.saturating_sub(gp_used)
+                        || sse_count > 8usize.saturating_sub(sse_used)
+                    {
+                        // No partial register assignment: the complete
+                        // object is passed on the outgoing argument stack.
+                        sig.params.push(AbiParam::special(types::I64,
+                            ir::ArgumentPurpose::StructArgument(stack_aggregate_size(param)?)));
+                    } else {
+                        gp_used += gp_count;
+                        sse_used += sse_count;
+                        sig.params.extend(registers.into_iter().map(AbiParam::new));
+                    }
+                }
+            }
+        } else {
+            let scalar = scalar_type(param)?;
+            if scalar == types::F32 || scalar == types::F64 {
+                sse_used = (sse_used + 1).min(8);
+            } else {
+                gp_used = (gp_used + 1).min(6);
+            }
+            sig.params.push(AbiParam::new(scalar));
+        }
     }
     if result.unqualified() != &CType::Void {
-        sig.returns.push(AbiParam::new(scalar_type(result)?));
+        if has_sret {
+            // Cranelift's SysV ABI implementation handles the hidden sret
+            // pointer and its machine-level result convention; IR returns
+            // must be empty when the StructReturn parameter is present.
+        } else if is_aggregate(result) {
+            sig.returns.extend(aggregate_abi_types(result)?.into_iter().map(AbiParam::new));
+        } else {
+            sig.returns.push(AbiParam::new(scalar_type(result)?));
+        }
     }
     Ok(sig)
 }
@@ -60,12 +171,14 @@ struct KnownFunction {
     defined: bool,
 }
 
-/// A callsite-specific fixed-ABI wrapper, emitted as a tiny x86-64 tail jump.
-/// Its entry sees the normal SysV GP/stack arguments and sets AL=0 before
-/// jumping into the real C variadic function. No SSE arguments are supported.
-struct SysvGpVarargThunk {
+/// One per-callsite SysV variadic tail thunk. Cranelift puts all fixed CLIF
+/// arguments in their ordinary GP/XMM registers and stack slots, but has no
+/// special AL register-value operand on a variadic call. The wrapper sets
+/// AL to the number of vector argument registers used, then tail-jumps.
+struct SysvVarargThunk {
     wrapper: FuncId,
     target: FuncId,
+    sse_count: u8,
 }
 
 /// Fully checked external function prototype waiting for its first
@@ -367,7 +480,7 @@ pub struct Compiler {
     module: ObjectModule,
     functions: HashMap<String, KnownFunction>,
     pending_functions: HashMap<String, PendingFunction>,
-    gp_vararg_thunks: Vec<SysvGpVarargThunk>,
+    vararg_thunks: Vec<SysvVarargThunk>,
     data: HashMap<String, KnownData>,
     strings: HashMap<Vec<u8>, DataId>,
 }
@@ -388,7 +501,7 @@ impl Compiler {
         Ok(Self {
             module: ObjectModule::new(object),
             functions: HashMap::new(), pending_functions: HashMap::new(),
-            gp_vararg_thunks: Vec::new(),
+            vararg_thunks: Vec::new(),
             data: HashMap::new(), strings: HashMap::new(),
         })
     }
@@ -790,7 +903,7 @@ impl Compiler {
                 .collect();
             let mut lower = Lower {
                 module: &mut self.module, functions: &self.functions,
-                gp_vararg_thunks: &mut self.gp_vararg_thunks,
+                vararg_thunks: &mut self.vararg_thunks,
                 data: &self.data,
                 strings: &mut self.strings,
                 scopes: vec![HashMap::new()], loops: Vec::new(), breaks: Vec::new(),
@@ -799,17 +912,52 @@ impl Compiler {
                     CType::Function { result, .. } => result.as_ref().clone(),
                     _ => return Err("function signature expected".into()),
                 },
+                sret_address: None,
             };
             let entry = builder.create_block();
             builder.append_block_params_for_function_params(entry);
             builder.switch_to_block(entry);
             builder.seal_block(entry);
             let params = builder.block_params(entry).to_vec();
-            if params.len() != function.params.len() {
-                return Err(format!("ABI parameter mismatch for '{}'", function.name));
+            let abi_params = builder.func.signature.params.clone();
+            let mut next = 0;
+            if returns_in_memory(&lower.result_ty)? {
+                lower.sret_address = Some(*params.first()
+                    .ok_or("missing hidden SysV sret parameter")?);
+                next += 1;
             }
-            for (param, value) in function.params.iter().zip(params) {
-                lower.bind(&mut builder, &param.name, &param.ty, Some(value))?;
+            for param in &function.params {
+                if is_aggregate(&param.ty) {
+                    lower.bind_storage(&mut builder, &param.name, &param.ty)?;
+                    let address = lower.object_address(&mut builder, &param.name)?;
+                    if matches!(abi_params.get(next).map(|p| p.purpose),
+                        Some(ir::ArgumentPurpose::StructArgument(_)))
+                    {
+                        // The special Cranelift argument is a pointer into
+                        // the incoming stack argument area, not an object
+                        // pointer supplied by the C caller in a register.
+                        let source = *params.get(next)
+                            .ok_or("missing stack-passed struct argument")?;
+                        let size = param.ty.size_bytes(Target::default())
+                            .ok_or("incomplete stack-passed struct parameter")?;
+                        Lower::copy_bytes(&mut builder, address, source, size)?;
+                        next += 1;
+                    } else {
+                        let count = aggregate_abi_types(&param.ty)?.len();
+                        let values = params.get(next..next + count)
+                            .ok_or_else(|| format!("ABI parameter mismatch for '{}'", function.name))?;
+                        Lower::store_aggregate_registers(&mut builder, address, &param.ty, values)?;
+                        next += count;
+                    }
+                } else {
+                    let value = *params.get(next)
+                        .ok_or_else(|| format!("ABI parameter mismatch for '{}'", function.name))?;
+                    lower.bind(&mut builder, &param.name, &param.ty, Some(value))?;
+                    next += 1;
+                }
+            }
+            if next != params.len() {
+                return Err(format!("ABI parameter mismatch for '{}'", function.name));
             }
             let live = lower.statement(&mut builder, &function.body)?;
             if live {
@@ -923,20 +1071,25 @@ impl Compiler {
                 .map_err(|e| format!("defining global '{name}': {e}"))?;
         }
         let mut product = self.module.finish();
-        if !self.gp_vararg_thunks.is_empty() {
+        if !self.vararg_thunks.is_empty() {
             let text = product.object.section_id(StandardSection::Text);
-            for thunk in self.gp_vararg_thunks {
+            for thunk in self.vararg_thunks {
                 let wrapper = product.function_symbol(thunk.wrapper);
                 let destination = product.function_symbol(thunk.target);
-                // x86-64: xor eax,eax ; jmp rel32. The tail jump preserves
-                // every incoming GP register, stack argument, return address,
-                // and alignment while setting the SysV SSE-register count AL=0.
+                // x86-64: xor eax,eax (0) or mov al,imm8 (1..8), then
+                // jmp rel32. Both prologues take two bytes; preserve GP/XMM
+                // arguments, stack argument area, return address and alignment.
                 // An undefined Cranelift import has Unknown scope in the
                 // object writer. Set a concrete local scope before defining
                 // the code bytes, as required by object::write.
                 product.object.symbol_mut(wrapper).scope = SymbolScope::Compilation;
+                let prologue = if thunk.sse_count == 0 {
+                    [0x31, 0xc0] // xor eax, eax
+                } else {
+                    [0xb0, thunk.sse_count] // mov al, imm8
+                };
                 let start = product.object.add_symbol_data(
-                    wrapper, text, &[0x31, 0xc0, 0xe9, 0, 0, 0, 0], 16
+                    wrapper, text, &[prologue[0], prologue[1], 0xe9, 0, 0, 0, 0], 16
                 );
                 product.object.add_relocation(text, Relocation {
                     offset: start + 3,
@@ -1004,7 +1157,7 @@ struct Local {
 struct Lower<'a> {
     module: &'a mut ObjectModule,
     functions: &'a HashMap<String, KnownFunction>,
-    gp_vararg_thunks: &'a mut Vec<SysvGpVarargThunk>,
+    vararg_thunks: &'a mut Vec<SysvVarargThunk>,
     data: &'a HashMap<String, KnownData>,
     strings: &'a mut HashMap<Vec<u8>, DataId>,
     scopes: Vec<HashMap<String, Local>>,
@@ -1019,6 +1172,8 @@ struct Lower<'a> {
     /// Only these labels can revive code after an unconditional terminator.
     referenced_labels: HashSet<String>,
     result_ty: CType,
+    /// The caller-owned return object for a MEMORY-class aggregate.
+    sret_address: Option<Value>,
 }
 
 impl Lower<'_> {
@@ -1061,10 +1216,117 @@ impl Lower<'_> {
         } else if !matches!(ty.unqualified(), CType::Array(..) | CType::Struct { .. } | CType::Union { .. }) {
             // Deterministic choice for otherwise-indeterminate scalar locals,
             // not a promise about C uninitialized reads.
-            let zero = b.ins().iconst(scalar_type(ty)?, 0);
+            let zero = match ty.unqualified() {
+                CType::Floating(FloatRank::Float) =>
+                    b.ins().f32const(ir::immediates::Ieee32::with_bits(0)),
+                CType::Floating(FloatRank::Double) =>
+                    b.ins().f64const(ir::immediates::Ieee64::with_bits(0)),
+                _ => b.ins().iconst(scalar_type(ty)?, 0),
+            };
             b.ins().store(ir::MemFlagsData::new(), zero, address, 0);
         }
         Ok(())
+    }
+
+    /// Pack a C aggregate's exact object bytes into SysV register eightbytes
+    /// without reading padding beyond the end of the object.
+    /// MEMORY-class arguments remain explicitly unsupported.
+    fn load_aggregate_registers(
+        b: &mut FunctionBuilder<'_>, address: Value, ty: &CType,
+    ) -> Result<Vec<Value>> {
+        let abi = aggregate_abi_types(ty)?;
+        let size = ty.size_bytes(Target::default()).ok_or("incomplete ABI aggregate")?;
+        let mut result = Vec::with_capacity(abi.len());
+        for (index, &reg_ty) in abi.iter().enumerate() {
+            let start = index as u64 * 8;
+            let end = size.min(start + 8);
+            if reg_ty == types::F32 || reg_ty == types::F64 {
+                let at = i32::try_from(start).map_err(|_| "aggregate SSE register offset overflow")?;
+                result.push(b.ins().load(reg_ty, ir::MemFlagsData::new(), address, at));
+                continue;
+            }
+            let mut packed = b.ins().iconst(types::I64, 0);
+            let mut offset = start;
+            while offset < end {
+                let remaining = end - offset;
+                let (width, chunk_ty) = if remaining >= 8 { (8, types::I64) }
+                    else if remaining >= 4 { (4, types::I32) }
+                    else if remaining >= 2 { (2, types::I16) }
+                    else { (1, types::I8) };
+                let at = i32::try_from(offset).map_err(|_| "aggregate register offset overflow")?;
+                let chunk = b.ins().load(chunk_ty, ir::MemFlagsData::new(), address, at);
+                let widened = if width == 8 { chunk } else { b.ins().uextend(types::I64, chunk) };
+                let shifted = if offset == start { widened } else {
+                    b.ins().ishl_imm_s(widened, ((offset - start) * 8) as i64)
+                };
+                packed = b.ins().bor(packed, shifted);
+                offset += width;
+            }
+            result.push(packed);
+        }
+        Ok(result)
+    }
+
+    /// Unpack GP/SSE eightbytes into a stack-resident C aggregate.
+    /// Narrow final chunks are stored without clobbering adjacent objects.
+    fn store_aggregate_registers(
+        b: &mut FunctionBuilder<'_>, address: Value, ty: &CType, values: &[Value],
+    ) -> Result<()> {
+        let abi = aggregate_abi_types(ty)?;
+        if values.len() != abi.len() { return Err("aggregate register count mismatch".into()); }
+        let size = ty.size_bytes(Target::default()).ok_or("incomplete ABI aggregate")?;
+        for (index, &value) in values.iter().enumerate() {
+            let start = index as u64 * 8;
+            let end = size.min(start + 8);
+            let reg_ty = abi[index];
+            if reg_ty == types::F32 || reg_ty == types::F64 {
+                if b.func.dfg.value_type(value) != reg_ty {
+                    return Err("aggregate SSE register type mismatch".into());
+                }
+                let at = i32::try_from(start).map_err(|_| "aggregate SSE register offset overflow")?;
+                b.ins().store(ir::MemFlagsData::new(), value, address, at);
+                continue;
+            }
+            let mut offset = start;
+            while offset < end {
+                let remaining = end - offset;
+                let (width, chunk_ty) = if remaining >= 8 { (8, types::I64) }
+                    else if remaining >= 4 { (4, types::I32) }
+                    else if remaining >= 2 { (2, types::I16) }
+                    else { (1, types::I8) };
+                let shifted = if offset == start { value } else {
+                    b.ins().ushr_imm_s(value, ((offset - start) * 8) as i64)
+                };
+                let narrowed = if width == 8 { shifted } else { b.ins().ireduce(chunk_ty, shifted) };
+                let at = i32::try_from(offset).map_err(|_| "aggregate register offset overflow")?;
+                b.ins().store(ir::MemFlagsData::new(), narrowed, address, at);
+                offset += width;
+            }
+        }
+        Ok(())
+    }
+
+    /// Cranelift's StructArgument(size) copies the *rounded* stack size from
+    /// its CLIF pointer. Never expose padding beyond the source C object's
+    /// allocated bounds: make a padded temporary where necessary.
+    fn outgoing_stack_aggregate(
+        b: &mut FunctionBuilder<'_>, source: Value, ty: &CType,
+    ) -> Result<Value> {
+        let actual = ty.size_bytes(Target::default())
+            .ok_or("incomplete outgoing stack aggregate")?;
+        let rounded = stack_aggregate_size(ty)?;
+        if actual == u64::from(rounded) { return Ok(source); }
+        let slot = b.create_sized_stack_slot(ir::StackSlotData::new(
+            ir::StackSlotKind::ExplicitSlot, rounded, Self::alignment(ty).max(3),
+        ));
+        let address = b.ins().stack_addr(types::I64, slot, 0);
+        Self::copy_bytes(b, address, source, actual)?;
+        let zero = b.ins().iconst(types::I8, 0);
+        for i in actual..u64::from(rounded) {
+            b.ins().store(ir::MemFlagsData::new(), zero, address,
+                i32::try_from(i).map_err(|_| "stack aggregate padding exceeds offset range")?);
+        }
+        Ok(address)
     }
 
     /// Initialize an automatic character array in native chunks rather than
@@ -1357,8 +1619,19 @@ impl Lower<'_> {
         }
         let value = self.expression(b, expr)?;
         let ty = b.func.dfg.value_type(value);
-        let zero = b.ins().iconst(ty, 0);
-        Ok(b.ins().icmp(IntCC::NotEqual, value, zero))
+        let cond = if ty == types::F32 || ty == types::F64 {
+            let zero = if ty == types::F32 {
+                b.ins().f32const(ir::immediates::Ieee32::with_bits(0))
+            } else {
+                b.ins().f64const(ir::immediates::Ieee64::with_bits(0))
+            };
+            // NaN converts to true in a C scalar condition.
+            b.ins().fcmp(FloatCC::NotEqual, value, zero)
+        } else {
+            let zero = b.ins().iconst(ty, 0);
+            b.ins().icmp(IntCC::NotEqual, value, zero)
+        };
+        Ok(cond)
     }
 
     fn boolean(b: &mut FunctionBuilder<'_>, value: Value) -> Value {
@@ -1367,20 +1640,83 @@ impl Lower<'_> {
         b.ins().select(value, one, zero)
     }
 
+    /// C floating arithmetic and comparisons, including unordered != for NaNs.
+    fn float_binary(b: &mut FunctionBuilder<'_>, op: BinOp, left: Value, right: Value) -> Result<Value> {
+        match op {
+            BinOp::Add => Ok(b.ins().fadd(left, right)),
+            BinOp::Sub => Ok(b.ins().fsub(left, right)),
+            BinOp::Mul => Ok(b.ins().fmul(left, right)),
+            BinOp::Div => Ok(b.ins().fdiv(left, right)),
+            BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+                let cc = match op {
+                    BinOp::Eq => FloatCC::Equal,
+                    BinOp::Ne => FloatCC::NotEqual,
+                    BinOp::Lt => FloatCC::LessThan,
+                    BinOp::Le => FloatCC::LessThanOrEqual,
+                    BinOp::Gt => FloatCC::GreaterThan,
+                    BinOp::Ge => FloatCC::GreaterThanOrEqual,
+                    _ => unreachable!(),
+                };
+                let flag = b.ins().fcmp(cc, left, right);
+                Ok(Self::boolean(b, flag))
+            }
+            _ => Err("floating-point operation is unsupported".into()),
+        }
+    }
+
     fn convert(b: &mut FunctionBuilder<'_>, value: Value, from: &CType, to: &CType) -> Result<Value> {
         let src_ty = scalar_type(from)?;
         let dst_ty = scalar_type(to)?;
-        // _Bool conversion is truth-value normalization, not integer
-        // truncation: both 2 and 256 must become 1, never 2 or 0.
+        let src_fp = src_ty == types::F32 || src_ty == types::F64;
+        let dst_fp = dst_ty == types::F32 || dst_ty == types::F64;
+        // _Bool conversion normalizes all nonzero values, including FP NaNs.
         if matches!(to.unqualified(), CType::Integer { rank: IntRank::Bool, .. }) {
-            let nonzero = b.ins().icmp_imm_s(IntCC::NotEqual, value, 0);
+            let nonzero = if src_fp {
+                let zero = if src_ty == types::F32 {
+                    b.ins().f32const(ir::immediates::Ieee32::with_bits(0))
+                } else {
+                    b.ins().f64const(ir::immediates::Ieee64::with_bits(0))
+                };
+                b.ins().fcmp(FloatCC::NotEqual, value, zero)
+            } else {
+                b.ins().icmp_imm_s(IntCC::NotEqual, value, 0)
+            };
             let one = b.ins().iconst(types::I8, 1);
             let zero = b.ins().iconst(types::I8, 0);
             return Ok(b.ins().select(nonzero, one, zero));
         }
         if src_ty == dst_ty { return Ok(value); }
+        if src_fp && dst_fp {
+            return Ok(if src_ty == types::F32 {
+                b.ins().fpromote(types::F64, value)
+            } else {
+                b.ins().fdemote(types::F32, value)
+            });
+        }
+        if src_fp {
+            let target = if dst_ty.bits() < 32 { types::I32 } else { dst_ty };
+            let unsigned = matches!(to.unqualified(), CType::Integer { unsigned: true, .. });
+            let converted = if unsigned {
+                b.ins().fcvt_to_uint(target, value)
+            } else {
+                b.ins().fcvt_to_sint(target, value)
+            };
+            return Ok(if target == dst_ty { converted } else { b.ins().ireduce(dst_ty, converted) });
+        }
+        if dst_fp {
+            let signed = matches!(from.unqualified(), CType::Integer { unsigned: false, .. });
+            let widened = if src_ty.bits() < 32 {
+                if signed { b.ins().sextend(types::I32, value) }
+                else { b.ins().uextend(types::I32, value) }
+            } else { value };
+            return Ok(if signed {
+                b.ins().fcvt_from_sint(dst_ty, widened)
+            } else {
+                b.ins().fcvt_from_uint(dst_ty, widened)
+            });
+        }
         if src_ty.bits() < dst_ty.bits() {
-            let signed = matches!(from, CType::Integer { unsigned: false, .. });
+            let signed = matches!(from.unqualified(), CType::Integer { unsigned: false, .. });
             Ok(if signed { b.ins().sextend(dst_ty, value) } else { b.ins().uextend(dst_ty, value) })
         } else {
             Ok(b.ins().ireduce(dst_ty, value))
@@ -1455,8 +1791,27 @@ impl Lower<'_> {
             | CheckedExprKind::DeepInitializer(_) =>
                 Err("braced initializer cannot be evaluated as an expression".into()),
             CheckedExprKind::Literal(n) => Ok(b.ins().iconst(scalar_type(&expr.ty)?, *n as i64)),
-            CheckedExprKind::FloatLiteral(_) =>
-                Err("native floating-point literal code generation is unsupported".into()),
+            CheckedExprKind::FloatLiteral(text) => {
+                // Keep rounding at the declared C rank; fail closed on C99
+                // hexadecimal forms until a correctly rounded parser exists.
+                if text.starts_with("0x") || text.starts_with("0X") {
+                    return Err("hexadecimal floating-point literal lowering is unsupported".into());
+                }
+                match expr.ty.unqualified() {
+                    CType::Floating(FloatRank::Float) => {
+                        let digits = text.trim_end_matches(['f', 'F']);
+                        let value = digits.parse::<f32>()
+                            .map_err(|e| format!("invalid binary32 literal '{text}': {e}"))?;
+                        Ok(b.ins().f32const(ir::immediates::Ieee32::with_bits(value.to_bits())))
+                    }
+                    CType::Floating(FloatRank::Double) => {
+                        let value = text.parse::<f64>()
+                            .map_err(|e| format!("invalid binary64 literal '{text}': {e}"))?;
+                        Ok(b.ins().f64const(ir::immediates::Ieee64::with_bits(value.to_bits())))
+                    }
+                    _ => Err("unsupported extended floating-point literal ABI".into()),
+                }
+            },
             CheckedExprKind::EnumConstant(n) => Ok(b.ins().iconst(scalar_type(&expr.ty)?, *n)),
             CheckedExprKind::StringLiteral(_) | CheckedExprKind::Member(..) |
             CheckedExprKind::BitFieldMember(..) => self.place(b, expr),
@@ -1520,15 +1875,30 @@ impl Lower<'_> {
                 if *op == UnOp::Deref {
                     return self.expression(b, inner);
                 }
-                let val = self.integer_value(b, inner)?;
+                let floating = matches!(inner.ty.unqualified(), CType::Floating(_));
+                let val = if floating {
+                    self.expression(b, inner)?
+                } else {
+                    self.integer_value(b, inner)?
+                };
                 match op {
                     UnOp::Plus => Ok(val),
-                    UnOp::Neg => Ok(b.ins().ineg(val)),
-                    UnOp::BitNot => Ok(b.ins().bnot(val)),
+                    UnOp::Neg => Ok(if floating { b.ins().fneg(val) } else { b.ins().ineg(val) }),
+                    UnOp::BitNot if !floating => Ok(b.ins().bnot(val)),
+                    UnOp::BitNot => Err("bitwise negation requires integer".into()),
                     UnOp::Not => {
                         let ty = b.func.dfg.value_type(val);
-                        let zero = b.ins().iconst(ty, 0);
-                        let cond = b.ins().icmp(IntCC::Equal, val, zero);
+                        let cond = if floating {
+                            let zero = if ty == types::F32 {
+                                b.ins().f32const(ir::immediates::Ieee32::with_bits(0))
+                            } else {
+                                b.ins().f64const(ir::immediates::Ieee64::with_bits(0))
+                            };
+                            b.ins().fcmp(FloatCC::Equal, val, zero)
+                        } else {
+                            let zero = b.ins().iconst(ty, 0);
+                            b.ins().icmp(IntCC::Equal, val, zero)
+                        };
                         Ok(Self::boolean(b, cond))
                     }
                     UnOp::Address | UnOp::Deref => unreachable!(),
@@ -1602,8 +1972,18 @@ impl Lower<'_> {
                     b.ins().iadd_imm_s(old, if *increment { width } else { -width })
                 } else {
                     let promoted = Self::convert(b, old, &target.ty, computation_ty)?;
-                    let one = b.ins().iconst(scalar_type(computation_ty)?, 1);
-                    let computed = if *increment {
+                    let floating = matches!(computation_ty.unqualified(), CType::Floating(_));
+                    let one = match computation_ty.unqualified() {
+                        CType::Floating(FloatRank::Float) =>
+                            b.ins().f32const(ir::immediates::Ieee32::with_bits(1.0f32.to_bits())),
+                        CType::Floating(FloatRank::Double) =>
+                            b.ins().f64const(ir::immediates::Ieee64::with_bits(1.0f64.to_bits())),
+                        _ => b.ins().iconst(scalar_type(computation_ty)?, 1),
+                    };
+                    let computed = if floating {
+                        if *increment { b.ins().fadd(promoted, one) }
+                        else { b.ins().fsub(promoted, one) }
+                    } else if *increment {
                         b.ins().iadd(promoted, one)
                     } else {
                         b.ins().isub(promoted, one)
@@ -1645,6 +2025,13 @@ impl Lower<'_> {
                     return Ok(result);
                 }
                 let left = Self::convert(b, old, &lhs.ty, computation_ty)?;
+                if matches!(computation_ty.unqualified(), CType::Floating(_)) {
+                    let right = self.expression(b, rhs)?;
+                    let computed = Self::float_binary(b, *op, left, right)?;
+                    let stored = Self::convert(b, computed, computation_ty, &lhs.ty)?;
+                    b.ins().store(ir::MemFlagsData::new(), stored, address, 0);
+                    return Ok(stored);
+                }
                 let mut right = self.integer_value(b, rhs)?;
                 if matches!(op, BinOp::Shl | BinOp::Shr) &&
                     b.func.dfg.value_type(right) != b.func.dfg.value_type(left)
@@ -1682,6 +2069,11 @@ impl Lower<'_> {
             CheckedExprKind::Binary(op, lhs, rhs) => {
                 if matches!(op, BinOp::And | BinOp::Or) {
                     return self.short_circuit(b, *op, lhs, rhs);
+                }
+                if matches!(lhs.ty.unqualified(), CType::Floating(_)) {
+                    let left = self.expression(b, lhs)?;
+                    let right = self.expression(b, rhs)?;
+                    return Self::float_binary(b, *op, left, right);
                 }
                 if matches!(op, BinOp::Add | BinOp::Sub)
                     && matches!(&expr.ty, CType::Pointer(_))
@@ -1765,11 +2157,9 @@ impl Lower<'_> {
             }
             CheckedExprKind::Call(callee, args) => {
                 // Cranelift 0.136 has fixed-arity SystemV signatures but no
-                // variadic AL operand. Direct calls with only GP-class integer
-                // and pointer arguments can use a tiny per-callsite tail thunk:
-                // Cranelift places every actual argument normally, the thunk
-                // zeroes EAX (AL=0 SSE arguments), then jumps to libc without
-                // disturbing the caller's GP registers or stack arguments.
+                // variadic AL operand. The per-callsite tail thunk sets AL to
+                // the count of used vector argument registers, preserving
+                // GP, SSE and outgoing stack arguments before jumping to libc.
                 let variadic = match &callee.ty {
                     CType::VariadicFunction { .. } => true,
                     CType::Pointer(inner) =>
@@ -1782,8 +2172,67 @@ impl Lower<'_> {
                 ) {
                     return Err("indirect SysV variadic calls are unsupported".into());
                 }
-                let mut values = Vec::with_capacity(args.len());
-                for arg in args { values.push(self.expression(b, arg)?); }
+                let function_ty = match callee.ty.unqualified() {
+                    CType::Function { .. } | CType::VariadicFunction { .. } => callee.ty.unqualified(),
+                    CType::Pointer(inner) if matches!(inner.unqualified(),
+                        CType::Function { .. } | CType::VariadicFunction { .. }) => inner.unqualified(),
+                    _ => return Err("call target is not a function".into()),
+                };
+                let result_ty = match function_ty {
+                    CType::Function { result, .. } | CType::VariadicFunction { result, .. } =>
+                        result.as_ref(),
+                    _ => unreachable!(),
+                };
+                let call_sig = if variadic { None } else {
+                    Some(signature(self.module, function_ty)?)
+                };
+                // Hidden MEMORY-class return address must be the first ABI
+                // argument (RDI). Allocate before evaluating source args.
+                let sret_address = if returns_in_memory(result_ty)? {
+                    let size = u32::try_from(result_ty.size_bytes(Target::default())
+                        .ok_or("incomplete SysV MEMORY return aggregate")?)
+                        .map_err(|_| "oversized SysV MEMORY call result")?;
+                    if size > 4096 {
+                        return Err("unsupported SysV MEMORY return object larger than 4096 bytes".into());
+                    }
+                    let slot = b.create_sized_stack_slot(ir::StackSlotData::new(
+                        ir::StackSlotKind::ExplicitSlot, size, Self::alignment(result_ty),
+                    ));
+                    Some(b.ins().stack_addr(types::I64, slot, 0))
+                } else { None };
+                let mut values = Vec::with_capacity(args.len() + usize::from(sret_address.is_some()));
+                if let Some(address) = sret_address { values.push(address); }
+                let mut abi_index = values.len();
+                for arg in args {
+                    let value = self.expression(b, arg)?;
+                    if is_aggregate(&arg.ty) {
+                        if variadic {
+                            return Err("unsupported SysV aggregate-by-value ABI in variadic call".into());
+                        }
+                        if matches!(call_sig.as_ref().and_then(|sig| sig.params.get(abi_index))
+                            .map(|p| p.purpose),
+                            Some(ir::ArgumentPurpose::StructArgument(_)))
+                        {
+                            // StructArgument's CLIF value is a source address;
+                            // Cranelift copies the bytes to the outgoing stack.
+                            let source = Self::outgoing_stack_aggregate(b, value, &arg.ty)?;
+                            values.push(source);
+                            abi_index += 1;
+                        } else {
+                            let packed = Self::load_aggregate_registers(b, value, &arg.ty)?;
+                            abi_index += packed.len();
+                            values.extend(packed);
+                        }
+                    } else {
+                        values.push(value);
+                        abi_index += 1;
+                    }
+                }
+                if let Some(sig) = &call_sig {
+                    if abi_index != sig.params.len() {
+                        return Err("internal SysV aggregate argument count mismatch".into());
+                    }
+                }
                 let inst = if let (CheckedExprKind::Name(name),
                     CType::VariadicFunction { result, .. }) = (&callee.kind, &callee.ty)
                 {
@@ -1791,24 +2240,22 @@ impl Lower<'_> {
                         .map(|known| known.id)
                         .ok_or_else(|| format!("missing variadic function declaration for '{name}'"))?;
                     let mut sig = self.module.make_signature();
+                    let mut sse_count = 0u8;
                     for arg in args {
-                        if !matches!(arg.ty.unqualified(),
-                            CType::Integer { .. } | CType::Pointer(_))
-                        {
-                            return Err(format!(
-                                "SysV variadic call '{name}' requires GP-class arguments only; SSE and aggregate ABI unsupported"
-                            ));
+                        let ty = scalar_type(&arg.ty)?;
+                        if ty == types::F32 || ty == types::F64 {
+                            sse_count = sse_count.saturating_add(1).min(8);
                         }
-                        sig.params.push(AbiParam::new(scalar_type(&arg.ty)?));
+                        sig.params.push(AbiParam::new(ty));
                     }
                     if result.unqualified() != &CType::Void {
                         sig.returns.push(AbiParam::new(scalar_type(result)?));
                     }
-                    let wrapper_name = format!("__mini_c_sysv_gpvar_{}", self.gp_vararg_thunks.len());
+                    let wrapper_name = format!("__mini_c_sysv_gpvar_{}", self.vararg_thunks.len());
                     let wrapper = self.module.declare_function(
                         &wrapper_name, ClLinkage::Import, &sig
                     ).map_err(|e| format!("declaring SysV variadic thunk: {e}"))?;
-                    self.gp_vararg_thunks.push(SysvGpVarargThunk { wrapper, target });
+                    self.vararg_thunks.push(SysvVarargThunk { wrapper, target, sse_count });
                     let reference = self.module.declare_func_in_func(wrapper, b.func);
                     b.ins().call(reference, &values)
                 } else if let (CheckedExprKind::Name(name), CType::Function { .. }) =
@@ -1831,8 +2278,22 @@ impl Lower<'_> {
                     let address = self.expression(b, callee)?;
                     b.ins().call_indirect(sigref, address, &values)
                 };
-                let results = b.inst_results(inst);
-                if let Some(&result) = results.first() {
+                let results = b.inst_results(inst).to_vec();
+                if let Some(address) = sret_address {
+                    // A MEMORY-class call writes directly into the allocated
+                    // C result object. RAX also contains the same pointer.
+                    Ok(address)
+                } else if is_aggregate(result_ty) {
+                    let size = u32::try_from(result_ty.size_bytes(Target::default())
+                        .ok_or("incomplete aggregate call result")?)
+                        .map_err(|_| "aggregate call result too large")?;
+                    let slot = b.create_sized_stack_slot(ir::StackSlotData::new(
+                        ir::StackSlotKind::ExplicitSlot, size, Self::alignment(result_ty),
+                    ));
+                    let address = b.ins().stack_addr(types::I64, slot, 0);
+                    Self::store_aggregate_registers(b, address, result_ty, &results)?;
+                    Ok(address)
+                } else if let Some(&result) = results.first() {
                     Ok(result)
                 } else {
                     // All valid uses of a void function are statement expressions.
@@ -2127,7 +2588,17 @@ impl Lower<'_> {
             CheckedStmt::Return(value) => {
                 if let Some(expr) = value {
                     let v = self.expression(b, expr)?;
-                    b.ins().return_(&[v]);
+                    if let Some(destination) = self.sret_address {
+                        let size = self.result_ty.size_bytes(Target::default())
+                            .ok_or("incomplete SysV MEMORY return aggregate")?;
+                        Self::copy_bytes(b, destination, v, size)?;
+                        b.ins().return_(&[]);
+                    } else if is_aggregate(&self.result_ty) {
+                        let values = Self::load_aggregate_registers(b, v, &self.result_ty)?;
+                        b.ins().return_(&values);
+                    } else {
+                        b.ins().return_(&[v]);
+                    }
                 } else {
                     b.ins().return_(&[]);
                 }
@@ -2364,6 +2835,32 @@ mod tests {
     }
 
     #[test]
+    fn sysv_variadic_sse_thunk_sets_al_register_count() {
+        let one = concat!(
+            "extern int printf(const char *, ...); ",
+            "int main(void) { printf(\"%f\", 1.25); return 0; }"
+        );
+        let one = compile_source(one).expect("one SSE variadic argument");
+        assert!(one.windows(3).any(|w| w == [0xb0, 0x01, 0xe9]),
+            "one SSE argument needs mov al,1; jmp rel32");
+
+        let many = concat!(
+            "extern int printf(const char *, ...); ",
+            "int main(void) { ",
+            "printf(\"%f%f%f%f%f%f%f%f%f\", ",
+            "1.0,2.0,3.0,4.0,5.0,6.0,7.0,8.0,9.0); return 0; }"
+        );
+        let many = compile_source(many).expect("nine SSE arguments, eight in registers");
+        assert!(many.windows(3).any(|w| w == [0xb0, 0x08, 0xe9]),
+            "AL count must saturate at eight XMM registers");
+
+        assert!(compile_source(
+            "extern int printf(const char *, ...); int main(void) { float x=2.25f; \
+             return printf(\"%f\", x); }"
+        ).is_ok(), "default FP promotions must produce a double argument");
+    }
+
+    #[test]
     fn sysv_gp_variadic_callers_can_pass_stack_arguments() {
         let source = concat!(
             "extern int printf(const char *fmt, ...); ",
@@ -2561,20 +3058,36 @@ mod tests {
 
     #[test]
     fn used_hosted_prototype_does_not_get_an_incorrect_native_signature() {
+        // INTEGER-class aggregate imports are now legal, including function
+        // addresses; the independent GCC link tests verify their machine ABI.
         let src = concat!(
             "struct Cookie { long first; long second; }; ",
             "extern struct Cookie cookie_open(void); ",
             "int main(void) { cookie_open(); return 0; }"
         );
-        let error = compile_source(src).unwrap_err();
-        assert!(error.contains("missing function declaration"), "{error}");
+        assert!(compile_source(src).is_ok());
 
         let src = concat!(
             "struct Cookie { long first; long second; }; ",
             "extern int cookie_consume(struct Cookie); ",
             "int main(void) { return &cookie_consume != 0; }"
         );
-        assert!(compile_source(src).is_err(), "function address must not become an invalid relocation");
+        assert!(compile_source(src).is_ok());
+
+        // Small MEMORY-class aggregate imports are now supported via
+        // hidden return slots, but very large stack objects are bounded.
+        let src = concat!(
+            "struct Large { long first; long second; long third; }; ",
+            "extern struct Large large_open(void); ",
+            "int main(void) { large_open(); return 0; }"
+        );
+        assert!(compile_source(src).is_ok());
+        let src = concat!(
+            "struct Huge { long entries[600]; }; ",
+            "extern struct Huge huge_open(void); ",
+            "int main(void) { huge_open(); return 0; }"
+        );
+        assert!(compile_source(src).is_err());
 
         // Declarations must still agree semantically even if Cranelift
         // cannot materialize their signatures.
@@ -2910,13 +3423,124 @@ mod tests {
 
 
     #[test]
-    fn m10_native_float_literal_is_explicitly_unsupported() {
-        // Parse and check the source, but never misemit its FP value as an
-        // integer or use a fabricated SysV return convention.
-        assert!(compile_source("float f(void) { return 0.5f; }").is_err());
+    fn native_float_and_double_scalar_operations_emit_elf() {
+        let sources = [
+            "float f(float x) { return x*1.5f + 0.5f; } int main(void) { return f(2.0f)!=3.5f; }",
+            "double f(double x) { return x/2.0-1.0; } int main(void) { return f(8.0)!=3.0; }",
+            "int main(void) { double x=2.5; double y=3.5; return (x+y)!=6.0; }",
+            "int main(void) { float x=1.5f; x+=2.0f; x++; return x!=4.5f; }",
+            "int main(void) { double x=2.75; int n=(int)x; return n!=2; }",
+        ];
+        for source in sources {
+            let object = compile_source(source).unwrap_or_else(|e|
+                panic!("scalar FP lowering failed: {source}: {e}"));
+            assert_eq!(&object[..4], b"\x7fELF");
+        }
+        assert!(compile_source("long double f(void) { return 1.0L; }").is_err());
+        assert!(compile_source("double f(void) { return 0x1.8p+1; }").is_err());
+    }
+
+    #[test]
+    fn emits_sysv_memory_aggregate_arguments_and_hidden_sret() {
+        let sources = [
+            // SysV passes three eightbytes on the stack, including a
+            // by-value copy which cannot alias the caller's original.
+            "struct L { long a,b,c; }; \
+             long sum(struct L x) { x.a+=3; return x.a+x.b+x.c; } \
+             int main(void) { struct L x={2,5,11}; return sum(x)!=21 || x.a!=2; }",
+            // The caller provides a hidden result pointer in RDI; a callee
+            // consuming normal arguments must see them in shifted registers.
+            "struct L { long a,b,c; }; \
+             struct L make(long a,long b,long c) { \
+                 struct L x={a,b,c}; return x; } \
+             int main(void) { struct L x=make(7,11,13); \
+                 return x.a!=7 || x.b!=11 || x.c!=13; }",
+            "struct L { long a,b,c; }; \
+             struct L roundtrip(struct L x) { x.c+=5; return x; } \
+             int main(void) { struct L x={2,3,7}; x=roundtrip(x); \
+                 return x.a!=2 || x.b!=3 || x.c!=12; }",
+            // 20-byte object: Cranelift copies a rounded 24-byte stack
+            // argument, so the source must have a padded temporary.
+            "struct Odd { int a,b,c,d,e; }; \
+             int sum(struct Odd x) { return x.a+x.b+x.c+x.d+x.e; } \
+             int main(void) { struct Odd x={1,2,3,4,5}; return sum(x)!=15; }",
+            "struct Odd { int a,b,c,d,e; }; \
+             struct Odd echo(struct Odd x) { x.e+=2; return x; } \
+             int main(void) { struct Odd x={1,2,3,4,5}; x=echo(x); \
+                 return x.a!=1 || x.e!=7; }",
+            // Six consumed GP registers force an otherwise two-register
+            // aggregate wholly onto the outgoing stack.
+            "struct P { long a,b; }; \
+             long f(long a,long b,long c,long d,long e,long g,struct P p) { \
+                 return a+b+c+d+e+g+p.a+p.b; } \
+             int main(void) { struct P x={7,11}; \
+                 return f(1,2,3,4,5,6,x)!=39; }",
+            // A hidden sret consumes one GP register; an aggregate that
+            // would otherwise fit at R9 must be stack-passed as a whole.
+            "struct L { long a,b,c; }; struct P { long a,b; }; \
+             struct L f(long a,long b,long c,long d,long e,struct P p) { \
+                 struct L v={a+p.a,b+p.b,c+d+e}; return v; } \
+             int main(void) { struct P x={7,11}; \
+                 struct L v=f(1,2,3,4,5,x); \
+                 return v.a!=8 || v.b!=13 || v.c!=12; }",
+        ];
+        for source in sources {
+            let object = compile_source(source)
+                .unwrap_or_else(|e| panic!("SysV MEMORY aggregate lowering failed: {source}: {e}"));
+            assert_eq!(&object[..4], b"\x7fELF");
+        }
+    }
+
+    #[test]
+    fn emits_sse_and_mixed_aggregate_calls_and_returns() {
+        let sources = [
+            "struct F { float v; }; struct F echo(struct F p) { return p; } \
+             int main(void) { struct F f; f.v=1.75f; f=echo(f); return f.v!=1.75f; }",
+            "struct FF { float a,b; }; struct FF echo(struct FF p) { return p; } \
+             int main(void) { struct FF f; f.a=1.25f; f.b=2.5f; \
+                 f=echo(f); return f.a!=1.25f || f.b!=2.5f; }",
+            "struct M { double d; long n; }; struct M echo(struct M p) { return p; } \
+             int main(void) { struct M x; x.d=3.25; x.n=11; \
+                 x=echo(x); return x.d!=3.25 || x.n!=11; }",
+            "struct D { double a,b; }; struct D echo(struct D p) { return p; } \
+             int main(void) { struct D x; x.a=2.0; x.b=5.0; \
+                 x=echo(x); return x.a!=2.0 || x.b!=5.0; }",
+            "struct M { long n; double d; }; struct M echo(struct M p) { return p; } \
+             int main(void) { struct M x; x.n=7; x.d=2.5; \
+                 x=echo(x); return x.n!=7 || x.d!=2.5; }",
+        ];
+        for source in sources {
+            let object = compile_source(source).unwrap_or_else(|e|
+                panic!("SSE aggregate ABI lowering failed: {source}: {e}"));
+            assert_eq!(&object[..4], b"\x7fELF");
+        }
         assert!(compile_source(
-            "double f(void) { return 3.40282346638528859811704183484516925e+38; }"
-        ).is_err());
+            "struct D { double a,b; }; int f(double a,double b,double c,double d, \
+             double e,double f,double g,struct D x) { return 0; }"
+        ).is_ok(), "SSE register exhaustion must stack-pass the entire aggregate");
+    }
+
+    #[test]
+    fn emits_small_integer_aggregate_calls_and_returns() {
+        let sources = [
+            "struct Pair { long a; long b; }; \
+             struct Pair make(long x,long y) { struct Pair p={x,y}; return p; } \
+             long sum(struct Pair p) { return p.a*3+p.b; } \
+             int main(void) { struct Pair p=make(5,11); return sum(p)!=26; }",
+            "struct Tiny { char a; short b; }; \
+             struct Tiny echo(struct Tiny x) { return x; } \
+             int main(void) { struct Tiny t={7,23}; \
+                 struct Tiny copy=echo(t); return copy.a!=7 || copy.b!=23; }",
+            "struct Triple { int a,b,c; }; \
+             struct Triple next(struct Triple x) { x.a+=1; x.c+=2; return x; } \
+             int main(void) { struct Triple t={3,5,7}; t=next(t); \
+                 return t.a!=4 || t.b!=5 || t.c!=9; }",
+        ];
+        for source in sources {
+            let object = compile_source(source).unwrap_or_else(|e|
+                panic!("integer aggregate ABI lowering failed: {source}: {e}"));
+            assert_eq!(&object[..4], b"\x7fELF");
+        }
     }
 
 }

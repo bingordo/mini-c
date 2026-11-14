@@ -14,6 +14,102 @@ import subprocess
 import sys
 
 PROGRAMS = {
+    # SysV variadic SSE calls must set AL to the count of XMM registers
+    # occupied by both fixed and ellipsis arguments; GCC formats the values.
+    "sysv_varargs_printf_double_one": """extern int printf(const char *, ...);
+        int main(void) { printf("%.2f|%.1f\\n", 1.25, -2.5); return 0; }""",
+    "sysv_varargs_printf_float_promoted": """extern int printf(const char *, ...);
+        int main(void) { float x=2.25f; printf("%.2f\\n", x); return 0; }""",
+    "sysv_varargs_printf_nine_doubles": """extern int printf(const char *, ...);
+        int main(void) { printf("%.0f|%.0f|%.0f|%.0f|%.0f|%.0f|%.0f|%.0f|%.0f\\n",
+            1.0,2.0,3.0,4.0,5.0,6.0,7.0,8.0,9.0); return 0; }""",
+    "sysv_varargs_mixed_gp_fp": """extern int printf(const char *, ...);
+        int main(void) { printf("%d|%.2f|%ld|%.1f|%s|%d\\n",
+            -17, 1.25, 1234567890L, 3.5, "ok", 9); return 0; }""",
+    "sysv_varargs_snprintf_mixed_fp": """extern int snprintf(char *, unsigned long, const char *, ...);
+        int main(void) { char buf[80];
+            int n=snprintf(buf,80,"%.1f/%d/%.1f",1.5,7,2.5);
+            return n!=9 || buf[0]!='1' || buf[3]!='/' || buf[8]!='5'; }""",
+    # SysV MEMORY-class by-value arguments and hidden structure returns.
+    "sysv_memory_stack_arg_padded_twenty_bytes": """struct Odd { int a,b,c,d,e; };
+        int sum(struct Odd x) { return x.a+x.b+x.c+x.d+x.e; }
+        int main(void) { struct Odd x={1,2,3,4,5}; return sum(x)!=15; }""",
+    "sysv_memory_sret_twenty_bytes": """struct Odd { int a,b,c,d,e; };
+        struct Odd echo(struct Odd x) { x.e+=4; return x; }
+        int main(void) { struct Odd x={1,2,3,4,5};
+            x=echo(x); return x.a!=1 || x.e!=9; }""",
+    "sysv_memory_large_struct_argument": """struct Large { long a,b,c; };
+        long sum(struct Large x) { x.a+=4; return x.a+x.b+x.c; }
+        int main(void) { struct Large x={2,3,5};
+            return sum(x)!=14 || x.a!=2; }""",
+    "sysv_memory_large_struct_return": """struct Large { long a,b,c; };
+        struct Large make(long a,long b,long c) {
+            struct Large x={a,b,c}; return x;
+        } int main(void) { struct Large x=make(7,11,13);
+            return x.a!=7 || x.b!=11 || x.c!=13; }""",
+    "sysv_memory_large_struct_roundtrip": """struct Large { long a,b,c; };
+        struct Large roundtrip(struct Large x) { x.c+=9; return x; }
+        int main(void) { struct Large x={2,3,5};
+            x=roundtrip(x); return x.a!=2 || x.b!=3 || x.c!=14; }""",
+    "sysv_register_exhaustion_struct_arg": """struct Pair { long a,b; };
+        long sum(long a,long b,long c,long d,long e,long f,
+                 struct Pair p) { return a+b+c+d+e+f+p.a+p.b; }
+        int main(void) { struct Pair p={7,11}; return sum(1,2,3,4,5,6,p)!=39; }""",
+    "sysv_sret_consumes_gp_register": """struct Large { long a,b,c; };
+        struct Pair { long a,b; };
+        struct Large f(long a,long b,long c,long d,long e,struct Pair p) {
+            struct Large x={a+p.a,b+p.b,c+d+e}; return x;
+        } int main(void) { struct Pair p={7,11}; struct Large x=f(1,2,3,4,5,p);
+            return x.a!=8 || x.b!=13 || x.c!=12; }""",
+    "sysv_sse_one_float_struct": """struct F { float v; };
+        struct F twice(struct F a) { a.v*=2.0f; return a; }
+        int main(void) { struct F f; f.v=1.25f; f=twice(f); return f.v!=2.5f; }""",
+    "sysv_sse_packed_two_floats": """struct F { float x,y; };
+        struct F swap(struct F a) { float t=a.x; a.x=a.y; a.y=t; return a; }
+        int main(void) { struct F f; f.x=1.25f; f.y=2.5f;
+            f=swap(f); return f.x!=2.5f || f.y!=1.25f; }""",
+    "sysv_sse_two_double_eightbytes": """struct D { double x,y; };
+        struct D adjust(struct D a) { a.x+=2.0; a.y-=1.0; return a; }
+        int main(void) { struct D d; d.x=1.5; d.y=5.0;
+            d=adjust(d); return d.x!=3.5 || d.y!=4.0; }""",
+    "sysv_mixed_integer_sse_aggregate": """struct M { long n; double d; };
+        struct M adjust(struct M x) { x.n+=3; x.d+=1.0; return x; }
+        int main(void) { struct M m; m.n=7; m.d=2.5;
+            m=adjust(m); return m.n!=10 || m.d!=3.5; }""",
+    # Independent native F32/F64 execution and SysV SSE scalar call gates.
+    "sysv_scalar_float_return_and_call": """float twice(float x) { return x*2.0f; }
+        int main(void) { return twice(3.25f)!=6.5f; }""",
+    "sysv_scalar_double_return_and_call": """double f(double x,double y) { return x*y+0.5; }
+        int main(void) { return f(2.5,3.0)!=8.0; }""",
+    "sysv_scalar_fp_integer_register_mix": """double f(int x,double a,long y,float b) {
+            return (double)x+a+(double)y+(double)b;
+        } int main(void) { return f(3,2.5,7,1.5f)!=14.0; }""",
+    "sysv_scalar_fp_conversions": """double f(double a) { return (double)(int)a + 0.5; }
+        int main(void) { return f(4.75)!=4.5; }""",
+    "sysv_scalar_fp_comparison_and_condition": """int f(double a,double b) {
+            return a<b ? 1 : a>=b ? 2 : 3;
+        } int main(void) { return f(2.5,3.0)!=1 || f(4.0,4.0)!=2; }""",
+    "sysv_scalar_fp_compound_update": """int main(void) { float x=1.25f; x*=2.0f; x++;
+            return x!=3.5f; }""",
+    # Register-class SysV aggregate calls and returns. Mixed GCC object tests
+    # below validate the ABI independently from Mini-C's own caller/callee.
+    "sysv_aggregate_two_integer_eightbytes": """struct Pair { long a; long b; };
+        struct Pair make(long a,long b) { struct Pair p={a,b}; return p; }
+        long use(struct Pair p) { return p.a * 3 + p.b; }
+        int main(void) { struct Pair p=make(5,11); return use(p)!=26; }""",
+    "sysv_aggregate_narrow_tail": """struct Tiny { char a; short b; };
+        struct Tiny copy(struct Tiny x) { return x; }
+        int main(void) { struct Tiny t={7,23}; struct Tiny v=copy(t);
+            return v.a!=7 || v.b!=23; }""",
+    "sysv_aggregate_twelve_bytes": """struct Three { int a,b,c; };
+        struct Three adjust(struct Three x) { x.a+=2; x.c+=5; return x; }
+        int main(void) { struct Three x={3,7,11}; x=adjust(x);
+            return x.a!=5 || x.b!=7 || x.c!=16; }""",
+    "sysv_aggregate_register_boundary": """struct Pair { long a,b; };
+        long use(long x,long y,long z,long w,struct Pair p) {
+            return x+y+z+w+p.a+p.b;
+        }
+        int main(void) { struct Pair p={6,7}; return use(1,2,3,4,p)!=23; }""",
     # FreeBSD ffs uses a zero guard around GCC __builtin_ctz(mask).
     # Compare defined negative/nonzero inputs and zero through the guard.
     "s21_ctz_guarded_ffs": """int ffs_like(int mask) {
@@ -675,6 +771,75 @@ def main() -> int:
     mixed = [
         # Verify both directions of the native SysV ABI, not only whole-TU
         # Mini-C compilation (which can hide symmetric ABI mistakes).
+        # GCC-defined variadic functions explicitly inspect va_arg(double).
+        # The fixed SSE argument must also be counted in AL.
+        ("mini_calls_gcc_variadic_fixed_sse_and_ellipsis",
+         "extern int sum_variadic(double fixed, ...); int main(void) { return sum_variadic(1.5,2.5)!=4; }",
+         "#include <stdarg.h>\nint sum_variadic(double fixed, ...) { va_list ap; va_start(ap,fixed); double x=va_arg(ap,double); va_end(ap); return (int)(fixed+x); }"),
+        ("mini_calls_gcc_variadic_mixed_stack_gp_sse",
+         "extern int accumulate(int fixed, ...); int main(void) { return accumulate(1,2.5,3,4.5)!=10; }",
+         "#include <stdarg.h>\nint accumulate(int fixed, ...) { va_list ap; va_start(ap,fixed); double a=va_arg(ap,double); int b=va_arg(ap,int); double c=va_arg(ap,double); va_end(ap); return fixed+(int)a+b+(int)c; }"),
+        # Cross-object SSE float/double scalar calls and returns.
+        ("gcc_calls_mini_f64",
+         "double twice(double x) { return x*2.0; }",
+         "double twice(double); int main(void) { return twice(3.5)!=7.0; }"),
+        ("mini_calls_gcc_f32",
+         "extern float sum(float,float); int main(void) { return sum(2.5f,4.0f)!=6.5f; }",
+         "float sum(float a,float b) { return a+b; }"),
+        ("gcc_calls_mini_gp_sse_mix",
+         "double combine(int a,double b,float c) { return (double)a+b+(double)c; }",
+         "double combine(int,double,float); int main(void) { return combine(3,2.5,4.5f)!=10.0; }"),
+        # Independently compiled GCC/Mini-C MEMORY-aggregate ABI in both directions.
+        ("gcc_calls_mini_twenty_byte_stack_struct",
+         "struct Odd { int a,b,c,d,e; }; int sum(struct Odd x) { return x.a+x.b+x.c+x.d+x.e; }",
+         "struct Odd { int a,b,c,d,e; }; int sum(struct Odd); int main(void) { struct Odd x={1,2,3,4,5}; return sum(x)!=15; }"),
+        ("mini_calls_gcc_twenty_byte_stack_struct",
+         "struct Odd { int a,b,c,d,e; }; extern int sum(struct Odd); int main(void) { struct Odd x={1,2,3,4,5}; return sum(x)!=15; }",
+         "struct Odd { int a,b,c,d,e; }; int sum(struct Odd x) { return x.a+x.b+x.c+x.d+x.e; }"),
+        ("gcc_calls_mini_sret_large",
+         "struct Large { long a,b,c; }; struct Large make(long x,long y,long z) { struct Large a={x,y,z}; return a; }",
+         "struct Large { long a,b,c; }; struct Large make(long,long,long); int main(void) { struct Large x=make(7,11,13); return x.a!=7 || x.b!=11 || x.c!=13; }"),
+        ("mini_calls_gcc_sret_large",
+         "struct Large { long a,b,c; }; extern struct Large make(long,long,long); int main(void) { struct Large x=make(7,11,13); return x.a!=7 || x.b!=11 || x.c!=13; }",
+         "struct Large { long a,b,c; }; struct Large make(long x,long y,long z) { struct Large a={x,y,z}; return a; }"),
+        ("gcc_calls_mini_stack_struct",
+         "struct Large { long a,b,c; }; long sum(struct Large x) { return x.a*2+x.b*3+x.c; }",
+         "struct Large { long a,b,c; }; long sum(struct Large); int main(void) { struct Large x={7,11,13}; return sum(x)!=60; }"),
+        ("mini_calls_gcc_stack_struct",
+         "struct Large { long a,b,c; }; extern long sum(struct Large); int main(void) { struct Large x={7,11,13}; return sum(x)!=60; }",
+         "struct Large { long a,b,c; }; long sum(struct Large x) { return x.a*2+x.b*3+x.c; }"),
+        ("gcc_calls_mini_memory_roundtrip",
+         "struct Large { long a,b,c; }; struct Large rotate(struct Large x) { struct Large y={x.b,x.c,x.a}; return y; }",
+         "struct Large { long a,b,c; }; struct Large rotate(struct Large); int main(void) { struct Large x={7,11,13}; x=rotate(x); return x.a!=11 || x.b!=13 || x.c!=7; }"),
+        ("mini_calls_gcc_register_exhaustion_struct",
+         "struct Pair { long a,b; }; extern long f(long,long,long,long,long,long,struct Pair); int main(void) { struct Pair p={7,11}; return f(1,2,3,4,5,6,p)!=39; }",
+         "struct Pair { long a,b; }; long f(long a,long b,long c,long d,long e,long g,struct Pair p) { return a+b+c+d+e+g+p.a+p.b; }"),
+        # Cross-object SysV SSE and mixed integer/SSE aggregate cases.
+        ("gcc_calls_mini_mixed_sse_integer_struct",
+         "struct Mix { double d; long n; }; struct Mix apply(struct Mix x) { x.d+=1.5; x.n+=4; return x; }",
+         "struct Mix { double d; long n; }; struct Mix apply(struct Mix); int main(void) { struct Mix x; x.d=2.5; x.n=7; x=apply(x); return x.d!=4.0 || x.n!=11; }"),
+        ("mini_calls_gcc_mixed_integer_sse_struct",
+         "struct Mix { long n; double d; }; extern struct Mix apply(struct Mix); int main(void) { struct Mix x; x.n=7; x.d=2.5; x=apply(x); return x.n!=11 || x.d!=4.0; }",
+         "struct Mix { long n; double d; }; struct Mix apply(struct Mix x) { x.d+=1.5; x.n+=4; return x; }"),
+        ("gcc_calls_mini_two_float_struct",
+         "struct PairF { float a,b; }; struct PairF flip(struct PairF x) { float t=x.a; x.a=x.b; x.b=t; return x; }",
+         "struct PairF { float a,b; }; struct PairF flip(struct PairF); int main(void) { struct PairF x; x.a=1.5f; x.b=3.25f; x=flip(x); return x.a!=3.25f || x.b!=1.5f; }"),
+        ("mini_calls_gcc_double_pair_struct",
+         "struct PairD { double a,b; }; extern struct PairD adjust(struct PairD); int main(void) { struct PairD x; x.a=1.25; x.b=3.5; x=adjust(x); return x.a!=2.25 || x.b!=5.5; }",
+         "struct PairD { double a,b; }; struct PairD adjust(struct PairD x) { x.a+=1.0; x.b+=2.0; return x; }"),
+        # Genuine GCC interop of C by-value aggregate arguments and returns.
+        ("gcc_calls_mini_aggregate_two_registers",
+         "struct Pair { long a,b; }; struct Pair adjust(struct Pair p) { p.a+=5; p.b-=3; return p; }",
+         "struct Pair { long a,b; }; struct Pair adjust(struct Pair); int main(void) { struct Pair p={7,23}; struct Pair q=adjust(p); return q.a!=12 || q.b!=20; }"),
+        ("mini_calls_gcc_aggregate_two_registers",
+         "struct Pair { long a,b; }; extern struct Pair adjust(struct Pair); int main(void) { struct Pair p={7,23}; struct Pair q=adjust(p); return q.a!=12 || q.b!=20; }",
+         "struct Pair { long a,b; }; struct Pair adjust(struct Pair p) { p.a+=5; p.b-=3; return p; }"),
+        ("gcc_calls_mini_aggregate_narrow",
+         "struct Tiny { char a; short b; }; struct Tiny adjust(struct Tiny p) { p.a+=1; p.b+=3; return p; }",
+         "struct Tiny { char a; short b; }; struct Tiny adjust(struct Tiny); int main(void) { struct Tiny p={7,23}; struct Tiny q=adjust(p); return q.a!=8 || q.b!=26; }"),
+        ("mini_calls_gcc_aggregate_twelve_bytes",
+         "struct Three { int a,b,c; }; extern struct Three add(struct Three); int main(void) { struct Three p={2,5,11}; struct Three q=add(p); return q.a!=3 || q.b!=5 || q.c!=14; }",
+         "struct Three { int a,b,c; }; struct Three add(struct Three x) { x.a++; x.c+=3; return x; }"),
         ("gcc_calls_mini_short_params",
          "int combine(short a, unsigned short b) { return a+b; }",
          "extern int combine(short,unsigned short); int main(void) { return combine(-5,65000)==64995; }"),

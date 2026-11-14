@@ -1625,9 +1625,9 @@ fn compound_bitwise_assignments_validate_lvalues_and_integer_promotions() {
     check("int f(unsigned char x, unsigned long shift) { x >>= shift; x <<= 1; x ^= 255; return x; }").unwrap();
     check("int f(int *p) { *p |= 1; return (*p ^= 3); }").unwrap();
     check("int f(int x, int y) { x &= y |= 4; return x; }").unwrap();
-    reject("int f(int *p) { p &= 3; return 0; }", "modifiable integer lvalue");
+    reject("int f(int *p) { p &= 3; return 0; }", "modifiable arithmetic lvalue");
     reject("int f(int x, int *p) { x ^= p; return x; }", "requires integer operands");
-    reject("int f(int x) { (x + 1) <<= 2; return x; }", "modifiable integer lvalue");
+    reject("int f(int x) { (x + 1) <<= 2; return x; }", "modifiable arithmetic lvalue");
 }
 
 
@@ -1637,10 +1637,10 @@ fn arithmetic_compound_assignments_support_integer_and_pointer_lvalues() {
     check("int f(int a, int b) { a += b *= 3; a -= 1; a /= 2; a %= 5; return a; }").unwrap();
     check("int f(int *p, int offset) { p += offset; p -= 1; return *p; }").unwrap();
     check("int f(void) { struct Data { int x; }; struct Data a[2]; struct Data *p=a; p += 1; p -= 1; return 0; }").unwrap();
-    reject("int f(int *p) { p *= 2; return 0; }", "modifiable integer lvalue");
+    reject("int f(int *p) { p *= 2; return 0; }", "modifiable arithmetic lvalue");
     reject("int f(int *p) { p += p; return 0; }", "requires integer operands");
     reject("int f(void *p) { p += 1; return 0; }", "complete object type");
-    reject("int f(int x) { (x+1) += 2; return x; }", "modifiable integer lvalue");
+    reject("int f(int x) { (x+1) += 2; return x; }", "modifiable arithmetic lvalue");
 }
 
 
@@ -2067,7 +2067,14 @@ fn m10_float_prototypes_retain_types_and_target_layout() {
         assert!(!ty.is_integer());
     }
     reject("extern double x; extern int x;", "conflicting declaration");
-    reject("int f(void){double x;return x;}", "incompatible");
+    check("int f(void){double x=2.75;return x;}").unwrap();
+    check("double f(float x) { return x; }").unwrap();
+    check("float f(double x) { return x; }").unwrap();
+    check("int f(void) { float x=1.5f; x+=2.0f; x++; return x>1.0f; }").unwrap();
+    check("int f(void) { double x=2.5; return (int)x; }").unwrap();
+    reject("int f(void) { double x=2.5; x &= 1; return 0; }", "integer lvalue");
+    reject("int f(void) { double x=2.5; x <<= 1; return 0; }", "integer lvalue");
+    reject("int f(void) { double x=2.5; x %= 2; return 0; }", "integer lvalue");
 }
 
 #[test]
