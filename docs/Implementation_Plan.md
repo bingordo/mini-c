@@ -120,20 +120,32 @@ Testing: table-driven positive/negative fixtures with expected diagnostic codes,
 
 Exit: robust recovery on representative malformed programs, stable diagnostic assertions, no crashes in bounded malformed-input fuzzing, and clear differentiation between syntax and semantic failures.
 
-## M2.5 — Cranelift executable backend (implemented, CI verified)
+## M2.5 — Cranelift executable reference (implemented, CI verified)
 
-The optional leaf crate `mini-c-cranelift` now consumes one `mini-c-sema::CheckedFunction` at a time, lowering typed expressions, SSA locals, integer conversions, signed/unsigned arithmetic and comparisons, short-circuit conditions, branches, while loops, break/continue, returns and direct calls (including recursion) to Cranelift IR. It emits PIC x86-64 Linux ELF object files that can be linked with `cc`, without introducing Cranelift dependencies into syntax or sema. The standalone `mini-c-cranelift --emit-obj OUTPUT.o INPUT.c` executable and embedded `compile_source` API are available; unsupported pointers, globals and aggregate types return explicit errors. See [Cranelift backend](Cranelift.md).
+The optional leaf crate `mini-c-cranelift` consumes checked Mini-C
+functions incrementally and emits PIC x86-64 Linux ELF objects, linking
+against GCC/glibc through `cc`. It handles typed scalar/pointer operations,
+local/global objects, arrays, structs/unions, control flow (including
+`switch`/`goto`), native calls, and the supported C99 initializer subset.
+Syntax and semantic crates do not depend on Cranelift.
 
-A dedicated, cached `.github/workflows/cranelift.yml` compiles and tests this crate, builds the generator/backend binaries once and uses `tools/test_cranelift.py` to compare linked Mini-C/GCC executables on arithmetic, control-flow, recursive calls and seeded defined-behavior programs. Heavy Cranelift builds were excluded from the fast syntax workflow's package list. The exit gate is met by [bingordo/mini-c run 40307103992](https://github.com/bingordo/mini-c/actions/runs/40307103992): targeted Cranelift tests, Clippy, executable build, and GCC differential comparisons all passed. Earlier failures before runner allocation are historical and no longer block M2.5.
+**Extended ABI validation (November 13, 2026):** direct scalar
+`float`/`double`, GP/SSE register-class aggregates, SysV MEMORY-class
+stack arguments and hidden `sret` results, and direct scalar variadic
+calls (including `%al` SSE-register counts) are GCC-executable-tested.
+MEMORY aggregates above 4,096 bytes, aggregate ellipsis arguments,
+indirect variadic calls, extended FP and some constant initializer forms
+remain explicitly unsupported. See [Cranelift backend](Cranelift.md) and
+[M5 aggregate/ABI validation](M5_Aggregates_ABI.md).
 
-Exit: a reproducible green Cranelift executable smoke suite with GCC comparisons, including loops, branches and calls. The backend remains an optional leaf crate ahead of M3.
-
-The **M2.5 Cranelift exit gate has now passed** in
-[bingordo CI run 40307103992](https://github.com/bingordo/mini-c/actions/runs/40307103992)
-on 2026-10-26 (targeted tests, Clippy, executable comparison). The regular
-syntax and preprocessing gate passed in
-[run 40307104216](https://github.com/bingordo/mini-c/actions/runs/40307104216).
-The M3 native integration in bingundu/compiler remains separately unverified.
+The original M2.5 exit gate was met by
+[run #40307103992](https://github.com/bingordo/mini-c/actions/runs/40307103992).
+Current native checks run **only in `bingordo/compiler-ci`**:
+[MEMORY aggregate run #43530563535](https://github.com/bingordo/compiler-ci/actions/runs/43530563535)
+and [FP variadic run #43531054795](https://github.com/bingordo/compiler-ci/actions/runs/43531054795)
+passed targeted Rust tests, Clippy and independent GCC execution/mixed
+object interop. This remains a reference backend, not a replacement for
+the separately tracked production `bingordo/compiler` adapter milestone.
 
 ## M3 — First executable native vertical slice (initial implementation committed; verification outstanding)
 
