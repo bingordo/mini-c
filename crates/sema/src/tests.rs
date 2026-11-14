@@ -2303,13 +2303,13 @@ fn completed_aggregate_tagref_parameter_accepts_compatible_by_value_argument() {
 fn checked_function_pointer_aggregate_result_completes_named_tag() {
     // Function-pointer prototypes retain nominal TagRefs. An indirect
     // call's aggregate rvalue must carry its complete checked object type.
-    let items = check(
-        "struct T{long a,b,c;};"
-        "struct T step(long n,struct T t){t.a+=n;return t;}"
-        "int main(void){struct T t={1,2,3};"
-        "struct T (*fp)(long,struct T)=step;"
+    let items = check(concat!(
+        "struct T{long a,b,c;};",
+        "struct T step(long n,struct T t){t.a+=n;return t;}",
+        "int main(void){struct T t={1,2,3};",
+        "struct T (*fp)(long,struct T)=step;",
         "struct T q=fp(7,t);return q.a==8;}"
-    ).unwrap();
+    )).unwrap();
     let CheckedItem::Function(main) = items.last().expect("main function") else {
         panic!("expected checked main");
     };
@@ -2324,11 +2324,11 @@ fn checked_function_pointer_aggregate_result_completes_named_tag() {
     assert!(matches!(initializer.kind, CheckedExprKind::Call(..)));
 
     // A similarly shaped but distinct nominal tag remains incompatible.
-    reject(
-        "struct A{long x;};struct B{long x;};"
-        "struct A make(void){struct A a={1};return a;}"
-        "int main(void){struct A (*fp)(void)=make;struct B b=fp();return b.x;}",
-        "incompatible assignment",
+    reject(concat!(
+        "struct A{long x;};struct B{long x;};",
+        "struct A make(void){struct A a={1};return a;}",
+        "int main(void){struct A (*fp)(void)=make;struct B b=fp();return b.x;}"
+    ), "incompatible assignment",
     );
 }
 
