@@ -37,41 +37,61 @@ calls and returns, local/string/global initializers, and the supported C99
 declarator and initializer subset. See
 [`C99_Frontend_Plan.md`](C99_Frontend_Plan.md) for independent frontend gaps.
 
-The reference backend now supports these additional native ABI slices:
+The reference backend now supports these native ABI slices:
 
-- Scalar `float` (F32) and `double` (F64): constants, local storage,
-  unary and binary arithmetic, comparisons, conditional tests, conversions
-  and direct/indirect nonvariadic calls and returns using SSE registers.
-- `struct`/`union` by-value **register-class** arguments and returns on
-  x86-64 SysV when their complete representation occupies at most two
-  eightbytes. The classifier supports INTEGER, SSE, and mixed INTEGER/SSE
-  classes, including two `float` fields packed into one SSE eightbyte.
-- Correct register allocation for the supported aggregate classes with
-  independent 6-GP and 8-SSE argument limits; when an aggregate cannot fit,
-  code generation rejects it rather than silently splitting it incorrectly.
-- Direct GCC executable differentials and GCC/Mini-C mixed-object linking
-  in both directions for scalar FP, one/two-register integer aggregates,
-  packed-float aggregates, two-double aggregates, and mixed GP/SSE aggregates.
+- Scalar `float` (F32) and `double` (F64): decimal constants, local
+  storage, arithmetic, comparisons, conditional tests, conversions, and
+  direct/indirect nonvariadic calls and returns using SSE registers.
+- `struct`/`union` by-value arguments and results in the x86-64 SysV
+  **INTEGER, SSE, and mixed INTEGER/SSE register classes** when the
+  complete representation fits in up to two eightbytes.
+- SysV **MEMORY-class aggregate parameters** (including a small aggregate
+  forced to the stack by GP/SSE register exhaustion), using Cranelift's
+  `StructArgument` purpose. Outgoing stack copies are eightbyte-padded
+  without reading beyond a smaller original C object.
+- SysV **MEMORY-class aggregate returns** using the caller-provided hidden
+  `StructReturn` address, including functions with both stack-passed
+  aggregates and additional integer/FP parameters.
+- **Direct scalar variadic calls**, including GP and F32/F64 arguments.
+  C default promotions convert `float` ellipsis arguments to `double`.
+  A callsite-specific tail thunk sets `%al` to the count of occupied XMM
+  argument registers (0–8), including fixed FP parameters, without
+  disturbing argument registers or stack areas.
+- GCC executable and mixed GCC/Mini-C object differentials in both
+  directions for register/memory aggregate passing and returning,
+  20-byte stack objects, scalar floating-point operations, and direct
+  variadic calls into GCC functions using `va_arg(double)`.
 
-**Still unsupported, fail-closed:** MEMORY-class aggregate arguments/returns
-(e.g., larger than 16 bytes, including hidden sret handling), aggregate
-register exhaustion that requires stack passing, unaligned aggregate members,
-extended/x87 floating-point types (`long double` and `_Float128`),
-hexadecimal FP literal code generation, and full SysV variadic calls with
-SSE arguments (`%al` vector register count). Floating-point global/static
-constant initializers and some C99 language/CPP features also remain work.
-The Cranelift backend does not target AArch64. Some missing-return
-diagnostics remain stricter than ISO C permits; a zero-initialization
-convenience for otherwise-indeterminate automatic locals does not change
-the C undefined-behavior rules.
+**Bounded implementation:** The current MEMORY-class path copies
+aggregates of at most **4,096 bytes** with straightforward inline copy
+code. Larger by-value aggregates fail explicitly until shared memcpy
+lowering is implemented. This is an implementation limit, not a C or
+SysV ABI limit.
 
-Current validation (source branch
-[`cranelift-sysv-aggregate-abi-foundation`](https://github.com/bingordo/mini-c/pull/173)):
-[compiler-ci run #43518580978](https://github.com/bingordo/compiler-ci/actions/runs/43518580978)
-passed targeted Rust tests, Clippy, preprocessor/hosted-header checks, and
-GCC executable and cross-object ABI differentials. The hardcoded branch
-override in [compiler-ci PR #669](https://github.com/bingordo/compiler-ci/pull/669)
-is temporary validation only and must not be merged.
+**Still unsupported, fail-closed:** indirect variadic function calls,
+aggregate types passed through `...`, extended/x87 floating-point types
+(`long double` and `_Float128`), hexadecimal FP literal code
+generation, some floating-point global/static constant initializers,
+and unrelated C99 language/CPP gaps. The Cranelift reference backend
+does not target AArch64. The current register classifier covers the
+implemented INTEGER/SSE cases; additional exotic aggregate ABI classes
+and unsupported target layouts need further validation. The backend
+uses deterministic initialization for otherwise-indeterminate local
+scalars as an implementation convenience, not as a C semantic promise.
+
+Validated on `bingordo/compiler-ci`, not `bingordo/compiler`:
+
+- [Run #43530563535](https://github.com/bingordo/compiler-ci/actions/runs/43530563535):
+  MEMORY-class struct arguments, hidden returns, GP exhaustion and
+  20-byte aggregate copies — targeted Rust tests, Clippy and executable
+  GCC/cross-object tests passed
+- [Run #43531054795](https://github.com/bingordo/compiler-ci/actions/runs/43531054795):
+  direct floating-point variadics, GCC `va_arg(double)`, more than eight
+  FP arguments and all existing regressions — corresponding gates passed
+
+Validation source routing uses temporary
+[compiler-ci PR #669](https://github.com/bingordo/compiler-ci/pull/669).
+Its hardcoded Mini-C test branch must **not** be merged.
 
 ## C99 switch and goto
 
@@ -97,14 +117,12 @@ seed. Failing cases preserve input source, command arguments, compiler
 version and outputs under `target/cranelift-failures/`; CI uploads the
 directory only on failure. Add regressions for any discovered mismatch.
 
-`.github/workflows/cranelift.yml` is a separate cached GitHub Actions
-workflow triggered for changes to the backend or its executable test
-harness, and by manual dispatch. It tests only this crate, builds
-reusable backend/fuzzer binaries once, runs GCC executable differentials,
-and runs backend Clippy. The fast syntax CI explicitly excludes the
-heavy backend dependencies to minimize CPU time.
+The active validation workflow is
+[`bingordo/compiler-ci/.github/workflows/mini-c-cranelift.yml`](https://github.com/bingordo/compiler-ci/blob/main/.github/workflows/mini-c-cranelift.yml),
+which builds the backend/fuzzer once and runs the Rust regression suite,
+Clippy, hosted preprocessing checks and GCC executable differentials.
+Do not use `bingordo/compiler` Actions while its minutes are exhausted.
 
-Cranelift is pinned to version `0.136.3` in the leaf crate. The crate
-uses the host's native ISA and PIC configuration so the emitted object
-links via ordinary `cc`. **CI must show a green full backend run**
-before M2.5 can be marked verified/complete.
+The leaf crate depends on Cranelift `0.136` and emits native x86-64
+PIC ELF objects linkable with `cc`. This is an executable reference
+backend, not the eventual `bingordo/compiler` native backend.
