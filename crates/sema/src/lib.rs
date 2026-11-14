@@ -1614,7 +1614,14 @@ impl Checker {
     fn convert_for_assignment(&self, expr: CheckedExpr, ty: &CType, _original: &Expr, span: Span) -> Result<CheckedExpr, Diagnostic> {
         // The source array undergoes the standard array-to-pointer conversion
         // before checking scalar assignment compatibility.
-        let expr = expr.rvalue();
+        let mut expr = expr.rvalue();
+        // A named, completed struct/union may still appear as a TagRef in
+        // a checked function-pointer result. Complete the value's nominal
+        // type before assignment compatibility and preserve its original
+        // expression kind so backends see an addressable aggregate call.
+        if matches!(expr.ty.unqualified(), CType::TagRef { .. }) {
+            expr.ty = self.complete_tag_type(expr.ty.unqualified().clone(), span)?;
+        }
         // Initializing a const-qualified object is permitted. Only the
         // stored value type loses top-level const; nested pointer qualifiers
         // remain intact and cannot be discarded.
