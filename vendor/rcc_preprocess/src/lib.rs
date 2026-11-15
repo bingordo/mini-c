@@ -899,7 +899,8 @@ impl<'a> Preprocessor<'a> {
     /// or remove them (E0027, C99 §6.10.8p2).
     pub fn install_predefined(&mut self) {
         self.install_static_predefined("__STDC__", "1");
-        self.install_static_predefined("__STDC_HOSTED__", "1");
+        self.install_static_predefined("__STDC_HOSTED__",
+            if self.session.opts.target.os == Os::None { "0" } else { "1" });
         self.install_static_predefined(
             "__STDC_VERSION__",
             self.session.opts.language_standard.stdc_version_macro(),
