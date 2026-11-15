@@ -225,6 +225,32 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    #[cfg(feature = "internal-cpp")]
+    #[test]
+    fn opt_in_bounded_cpp_pipe_rejects_atomic_types_explicitly() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let dir = std::env::temp_dir().join(format!(
+            "mini-c-direct-atomic-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos(),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.join("atomic.c");
+        let config = preprocess::Config {
+            executable: "internal-stream".into(),
+            args: vec!["-E", "-nostdinc"].into_iter().map(Into::into).collect(),
+        };
+        // A preceding valid declaration must not make an unsupported
+        // atomic type appear successful in the pull-driven checker.
+        std::fs::write(&root, "int first;\n_Atomic int counter;\n").unwrap();
+        let failure = check(root.to_str().unwrap(), Some(&config)).unwrap_err();
+        assert!(failure.contains("C11 _Atomic type is unsupported"), "{failure}");
+        assert!(failure.contains("atomic.c:2:"), "{failure}");
+        let failure = check_recovering(root.to_str().unwrap(), Some(&config), 4).unwrap_err();
+        assert!(failure.contains("error[S0105]"), "{failure}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn preprocessor_flags_parse_without_shell_splitting() {
         let options = parse_options([
