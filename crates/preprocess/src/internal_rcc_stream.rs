@@ -3,7 +3,7 @@
 //! This is an opt-in bridge for incremental parser integration. The worker
 //! owns all rcc session state, while the consumer owns individual spellings;
 //! no source-map borrow or whole expanded output String crosses threads.
-use super::{options_from_args, MAX_OUTPUT_BYTES, MAX_SOURCE_BYTES};
+use super::options_from_args;
 use rcc_errors::Level;
 use rcc_lexer::PpTokenKind;
 use rcc_session::Session;
@@ -16,6 +16,11 @@ use std::thread::{self, JoinHandle};
 
 const TOKENS_PER_BATCH: usize = 128;
 const CHANNEL_BATCHES: usize = 2;
+
+// The normal batch adapter deliberately keeps its existing 16 MiB cap.
+// Only --cpp=internal-stream uses these finite bootstrap-size ceilings.
+const MAX_STREAM_SOURCE_BYTES: usize = 128 * 1024 * 1024;
+const MAX_STREAM_OUTPUT_BYTES: usize = 128 * 1024 * 1024;
 
 /// An expanded token with a stable owned spelling and its logical origin.
 /// Source-map buffers can be released without invalidating this token.
@@ -127,15 +132,26 @@ fn produce(path: &Path, args: &[OsString], sender: &mpsc::SyncSender<Message>)
     // Maintain the current root/source budgets. Streaming output tokens
     // alone does not make the underlying source map a streaming reader.
     let mut root_bytes = Vec::new();
-    std::fs::File::open(path)
-        .map_err(|e| format!("cannot read C source {}: {e}", path.display()))?
-        .take((MAX_SOURCE_BYTES + 1) as u64)
-        .read_to_end(&mut root_bytes)
+    let file = std::fs::File::open(path)
         .map_err(|e| format!("cannot read C source {}: {e}", path.display()))?;
-    if root_bytes.len() > MAX_SOURCE_BYTES {
+    // Fail fast on oversized ordinary disk files without reading 128 MiB.
+    // The bounded read below remains necessary if the file grows while read.
+    if file.metadata().map_err(|e| format!(
+        "cannot stat C source {}: {e}", path.display()
+    ))?.len() > MAX_STREAM_SOURCE_BYTES as u64 {
         return Err(format!(
             "preprocessing source byte limit exceeded ({} bytes) for {}",
-            MAX_SOURCE_BYTES, path.display()
+            MAX_STREAM_SOURCE_BYTES, path.display()
+        ));
+    }
+    file
+        .take((MAX_STREAM_SOURCE_BYTES + 1) as u64)
+        .read_to_end(&mut root_bytes)
+        .map_err(|e| format!("cannot read C source {}: {e}", path.display()))?;
+    if root_bytes.len() > MAX_STREAM_SOURCE_BYTES {
+        return Err(format!(
+            "preprocessing source byte limit exceeded ({} bytes) for {}",
+            MAX_STREAM_SOURCE_BYTES, path.display()
         ));
     }
     let source = String::from_utf8(root_bytes)
@@ -145,6 +161,7 @@ fn produce(path: &Path, args: &[OsString], sender: &mpsc::SyncSender<Message>)
         .add_file(path.to_path_buf(), Arc::from(source));
 
     let mut pp = rcc_preprocess::Preprocessor::new(&mut session);
+    pp.enable_large_streaming_inputs();
     let mut by_file: HashMap<u32, Arc<str>> = HashMap::new();
     let mut buffered = Vec::with_capacity(TOKENS_PER_BATCH);
     let mut emitted_bytes = 0usize;
@@ -179,8 +196,11 @@ fn produce(path: &Path, args: &[OsString], sender: &mpsc::SyncSender<Message>)
                 break;
             };
             emitted_bytes = emitted_bytes.saturating_add(spelling.len().saturating_add(1));
-            if emitted_bytes > MAX_OUTPUT_BYTES {
-                output_error = Some("internal preprocessor output exceeded 16 MiB limit".into());
+            if emitted_bytes > MAX_STREAM_OUTPUT_BYTES {
+                output_error = Some(format!(
+                    "internal preprocessor output exceeded {} MiB limit",
+                    MAX_STREAM_OUTPUT_BYTES / (1024 * 1024),
+                ));
                 context.request_cancel();
                 break;
             }
@@ -264,6 +284,37 @@ mod tests {
         );
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn streaming_accepts_root_larger_than_legacy_sixteen_megabytes() {
+        let dir = directory();
+        let root = dir.join("large.c");
+        // A large, but simple, root source proves the legacy 16 MiB cap
+        // does not accidentally apply to the streaming CPP worker.
+        let mut source = String::from("int answer = 42;\n/*");
+        source.extend(std::iter::repeat_n('x', 17 * 1024 * 1024));
+        source.push_str("*/\n");
+        std::fs::write(&root, source).unwrap();
+        let tokens = start(&root, &[OsString::from("-E"), OsString::from("-nostdinc")])
+            .unwrap()
+            .map(|token| token.unwrap().spelling.to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(tokens, ["int", "answer", "=", "42", ";"]);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn streaming_rejects_oversize_root_without_reading_it() {
+        let dir = directory();
+        let root = dir.join("too_large.c");
+        let file = std::fs::File::create(&root).unwrap();
+        file.set_len((MAX_STREAM_SOURCE_BYTES + 1) as u64).unwrap();
+        let error = start(&root, &[OsString::from("-E"), OsString::from("-nostdinc")])
+            .unwrap()
+            .next().unwrap().unwrap_err();
+        assert!(error.contains("source byte limit exceeded"), "{error}");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

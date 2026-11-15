@@ -210,6 +210,29 @@ impl<'a> Preprocessor<'a> {
         }
     }
 
+    /// Increase the cumulative resource ceilings for the opt-in bounded
+    /// CPP-to-parser streaming driver used to audit bootstrap-sized C files.
+    ///
+    /// These are hard work/byte limits, not a promise of constant memory:
+    /// source text is still retained by SourceMap, and active macro regions
+    /// may require extra buffering. Legacy collector/adapter users retain
+    /// their default 16 MiB source and one-million-token limits.
+    ///
+    /// The 128 MiB byte ceiling covers source files *plus* included headers.
+    /// Macro expansion, input scanning, and output tokens are still metered
+    /// with finite independent ceilings.
+    pub fn enable_large_streaming_inputs(&mut self) {
+        const SOURCE_BYTES: usize = 128 * 1024 * 1024;
+        const TOKENS: usize = 32_000_000;
+        const EXPANSION_STEPS: usize = 64_000_000;
+        self.source_byte_limit = SOURCE_BYTES;
+        self.input_token_limit = TOKENS;
+        self.output_token_limit = TOKENS;
+        self.expansion_step_limit = EXPANSION_STEPS;
+        // Synthetic-token allocations are intentionally kept at the
+        // existing 16 MiB limit, as are max include/macro recursion limits.
+    }
+
     /// Stop preprocessing as soon as control returns to the source walk.
     /// Useful for bounded producers whose downstream parser has exited.
     /// This is intentionally distinct from the fatal #error diagnostic.
