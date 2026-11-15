@@ -1897,7 +1897,7 @@ fn integer_constant_c_type_selection_and_unsigned_ranges() {
 #[test]
 fn nondecimal_type_selection_respects_nondefault_target_widths() {
     use mini_c_syntax::integer_literal::decode_integer_literal;
-    let model = Target { char_is_signed: true, int_bits: 16, long_bits: 32 };
+    let model = Target { char_is_signed: true, int_bits: 16, long_bits: 32, pointer_bits: 64 };
     let cases = [
         ("0x7fff", Some((IntRank::Int, false))),
         ("0x8000", Some((IntRank::Int, true))),
