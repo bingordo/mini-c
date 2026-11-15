@@ -84,14 +84,14 @@ impl CType {
             || (matches!(dest, Self::Void) && source.is_object())
             || (matches!(source, Self::Void) && dest.is_object())
     }
-    /// Target-specific object alignment in bytes for x86-64 LP64.
+    /// Target-specific object alignment in bytes, including wasm32 ILP32.
     pub fn align_bytes(&self, target: Target) -> Option<u64> {
         match self {
             Self::Void | Self::Function { .. } | Self::VariadicFunction { .. } | Self::TagRef { .. } => None,
             Self::Qualified(inner) => inner.align_bytes(target),
             Self::Struct { align, .. } | Self::Union { align, .. } => Some(*align),
             Self::Array(element, _) => element.align_bytes(target),
-            Self::Pointer(_) => Some(8),
+            Self::Pointer(_) => Some(u64::from(target.pointer_bits / 8)),
             Self::Integer { rank, .. } => Some(u64::from(target.bits(*rank) / 8)),
             Self::Floating(rank) => Some(match rank {
                 FloatRank::Float => 4, FloatRank::Double => 8,
@@ -191,7 +191,7 @@ impl CType {
         !matches!(self.unqualified(), Self::Void | Self::Function { .. } | Self::VariadicFunction { .. })
     }
 
-    /// Known object size in bytes for the currently supported LP64 model.
+    /// Object size in bytes for the selected C target data model.
     /// Incomplete arrays, void/function types and overflowing extents have no size.
     pub fn size_bytes(&self, target: Target) -> Option<u64> {
         match self {
@@ -204,7 +204,7 @@ impl CType {
                 FloatRank::LongDouble => 16, // x86-64 SysV padded x87 format
                 FloatRank::Float128 => 16,  // distinct IEEE binary128 storage
             }),
-            Self::Pointer(_) => Some(8), // Current target model is LP64.
+            Self::Pointer(_) => Some(u64::from(target.pointer_bits / 8)),
             Self::Array(element, Some(count)) => element.size_bytes(target)?.checked_mul(*count),
             Self::Array(_, None) => None,
         }
@@ -331,16 +331,31 @@ pub struct Target {
     pub char_is_signed: bool,
     pub int_bits: u16,
     pub long_bits: u16,
+    /// Object pointer width in bits, independent of C long width.
+    pub pointer_bits: u16,
 }
 
 impl Default for Target {
-    fn default() -> Self { Self { char_is_signed: true, int_bits: 32, long_bits: 64 } }
+    fn default() -> Self {
+        Self { char_is_signed: true, int_bits: 32, long_bits: 64, pointer_bits: 64 }
+    }
 }
 
 impl Target {
+    /// WebAssembly32 C data model: 32-bit int, long and object pointers.
+    ///
+    /// Selecting a checker target does not imply every operation is lowered
+    /// by an experimental code generator.
+    pub const fn wasm32() -> Self {
+        Self { char_is_signed: true, int_bits: 32, long_bits: 32, pointer_bits: 32 }
+    }
+
     pub fn validate(self) -> Result<Self, Diagnostic> {
-        if !(16..=64).contains(&self.int_bits) || !(self.int_bits..=64).contains(&self.long_bits) {
-            return Err(Diagnostic::semantic(Span::default(), "invalid target: expected 16 <= int_bits <= long_bits <= 64"));
+        if !(16..=64).contains(&self.int_bits) || !(self.int_bits..=64).contains(&self.long_bits)
+            || !matches!(self.pointer_bits,32 | 64)
+        {
+            return Err(Diagnostic::semantic(Span::default(),
+                "invalid target: expected 16 <= int_bits <= long_bits <= 64 and 32/64 pointer_bits"));
         }
         Ok(self)
     }
@@ -550,6 +565,23 @@ mod tests {
         assert_eq!(int16.promote(&signed),CType::int());
         assert_eq!(int16.promote(&unsigned),
             CType::Integer{rank:IntRank::Int,unsigned:true});
+    }
+
+    #[test]
+    fn wasm32_struct_and_union_layout_uses_32bit_pointers_and_long() {
+        let target=Target::wasm32().validate().unwrap();
+        let members=vec![
+            ("c".into(),CType::Integer{rank:IntRank::Char,unsigned:false}),
+            ("p".into(),CType::Pointer(Box::new(CType::int()))),
+            ("n".into(),CType::Integer{rank:IntRank::Long,unsigned:false}),
+        ];
+        let structure=layout_struct(Some("S".into()),members.clone(),target).unwrap();
+        let CType::Struct{members,size,align,..}=&structure else {panic!("struct")};
+        assert_eq!((*size,*align),(12,4));
+        assert_eq!(members.iter().map(|m|m.offset).collect::<Vec<_>>(),[0,4,8]);
+        let union=layout_union(Some("U".into()),members.iter().map(|m|(m.name.clone(),m.ty.clone())).collect(),target).unwrap();
+        assert_eq!((union.size_bytes(target),union.align_bytes(target)),(Some(4),Some(4)));
+        assert_eq!(CType::Pointer(Box::new(CType::int())).size_bytes(Target::default()),Some(8));
     }
 
     #[test]
