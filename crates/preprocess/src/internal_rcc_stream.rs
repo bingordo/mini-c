@@ -187,6 +187,14 @@ fn produce(path: &Path, args: &[OsString], sender: &mpsc::SyncSender<Message>)
                 break;
             }
         }
+        // Directive boundaries and macro-free chunks are useful natural
+        // delivery points even when fewer than 128 tokens were emitted.
+        if !buffered.is_empty() && !disconnected && output_error.is_none() &&
+            sender.send(Message::Tokens(std::mem::take(&mut buffered))).is_err()
+        {
+            disconnected = true;
+            context.request_cancel();
+        }
     });
     if disconnected {
         // The parser has been dropped (possibly after a syntax error).
