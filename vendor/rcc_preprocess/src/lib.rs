@@ -965,6 +965,24 @@ impl<'a> Preprocessor<'a> {
             Os::None => {}
         }
 
+        // GCC's public <stdatomic.h> uses these compiler-defined memory
+        // order macros in the memory_order enum. They are integer constants,
+        // not builtin call rewrites; installing them does not claim atomic
+        // code-generation support or relax the memory model.
+        //
+        // GCC defines these six values consistently across supported
+        // architectures. Treat them as target/header compatibility facts.
+        for (name, value) in [
+            ("__ATOMIC_RELAXED", "0"),
+            ("__ATOMIC_CONSUME", "1"),
+            ("__ATOMIC_ACQUIRE", "2"),
+            ("__ATOMIC_RELEASE", "3"),
+            ("__ATOMIC_ACQ_REL", "4"),
+            ("__ATOMIC_SEQ_CST", "5"),
+        ] {
+            self.install_static_predefined(name, value);
+        }
+
         // Target facts are needed by ordinary hosted headers even when
         // GNU builtin *call rewriting* is disabled. Do not tie these
         // definitions to opts.gnu_builtin_libcalls: that option controls
@@ -2886,6 +2904,39 @@ mod run_tests {
         let sess = Session::with_handler(opts, Handler::with_emitter(Box::new(cap.clone())));
         let id = sess.source_map.write().unwrap().add_file(PathBuf::from("<unit>"), Arc::from(src));
         (sess, id, cap)
+    }
+
+    #[test]
+    fn gcc_atomic_memory_order_constants_expand_for_hosted_stdatomic_header() {
+        let source = concat!(
+            "#if __ATOMIC_RELAXED != 0 || __ATOMIC_CONSUME != 1 || __ATOMIC_ACQUIRE != 2\n",
+            "#error wrong_gcc_atomic_order_low_values\n",
+            "#endif\n",
+            "#if __ATOMIC_RELEASE != 3 || __ATOMIC_ACQ_REL != 4 || __ATOMIC_SEQ_CST != 5\n",
+            "#error wrong_gcc_atomic_order_high_values\n",
+            "#endif\n",
+            "__ATOMIC_RELAXED __ATOMIC_CONSUME __ATOMIC_ACQUIRE ",
+            "__ATOMIC_RELEASE __ATOMIC_ACQ_REL __ATOMIC_SEQ_CST\n",
+        );
+        let (mut sess, id, cap) = seed(source);
+        let mut pp = Preprocessor::new(&mut sess);
+        let out = pp.run(id);
+        assert_eq!(joined_text(&pp, &out), "012345");
+        assert!(cap.diagnostics().is_empty(),
+            "GCC atomic memory-order definitions should be usable in #if: {:?}",
+            cap.diagnostics());
+    }
+
+    #[test]
+    fn gcc_atomic_memory_order_can_be_disabled_from_command_line() {
+        let mut opts = rcc_session::Options::default();
+        opts.cli_undefines.push("__ATOMIC_RELAXED".into());
+        let (mut sess, id, cap) = seed_with_opts(opts,
+            "#ifdef __ATOMIC_RELAXED\nbad\n#else\ncorrect\n#endif\n");
+        let mut pp = Preprocessor::new(&mut sess);
+        let out = pp.run(id);
+        assert_eq!(joined_text(&pp, &out), "correct");
+        assert!(cap.diagnostics().is_empty());
     }
 
     #[test]
