@@ -2584,3 +2584,41 @@ fn c99_f0_feature_matrix_checked_shapes_are_not_only_exit_codes() {
     assert_eq!(expr.ty, CType::int());
     assert!(matches!(expr.kind, CheckedExprKind::Conditional(..)));
 }
+
+/// A distinct wasm32 target must drive pointer/long object layout and sizeof.
+#[test]
+fn wasm32_checked_sizeof_and_aggregate_layout() {
+    let target=Target::wasm32().validate().unwrap();
+    let ptr=CType::Pointer(Box::new(CType::int()));
+    let long=CType::Integer{rank:IntRank::Long,unsigned:false};
+    assert_eq!((ptr.size_bytes(target),ptr.align_bytes(target)),(Some(4),Some(4)));
+    assert_eq!((long.size_bytes(target),long.align_bytes(target)),(Some(4),Some(4)));
+    assert_eq!(CType::Array(Box::new(ptr),Some(3)).size_bytes(target),Some(12));
+    let source=concat!(
+        "struct Pair { char c; int *p; long z; };",
+        "int test(void){return sizeof(void*)==4 && sizeof(long)==4",
+        " && sizeof(long long)==8 && sizeof(struct Pair)==12;}"
+    );
+    let mut parser=Parser::new(source);
+    let mut checker=Checker::new(target).unwrap();
+    let mut items=Vec::new();
+    check_stream(&mut parser,&mut checker,|item|{items.push(item);Ok(())}).unwrap();
+    let CheckedItem::Function(f)=&items[1] else {panic!("checked function expected")};
+    let CheckedStmt::Block(stmts)=&f.body else {panic!("checked block expected")};
+    let CheckedStmt::Return(Some(e))=&stmts[0] else {panic!("return expected")};
+    assert_eq!(const_eval::evaluate(e,target),Ok(1));
+    let mut parser=Parser::new("int a[sizeof(void*)]; int b[sizeof(long)];");
+    let mut checker=Checker::new(target).unwrap();
+    let mut items=Vec::new();
+    check_stream(&mut parser,&mut checker,|item|{items.push(item);Ok(())}).unwrap();
+    for item in items {
+        let CheckedItem::Declaration(d)=item else {panic!("global array")};
+        assert_eq!(d.ty,CType::Array(Box::new(CType::int()),Some(4)));
+    }
+}
+#[test]
+fn wasm32_target_rejects_invalid_pointer_width() {
+    assert!(Target{pointer_bits:16,..Target::wasm32()}.validate().is_err());
+    assert!(Target{pointer_bits:128,..Target::wasm32()}.validate().is_err());
+    assert_eq!((Target::default().pointer_bits,Target::default().long_bits),(64,64));
+}
