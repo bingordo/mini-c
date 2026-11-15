@@ -2055,6 +2055,30 @@ mod run_tests {
     }
 
     #[test]
+    fn source_context_sink_observes_current_logical_line_overrides() {
+        let source = "#line 123 \"virtual.c\"\nint first;\n#line 200\nint second;\n";
+        let (mut session, root, cap) = seed(source);
+        let mut pp = Preprocessor::new(&mut session);
+        let mut origins = Vec::new();
+        pp.run_with_context_sink(root, &mut |context, chunk| {
+            let map = context.session.source_map.read().unwrap();
+            let first = chunk.first().expect("each callback contains tokens");
+            let logical_file = context.line_overrides.effective_file(
+                &map, first.span.file, first.span.lo,
+            );
+            let logical_line = context.line_overrides.effective_line(
+                &map, first.span.file, first.span.lo,
+            );
+            origins.push((map.file(logical_file).name.display().to_string(), logical_line));
+        });
+        assert!(!pp.halted);
+        assert!(!pp.session.handler.has_errors(), "{:?}", cap.diagnostics());
+        assert_eq!(origins, [
+            ("virtual.c".to_owned(), 123), ("virtual.c".to_owned(), 200),
+        ]);
+    }
+
+    #[test]
     fn macro_free_long_region_streams_without_an_intervening_directive() {
         let mut source = String::new();
         for i in 0..1_500 {
