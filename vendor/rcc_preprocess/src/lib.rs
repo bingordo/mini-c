@@ -2030,6 +2030,7 @@ mod run_tests {
             "#define MARK 7\n",
             "int outer_before=MARK;\n",
             "#include \"inner.h\"\n",
+            "#undef MARK\n",
             "#define MARK 9\n",
             "int outer_after=MARK;\n",
         )).unwrap();
