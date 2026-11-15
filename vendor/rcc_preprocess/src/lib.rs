@@ -261,6 +261,23 @@ impl<'a> Preprocessor<'a> {
     where
         F: FnMut(Vec<PpToken>),
     {
+        self.run_with_context_sink(root, &mut |_, chunk| sink(chunk));
+    }
+
+    /// Emit completed token chunks while allowing the consumer to inspect
+    /// their **current** source map and logical #line overrides. In contrast
+    /// to the compatibility collector, this does not materialize the whole
+    /// expanded token stream. The observer receives a read-only preprocessor
+    /// view *at emission time*, so it can reconstruct token spellings and
+    /// origins without guessing ahead about later #line directives.
+    ///
+    /// Output is tentative until the entire translation unit succeeds.
+    /// Consumers must discard all emitted data on any diagnostic error,
+    /// including a late #error or input/output expansion budget failure.
+    pub fn run_with_context_sink<F>(&mut self, root: FileId, sink: &mut F)
+    where
+        F: FnMut(&Self, Vec<PpToken>),
+    {
         let mut emitted_tokens = 0usize;
         self.run_with_sink_budget(root, &mut emitted_tokens, sink);
     }
@@ -275,7 +292,7 @@ impl<'a> Preprocessor<'a> {
         sink: &mut F,
     )
     where
-        F: FnMut(Vec<PpToken>),
+        F: FnMut(&Self, Vec<PpToken>),
     {
         if !self.predefined_installed {
             // The Mini-C adapter loads the root with a bounded read. Also
@@ -556,7 +573,7 @@ impl<'a> Preprocessor<'a> {
         sink: &mut F,
     )
     where
-        F: FnMut(Vec<PpToken>),
+        F: FnMut(&Self, Vec<PpToken>),
     {
         if pending_text.is_empty() {
             return;
@@ -582,7 +599,7 @@ impl<'a> Preprocessor<'a> {
         sink: &mut F,
     )
     where
-        F: FnMut(Vec<PpToken>),
+        F: FnMut(&Self, Vec<PpToken>),
     {
         if self.halted {
             return;
@@ -613,7 +630,7 @@ impl<'a> Preprocessor<'a> {
         }
         *emitted_tokens += additional.len();
         if !additional.is_empty() {
-            sink(additional);
+            sink(self, additional);
         }
     }
 
@@ -1051,7 +1068,7 @@ impl<'a> Preprocessor<'a> {
         sink: &mut F,
     ) -> Vec<PpToken>
     where
-        F: FnMut(Vec<PpToken>),
+        F: FnMut(&Self, Vec<PpToken>),
     {
         // Peek the directive name so we can identify conditional
         // control directives without running the full parser (and
