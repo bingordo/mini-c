@@ -429,30 +429,6 @@ impl<'a> Preprocessor<'a> {
         Ok(Some(id))
     }
 
-    /// Scan input with a translation-unit-wide budget. A full collect() here
-    /// could allocate an arbitrarily large Vec before the later expansion
-    /// limit or output byte guard ever runs. Limit the scanner iterator itself.
-    ///
-    /// Include-cycle guard probes also use this function, so their repeated
-    /// scanning cannot bypass the global cap. One extra token distinguishes
-    /// an exact-fit stream from an over-budget one.
-    fn tokenize_source_bounded(&mut self, file: FileId, src: &str) -> Vec<PpToken> {
-        if self.halted {
-            return Vec::new();
-        }
-        let remaining = self.input_token_limit.saturating_sub(self.input_tokens_seen);
-        let tokens: Vec<PpToken> = rcc_lexer::tokenize(file, src)
-            .take(remaining.saturating_add(1))
-            .collect();
-        if tokens.len() > remaining {
-            let location = tokens.last().expect("budget overflow has a token").span;
-            self.report_input_token_limit(location);
-            return Vec::new();
-        }
-        self.input_tokens_seen += tokens.len();
-        tokens
-    }
-
     /// Charge the tokens pulled so far by the lazy logical-line scanner.
     /// The count is monotonic for one source file. A child include may run
     /// while the parent iterator is suspended, so charge each line before
