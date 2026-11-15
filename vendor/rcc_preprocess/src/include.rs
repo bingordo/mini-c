@@ -23,7 +23,7 @@ use rcc_lexer::{PpToken, PpTokenKind, Punct};
 use rcc_session::{Arch, Environment, Options, Os, TargetInfo};
 use rcc_span::{BytePos, FileId, Span};
 
-use crate::guard::detect_guard;
+use crate::guard::detect_guard_iter;
 use crate::macros::{MacroDef, MacroKind};
 use crate::Preprocessor;
 
@@ -332,20 +332,37 @@ fn env_include_paths() -> Vec<PathBuf> {
 /// `#` token that starts a logical line, followed immediately by the
 /// identifiers `pragma` then `once`; trailing tokens on the same line
 /// are permitted and ignored (matching clang/gcc behaviour).
-pub fn detect_pragma_once(tokens: &[PpToken], src: &str) -> bool {
-    for window in tokens.windows(3) {
-        let (hash, pragma, once) = (&window[0], &window[1], &window[2]);
-        if !(matches!(hash.kind, PpTokenKind::Punct(Punct::Hash)) && hash.at_line_start) {
-            continue;
+#[derive(Default)]
+struct PragmaOnceProbe {
+    older: Option<PpToken>,
+    previous: Option<PpToken>,
+    found: bool,
+}
+
+impl PragmaOnceProbe {
+    fn push(&mut self, token: &PpToken, src: &str) {
+        if let (Some(hash), Some(pragma)) = (&self.older, &self.previous) {
+            if matches!(hash.kind, PpTokenKind::Punct(Punct::Hash))
+                && hash.at_line_start
+                && pragma.kind == PpTokenKind::Ident
+                && token.kind == PpTokenKind::Ident
+                && slice_text(pragma, src) == "pragma"
+                && slice_text(token, src) == "once"
+            {
+                self.found = true;
+            }
         }
-        if pragma.kind != PpTokenKind::Ident || once.kind != PpTokenKind::Ident {
-            continue;
-        }
-        if slice_text(pragma, src) == "pragma" && slice_text(once, src) == "once" {
-            return true;
-        }
+        self.older = self.previous.take();
+        self.previous = Some(token.clone());
     }
-    false
+}
+
+pub fn detect_pragma_once(tokens: &[PpToken], src: &str) -> bool {
+    let mut probe = PragmaOnceProbe::default();
+    for token in tokens {
+        probe.push(token, src);
+    }
+    probe.found
 }
 
 fn slice_text<'a>(tok: &PpToken, src: &'a str) -> &'a str {
@@ -501,6 +518,48 @@ impl Preprocessor<'_> {
         self.process_resolved_include_with_sink(resolved, is_system, directive_span, current_file, emitted_tokens, sink)
     }
 
+    /// Rescan a header to fingerprint its guard/pragma shape without
+    /// allocating a Vec of all raw pp-tokens. Preserve the same cumulative
+    /// token-work accounting as tokenize_source_bounded(), including the
+    /// over-budget sentinel token and fail-closed diagnostic.
+    fn scan_header_fingerprint_bounded(
+        &mut self,
+        file: FileId,
+        src: &str,
+        need_pragma: bool,
+        need_guard: bool,
+    ) -> Option<(bool, Option<rcc_span::Symbol>)> {
+        if self.halted {
+            return None;
+        }
+        let remaining = self.input_token_limit.saturating_sub(self.input_tokens_seen);
+        let mut seen = 0usize;
+        let mut last_span = None;
+        let mut pragma = PragmaOnceProbe::default();
+        let tokens = rcc_lexer::tokenize(file, src)
+            .take(remaining.saturating_add(1))
+            .inspect(|token| {
+                seen += 1;
+                last_span = Some(token.span);
+                if need_pragma {
+                    pragma.push(token, src);
+                }
+            });
+
+        let guard = if need_guard {
+            detect_guard_iter(tokens, src, &mut self.session.interner)
+        } else {
+            tokens.for_each(drop);
+            None
+        };
+        if seen > remaining {
+            self.report_input_token_limit(last_span.expect("overflow has a token"));
+            return None;
+        }
+        self.input_tokens_seen += seen;
+        Some((pragma.found, guard))
+    }
+
     fn process_resolved_include_with_sink<F>(
         &mut self,
         resolved: PathBuf,
@@ -576,11 +635,12 @@ impl Preprocessor<'_> {
                 // inclusion would expand to nothing — silent skip.
                 if !self.include_guards.contains_key(&new_file) {
                     let src = self.session.source_map.read().unwrap().file(new_file).src.clone();
-                    let raw = self.tokenize_source_bounded(new_file, &src);
-                    if self.halted {
+                    let Some((_, guard)) = self.scan_header_fingerprint_bounded(
+                        new_file, &src, false, true,
+                    ) else {
                         return;
-                    }
-                    if let Some(guard) = detect_guard(&raw, &src, &mut self.session.interner) {
+                    };
+                    if let Some(guard) = guard {
                         self.include_guards.insert(new_file, guard);
                     }
                 }
@@ -649,18 +709,20 @@ impl Preprocessor<'_> {
         let need_guard_scan = !self.include_guards.contains_key(&new_file);
         if need_pragma_scan || need_guard_scan {
             let src = self.session.source_map.read().unwrap().file(new_file).src.clone();
-            // Fingerprinting runs AFTER run(new_file), so this is a second
-            // raw tokenization of the same header. Charge it to the same
-            // translation-unit budget instead of collecting unboundedly.
-            let raw = self.tokenize_source_bounded(new_file, &src);
-            if self.halted {
+            // Fingerprinting runs AFTER run(new_file) and must inspect
+            // the raw source rather than macro-expanded tokens. The
+            // incremental scanner charges the exact lexical work but
+            // retains only one logical line and a two-token pragma window.
+            let Some((has_pragma_once, guard)) = self.scan_header_fingerprint_bounded(
+                new_file, &src, need_pragma_scan, need_guard_scan,
+            ) else {
                 return;
-            }
-            if need_pragma_scan && detect_pragma_once(&raw, &src) {
+            };
+            if need_pragma_scan && has_pragma_once {
                 self.pragma_once.insert(new_file, ());
             }
             if need_guard_scan {
-                if let Some(guard) = detect_guard(&raw, &src, &mut self.session.interner) {
+                if let Some(guard) = guard {
                     self.include_guards.insert(new_file, guard);
                     // Stub-define the guard symbol in the macro table so
                     // the next inclusion hits the skip branch above.
