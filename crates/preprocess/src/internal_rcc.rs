@@ -10,6 +10,9 @@ use rcc_errors::Level;
 use rcc_lexer::PpTokenKind;
 use rcc_session::Session;
 
+#[path = "internal_rcc_stream.rs"]
+pub mod stream;
+
 /// Maximum generated text in an experimental translation unit.
 const MAX_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 /// Bound the root source before it is added to the session source map.
@@ -21,7 +24,7 @@ const MAX_SOURCE_BYTES: usize = 16 * 1024 * 1024;
 /// The caller passes the same OS arguments used by the external frontend:
 /// -E, -I<path>, -D<name>[=<value>] and -U<name>. Unknown flags fail closed.
 /// This function never launches an external C preprocessor or shell.
-pub fn file(path: &Path, args: &[std::ffi::OsString]) -> Result<String, String> {
+fn options_from_args(args: &[std::ffi::OsString]) -> Result<rcc_session::Options, String> {
     let mut opts = rcc_session::Options::default();
     // Hosted-mode include discovery is done by the adapter, not by
     // rcc_session::Options::default(): the latter intentionally starts
@@ -94,6 +97,11 @@ pub fn file(path: &Path, args: &[std::ffi::OsString]) -> Result<String, String> 
         }
     }
 
+    Ok(opts)
+}
+
+pub fn file(path: &Path, args: &[std::ffi::OsString]) -> Result<String, String> {
+    let opts = options_from_args(args)?;
     let (mut session, captured) = Session::for_test();
     session.opts = opts;
     // Do not call Session::load_source_file here: its unbounded disk read

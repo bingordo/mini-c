@@ -62,6 +62,9 @@ impl Declarator {
 pub struct Parser<'a> {
     scanner: Box<dyn ParserTokenSource<'a> + 'a>,
     input_len: usize,
+    /// Furthest token seen so a true pull stream can diagnose truncated
+    /// source without knowing the final translation-unit length up front.
+    last_seen_end: usize,
     expression_spans: bool,
     lookahead: Option<ParserToken<'a>>,
     // Nonconsuming two-token lookahead replaces Scanner::clone, which
@@ -102,6 +105,7 @@ impl<'a> Parser<'a> {
         Self {
             scanner: Box::new(source),
             input_len,
+            last_seen_end: 0,
             expression_spans: false,
             lookahead: None,
             second_lookahead: None,
@@ -114,9 +118,13 @@ impl<'a> Parser<'a> {
     /// Enables byte-accurate expression locations for semantic diagnostics.
     /// Default Parser::new() preserves the original unannotated AST.
     pub fn new_with_spans(source: &'a str) -> Self {
-        let mut parser = Self::new(source);
-        parser.expression_spans = true;
-        parser
+        Self::new(source).with_expression_spans()
+    }
+
+    /// Preserve byte-accurate expressions in the streamed token path too.
+    pub fn with_expression_spans(mut self) -> Self {
+        self.expression_spans = true;
+        self
     }
 
     fn located(&self, expr: Expr, span: Span) -> Expr {
@@ -141,7 +149,8 @@ impl<'a> Parser<'a> {
     // A missing token belongs at the actual end of input, not byte zero.
     // In particular this must handle UTF-8 source preceding a truncated item.
     fn eof_span(&self) -> Span {
-        Span { lo: self.input_len, hi: self.input_len }
+        let end = self.input_len.max(self.last_seen_end);
+        Span { lo: end, hi: end }
     }
 
     /// Skip a damaged external item after `next_item` has reported an error.
@@ -253,6 +262,9 @@ impl<'a> Parser<'a> {
     fn peek(&mut self) -> Result<Option<ParserToken<'a>>, Diagnostic> {
         if self.lookahead.is_none() {
             self.lookahead = self.scanner.next_parser_token(Some(&self.scopes))?;
+            if let Some(token) = self.lookahead.as_ref() {
+                self.last_seen_end = self.last_seen_end.max(token.span.hi);
+            }
         }
         // Scope changes can occur while a token is held in lookahead.
         if let Some(token) = self.lookahead.as_mut() {
