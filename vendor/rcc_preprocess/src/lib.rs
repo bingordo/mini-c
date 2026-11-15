@@ -234,12 +234,35 @@ impl<'a> Preprocessor<'a> {
     /// object-like macros, then the C99 §6.10.8 predefined set
     /// (which unconditionally overrides any colliding `-D`).
     pub fn run(&mut self, root: FileId) -> Vec<PpToken> {
+        let mut output = Vec::new();
+        self.run_with_sink(root, &mut |chunk| output.extend(chunk));
+        // The legacy collector is transactional with respect to output
+        // budget exhaustion. Streaming consumers must themselves discard
+        // earlier chunks when the preprocessor reports an error.
+        if self.output_limit_reported {
+            output.clear();
+        }
+        output
+    }
+
+    /// Emit completed blocks of expanded preprocessing tokens to a caller.
+    ///
+    /// This first stage avoids accumulating the entire *root's* output
+    /// vector. Included headers and long stretches without directives still
+    /// use the existing batch implementation; this is not yet a pull-driven
+    /// lexer/parser API. The source map keeps token spellings valid throughout
+    /// this call. No callback may treat its chunks as committed output until
+    /// preprocessing finishes without errors (including a late #error).
+    pub fn run_with_sink<F>(&mut self, root: FileId, sink: &mut F)
+    where
+        F: FnMut(Vec<PpToken>),
+    {
         if !self.predefined_installed {
             // The Mini-C adapter loads the root with a bounded read. Also
             // account for roots supplied by clients of this public API.
             let source_len = self.session.source_map.read().unwrap().file(root).src.len();
             if !self.charge_source_bytes(source_len, Span::new(root, BytePos(0), BytePos(0))) {
-                return Vec::new();
+                return;
             }
             self.predefined_installed = true;
             self.install_cli_defines();
@@ -254,7 +277,7 @@ impl<'a> Preprocessor<'a> {
         let src = self.session.source_map.read().unwrap().file(root).src.clone();
         let tokens = self.tokenize_source_bounded(root, &src);
 
-        let mut out: Vec<PpToken> = Vec::new();
+        let mut emitted_tokens = 0usize;
         let mut pending_text: Vec<PpToken> = Vec::new();
         let mut ls = line_stream::LineStream::new(tokens.into_iter());
         let mut cond = cond_stack::CondStack::new();
@@ -267,7 +290,7 @@ impl<'a> Preprocessor<'a> {
                 break;
             }
             if is_directive_line(&line) {
-                self.flush_pending_text(&mut pending_text, &mut out);
+                self.flush_pending_text_sink(&mut pending_text, &mut emitted_tokens, sink);
                 if self.halted {
                     break;
                 }
@@ -276,17 +299,17 @@ impl<'a> Preprocessor<'a> {
                     continue;
                 }
                 let directive_output = self.dispatch_directive(&line, &src, &mut cond);
-                self.append_output_bounded(&mut out, directive_output, line[0].span);
+                self.emit_output_bounded(&mut emitted_tokens, directive_output, line[0].span, sink);
                 continue;
             }
             if !cond.is_active() {
-                self.flush_pending_text(&mut pending_text, &mut out);
+                self.flush_pending_text_sink(&mut pending_text, &mut emitted_tokens, sink);
                 continue;
             }
             pending_text.extend(line);
         }
         if !self.halted {
-            self.flush_pending_text(&mut pending_text, &mut out);
+            self.flush_pending_text_sink(&mut pending_text, &mut emitted_tokens, sink);
         }
 
         // Unterminated `#if` / `#ifdef` / `#ifndef` at end of file.
@@ -308,7 +331,6 @@ impl<'a> Preprocessor<'a> {
         self.local_macro_revision_stack.pop();
         self.include_stack.pop();
 
-        out
     }
 
     /// Charge the total source-byte budget, including files that were
@@ -435,7 +457,15 @@ impl<'a> Preprocessor<'a> {
         }
     }
 
-    fn flush_pending_text(&mut self, pending_text: &mut Vec<PpToken>, out: &mut Vec<PpToken>) {
+    fn flush_pending_text_sink<F>(
+        &mut self,
+        pending_text: &mut Vec<PpToken>,
+        emitted_tokens: &mut usize,
+        sink: &mut F,
+    )
+    where
+        F: FnMut(Vec<PpToken>),
+    {
         if pending_text.is_empty() {
             return;
         }
@@ -443,33 +473,31 @@ impl<'a> Preprocessor<'a> {
         let expanded = self.expand_tokens(std::mem::take(pending_text));
         let expanded = self.process_pragma_operators(expanded);
         let expanded = self.apply_pragma_pack(expanded);
-        self.append_output_bounded(out, expanded, span);
+        self.emit_output_bounded(emitted_tokens, expanded, span, sink);
     }
 
-    /// Append completed preprocessor tokens without growing the aggregate
-    /// output vector beyond the per-run budget. Directives and expanded
-    /// source lines use this same path. A child include's output is
-    /// checked again when appended to its parent, accounting for the
-    /// parent buffer's already-emitted text without double-counting
-    /// output tokens against a global translation-unit counter.
-    fn append_output_bounded(
+    /// Charge each emitted chunk against the same per-file token limit as
+    /// the collecting API. This remains a cumulative *work* limit for now,
+    /// not a statement that the streamed chunks are retained in memory.
+    ///
+    /// A later error can invalidate previously emitted chunks. The caller
+    /// must observe diagnostics/halting before accepting an output artifact.
+    fn emit_output_bounded<F>(
         &mut self,
-        out: &mut Vec<PpToken>,
+        emitted_tokens: &mut usize,
         additional: Vec<PpToken>,
         span: Span,
-    ) {
+        sink: &mut F,
+    )
+    where
+        F: FnMut(Vec<PpToken>),
+    {
         if self.halted {
-            // Do not change ordinary #error behavior. Only an output
-            // budget overflow invalidates and clears the earlier output.
-            if self.output_limit_reported {
-                out.clear();
-            }
             return;
         }
-        if additional.len() > self.output_token_limit.saturating_sub(out.len()) {
+        if additional.len() > self.output_token_limit.saturating_sub(*emitted_tokens) {
             self.halted = true;
             self.output_limit_reported = true;
-            out.clear();
             self.session.handler.emit(&rcc_errors::Diagnostic {
                 level: rcc_errors::Level::Error,
                 code: None,
@@ -479,11 +507,11 @@ impl<'a> Preprocessor<'a> {
                 ),
                 labels: vec![rcc_errors::Label {
                     span,
-                    message: "the accumulated preprocessor output exceeded its token limit".into(),
+                    message: "the cumulative expanded output exceeded its token limit".into(),
                     primary: true,
                 }],
                 notes: vec![
-                    "ordinary code and expanded included headers share this output buffer limit".into(),
+                    "ordinary code and expanded included headers share this output limit".into(),
                 ],
                 help: vec![
                     "reduce the expanded output or use --cpp=cc".into(),
@@ -491,7 +519,10 @@ impl<'a> Preprocessor<'a> {
             });
             return;
         }
-        out.extend(additional);
+        *emitted_tokens += additional.len();
+        if !additional.is_empty() {
+            sink(additional);
+        }
     }
 
     /// Entry point for expanding a single pre-tokenised token into its
@@ -1904,6 +1935,43 @@ mod run_tests {
     }
 
     #[test]
+    fn output_sink_matches_legacy_collector_across_multiline_macro_and_directives() {
+        // The function-like invocation crosses a newline. In particular,
+        // flushing each physical line would change the semantics.
+        let source = "#define INC(x) ((x)+1)\nint first=INC\n(41);\n#define VALUE 9\nint second=VALUE;\n";
+        let (mut batch_session, batch_root, _) = seed(source);
+        let mut batch = Preprocessor::new(&mut batch_session);
+        let expected = batch.run(batch_root);
+
+        let (mut stream_session, stream_root, _) = seed(source);
+        let mut stream = Preprocessor::new(&mut stream_session);
+        let mut chunks = 0usize;
+        let mut actual = Vec::new();
+        stream.run_with_sink(stream_root, &mut |chunk| {
+            chunks += 1;
+            actual.extend(chunk);
+        });
+        assert!(chunks >= 2, "directives must permit multiple sink deliveries");
+        assert_eq!(format!("{actual:?}"), format!("{expected:?}"));
+        assert!(!stream.halted);
+    }
+
+    #[test]
+    fn output_sink_failure_does_not_erase_previously_delivered_chunks() {
+        // Streaming consumers must check errors and discard partial output.
+        let source = "int good;\n#define VALUE 1\nint next;\n";
+        let (mut sess, root, cap) = seed(source);
+        let mut pp = Preprocessor::new(&mut sess);
+        pp.output_token_limit = 4;
+        let mut emitted = 0usize;
+        pp.run_with_sink(root, &mut |chunk| emitted += chunk.len());
+        assert!(emitted > 0, "first block should have reached the sink");
+        assert!(pp.output_limit_reported, "later output must overflow the budget");
+        assert!(cap.diagnostics().iter().any(|diag|
+            diag.message.contains("preprocessing output token buffer limit exceeded")));
+    }
+
+    #[test]
     fn acceptance_define_roundtrip_exposes_body_as_pp_number() {
         let (mut sess, id, cap) = seed("#define FOO 42\n");
         let foo = sess.interner.intern("FOO");
@@ -2259,7 +2327,7 @@ mod run_tests {
         // The invocation is one token. Without the new substitution guard,
         // all eighty replacement tokens would be allocated into a Vec
         // before the existing visit counter could inspect any of them.
-        let macro_body = std::iter::repeat("17").take(80).collect::<Vec<_>>().join(" ");
+        let macro_body = std::iter::repeat_n("17", 80).collect::<Vec<_>>().join(" ");
         let source = format!("#define BIG {macro_body}\nBIG\n");
         let (mut sess, id, cap) = seed(&source);
         let mut pp = Preprocessor::new(&mut sess);
