@@ -1348,7 +1348,7 @@ impl<'a> Parser<'a> {
                     }
                     "static" | "extern" | "register" | "int" | "_Bool" | "char" | "short"
                     | "long" | "_Float128" | "float" | "double" | "void"
-                    | "unsigned" | "signed" | "const" | "restrict"
+                    | "unsigned" | "signed" | "const" | "restrict" | "_Atomic"
                     | "__restrict" | "__restrict__" => Some(false),
                     _ if token.kind == TokenKind::TypedefName
                         && !self.followed_by_colon()? => Some(false),
@@ -1573,6 +1573,16 @@ impl<'a> Parser<'a> {
             match token.text.as_ref() {
                 "const" => result.is_const = true,
                 "restrict" | "__restrict" | "__restrict__" => result.is_restrict = true,
+                "_Atomic" => {
+                    // Do not strip this qualifier: atomic load/store/RMW
+                    // semantics and alignment are not represented in the
+                    // checked Mini-C type system or native backend yet.
+                    return Err(Diagnostic::coded(
+                        token.span,
+                        DiagnosticCode::SyntaxInvalidDeclaration,
+                        "C11 _Atomic type is unsupported (requires atomic-aware type checking and code generation)",
+                    ));
+                },
                 _ => break,
             }
             self.take()?;
@@ -2056,6 +2066,34 @@ mod tests {
             assert!(Parser::new(source).next_item().is_err(),
                 "incorrectly accepted {source}");
         }
+    }
+
+    #[test]
+    fn atomic_types_fail_closed_with_specific_diagnostics() {
+        // These spellings are legal C11 but cannot be interpreted as
+        // ordinary types or silently desugared into non-atomic accesses.
+        // The existing GCC bootstrap remains the supported path.
+        for source in [
+            "_Atomic int counter;",
+            "_Atomic(int) counter;",
+            "int _Atomic counter;",
+            "typedef _Atomic int Counter;",
+            "struct S { _Atomic int state; };",
+            "int f(void) { _Atomic int value; return 0; }",
+            "int f(_Atomic int *value);",
+        ] {
+            let diagnostic = Parser::new(source).next_item().expect_err(source);
+            assert_eq!(diagnostic.code, DiagnosticCode::SyntaxInvalidDeclaration,
+                "{source}: {diagnostic:?}");
+            assert!(diagnostic.message.contains("C11 _Atomic type is unsupported"),
+                "{source}: {diagnostic:?}");
+            let expected_offset = source.find("_Atomic").unwrap();
+            assert_eq!(diagnostic.span.lo, expected_offset, "{source}");
+        }
+        // Non-atomic input and the ordinary const type qualifier must
+        // retain their existing parser behavior.
+        assert!(Parser::new("int plain;").next_item().is_ok());
+        assert!(Parser::new("const int plain;").next_item().is_ok());
     }
 
     #[test]
