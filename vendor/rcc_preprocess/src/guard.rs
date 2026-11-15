@@ -37,70 +37,59 @@ use rcc_span::{Interner, Symbol};
 ///
 /// See the [module docs](self) for the exact acceptance rules.
 pub fn detect_guard(tokens: &[PpToken], src: &str, interner: &mut Interner) -> Option<Symbol> {
-    let lines = logical_lines(tokens);
-    if lines.len() < 3 {
-        return None;
-    }
-
-    let first = lines[0];
-    let second = lines[1];
-    let last = *lines.last().expect("lines.len() >= 3");
-
-    // `#ifndef NAME` — the opening guard must be exactly three tokens:
-    // the hash, the `ifndef` identifier, and the guard name. Extra
-    // trailing tokens on the same line (e.g. `#ifndef NAME foo`) are
-    // syntactically ill-formed and would be caught by the directive
-    // parser; they also disqualify the guard shape here.
-    if first.len() != 3 || !is_hash(&first[0]) || !ident_is(&first[1], src, "ifndef") {
-        return None;
-    }
-    if first[2].kind != PpTokenKind::Ident {
-        return None;
-    }
-    let guard_text = token_text(&first[2], src);
-
-    // `#define NAME [replacement-list]` — the macro name must match
-    // the `#ifndef` name. A non-empty replacement list is permitted
-    // (the value is discarded for guard purposes).
-    if second.len() < 3 || !is_hash(&second[0]) || !ident_is(&second[1], src, "define") {
-        return None;
-    }
-    if second[2].kind != PpTokenKind::Ident || token_text(&second[2], src) != guard_text {
-        return None;
-    }
-
-    // Bare `#endif`. Trailing tokens on the `#endif` line (e.g.
-    // `#endif /* NAME */` survives only because the comment was
-    // collapsed by the lexer) are rejected — if anything is left
-    // after the `endif` identifier, we bail.
-    if last.len() != 2 || !is_hash(&last[0]) || !ident_is(&last[1], src, "endif") {
-        return None;
-    }
-
-    Some(interner.intern(guard_text))
+    detect_guard_iter(tokens.iter().cloned(), src, interner)
 }
 
-/// Split `tokens` at `Newline` boundaries and drop blank lines. The
-/// terminating `Newline`s themselves are discarded; a trailing
-/// unterminated line (no final `Newline`) is still returned if it
-/// carries any tokens. This mirrors the semantics of
-/// [`crate::line_stream::LineStream`] but works directly on a slice
-/// instead of an iterator, which is what `detect_guard` needs.
-fn logical_lines(tokens: &[PpToken]) -> Vec<&[PpToken]> {
-    let mut out = Vec::new();
-    let mut start = 0;
-    for (i, tok) in tokens.iter().enumerate() {
-        if tok.kind == PpTokenKind::Newline {
-            if start < i {
-                out.push(&tokens[start..i]);
-            }
-            start = i + 1;
+/// Detect the same canonical guard shape directly from a token iterator.
+///
+/// Unlike the legacy slice API this keeps only the active logical line and
+/// the guard identifier, not a token vector for the entire header. All
+/// intermediate body lines are discarded after their shape is observed.
+/// The full stream is still consumed even when the prefix is not a guard:
+/// the caller may be enforcing a cumulative lexical-work budget.
+pub fn detect_guard_iter<I>(
+    tokens: I,
+    src: &str,
+    interner: &mut Interner,
+) -> Option<Symbol>
+where
+    I: Iterator<Item = PpToken>,
+{
+    let mut nonblank = 0usize;
+    let mut guard_text: Option<String> = None;
+    let mut define_matches = false;
+    let mut final_endif = false;
+
+    for line in crate::line_stream::LineStream::new(tokens) {
+        if line.is_empty() {
+            continue;
         }
+        nonblank = nonblank.saturating_add(1);
+        if nonblank == 1 {
+            // A guard must open the file's first non-blank line.
+            if line.len() == 3
+                && is_hash(&line[0])
+                && ident_is(&line[1], src, "ifndef")
+                && line[2].kind == PpTokenKind::Ident
+            {
+                guard_text = Some(token_text(&line[2], src).to_owned());
+            }
+        } else if nonblank == 2 {
+            if let Some(guard) = guard_text.as_deref() {
+                define_matches = line.len() >= 3
+                    && is_hash(&line[0])
+                    && ident_is(&line[1], src, "define")
+                    && line[2].kind == PpTokenKind::Ident
+                    && token_text(&line[2], src) == guard;
+            }
+        }
+        // Every non-blank line becomes the candidate last line.
+        final_endif = line.len() == 2
+            && is_hash(&line[0])
+            && ident_is(&line[1], src, "endif");
     }
-    if start < tokens.len() {
-        out.push(&tokens[start..]);
-    }
-    out
+    (nonblank >= 3 && define_matches && final_endif)
+        .then(|| interner.intern(guard_text.as_deref().expect("verified guard name")))
 }
 
 fn is_hash(tok: &PpToken) -> bool {
@@ -130,6 +119,31 @@ mod tests {
 
     /// `ok.h` — the canonical header shape every C project uses. Must
     /// be detected and produce the correct guard symbol.
+    #[test]
+    fn incremental_guard_detector_matches_legacy_slice_on_header_shapes() {
+        for source in [
+            "", "#ifndef G\n#define G\nint x;\n#endif\n",
+            "#ifndef G\n#define G 42\n#endif\n",
+            "#ifndef G\n#define G\n#endif\nint tail;\n",
+            "#pragma once\n#ifndef G\n#define G\n#endif\n",
+            "\n\n#ifndef G\n\n#define G\nint x;\n\n#endif\n",
+            "#ifndef G\n#define Q\n#endif\n",
+            "#ifndef G\n#define G\n#ifdef X\n#endif\n#endif\n",
+            "#ifndef G\n#define G\n#endif BAD\n",
+            "int x;\n#ifndef G\n#define G\n#endif\n",
+        ] {
+            let tokens = tokens_of(source);
+            let mut a = Interner::new();
+            let mut b = Interner::new();
+            let from_slice = detect_guard(&tokens, source, &mut a)
+                .map(|symbol| a.get(symbol).to_owned());
+            let from_stream = detect_guard_iter(
+                rcc_lexer::tokenize(FileId(0), source), source, &mut b,
+            ).map(|symbol| b.get(symbol).to_owned());
+            assert_eq!(from_slice, from_stream, "{source:?}");
+        }
+    }
+
     #[test]
     fn ok_h_canonical_guard() {
         let src = "#ifndef OK_H\n#define OK_H\nint ok;\n#endif\n";
