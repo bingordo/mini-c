@@ -10,7 +10,7 @@ use rcc_session::Session;
 use std::collections::{HashMap, VecDeque};
 use std::ffi::OsString;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{mpsc, Arc};
 use std::thread::{self, JoinHandle};
 
@@ -30,6 +30,7 @@ pub struct OwnedPpToken {
 enum Message {
     Tokens(Vec<OwnedPpToken>),
     Error(String),
+    Complete,
 }
 
 /// One-shot bounded stream of independently owned expanded tokens.
@@ -41,6 +42,7 @@ pub struct TokenStream {
     receiver: Option<mpsc::Receiver<Message>>,
     pending: VecDeque<OwnedPpToken>,
     worker: Option<JoinHandle<()>>,
+    finished: bool,
 }
 
 impl Iterator for TokenStream {
@@ -51,14 +53,28 @@ impl Iterator for TokenStream {
             if let Some(token) = self.pending.pop_front() {
                 return Some(Ok(token));
             }
-            let message = self.receiver.as_ref()?.recv().ok()?;
+            let message = match self.receiver.as_ref()?.recv() {
+                Ok(message) => message,
+                Err(_) => {
+                    // A worker panic or premature disconnect must NEVER
+                    // turn a partially preprocessed TU into valid EOF.
+                    self.receiver.take();
+                    if self.finished { return None; }
+                    self.finished = true;
+                    return Some(Err("internal CPP worker terminated before completion".into()));
+                }
+            };
             match message {
                 Message::Tokens(tokens) => self.pending = tokens.into(),
                 Message::Error(message) => {
-                    // This is terminal; do not emit any more tokens after
-                    // a fatal preprocessing or output-budget diagnostic.
+                    self.finished = true;
                     self.receiver.take();
                     return Some(Err(message));
+                }
+                Message::Complete => {
+                    self.finished = true;
+                    self.receiver.take();
+                    return None;
                 }
             }
         }
@@ -88,8 +104,9 @@ pub fn start(path: &Path, args: &[OsString]) -> Result<TokenStream, String> {
         .spawn(move || {
             // Keep one sender alive until the worker has reported a final
             // failure (or dropped it on success).
-            if let Err(error) = produce(&path, &args, &sender) {
-                let _ = sender.send(Message::Error(error));
+            match produce(&path, &args, &sender) {
+                Ok(()) => { let _ = sender.send(Message::Complete); }
+                Err(error) => { let _ = sender.send(Message::Error(error)); }
             }
         })
         .map_err(|err| format!("cannot launch internal CPP worker: {err}"))?;
@@ -97,6 +114,7 @@ pub fn start(path: &Path, args: &[OsString]) -> Result<TokenStream, String> {
         receiver: Some(receiver),
         pending: VecDeque::new(),
         worker: Some(worker),
+        finished: false,
     })
 }
 
@@ -237,6 +255,7 @@ fn produce(path: &Path, args: &[OsString], sender: &mpsc::SyncSender<Message>)
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+    use std::path::PathBuf;
 
     fn directory() -> PathBuf {
         let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
@@ -277,6 +296,21 @@ mod tests {
         assert!(seen > 0);
         assert!(error.expect("late error must be delivered").contains("late_failure"));
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn premature_worker_disconnect_is_an_error_not_successful_eof() {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        drop(sender);
+        let mut stream = TokenStream {
+            receiver: Some(receiver),
+            pending: VecDeque::new(),
+            worker: None,
+            finished: false,
+        };
+        let error = stream.next().unwrap().unwrap_err();
+        assert!(error.contains("before completion"), "{error}");
+        assert!(stream.next().is_none());
     }
 
     #[test]
