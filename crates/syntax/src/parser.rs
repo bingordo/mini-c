@@ -1700,6 +1700,79 @@ mod tests {
         }
     }
 
+    /// Exercise the parser against an actual one-shot scanner iterator,
+    /// not a collected token Vec or a cloned scanner.
+    #[test]
+    fn pull_token_source_delivers_items_only_when_requested() {
+        use std::{cell::Cell, rc::Rc};
+        use crate::lexer::PullTokenSource;
+
+        let source = "int first; int second; int third; int fourth;";
+        let mut lexer = Scanner::new(source);
+        let calls = Rc::new(Cell::new(0));
+        let observed = Rc::clone(&calls);
+        let tokens = std::iter::from_fn(move || {
+            observed.set(observed.get() + 1);
+            lexer.next_token(None).transpose()
+        });
+        let mut parser = Parser::from_token_source(
+            PullTokenSource::new(tokens), source.len(),
+        );
+
+        let first = parser.next_item().unwrap().unwrap();
+        assert!(matches!(first, ExternalItem::Declaration(ref d) if d.name == "first"));
+        assert!(calls.get() < 13, "parser should not pull the whole translation unit");
+        let mut names = Vec::new();
+        while let Some(item) = parser.next_item().unwrap() {
+            let ExternalItem::Declaration(decl) = item else { panic!("declaration expected") };
+            names.push(decl.name);
+        }
+        assert_eq!(names, ["second", "third", "fourth"]);
+    }
+
+    #[test]
+    fn pull_token_source_matches_scanner_for_typedefs_labels_and_shadowing() {
+        use crate::lexer::PullTokenSource;
+        let source = "typedef int T; T value; int f(void) { T: goto T; } int g(void) { int T = 3; return T; }";
+        let mut regular = Parser::new(source);
+        let mut expected = Vec::new();
+        while let Some(item) = regular.next_item().unwrap() { expected.push(item); }
+
+        let mut lexer = Scanner::new(source);
+        let tokens = std::iter::from_fn(move || lexer.next_token(None).transpose());
+        let mut streaming = Parser::from_token_source(
+            PullTokenSource::new(tokens), source.len(),
+        );
+        let mut actual = Vec::new();
+        while let Some(item) = streaming.next_item().unwrap() { actual.push(item); }
+        assert_eq!(actual, expected, "token-provider parser must match plain scanner");
+    }
+
+    #[test]
+    fn pull_token_source_keeps_error_recovery_and_eof_locations() {
+        use crate::lexer::PullTokenSource;
+        let source = "int first; int broken = ; int last;";
+        let mut lexer = Scanner::new(source);
+        let tokens = std::iter::from_fn(move || lexer.next_token(None).transpose());
+        let mut parser = Parser::from_token_source(
+            PullTokenSource::new(tokens), source.len(),
+        );
+        let mut names = Vec::new();
+        let errors = parser.for_each_item_recovering(4, |item| {
+            if let ExternalItem::Declaration(decl) = item { names.push(decl.name); }
+        });
+        assert_eq!(names, ["first", "last"]);
+        assert_eq!(errors.len(), 1, "one malformed item should not lose the following declaration");
+        let incomplete = "int unfinished = ";
+        let mut lexer = Scanner::new(incomplete);
+        let tokens = std::iter::from_fn(move || lexer.next_token(None).transpose());
+        let mut parser = Parser::from_token_source(
+            PullTokenSource::new(tokens), incomplete.len(),
+        );
+        let error = parser.next_item().unwrap_err();
+        assert_eq!(error.span, Span { lo: incomplete.len(), hi: incomplete.len() });
+    }
+
     #[test]
     fn c99_goto_and_labels_preserve_forward_references() {
         let item = Parser::new("int f(void) { start: ; goto done; done: return 0; }")
