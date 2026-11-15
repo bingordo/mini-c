@@ -22,6 +22,54 @@ pub struct Token<'a> {
     pub span: Span,
 }
 
+
+/// A pull-based lexical token provider for the declaration-at-a-time parser.
+///
+/// The returned token text must outlive the parser. Source slices, stable
+/// macro-definition storage, or an arena owned by the caller can provide that
+/// lifetime; the parser itself does not cache an expanded translation unit.
+/// Implementations must never classify all typedef names in advance: callers
+/// supply the **current** scope on every pull, and even cached parser
+/// lookahead is reclassified after declarations update that scope.
+pub trait TokenSource<'a> {
+    fn next_token(&mut self, scopes: Option<&Scopes>) -> Result<Option<Token<'a>>, Diagnostic>;
+}
+
+/// Adapt a borrowed-token iterator to the parser's demand-driven interface.
+///
+/// This adapter keeps only the underlying iterator's own state; it does not
+/// collect a Vec of tokens. Tokens from a preprocessing producer may be used
+/// once their spelling storage is stable for the parser lifetime.
+pub struct PullTokenSource<I> {
+    tokens: I,
+}
+
+impl<I> PullTokenSource<I> {
+    pub fn new(tokens: I) -> Self {
+        Self { tokens }
+    }
+}
+
+impl<'a, I> TokenSource<'a> for PullTokenSource<I>
+where
+    I: Iterator<Item = Result<Token<'a>, Diagnostic>>,
+{
+    fn next_token(&mut self, scopes: Option<&Scopes>) -> Result<Option<Token<'a>>, Diagnostic> {
+        let mut token = match self.tokens.next() {
+            Some(result) => result?,
+            None => return Ok(None),
+        };
+        if matches!(token.kind, TokenKind::Identifier | TokenKind::TypedefName) {
+            token.kind = if scopes.is_some_and(|scope| scope.is_typedef(token.text)) {
+                TokenKind::TypedefName
+            } else {
+                TokenKind::Identifier
+            };
+        }
+        Ok(Some(token))
+    }
+}
+
 pub fn scan(source: &str) -> Result<Vec<Token<'_>>, Diagnostic> {
     Scanner::new(source).collect()
 }
@@ -267,6 +315,13 @@ impl<'a> Scanner<'a> {
             tokens.push(token);
         }
         Ok(tokens)
+    }
+}
+
+
+impl<'a> TokenSource<'a> for Scanner<'a> {
+    fn next_token(&mut self, scopes: Option<&Scopes>) -> Result<Option<Token<'a>>, Diagnostic> {
+        Scanner::next_token(self, scopes)
     }
 }
 
