@@ -228,6 +228,28 @@ mod tests {
     use std::{ffi::OsString, time::{SystemTime, UNIX_EPOCH}};
 
     #[test]
+    fn internal_adapter_consumes_many_macro_free_chunks_in_order() {
+        let dir = std::env::temp_dir().join(format!(
+            "mini-c-stream-adapter-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos(),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.join("many.c");
+        let mut source = String::new();
+        for i in 0..2_000 {
+            source.push_str(&format!("int item_{i} = {i};\\n"));
+        }
+        std::fs::write(&root, source.replace("\\n", "\n")).unwrap();
+        let result = file(&root, &[OsString::from("-E"), OsString::from("-nostdinc")]);
+        std::fs::remove_dir_all(dir).unwrap();
+        let output = result.expect("internal streaming output must be accepted");
+        assert!(output.contains("item_0 = 0"), "first declaration missing");
+        assert!(output.contains("item_1999 = 1999"), "last declaration missing");
+        assert_eq!(output.matches("int item_").count(), 2_000);
+    }
+
+    #[test]
     fn rejects_oversize_disk_root_without_unbounded_read() {
         let dir = std::env::temp_dir().join(format!(
             "mini-c-rcc-root-budget-{}-{}", std::process::id(),
