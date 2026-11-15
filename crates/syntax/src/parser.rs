@@ -250,7 +250,7 @@ impl<'a> Parser<'a> {
         errors
     }
 
-    fn peek(&mut self) -> Result<Option<Token<'a>>, Diagnostic> {
+    fn peek(&mut self) -> Result<Option<ParserToken<'a>>, Diagnostic> {
         if self.lookahead.is_none() {
             self.lookahead = self.scanner.next_parser_token(Some(&self.scopes))?;
         }
@@ -267,7 +267,7 @@ impl<'a> Parser<'a> {
         Ok(self.lookahead.clone())
     }
 
-    fn take(&mut self) -> Result<Option<Token<'a>>, Diagnostic> {
+    fn take(&mut self) -> Result<Option<ParserToken<'a>>, Diagnostic> {
         self.peek()?;
         let next = self.lookahead.take();
         if let Some(after) = self.second_lookahead.take() {
@@ -283,7 +283,7 @@ impl<'a> Parser<'a> {
         Ok(next)
     }
 
-    fn expect(&mut self, expected: &str) -> Result<Token<'a>, Diagnostic> {
+    fn expect(&mut self, expected: &str) -> Result<ParserToken<'a>, Diagnostic> {
         // Do not consume a mismatching token: the recovery API needs to see
         // structural delimiters to resume at the next external declaration.
         match self.peek()? {
