@@ -2017,6 +2017,96 @@ mod run_tests {
     }
 
     #[test]
+    fn nested_include_sink_delivers_multiple_chunks_in_source_order() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let id = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "mini-c-stream-nested-{}-{id}", std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.join("root.c");
+        std::fs::write(&root, "int before;\n#include \"outer.h\"\nint after=MARK;\n").unwrap();
+        std::fs::write(dir.join("outer.h"), concat!(
+            "#define MARK 7\n",
+            "int outer_before=MARK;\n",
+            "#include \"inner.h\"\n",
+            "#define MARK 9\n",
+            "int outer_after=MARK;\n",
+        )).unwrap();
+        std::fs::write(dir.join("inner.h"), concat!(
+            "int inner_first=1;\n",
+            "#define INNER 2\n",
+            "int inner_second=INNER;\n",
+        )).unwrap();
+        let cap = CaptureEmitter::new();
+        let mut sess = Session::with_handler(
+            Options::default(),
+            Handler::with_emitter(Box::new(cap.clone())),
+        );
+        let file = sess.load_source_file(&root).unwrap();
+        let mut pp = Preprocessor::new(&mut sess);
+        let mut chunks = 0usize;
+        let mut tokens = Vec::new();
+        pp.run_with_sink(file, &mut |chunk| {
+            chunks += 1;
+            tokens.extend(chunk);
+        });
+        assert!(!pp.halted, "unexpected input/output budget failure");
+        assert!(!pp.session.handler.has_errors(), "include diagnostics: {:?}", cap.diagnostics());
+        // Before P3, the complete nested include was passed to the parent
+        // as a single Vec, hiding all internal directive boundaries.
+        assert!(chunks >= 5, "nested include output must stream in several chunks: {chunks}");
+        let text = {
+            let sm = pp.session.source_map.read().unwrap();
+            tokens.iter().map(|tok| {
+                sm.file(tok.span.file).src[tok.span.lo.0 as usize..tok.span.hi.0 as usize].to_owned()
+            }).collect::<Vec<_>>().join(" ")
+        };
+        for expected in [
+            "int before ;", "int outer_before = 7 ;",
+            "int inner_first = 1 ;", "int inner_second = 2 ;",
+            "int outer_after = 9 ;", "int after = 9 ;",
+        ] {
+            assert!(text.contains(expected), "missing {expected:?} in {text:?}");
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn streaming_nested_includes_share_parent_output_budget() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let id = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "mini-c-stream-budget-{}-{id}", std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.join("root.c");
+        std::fs::write(&root, "#include \"outer.h\"\n").unwrap();
+        std::fs::write(dir.join("outer.h"), concat!(
+            "int outer;\n", "#include \"inner.h\"\n", "int after;\n"
+        )).unwrap();
+        std::fs::write(dir.join("inner.h"), concat!(
+            "int first;\n", "#define X 9\n", "int second;\n"
+        )).unwrap();
+        let cap = CaptureEmitter::new();
+        let mut sess = Session::with_handler(
+            Options::default(),
+            Handler::with_emitter(Box::new(cap.clone())),
+        );
+        let file = sess.load_source_file(&root).unwrap();
+        let mut pp = Preprocessor::new(&mut sess);
+        // Each included file fits under six tokens, but all concatenated
+        // files do not. Returning an independent child Vec may hide this.
+        pp.output_token_limit = 6;
+        let tokens = pp.run(file);
+        assert!(tokens.is_empty(), "root collector must not expose partial output");
+        assert!(pp.output_limit_reported);
+        assert!(cap.diagnostics().iter().any(|d|
+            d.message.contains("preprocessing output token buffer limit exceeded")));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn lazy_input_scanner_charges_incrementally_before_expanding_the_tail() {
         // The directive separates the prefix from a deliberately oversized
         // trailing source. A sink can observe the prefix, but after the
