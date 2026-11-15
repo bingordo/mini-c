@@ -14,6 +14,10 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rcc_data_structures::FxHashMap;
+
+// Retain a compact upper threshold for *macro-free* runs. Macro-bearing runs
+// keep the original expansion boundary to preserve Prosser hide-set semantics.
+const MACRO_FREE_FLUSH_TOKENS: usize = 4_096;
 use rcc_lexer::{PpToken, PpTokenKind, Punct};
 use rcc_session::{Arch, DataModel, Endianness, Os, Session, WarningConfig};
 use rcc_span::{BytePos, FileId, Span, Symbol};
@@ -306,6 +310,11 @@ impl<'a> Preprocessor<'a> {
             });
 
         let mut pending_text: Vec<PpToken> = Vec::new();
+        // A macro-free region can be emitted without waiting for the next
+        // directive. Once a region is known to contain a macro (or a raw
+        // _Pragma), do not retry the scan on every line: leave its complete
+        // token sequence to Prosser's existing batch expander.
+        let mut pending_needs_whole_region = false;
         let mut ls = line_stream::LineStream::new(tokens);
         let mut accounted = 0usize;
         let mut cond = cond_stack::CondStack::new();
@@ -324,6 +333,7 @@ impl<'a> Preprocessor<'a> {
             }
             if is_directive_line(&line) {
                 self.flush_pending_text_sink(&mut pending_text, emitted_tokens, sink);
+                pending_needs_whole_region = false;
                 if self.halted {
                     break;
                 }
@@ -338,9 +348,24 @@ impl<'a> Preprocessor<'a> {
             }
             if !cond.is_active() {
                 self.flush_pending_text_sink(&mut pending_text, emitted_tokens, sink);
+                pending_needs_whole_region = false;
                 continue;
             }
             pending_text.extend(line);
+            // A raw non-macro token has no replacement text and cannot
+            // create a function-like macro invocation across this boundary.
+            // In particular, DO NOT split macro-containing regions at ';':
+            // an object-like replacement can manufacture an opening '('
+            // whose argument includes later semicolons.
+            if pending_text.len() >= MACRO_FREE_FLUSH_TOKENS
+                && !pending_needs_whole_region
+            {
+                if self.pending_might_expand(&pending_text, &src) {
+                    pending_needs_whole_region = true;
+                } else {
+                    self.flush_pending_text_sink(&mut pending_text, emitted_tokens, sink);
+                }
+            }
         }
         // The final scanner pull can consume an EOF or blank logical line
         // without producing a LineStream item. Account for those tokens too.
@@ -502,6 +527,26 @@ impl<'a> Preprocessor<'a> {
         if let Some(local) = self.local_macro_revision_stack.last_mut() {
             *local = local.wrapping_add(1);
         }
+    }
+
+    /// Return true if any identifier in a candidate chunk could expand.
+    /// The macro set does not change between preprocessor directives. A
+    /// raw _Pragma is special even though it is not a macro table entry.
+    /// Conservatively retain the whole region on unknown source spans.
+    fn pending_might_expand(&self, tokens: &[PpToken], src: &str) -> bool {
+        let names: std::collections::HashSet<&str> = self.macros.iter()
+            .map(|def| self.session.interner.get(def.name))
+            .collect();
+        tokens.iter().any(|token| {
+            if token.kind != PpTokenKind::Ident {
+                return false;
+            }
+            let start = token.span.lo.0 as usize;
+            let end = token.span.hi.0 as usize;
+            src.get(start..end).is_none_or(|spelling| {
+                spelling == "_Pragma" || names.contains(spelling)
+            })
+        })
     }
 
     fn flush_pending_text_sink<F>(
@@ -1990,6 +2035,81 @@ mod run_tests {
             Session::with_handler(Options::default(), Handler::with_emitter(Box::new(cap.clone())));
         let id = sess.source_map.write().unwrap().add_file(PathBuf::from("<unit>"), Arc::from(src));
         (sess, id, cap)
+    }
+
+    #[test]
+    fn macro_free_long_region_streams_without_an_intervening_directive() {
+        let mut source = String::new();
+        for i in 0..1_500 {
+            source.push_str(&format!("int v{i} = {i};\\n"));
+        }
+        let source = source.replace("\\n", "\n");
+        let (mut session, root, cap) = seed(&source);
+        let mut pp = Preprocessor::new(&mut session);
+        let mut sizes = Vec::new();
+        pp.run_with_sink(root, &mut |chunk| sizes.push(chunk.len()));
+        assert!(!pp.halted);
+        assert!(!pp.session.handler.has_errors(), "{:?}", cap.diagnostics());
+        assert!(sizes.len() >= 2, "large macro-free source must yield multiple batches: {sizes:?}");
+        assert_eq!(sizes.iter().sum::<usize>(), 1_500 * 5);
+        assert!(sizes.iter().all(|&n| n <= MACRO_FREE_FLUSH_TOKENS + 5),
+            "output blocks should be near the chunk threshold: {sizes:?}");
+    }
+
+    #[test]
+    fn macro_generated_open_paren_keeps_later_semicolons_in_same_expansion() {
+        // Macro expansion can create a function invocation whose argument
+        // spans thousands of raw tokens and semicolons. Splitting the raw
+        // stream at punctuation would incorrectly terminate that invocation.
+        let mut source = String::from("#define PASS(x) x\n#define OPEN PASS(\nint value = OPEN\n");
+        for i in 0..1_100 {
+            source.push_str(&format!("int inner{i} = {i};\\n"));
+        }
+        source.push_str("42);\n");
+        let source = source.replace("\\n", "\n");
+        let (mut session, root, cap) = seed(&source);
+        let mut pp = Preprocessor::new(&mut session);
+        let mut chunks = 0usize;
+        let mut first_and_last = (None, None);
+        pp.run_with_sink(root, &mut |chunk| {
+            chunks += 1;
+            if first_and_last.0.is_none() { first_and_last.0 = chunk.first().copied(); }
+            first_and_last.1 = chunk.last().copied();
+        });
+        assert!(!pp.halted);
+        assert!(!pp.session.handler.has_errors(), "{:?}", cap.diagnostics());
+        assert_eq!(chunks, 1,
+            "macro-bearing region must not be split at raw semicolons");
+        assert!(first_and_last.0.is_some() && first_and_last.1.is_some());
+    }
+
+    #[test]
+    fn chunked_macro_free_region_keeps_multiline_macro_invocation_intact() {
+        let mut source = String::from("#define ADD1(x) ((x)+1)\n");
+        for i in 0..1_200 {
+            source.push_str(&format!("int v{i} = {i};\\n"));
+        }
+        source.push_str("int result = ADD1\n(41);\n");
+        let source = source.replace("\\n", "\n");
+        let (mut session, root, cap) = seed(&source);
+        let mut pp = Preprocessor::new(&mut session);
+        let mut chunks = 0usize;
+        let mut tokens = Vec::new();
+        pp.run_with_sink(root, &mut |chunk| {
+            chunks += 1;
+            tokens.extend(chunk);
+        });
+        assert!(!pp.halted);
+        assert!(!pp.session.handler.has_errors(), "{:?}", cap.diagnostics());
+        assert!(chunks >= 2);
+        let rendered = {
+            let sm = pp.session.source_map.read().unwrap();
+            tokens.iter().map(|token| {
+                sm.file(token.span.file).src[token.span.lo.0 as usize..token.span.hi.0 as usize].to_owned()
+            }).collect::<Vec<_>>().join(" ")
+        };
+        assert!(rendered.contains("int result = ( ( 41 ) + 1 ) ;"),
+            "multiline function-like macro invocation was not expanded: {rendered:?}");
     }
 
     #[test]
