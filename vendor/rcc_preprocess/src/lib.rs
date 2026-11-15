@@ -275,13 +275,31 @@ impl<'a> Preprocessor<'a> {
         self.local_macro_revision_stack.push(0);
 
         let src = self.session.source_map.read().unwrap().file(root).src.clone();
-        let tokens = self.tokenize_source_bounded(root, &src);
+        // Scan only the raw tokens required by the next logical line. The
+        // older eager tokenize_source_bounded() is still used for include-
+        // guard detection, but the normal source walk no longer allocates a
+        // whole-file Vec<PpToken> before processing the first directive.
+        let remaining = self.input_token_limit.saturating_sub(self.input_tokens_seen);
+        let scanned = Cell::new(0usize);
+        let last_span = Cell::new(None);
+        let tokens = rcc_lexer::tokenize(root, &src)
+            .take(remaining.saturating_add(1))
+            .inspect(|tok| {
+                scanned.set(scanned.get() + 1);
+                last_span.set(Some(tok.span));
+            });
 
         let mut emitted_tokens = 0usize;
         let mut pending_text: Vec<PpToken> = Vec::new();
-        let mut ls = line_stream::LineStream::new(tokens.into_iter());
+        let mut ls = line_stream::LineStream::new(tokens);
+        let mut accounted = 0usize;
         let mut cond = cond_stack::CondStack::new();
         while let Some(line) = ls.next_line() {
+            // Charge actual scanner work before dispatching a directive, so
+            // nested includes share the same cumulative token budget.
+            if !self.account_stream_scan(scanned.get(), &mut accounted, last_span.get()) {
+                break;
+            }
             // `#error` latches [`Self::halted`] as a fatal abort for
             // the entire preprocessing run (task 04-16, C99 §6.10.5).
             // Stop eagerly so neither tokens nor additional directive
@@ -308,6 +326,9 @@ impl<'a> Preprocessor<'a> {
             }
             pending_text.extend(line);
         }
+        // The final scanner pull can consume an EOF or blank logical line
+        // without producing a LineStream item. Account for those tokens too.
+        self.account_stream_scan(scanned.get(), &mut accounted, last_span.get());
         if !self.halted {
             self.flush_pending_text_sink(&mut pending_text, &mut emitted_tokens, sink);
         }
@@ -408,31 +429,65 @@ impl<'a> Preprocessor<'a> {
             .take(remaining.saturating_add(1))
             .collect();
         if tokens.len() > remaining {
-            self.halted = true;
             let location = tokens.last().expect("budget overflow has a token").span;
-            self.session.handler.emit(&rcc_errors::Diagnostic {
-                level: rcc_errors::Level::Error,
-                code: None,
-                message: format!(
-                    "preprocessing input token limit exceeded ({} tokens)",
-                    self.input_token_limit
-                ),
-                labels: vec![rcc_errors::Label {
-                    span: location,
-                    message: "input scanning stopped here".into(),
-                    primary: true,
-                }],
-                notes: vec![
-                    "source files, nested includes, and include-guard scans share this token budget".into(),
-                ],
-                help: vec![
-                    "reduce input size or use external preprocessing with --cpp=cc".into(),
-                ],
-            });
+            self.report_input_token_limit(location);
             return Vec::new();
         }
         self.input_tokens_seen += tokens.len();
         tokens
+    }
+
+    /// Charge the tokens pulled so far by the lazy logical-line scanner.
+    /// The count is monotonic for one source file. A child include may run
+    /// while the parent iterator is suspended, so charge each line before
+    /// dispatch rather than at end of the parent file.
+    fn account_stream_scan(
+        &mut self,
+        observed: usize,
+        accounted: &mut usize,
+        last_span: Option<Span>,
+    ) -> bool {
+        let new_tokens = observed.saturating_sub(*accounted);
+        *accounted = observed;
+        self.input_tokens_seen = self.input_tokens_seen.saturating_add(new_tokens);
+        if self.input_tokens_seen > self.input_token_limit {
+            self.report_input_token_limit(last_span.unwrap_or_else(|| {
+                Span::new(
+                    self.include_stack.last().copied().unwrap_or(FileId(0)),
+                    BytePos(0), BytePos(0),
+                )
+            }));
+            return false;
+        }
+        !self.halted
+    }
+
+    /// The same input-token diagnostic is used by lazy root/header scanning
+    /// and the existing eager guard-fingerprinting scans.
+    fn report_input_token_limit(&mut self, location: Span) {
+        if self.halted {
+            return;
+        }
+        self.halted = true;
+        self.session.handler.emit(&rcc_errors::Diagnostic {
+            level: rcc_errors::Level::Error,
+            code: None,
+            message: format!(
+                "preprocessing input token limit exceeded ({} tokens)",
+                self.input_token_limit
+            ),
+            labels: vec![rcc_errors::Label {
+                span: location,
+                message: "input scanning stopped here".into(),
+                primary: true,
+            }],
+            notes: vec![
+                "source files, nested includes, and include-guard scans share this token budget".into(),
+            ],
+            help: vec![
+                "reduce input size or use external preprocessing with --cpp=cc".into(),
+            ],
+        });
     }
 
     pub(crate) fn mark_self_include_reentry(&mut self, current_file: FileId) -> bool {
@@ -1932,6 +1987,26 @@ mod run_tests {
             Session::with_handler(Options::default(), Handler::with_emitter(Box::new(cap.clone())));
         let id = sess.source_map.write().unwrap().add_file(PathBuf::from("<unit>"), Arc::from(src));
         (sess, id, cap)
+    }
+
+    #[test]
+    fn lazy_input_scanner_charges_incrementally_before_expanding_the_tail() {
+        // The directive separates the prefix from a deliberately oversized
+        // trailing source. A sink can observe the prefix, but after the
+        // later input budget failure the caller must reject all output.
+        let source = format!(
+            "int prefix;\\n#define VALUE 1\\n{}",
+            "int tail = VALUE;\\n".repeat(100),
+        ).replace("\\n", "\n");
+        let (mut session, root, cap) = seed(&source);
+        let mut pp = Preprocessor::new(&mut session);
+        pp.input_token_limit = 48;
+        let mut delivered = 0usize;
+        pp.run_with_sink(root, &mut |chunk| delivered += chunk.len());
+        assert!(delivered > 0);
+        assert!(pp.halted);
+        assert!(cap.diagnostics().iter().any(|d|
+            d.message.contains("preprocessing input token limit exceeded")));
     }
 
     #[test]
