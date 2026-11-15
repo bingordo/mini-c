@@ -261,6 +261,23 @@ impl<'a> Preprocessor<'a> {
     where
         F: FnMut(Vec<PpToken>),
     {
+        self.run_with_context_sink(root, &mut |_, chunk| sink(chunk));
+    }
+
+    /// Emit completed token chunks while allowing the consumer to inspect
+    /// their **current** source map and logical #line overrides. In contrast
+    /// to the compatibility collector, this does not materialize the whole
+    /// expanded token stream. The observer receives a read-only preprocessor
+    /// view *at emission time*, so it can reconstruct token spellings and
+    /// origins without guessing ahead about later #line directives.
+    ///
+    /// Output is tentative until the entire translation unit succeeds.
+    /// Consumers must discard all emitted data on any diagnostic error,
+    /// including a late #error or input/output expansion budget failure.
+    pub fn run_with_context_sink<F>(&mut self, root: FileId, sink: &mut F)
+    where
+        F: FnMut(&Self, Vec<PpToken>),
+    {
         let mut emitted_tokens = 0usize;
         self.run_with_sink_budget(root, &mut emitted_tokens, sink);
     }
@@ -275,7 +292,7 @@ impl<'a> Preprocessor<'a> {
         sink: &mut F,
     )
     where
-        F: FnMut(Vec<PpToken>),
+        F: FnMut(&Self, Vec<PpToken>),
     {
         if !self.predefined_installed {
             // The Mini-C adapter loads the root with a bounded read. Also
@@ -556,7 +573,7 @@ impl<'a> Preprocessor<'a> {
         sink: &mut F,
     )
     where
-        F: FnMut(Vec<PpToken>),
+        F: FnMut(&Self, Vec<PpToken>),
     {
         if pending_text.is_empty() {
             return;
@@ -582,7 +599,7 @@ impl<'a> Preprocessor<'a> {
         sink: &mut F,
     )
     where
-        F: FnMut(Vec<PpToken>),
+        F: FnMut(&Self, Vec<PpToken>),
     {
         if self.halted {
             return;
@@ -613,7 +630,7 @@ impl<'a> Preprocessor<'a> {
         }
         *emitted_tokens += additional.len();
         if !additional.is_empty() {
-            sink(additional);
+            sink(self, additional);
         }
     }
 
@@ -1051,7 +1068,7 @@ impl<'a> Preprocessor<'a> {
         sink: &mut F,
     ) -> Vec<PpToken>
     where
-        F: FnMut(Vec<PpToken>),
+        F: FnMut(&Self, Vec<PpToken>),
     {
         // Peek the directive name so we can identify conditional
         // control directives without running the full parser (and
@@ -2035,6 +2052,30 @@ mod run_tests {
             Session::with_handler(Options::default(), Handler::with_emitter(Box::new(cap.clone())));
         let id = sess.source_map.write().unwrap().add_file(PathBuf::from("<unit>"), Arc::from(src));
         (sess, id, cap)
+    }
+
+    #[test]
+    fn source_context_sink_observes_current_logical_line_overrides() {
+        let source = "#line 123 \"virtual.c\"\nint first;\n#line 200\nint second;\n";
+        let (mut session, root, cap) = seed(source);
+        let mut pp = Preprocessor::new(&mut session);
+        let mut origins = Vec::new();
+        pp.run_with_context_sink(root, &mut |context, chunk| {
+            let map = context.session.source_map.read().unwrap();
+            let first = chunk.first().expect("each callback contains tokens");
+            let logical_file = context.line_overrides.effective_file(
+                &map, first.span.file, first.span.lo,
+            );
+            let logical_line = context.line_overrides.effective_line(
+                &map, first.span.file, first.span.lo,
+            );
+            origins.push((map.file(logical_file).name.display().to_string(), logical_line));
+        });
+        assert!(!pp.halted);
+        assert!(!pp.session.handler.has_errors(), "{:?}", cap.diagnostics());
+        assert_eq!(origins, [
+            ("virtual.c".to_owned(), 123), ("virtual.c".to_owned(), 200),
+        ]);
     }
 
     #[test]

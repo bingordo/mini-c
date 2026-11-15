@@ -417,7 +417,7 @@ impl Preprocessor<'_> {
         let mut emitted_tokens = 0usize;
         self.process_include_with_sink(
             header, is_system, directive_span, current_file,
-            &mut emitted_tokens, &mut |chunk| output.extend(chunk),
+            &mut emitted_tokens, &mut |_, chunk| output.extend(chunk),
         );
         if self.output_limit_reported {
             output.clear();
@@ -435,7 +435,7 @@ impl Preprocessor<'_> {
         sink: &mut F,
     )
     where
-        F: FnMut(Vec<PpToken>),
+        F: FnMut(&Self, Vec<PpToken>),
     {
         let name = strip_header_delimiters(header);
 
@@ -473,7 +473,7 @@ impl Preprocessor<'_> {
         let mut emitted_tokens = 0usize;
         self.process_include_next_with_sink(
             header, is_system, directive_span, current_file,
-            &mut emitted_tokens, &mut |chunk| output.extend(chunk),
+            &mut emitted_tokens, &mut |_, chunk| output.extend(chunk),
         );
         if self.output_limit_reported {
             output.clear();
@@ -491,7 +491,7 @@ impl Preprocessor<'_> {
         sink: &mut F,
     )
     where
-        F: FnMut(Vec<PpToken>),
+        F: FnMut(&Self, Vec<PpToken>),
     {
         let name = strip_header_delimiters(header);
 
@@ -573,7 +573,7 @@ impl Preprocessor<'_> {
         sink: &mut F,
     )
     where
-        F: FnMut(Vec<PpToken>),
+        F: FnMut(&Self, Vec<PpToken>),
     {
         self.session.record_source_dependency(resolved.clone(), is_system);
 

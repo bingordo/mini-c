@@ -116,7 +116,67 @@ pub fn file(path: &Path, args: &[std::ffi::OsString]) -> Result<String, String> 
         .map_err(|_| "internal source map lock poisoned")?
         .add_file(path.to_path_buf(), Arc::from(source));
     let mut preprocessor = rcc_preprocess::Preprocessor::new(&mut session);
-    let tokens = preprocessor.run(root);
+    // Consume each expanded token chunk immediately, instead of retaining
+    // a complete pp-token Vec while building a second full output String.
+    // The callback receives current #line metadata from the preprocessor.
+    // Nothing is committed: a late error discards all buffered text.
+    let mut output = String::new();
+    let mut last_origin: Option<(u32, u32)> = None;
+    let mut adapter_error: Option<String> = None;
+    preprocessor.run_with_context_sink(root, &mut |context, chunk| {
+        if adapter_error.is_some() {
+            return;
+        }
+        let map = match context.session.source_map.read() {
+            Ok(map) => map,
+            Err(e) => {
+                adapter_error = Some(format!("internal source map lock poisoned: {e}"));
+                return;
+            }
+        };
+        for token in chunk {
+            match token.kind {
+                PpTokenKind::Whitespace | PpTokenKind::Eof => continue,
+                PpTokenKind::Newline => {
+                    if !output.ends_with('\n') { output.push('\n'); }
+                    continue;
+                }
+                _ => {}
+            }
+            let source = map.file(token.span.file);
+            let lo = token.span.lo.0 as usize;
+            let hi = token.span.hi.0 as usize;
+            let Some(spelling) = source.src.get(lo..hi) else {
+                adapter_error = Some("preprocessor returned an invalid token span".into());
+                return;
+            };
+            let original_file = !source.name.to_string_lossy().starts_with('<');
+            if original_file {
+                let logical_file = context.line_overrides.effective_file(
+                    &map, token.span.file, token.span.lo);
+                let logical_line = context.line_overrides.effective_line(
+                    &map, token.span.file, token.span.lo);
+                let location = (logical_file.0, logical_line);
+                if last_origin != Some(location) {
+                    if !output.is_empty() && !output.ends_with('\n') { output.push('\n'); }
+                    let filename = map.file(logical_file).name.to_string_lossy()
+                        .replace('\\', "\\\\").replace('"', "\\\"");
+                    output.push_str(&format!("# {} \"{}\"\n", logical_line, filename));
+                    last_origin = Some(location);
+                }
+            }
+            // Token separation is conservative: 'a + + b' must not
+            // become 'a ++ b', nor can adjacent pp-numbers merge.
+            if !output.is_empty() && !output.ends_with('\n') {
+                output.push(' ');
+            }
+            output.push_str(spelling);
+            if output.len() > MAX_OUTPUT_BYTES {
+                adapter_error = Some("internal preprocessor output exceeded 16 MiB limit".into());
+                return;
+            }
+        }
+    });
 
     // The narrow rcc_preprocess patch preserves the invocation site of
     // replacement-list tokens separately from their spelling spans, so
@@ -149,50 +209,8 @@ pub fn file(path: &Path, args: &[std::ffi::OsString]) -> Result<String, String> 
     }).collect();
     if !errors.is_empty() { return Err(errors.join("\n")); }
 
-    let mut output = String::new();
-    // A directive marks the NEXT physical source line. Print one only when
-    // a non-synthetic origin changes, then emit token-separated spelling.
-    // Synthetic macro replacement buffers do not correspond to on-disk
-    // user locations; retain the previous real-file origin for them.
-    let mut last_origin: Option<(u32, u32)> = None;
-    for token in tokens {
-        match token.kind {
-            PpTokenKind::Whitespace | PpTokenKind::Eof => continue,
-            PpTokenKind::Newline => {
-                if !output.ends_with('\n') { output.push('\n'); }
-                continue;
-            }
-            _ => {}
-        }
-        let source = map.file(token.span.file);
-        let lo = token.span.lo.0 as usize;
-        let hi = token.span.hi.0 as usize;
-        let spelling = source.src.get(lo..hi)
-            .ok_or("preprocessor returned an invalid token span")?;
-        let original_file = !source.name.to_string_lossy().starts_with('<');
-        if original_file {
-            let logical_file = preprocessor.line_overrides.effective_file(
-                &map, token.span.file, token.span.lo);
-            let logical_line = preprocessor.line_overrides.effective_line(
-                &map, token.span.file, token.span.lo);
-            let location = (logical_file.0, logical_line);
-            if last_origin != Some(location) {
-                if !output.is_empty() && !output.ends_with('\n') { output.push('\n'); }
-                let filename = map.file(logical_file).name.to_string_lossy()
-                    .replace('\\', "\\\\").replace('"', "\\\"");
-                output.push_str(&format!("# {} \"{}\"\n", logical_line, filename));
-                last_origin = Some(location);
-            }
-        }
-        // A space between every pair of tokens is conservative and avoids
-        // re-lexing "a + + b" as "a ++ b" or merging pasted pp-numbers.
-        if !output.is_empty() && !output.ends_with('\n') {
-            output.push(' ');
-        }
-        output.push_str(spelling);
-        if output.len() > MAX_OUTPUT_BYTES {
-            return Err("internal preprocessor output exceeded 16 MiB limit".into());
-        }
+    if let Some(error) = adapter_error {
+        return Err(error);
     }
     output.push('\n');
     Ok(output)
@@ -208,6 +226,28 @@ fn c_identifier(name: &str) -> bool {
 mod tests {
     use super::*;
     use std::{ffi::OsString, time::{SystemTime, UNIX_EPOCH}};
+
+    #[test]
+    fn internal_adapter_consumes_many_macro_free_chunks_in_order() {
+        let dir = std::env::temp_dir().join(format!(
+            "mini-c-stream-adapter-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos(),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.join("many.c");
+        let mut source = String::new();
+        for i in 0..2_000 {
+            source.push_str(&format!("int item_{i} = {i};\\n"));
+        }
+        std::fs::write(&root, source.replace("\\n", "\n")).unwrap();
+        let result = file(&root, &[OsString::from("-E"), OsString::from("-nostdinc")]);
+        std::fs::remove_dir_all(dir).unwrap();
+        let output = result.expect("internal streaming output must be accepted");
+        assert!(output.contains("item_0 = 0"), "first declaration missing");
+        assert!(output.contains("item_1999 = 1999"), "last declaration missing");
+        assert_eq!(output.matches("int item_").count(), 2_000);
+    }
 
     #[test]
     fn rejects_oversize_disk_root_without_unbounded_read() {
