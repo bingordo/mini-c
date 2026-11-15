@@ -8,7 +8,18 @@ use std::fs;
 use std::path::Path;
 use std::process::ExitCode;
 
+#[cfg(feature = "internal-cpp")]
+mod stream_check;
+
 fn check(path: &str, cpp: Option<&preprocess::Config>) -> Result<(), String> {
+    if let Some(config) = cpp {
+        if config.executable == std::ffi::OsStr::new("internal-stream") {
+            #[cfg(feature = "internal-cpp")]
+            return stream_check::check(path, config, None);
+            #[cfg(not(feature = "internal-cpp"))]
+            return Err("internal-stream requires --features internal-cpp".into());
+        }
+    }
     let source = match cpp {
         Some(config) => preprocess::file(Path::new(path), config)
             .map_err(|e| format!("{path}: {e}"))?,
@@ -45,6 +56,14 @@ fn check(path: &str, cpp: Option<&preprocess::Config>) -> Result<(), String> {
 fn check_recovering(
     path: &str, cpp: Option<&preprocess::Config>, max_errors: usize
 ) -> Result<(), String> {
+    if let Some(config) = cpp {
+        if config.executable == std::ffi::OsStr::new("internal-stream") {
+            #[cfg(feature = "internal-cpp")]
+            return stream_check::check(path, config, Some(max_errors));
+            #[cfg(not(feature = "internal-cpp"))]
+            return Err("internal-stream requires --features internal-cpp".into());
+        }
+    }
     let source = match cpp {
         Some(config) => preprocess::file(Path::new(path), config)
             .map_err(|e| format!("{path}: {e}"))?,
@@ -72,7 +91,7 @@ fn check_recovering(
 
 fn usage() {
     eprintln!(
-        "usage: mini-c check [--cpp=internal|--cpp=cc|--cpp=none|--cpp=clang|--cpp=<path>] \
+        "usage: mini-c check [--cpp=internal|--cpp=internal-stream|--cpp=cc|--cpp=none|--cpp=clang|--cpp=<path>] \
          [-I<dir>|-I <dir>] [-D<name>[=<value>]|-D <name>[=<value>]] \
          [-U<name>|-U <name>] [--cpp-arg=<arg>] \
          [--max-errors=<positive integer>] [--] <file.c> [file.c ...]"
@@ -150,6 +169,61 @@ fn main() -> ExitCode {
 mod tests {
     use super::*;
     use std::ffi::OsString;
+
+
+    #[cfg(feature = "internal-cpp")]
+    #[test]
+    fn opt_in_bounded_cpp_pipe_checks_macros_headers_and_lexical_origins() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let dir = std::env::temp_dir().join(format!(
+            "mini-c-direct-cpp-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos(),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.join("main.c");
+        std::fs::write(dir.join("defs.h"), "#define PLUS1(x) ((x)+1)\n").unwrap();
+        std::fs::write(&root, "#include \"defs.h\"\ntypedef int T;\nT value = PLUS1\n(41);\nint f(void) { return value; }\n").unwrap();
+        let config = preprocess::Config {
+            executable: "internal-stream".into(),
+            args: vec!["-E", "-nostdinc"].into_iter().map(Into::into).collect(),
+        };
+        assert!(check(root.to_str().unwrap(), Some(&config)).is_ok());
+        assert!(check_recovering(root.to_str().unwrap(), Some(&config), 4).is_ok());
+        let old = preprocess::Config {
+            executable: "internal".into(), args: config.args.clone(),
+        };
+        assert!(check(root.to_str().unwrap(), Some(&old)).is_ok());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(feature = "internal-cpp")]
+    #[test]
+    fn opt_in_bounded_cpp_pipe_reports_late_error_and_logical_file() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let dir = std::env::temp_dir().join(format!(
+            "mini-c-direct-late-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos(),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.join("main.c");
+        let config = preprocess::Config {
+            executable: "internal-stream".into(),
+            args: vec!["-E", "-nostdinc"].into_iter().map(Into::into).collect(),
+        };
+        std::fs::write(&root,
+            "#line 77 \"generated.c\"\nint first;\n#error late_failure\n"
+        ).unwrap();
+        let failure = check(root.to_str().unwrap(), Some(&config)).unwrap_err();
+        assert!(failure.contains("late_failure"), "{failure}");
+        std::fs::write(&root,
+            "#line 123 \"virtual.c\"\nint f(void) { return missing; }\n"
+        ).unwrap();
+        let failure = check(root.to_str().unwrap(), Some(&config)).unwrap_err();
+        assert!(failure.contains("virtual.c:123"), "{failure}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn preprocessor_flags_parse_without_shell_splitting() {
