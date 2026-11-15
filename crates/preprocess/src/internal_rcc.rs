@@ -266,6 +266,52 @@ mod tests {
     use std::{ffi::OsString, time::{SystemTime, UNIX_EPOCH}};
 
     #[test]
+    fn wasm32_cpp_target_uses_real_ilp32_builtin_layout_and_no_host_arch() {
+        let opts=options_from_args(&[
+            OsString::from("-E"),OsString::from("-nostdinc"),
+            OsString::from("--cpp-target=wasm32"),
+            OsString::from("-D__wasm32__=1"),
+        ]).unwrap();
+        assert_eq!(opts.target.pointer_width,32);
+        assert_eq!(opts.target.layouts.long.size,4);
+        assert_eq!(opts.target.layouts.pointer.size,4);
+        assert_eq!(opts.target.os,rcc_session::Os::None);
+
+        let dir=std::env::temp_dir().join(format!(
+            "mini-c-wasm32-internal-cpp-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos(),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root=dir.join("main.c");
+        std::fs::write(&root,r#"
+            #if !defined(__wasm32__) || !defined(__ILP32__)
+            #error wasm_target_missing
+            #endif
+            #if __SIZEOF_POINTER__ != 4 || __SIZEOF_LONG__ != 4
+            #error wrong_wasm32_ilp32_builtin
+            #endif
+            #if __STDC_HOSTED__ != 0 || defined(__LP64__)
+            #error host_data_model_leaked
+            #endif
+            #if defined(__i386__) || defined(__x86_64__) || defined(__linux__)
+            #error host_architecture_leaked
+            #endif
+            int result = __SIZEOF_POINTER__+__SIZEOF_LONG__;
+        "#).unwrap();
+        let result=file(&root,&[
+            OsString::from("-E"),OsString::from("-nostdinc"),
+            OsString::from("--cpp-target=wasm32"),
+            OsString::from("-D__wasm32__=1"),
+            OsString::from("-D__ILP32__=1"),
+        ]);
+        let _=std::fs::remove_dir_all(dir);
+        let output=result.expect("wasm32 internal C preprocessing");
+        assert!(output.contains("result = 4 + 4") ||
+            output.contains("result = 4+4"),"{output}");
+    }
+
+    #[test]
     fn internal_adapter_consumes_many_macro_free_chunks_in_order() {
         let dir = std::env::temp_dir().join(format!(
             "mini-c-stream-adapter-{}-{}",
