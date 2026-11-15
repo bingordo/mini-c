@@ -8,7 +8,7 @@ use std::{collections::BTreeMap, io::Read, path::{Path, PathBuf}, sync::Arc};
 
 use rcc_errors::Level;
 use rcc_lexer::PpTokenKind;
-use rcc_session::Session;
+use rcc_session::{Arch, DataModel, Endianness, Environment, Os, Session, TargetTriple};
 
 #[path = "internal_rcc_stream.rs"]
 pub mod stream;
@@ -31,6 +31,7 @@ fn options_from_args(args: &[std::ffi::OsString]) -> Result<rcc_session::Options
     // with no system include roots. Keep user -isystem directories ahead
     // of the discovered target/host defaults.
     let mut no_stdinc = false;
+    let mut wasm32_target = false;
     // GCC applies -D and -U in command-line order. The pinned rcc Options
     // instead processes every -D before every -U, so normalize each name to
     // its final operation before passing it into the independent engine.
@@ -39,6 +40,30 @@ fn options_from_args(args: &[std::ffi::OsString]) -> Result<rcc_session::Options
     for arg in args {
         let arg = arg.to_str().ok_or("internal preprocessor needs UTF-8 option values")?;
         if arg == "-E" {
+            continue;
+        }
+        if arg == "--cpp-target=wasm32" {
+            // The reused rcc frontend currently has no Wasm architecture
+            // variant. Its target layout and OS are public data: configure
+            // the exact ILP32 C sizes here and suppress the temporary i386
+            // predefine after installation. This target is preprocessing-only;
+            // it never authorizes rcc native codegen for wasm32.
+            let target=&mut opts.target;
+            target.triple=TargetTriple::new("wasm32-unknown-unknown");
+            target.arch=Arch::I386;
+            target.os=Os::None;
+            target.env=Environment::Unknown;
+            target.data_model=DataModel::Ilp32;
+            target.pointer_width=32;
+            target.endianness=Endianness::Little;
+            target.layouts.pointer.size=4;
+            target.layouts.pointer.align=4;
+            target.layouts.long.size=4;
+            target.layouts.long.align=4;
+            target.layouts.builtin_va_list.size=4;
+            target.layouts.builtin_va_list.align=4;
+            target.llvm_data_layout="e-m:e-p:32:32-i64:64-n32:64-S128";
+            wasm32_target=true;
             continue;
         }
         if arg == "-nostdinc" {
@@ -97,6 +122,11 @@ fn options_from_args(args: &[std::ffi::OsString]) -> Result<rcc_session::Options
         }
     }
 
+    if wasm32_target {
+        // rcc has not added Arch::Wasm32 yet: remove the temporary i386
+        // target spelling so source sees no contradictory host predefines.
+        opts.cli_undefines.push("__i386__".into());
+    }
     Ok(opts)
 }
 
