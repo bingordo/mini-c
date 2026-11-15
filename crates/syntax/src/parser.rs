@@ -273,7 +273,7 @@ impl<'a> Parser<'a> {
         if let Some(after) = self.second_lookahead.take() {
             self.lookahead = after;
         }
-        if let Some(token) = next {
+        if let Some(ref token) = next {
             match token.text.as_ref() {
                 "{" => self.brace_depth += 1,
                 "}" => self.brace_depth = self.brace_depth.saturating_sub(1),
@@ -1290,7 +1290,7 @@ impl<'a> Parser<'a> {
                 self.expect(":")?;
                 // ISO C99 permits labels on statements, not declarations.
                 let next = self.peek()?;
-                let is_decl_keyword = next.is_some_and(|token| matches!(token.text.as_ref(),
+                let is_decl_keyword = next.as_ref().is_some_and(|token| matches!(token.text.as_ref(),
                     "typedef" | "static" | "extern" | "register" | "struct" | "union" | "enum" |
                     "int" | "_Bool" | "char" | "short" | "long" | "_Float128" |
                     "float" | "double" | "void" | "unsigned" | "signed" |
