@@ -409,7 +409,8 @@ impl Checker {
                 // } __builtin_va_list[1];
                 // This must remain an array and decay to a tag pointer in
                 // function parameters, not be modeled as an ordinary void*.
-                if self.target.int_bits != 32 || self.target.long_bits != 64 {
+                if self.target.int_bits != 32 || self.target.long_bits != 64
+                    || self.target.pointer_bits != 64 {
                     return Err(type_error(span,
                         "__builtin_va_list requires the x86-64 SysV LP64 data model"));
                 }
@@ -1952,7 +1953,7 @@ impl Checker {
                 let size = operand_ty.size_bytes(self.target).ok_or_else(|| type_error(
                     span, "sizeof requires a complete object type (not void or function)"
                 ))?;
-                // C sizeof has size_t type. The hosted x86-64 LP64 target
+                // C sizeof has size_t type under the checked target model.
                 // uses unsigned long, not the type of an ordinary decimal literal.
                 let size_ty = CType::Integer { rank: IntRank::Long, unsigned: true };
                 Ok(CheckedExpr::value(size_ty, CheckedExprKind::Literal(size)))
