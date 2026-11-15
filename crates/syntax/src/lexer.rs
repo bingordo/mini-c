@@ -22,6 +22,78 @@ pub struct Token<'a> {
     pub span: Span,
 }
 
+/// The spelling of a parser token. Borrowed tokens remain zero-copy for the
+/// legacy `Scanner<&str>` path; tokens produced incrementally by a CPP
+/// adapter may own an Arc-backed spelling with no source-file lifetime.
+///
+/// The parser only retains its current and next token, so owned spellings
+/// are released as soon as parsing no longer references them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TokenText<'a> {
+    Borrowed(&'a str),
+    Shared(std::sync::Arc<str>),
+}
+
+impl AsRef<str> for TokenText<'_> {
+    fn as_ref(&self) -> &str {
+        match self {
+            Self::Borrowed(s) => s,
+            Self::Shared(s) => s,
+        }
+    }
+}
+
+impl std::ops::Deref for TokenText<'_> {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        self.as_ref()
+    }
+}
+
+/// Parser-local token which can carry either a borrowed or owned spelling.
+/// It is cheap to clone: shared spellings use Arc and borrowed ones copy a
+/// pointer. No token spelling is leaked to obtain a false 'static lifetime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParserToken<'a> {
+    pub kind: TokenKind,
+    pub text: TokenText<'a>,
+    pub span: Span,
+}
+
+impl<'a> From<Token<'a>> for ParserToken<'a> {
+    fn from(token: Token<'a>) -> Self {
+        Self {
+            kind: token.kind,
+            text: TokenText::Borrowed(token.text),
+            span: token.span,
+        }
+    }
+}
+
+/// A streaming token source that can transfer independently owned token
+/// spellings. A CPP producer can implement this without preserving its
+/// entire output as a String or leaking token text.
+///
+/// The parser performs typedef classification at each pull (and again on
+/// cached lookahead), so this source may return ordinary Identifier tokens.
+pub trait ParserTokenSource<'a> {
+    fn next_parser_token(&mut self, scopes: Option<&Scopes>)
+        -> Result<Option<ParserToken<'a>>, Diagnostic>;
+}
+
+/// Wrap the prior borrowed TokenSource implementation in the new parser
+/// interface without copying source text.
+pub struct BorrowedParserTokenSource<S>(pub S);
+
+impl<'a, S: TokenSource<'a>> ParserTokenSource<'a> for BorrowedParserTokenSource<S> {
+    fn next_parser_token(&mut self, scopes: Option<&Scopes>)
+        -> Result<Option<ParserToken<'a>>, Diagnostic>
+    {
+        Ok(self.0.next_token(scopes)?.map(ParserToken::from))
+    }
+}
+
 
 /// A pull-based lexical token provider for the declaration-at-a-time parser.
 ///
