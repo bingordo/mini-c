@@ -353,10 +353,13 @@ impl PragmaOnceProbe {
             }
         }
         self.older = self.previous.take();
-        self.previous = Some(token.clone());
+        self.previous = Some(*token);
     }
 }
 
+/// Determine whether a tokenized header contains a line-leading
+/// `#pragma once`, independent of its position in the file.
+/// The historical slice interface now delegates to a constant-window probe.
 pub fn detect_pragma_once(tokens: &[PpToken], src: &str) -> bool {
     let mut probe = PragmaOnceProbe::default();
     for token in tokens {
