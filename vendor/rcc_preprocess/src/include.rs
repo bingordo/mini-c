@@ -533,7 +533,7 @@ impl Preprocessor<'_> {
             Some(id) => id,
             None => match self.load_include_source_bounded(&resolved, directive_span) {
                 Ok(Some(id)) => id,
-                Ok(None) => return Vec::new(),
+                Ok(None) => return,
                 Err(err) => {
                     self.session.handler.emit(&cannot_load_header(directive_span, &resolved, &err));
                     return;
