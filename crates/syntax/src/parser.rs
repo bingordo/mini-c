@@ -2,7 +2,7 @@
 //! Each complete function body is returned separately; earlier bodies are not retained.
 use crate::ast::{BinOp, Decl, Designator, Expr, FloatRank, Function, Qualifiers, Span, Stmt, StorageClass, TagKind, Type, UnOp};
 use crate::diag::{Diagnostic, DiagnosticCode};
-use crate::lexer::{Scanner, Token, TokenKind};
+use crate::lexer::{Scanner, Token, TokenKind, TokenSource};
 use crate::stream::{ExternalItem, ItemSource};
 use crate::scopes::{Binding, Scopes};
 
@@ -60,10 +60,13 @@ impl Declarator {
 }
 
 pub struct Parser<'a> {
-    scanner: Scanner<'a>,
+    scanner: Box<dyn TokenSource<'a> + 'a>,
     input_len: usize,
     expression_spans: bool,
     lookahead: Option<Token<'a>>,
+    // Nonconsuming two-token lookahead replaces Scanner::clone, which
+    // cannot work for one-shot preprocessing token iterators.
+    second_lookahead: Option<Option<Token<'a>>>,
     scopes: Scopes,
     brace_depth: usize,
     pending_file_binding: Option<(String, Option<Binding>)>,
@@ -71,11 +74,27 @@ pub struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     pub fn new(source: &'a str) -> Self {
+        Self::from_token_source(Scanner::new(source), source.len())
+    }
+
+    /// Parse tokens as they are requested from a producer rather than from
+    /// one preprocessed source string. The caller owns the storage for
+    /// borrowed token spellings until parsing finishes.
+    ///
+    /// `input_len` is the final byte offset for precise unexpected-EOF
+    /// diagnostics. A streaming producer may use zero if it does not yet
+    /// know the final size; the parser still tracks the furthest token
+    /// span observed as a fallback.
+    pub fn from_token_source(
+        source: impl TokenSource<'a> + 'a,
+        input_len: usize,
+    ) -> Self {
         Self {
-            scanner: Scanner::new(source),
-            input_len: source.len(),
+            scanner: Box::new(source),
+            input_len,
             expression_spans: false,
             lookahead: None,
+            second_lookahead: None,
             scopes: Scopes::new(),
             brace_depth: 0,
             pending_file_binding: None,
@@ -102,8 +121,10 @@ impl<'a> Parser<'a> {
     /// C labels use their own namespace even when spelled as typedef names.
     fn followed_by_colon(&mut self) -> Result<bool, Diagnostic> {
         self.peek()?;
-        let mut probe = self.scanner.clone();
-        Ok(probe.next_token(Some(&self.scopes))?.is_some_and(|token| token.text == ":"))
+        if self.second_lookahead.is_none() {
+            self.second_lookahead = Some(self.scanner.next_token(Some(&self.scopes))?);
+        }
+        Ok(self.second_lookahead.flatten().is_some_and(|token| token.text == ":"))
     }
 
     // A missing token belongs at the actual end of input, not byte zero.
@@ -238,6 +259,9 @@ impl<'a> Parser<'a> {
     fn take(&mut self) -> Result<Option<Token<'a>>, Diagnostic> {
         self.peek()?;
         let next = self.lookahead.take();
+        if let Some(after) = self.second_lookahead.take() {
+            self.lookahead = after;
+        }
         if let Some(token) = next {
             match token.text {
                 "{" => self.brace_depth += 1,
