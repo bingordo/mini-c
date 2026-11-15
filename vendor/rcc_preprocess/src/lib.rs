@@ -247,13 +247,29 @@ impl<'a> Preprocessor<'a> {
 
     /// Emit completed blocks of expanded preprocessing tokens to a caller.
     ///
-    /// This first stage avoids accumulating the entire *root's* output
-    /// vector. Included headers and long stretches without directives still
-    /// use the existing batch implementation; this is not yet a pull-driven
-    /// lexer/parser API. The source map keeps token spellings valid throughout
+    /// Completed expanded token blocks are delivered from the root and
+    /// nested includes without accumulating a complete include output Vec.
+    /// Long stretches of source without directives are still buffered; this
+    /// is not yet a pull-driven lexer/parser API. The source map keeps token spellings valid throughout
     /// this call. No callback may treat its chunks as committed output until
     /// preprocessing finishes without errors (including a late #error).
     pub fn run_with_sink<F>(&mut self, root: FileId, sink: &mut F)
+    where
+        F: FnMut(Vec<PpToken>),
+    {
+        let mut emitted_tokens = 0usize;
+        self.run_with_sink_budget(root, &mut emitted_tokens, sink);
+    }
+
+    /// Internal include-recursive variant. The same cumulative budget follows
+    /// all nested includes, so no intermediate include Vec or parent recount
+    /// is needed. The public collector keeps its fail-closed contract.
+    pub(crate) fn run_with_sink_budget<F>(
+        &mut self,
+        root: FileId,
+        emitted_tokens: &mut usize,
+        sink: &mut F,
+    )
     where
         F: FnMut(Vec<PpToken>),
     {
@@ -289,7 +305,6 @@ impl<'a> Preprocessor<'a> {
                 last_span.set(Some(tok.span));
             });
 
-        let mut emitted_tokens = 0usize;
         let mut pending_text: Vec<PpToken> = Vec::new();
         let mut ls = line_stream::LineStream::new(tokens);
         let mut accounted = 0usize;
@@ -308,7 +323,7 @@ impl<'a> Preprocessor<'a> {
                 break;
             }
             if is_directive_line(&line) {
-                self.flush_pending_text_sink(&mut pending_text, &mut emitted_tokens, sink);
+                self.flush_pending_text_sink(&mut pending_text, emitted_tokens, sink);
                 if self.halted {
                     break;
                 }
@@ -316,12 +331,13 @@ impl<'a> Preprocessor<'a> {
                 if line.len() == 1 {
                     continue;
                 }
-                let directive_output = self.dispatch_directive(&line, &src, &mut cond);
-                self.emit_output_bounded(&mut emitted_tokens, directive_output, line[0].span, sink);
+                let directive_output =
+                    self.dispatch_directive_with_sink(&line, &src, &mut cond, emitted_tokens, sink);
+                self.emit_output_bounded(emitted_tokens, directive_output, line[0].span, sink);
                 continue;
             }
             if !cond.is_active() {
-                self.flush_pending_text_sink(&mut pending_text, &mut emitted_tokens, sink);
+                self.flush_pending_text_sink(&mut pending_text, emitted_tokens, sink);
                 continue;
             }
             pending_text.extend(line);
@@ -330,7 +346,7 @@ impl<'a> Preprocessor<'a> {
         // without producing a LineStream item. Account for those tokens too.
         self.account_stream_scan(scanned.get(), &mut accounted, last_span.get());
         if !self.halted {
-            self.flush_pending_text_sink(&mut pending_text, &mut emitted_tokens, sink);
+            self.flush_pending_text_sink(&mut pending_text, emitted_tokens, sink);
         }
 
         // Unterminated `#if` / `#ifdef` / `#ifndef` at end of file.
@@ -1005,12 +1021,17 @@ impl<'a> Preprocessor<'a> {
     /// entirely when [`CondStack::is_active`] is false: no
     /// diagnostics are produced for malformed `#define`s in dead
     /// code, no `#error` fires, no macro table changes.
-    fn dispatch_directive(
+    fn dispatch_directive_with_sink<F>(
         &mut self,
         line: &[PpToken],
         src: &str,
         cond: &mut cond_stack::CondStack,
-    ) -> Vec<PpToken> {
+        emitted_tokens: &mut usize,
+        sink: &mut F,
+    ) -> Vec<PpToken>
+    where
+        F: FnMut(Vec<PpToken>),
+    {
         // Peek the directive name so we can identify conditional
         // control directives without running the full parser (and
         // therefore without emitting unrelated diagnostics while in
@@ -1091,10 +1112,14 @@ impl<'a> Preprocessor<'a> {
                 }
             }
             Ok(directive::Directive::Include { span, is_system, header }) => {
-                return self.process_include(&header, is_system, span, line[0].span.file);
+                self.process_include_with_sink(
+                    &header, is_system, span, line[0].span.file, emitted_tokens, sink,
+                );
             }
             Ok(directive::Directive::IncludeNext { span, is_system, header }) => {
-                return self.process_include_next(&header, is_system, span, line[0].span.file);
+                self.process_include_next_with_sink(
+                    &header, is_system, span, line[0].span.file, emitted_tokens, sink,
+                );
             }
             Ok(directive::Directive::IncludeTokens { span, tokens }) => {
                 let expanded = self.expand_tokens(tokens);
@@ -1104,7 +1129,9 @@ impl<'a> Preprocessor<'a> {
                 };
                 match parsed {
                     Ok((is_system, header)) => {
-                        return self.process_include(&header, is_system, span, line[0].span.file);
+                        self.process_include_with_sink(
+                            &header, is_system, span, line[0].span.file, emitted_tokens, sink,
+                        );
                     }
                     Err(diag) => self.session.handler.emit(&diag),
                 }
@@ -1987,6 +2014,97 @@ mod run_tests {
             Session::with_handler(Options::default(), Handler::with_emitter(Box::new(cap.clone())));
         let id = sess.source_map.write().unwrap().add_file(PathBuf::from("<unit>"), Arc::from(src));
         (sess, id, cap)
+    }
+
+    #[test]
+    fn nested_include_sink_delivers_multiple_chunks_in_source_order() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let id = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "mini-c-stream-nested-{}-{id}", std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.join("root.c");
+        std::fs::write(&root, "int before;\n#include \"outer.h\"\nint after=MARK;\n").unwrap();
+        std::fs::write(dir.join("outer.h"), concat!(
+            "#define MARK 7\n",
+            "int outer_before=MARK;\n",
+            "#include \"inner.h\"\n",
+            "#undef MARK\n",
+            "#define MARK 9\n",
+            "int outer_after=MARK;\n",
+        )).unwrap();
+        std::fs::write(dir.join("inner.h"), concat!(
+            "int inner_first=1;\n",
+            "#define INNER 2\n",
+            "int inner_second=INNER;\n",
+        )).unwrap();
+        let cap = CaptureEmitter::new();
+        let mut sess = Session::with_handler(
+            Options::default(),
+            Handler::with_emitter(Box::new(cap.clone())),
+        );
+        let file = sess.load_source_file(&root).unwrap();
+        let mut pp = Preprocessor::new(&mut sess);
+        let mut chunks = 0usize;
+        let mut tokens = Vec::new();
+        pp.run_with_sink(file, &mut |chunk| {
+            chunks += 1;
+            tokens.extend(chunk);
+        });
+        assert!(!pp.halted, "unexpected input/output budget failure");
+        assert!(!pp.session.handler.has_errors(), "include diagnostics: {:?}", cap.diagnostics());
+        // Before P3, the complete nested include was passed to the parent
+        // as a single Vec, hiding all internal directive boundaries.
+        assert!(chunks >= 5, "nested include output must stream in several chunks: {chunks}");
+        let text = {
+            let sm = pp.session.source_map.read().unwrap();
+            tokens.iter().map(|tok| {
+                sm.file(tok.span.file).src[tok.span.lo.0 as usize..tok.span.hi.0 as usize].to_owned()
+            }).collect::<Vec<_>>().join(" ")
+        };
+        for expected in [
+            "int before ;", "int outer_before = 7 ;",
+            "int inner_first = 1 ;", "int inner_second = 2 ;",
+            "int outer_after = 9 ;", "int after = 9 ;",
+        ] {
+            assert!(text.contains(expected), "missing {expected:?} in {text:?}");
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn streaming_nested_includes_share_parent_output_budget() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let id = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "mini-c-stream-budget-{}-{id}", std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.join("root.c");
+        std::fs::write(&root, "#include \"outer.h\"\n").unwrap();
+        std::fs::write(dir.join("outer.h"), concat!(
+            "int outer;\n", "#include \"inner.h\"\n", "int after;\n"
+        )).unwrap();
+        std::fs::write(dir.join("inner.h"), concat!(
+            "int first;\n", "#define X 9\n", "int second;\n"
+        )).unwrap();
+        let cap = CaptureEmitter::new();
+        let mut sess = Session::with_handler(
+            Options::default(),
+            Handler::with_emitter(Box::new(cap.clone())),
+        );
+        let file = sess.load_source_file(&root).unwrap();
+        let mut pp = Preprocessor::new(&mut sess);
+        // Each included file fits under six tokens, but all concatenated
+        // files do not. Returning an independent child Vec may hide this.
+        pp.output_token_limit = 6;
+        let tokens = pp.run(file);
+        assert!(tokens.is_empty(), "root collector must not expose partial output");
+        assert!(pp.output_limit_reported);
+        assert!(cap.diagnostics().iter().any(|d|
+            d.message.contains("preprocessing output token buffer limit exceeded")));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

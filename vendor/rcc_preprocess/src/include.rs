@@ -381,15 +381,9 @@ impl Preprocessor<'_> {
     /// issued from (used to derive the current directory for the
     /// `"..."` search rule).
     ///
-    /// Returns the expanded token stream contributed by the included
-    /// file. When resolution fails an E0021 diagnostic is emitted and
-    /// the token stream is empty; this matches the standard's "one
-    /// diagnostic, translation unit is ill-formed" model without
-    /// abandoning the parent file.
-    ///
-    /// Recursion currently calls back into [`Preprocessor::run`], which
-    /// is still a pass-through tokeniser in the overall M5 schedule
-    /// (tasks 04-06..04-14 populate the directive loop itself).
+    /// The collecting compatibility wrapper below uses the same sink
+    /// implementation as the streaming parent include path. On failure,
+    /// the callback output is tentative until all diagnostics are checked.
     /// Include-guard caching (04-04) and `#pragma once` caching
     /// (04-05) both short-circuit repeated inclusions here.
     pub fn process_include(
@@ -399,6 +393,30 @@ impl Preprocessor<'_> {
         directive_span: Span,
         current_file: FileId,
     ) -> Vec<PpToken> {
+        let mut output = Vec::new();
+        let mut emitted_tokens = 0usize;
+        self.process_include_with_sink(
+            header, is_system, directive_span, current_file,
+            &mut emitted_tokens, &mut |chunk| output.extend(chunk),
+        );
+        if self.output_limit_reported {
+            output.clear();
+        }
+        output
+    }
+
+    pub(crate) fn process_include_with_sink<F>(
+        &mut self,
+        header: &str,
+        is_system: bool,
+        directive_span: Span,
+        current_file: FileId,
+        emitted_tokens: &mut usize,
+        sink: &mut F,
+    )
+    where
+        F: FnMut(Vec<PpToken>),
+    {
         let name = strip_header_delimiters(header);
 
         let current_dir: PathBuf = {
@@ -417,10 +435,10 @@ impl Preprocessor<'_> {
             })
         else {
             self.session.handler.emit(&cannot_find_header(directive_span, name, is_system));
-            return Vec::new();
+            return;
         };
 
-        self.process_resolved_include(resolved, is_system, directive_span, current_file)
+        self.process_resolved_include_with_sink(resolved, is_system, directive_span, current_file, emitted_tokens, sink)
     }
 
     /// Resolve, load, and recursively preprocess a GNU `#include_next`.
@@ -431,6 +449,30 @@ impl Preprocessor<'_> {
         directive_span: Span,
         current_file: FileId,
     ) -> Vec<PpToken> {
+        let mut output = Vec::new();
+        let mut emitted_tokens = 0usize;
+        self.process_include_next_with_sink(
+            header, is_system, directive_span, current_file,
+            &mut emitted_tokens, &mut |chunk| output.extend(chunk),
+        );
+        if self.output_limit_reported {
+            output.clear();
+        }
+        output
+    }
+
+    pub(crate) fn process_include_next_with_sink<F>(
+        &mut self,
+        header: &str,
+        is_system: bool,
+        directive_span: Span,
+        current_file: FileId,
+        emitted_tokens: &mut usize,
+        sink: &mut F,
+    )
+    where
+        F: FnMut(Vec<PpToken>),
+    {
         let name = strip_header_delimiters(header);
 
         let (current_path, current_dir): (PathBuf, PathBuf) = {
@@ -453,19 +495,24 @@ impl Preprocessor<'_> {
                 name,
                 &skipped_dir,
             ));
-            return Vec::new();
+            return;
         };
 
-        self.process_resolved_include(resolved, is_system, directive_span, current_file)
+        self.process_resolved_include_with_sink(resolved, is_system, directive_span, current_file, emitted_tokens, sink)
     }
 
-    fn process_resolved_include(
+    fn process_resolved_include_with_sink<F>(
         &mut self,
         resolved: PathBuf,
         is_system: bool,
         directive_span: Span,
         current_file: FileId,
-    ) -> Vec<PpToken> {
+        emitted_tokens: &mut usize,
+        sink: &mut F,
+    )
+    where
+        F: FnMut(Vec<PpToken>),
+    {
         self.session.record_source_dependency(resolved.clone(), is_system);
 
         // Dedupe on the resolved path: if this header was already
@@ -486,10 +533,10 @@ impl Preprocessor<'_> {
             Some(id) => id,
             None => match self.load_include_source_bounded(&resolved, directive_span) {
                 Ok(Some(id)) => id,
-                Ok(None) => return Vec::new(),
+                Ok(None) => return,
                 Err(err) => {
                     self.session.handler.emit(&cannot_load_header(directive_span, &resolved, &err));
-                    return Vec::new();
+                    return;
                 }
             },
         };
@@ -501,7 +548,7 @@ impl Preprocessor<'_> {
         // lookup — and semantically non-overridable (there is no
         // `#undef` for it).
         if self.pragma_once.contains_key(&new_file) {
-            return Vec::new();
+            return;
         }
 
         // Include-guard fast path: if a previous inclusion of the
@@ -510,7 +557,7 @@ impl Preprocessor<'_> {
         // nothing. Elide the work entirely — O(1) skip.
         if let Some(&guard_sym) = self.include_guards.get(&new_file) {
             if self.macros.is_defined(guard_sym) {
-                return Vec::new();
+                return;
             }
         }
 
@@ -531,7 +578,7 @@ impl Preprocessor<'_> {
                     let src = self.session.source_map.read().unwrap().file(new_file).src.clone();
                     let raw = self.tokenize_source_bounded(new_file, &src);
                     if self.halted {
-                        return Vec::new();
+                        return;
                     }
                     if let Some(guard) = detect_guard(&raw, &src, &mut self.session.interner) {
                         self.include_guards.insert(new_file, guard);
@@ -539,7 +586,7 @@ impl Preprocessor<'_> {
                 }
                 if let Some(&guard_sym) = self.include_guards.get(&new_file) {
                     if self.macros.is_defined(guard_sym) {
-                        return Vec::new();
+                        return;
                     }
                 }
                 let edge = (current_file, new_file);
@@ -547,7 +594,7 @@ impl Preprocessor<'_> {
                     self.session.handler.emit(&recursive_include_cycle(directive_span, &resolved));
                     self.diagnosed_include_cycles.insert(edge, ());
                 }
-                return Vec::new();
+                return;
             }
         }
 
@@ -560,7 +607,7 @@ impl Preprocessor<'_> {
                 ));
                 self.include_expansion_limit_reported = true;
             }
-            return Vec::new();
+            return;
         }
 
         if self.include_depth >= MAX_INCLUDE_DEPTH {
@@ -569,13 +616,13 @@ impl Preprocessor<'_> {
                 &resolved,
                 MAX_INCLUDE_DEPTH,
             ));
-            return Vec::new();
+            return;
         }
 
         self.include_expansions += 1;
         *self.active_includes.entry(new_file).or_insert(0) += 1;
         self.include_depth += 1;
-        let tokens = self.run(new_file);
+        self.run_with_sink_budget(new_file, emitted_tokens, sink);
         self.include_depth -= 1;
         if let Some(count) = self.active_includes.get_mut(&new_file) {
             *count -= 1;
@@ -607,7 +654,7 @@ impl Preprocessor<'_> {
             // translation-unit budget instead of collecting unboundedly.
             let raw = self.tokenize_source_bounded(new_file, &src);
             if self.halted {
-                return Vec::new();
+                return;
             }
             if need_pragma_scan && detect_pragma_once(&raw, &src) {
                 self.pragma_once.insert(new_file, ());
@@ -630,7 +677,6 @@ impl Preprocessor<'_> {
             }
         }
 
-        tokens
     }
 }
 
