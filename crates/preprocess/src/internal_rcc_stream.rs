@@ -145,7 +145,6 @@ fn produce(path: &Path, args: &[OsString], sender: &mpsc::SyncSender<Message>)
         ));
     }
     file
-        .map_err(|e| format!("cannot read C source {}: {e}", path.display()))?
         .take((MAX_STREAM_SOURCE_BYTES + 1) as u64)
         .read_to_end(&mut root_bytes)
         .map_err(|e| format!("cannot read C source {}: {e}", path.display()))?;
