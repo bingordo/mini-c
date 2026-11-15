@@ -35,7 +35,7 @@ struct OriginLines(Vec<Origin>);
 impl OriginLines {
     fn record(&mut self, start: usize, file: &Arc<str>, line: u32) {
         if !self.0.last().is_some_and(|previous|
-            previous.line == line && previous.file == *file)
+            previous.line == line && previous.file.as_ref() == file.as_ref())
         {
             self.0.push(Origin {
                 start, file: Arc::clone(file), line,
