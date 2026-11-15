@@ -1714,6 +1714,85 @@ mod tests {
     /// Exercise the parser against an actual one-shot scanner iterator,
     /// not a collected token Vec or a cloned scanner.
     #[test]
+    fn parser_owned_token_source_is_lazy_and_matches_borrowed_path() {
+        use std::{cell::Cell, rc::Rc, sync::Arc};
+        use crate::lexer::{ParserToken, ParserTokenSource, TokenText};
+
+        struct SharedScanner<'a> {
+            scanner: Scanner<'a>,
+            pulls: Rc<Cell<usize>>,
+        }
+        impl<'a> ParserTokenSource<'a> for SharedScanner<'a> {
+            fn next_parser_token(
+                &mut self, _scopes: Option<&Scopes>,
+            ) -> Result<Option<ParserToken<'a>>, Diagnostic> {
+                self.pulls.set(self.pulls.get() + 1);
+                Ok(self.scanner.next_token(None)?.map(|token| ParserToken {
+                    kind: token.kind,
+                    text: TokenText::Shared(Arc::from(token.text)),
+                    span: token.span,
+                }))
+            }
+        }
+        let source = "typedef int T; T value; int f(void) { T: goto T; } int g(void) { int T = 3; return T; }";
+        let mut ordinary = Parser::new(source);
+        let mut expected = Vec::new();
+        while let Some(item) = ordinary.next_item().unwrap() {
+            expected.push(item);
+        }
+        let pulls = Rc::new(Cell::new(0));
+        let shared = SharedScanner {
+            scanner: Scanner::new(source), pulls: Rc::clone(&pulls),
+        };
+        let mut parsed = Parser::from_parser_token_source(shared, source.len());
+        let first = parsed.next_item().unwrap().unwrap();
+        assert!(pulls.get() < source.len() / 2,
+            "parser should not pull entire source before its first item");
+        let mut actual = vec![first];
+        while let Some(item) = parsed.next_item().unwrap() {
+            actual.push(item);
+        }
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn parser_releases_shared_spellings_after_consumption() {
+        use std::{collections::VecDeque, sync::Arc};
+        use crate::lexer::{ParserToken, ParserTokenSource, TokenText};
+        struct Queue(VecDeque<ParserToken<'static>>);
+        impl ParserTokenSource<'static> for Queue {
+            fn next_parser_token(
+                &mut self, _scopes: Option<&Scopes>,
+            ) -> Result<Option<ParserToken<'static>>, Diagnostic> {
+                Ok(self.0.pop_front())
+            }
+        }
+        let name: Arc<str> = Arc::from("first");
+        let second: Arc<str> = Arc::from("second");
+        let make = |kind, text: Arc<str>, lo, hi| ParserToken {
+            kind, text: TokenText::Shared(text), span: Span { lo, hi },
+        };
+        let mut source = Queue(VecDeque::from([
+            make(TokenKind::Identifier, Arc::from("int"), 0, 3),
+            make(TokenKind::Identifier, Arc::clone(&name), 4, 9),
+            make(TokenKind::Punctuation, Arc::from(";"), 9, 10),
+            make(TokenKind::Identifier, Arc::from("int"), 11, 14),
+            make(TokenKind::Identifier, Arc::clone(&second), 15, 21),
+            make(TokenKind::Punctuation, Arc::from(";"), 21, 22),
+        ]));
+        let mut parser = Parser::from_parser_token_source(
+            Queue(std::mem::take(&mut source.0)), 22,
+        );
+        assert!(matches!(parser.next_item().unwrap(),
+            Some(ExternalItem::Declaration(ref decl)) if decl.name == "first"));
+        assert_eq!(Arc::strong_count(&name), 1,
+            "consumed identifier spelling must not remain pinned by the parser");
+        assert!(matches!(parser.next_item().unwrap(),
+            Some(ExternalItem::Declaration(ref decl)) if decl.name == "second"));
+        assert_eq!(Arc::strong_count(&second), 1);
+    }
+
+    #[test]
     fn pull_token_source_delivers_items_only_when_requested() {
         use std::{cell::Cell, rc::Rc};
         use crate::lexer::PullTokenSource;
