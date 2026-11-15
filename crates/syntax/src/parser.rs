@@ -2,7 +2,7 @@
 //! Each complete function body is returned separately; earlier bodies are not retained.
 use crate::ast::{BinOp, Decl, Designator, Expr, FloatRank, Function, Qualifiers, Span, Stmt, StorageClass, TagKind, Type, UnOp};
 use crate::diag::{Diagnostic, DiagnosticCode};
-use crate::lexer::{Scanner, Token, TokenKind, TokenSource};
+use crate::lexer::{BorrowedParserTokenSource, ParserToken, ParserTokenSource, Scanner, TokenKind, TokenSource};
 use crate::stream::{ExternalItem, ItemSource};
 use crate::scopes::{Binding, Scopes};
 
@@ -60,13 +60,13 @@ impl Declarator {
 }
 
 pub struct Parser<'a> {
-    scanner: Box<dyn TokenSource<'a> + 'a>,
+    scanner: Box<dyn ParserTokenSource<'a> + 'a>,
     input_len: usize,
     expression_spans: bool,
-    lookahead: Option<Token<'a>>,
+    lookahead: Option<ParserToken<'a>>,
     // Nonconsuming two-token lookahead replaces Scanner::clone, which
     // cannot work for one-shot preprocessing token iterators.
-    second_lookahead: Option<Option<Token<'a>>>,
+    second_lookahead: Option<Option<ParserToken<'a>>>,
     scopes: Scopes,
     brace_depth: usize,
     pending_file_binding: Option<(String, Option<Binding>)>,
@@ -87,6 +87,16 @@ impl<'a> Parser<'a> {
     /// span observed as a fallback.
     pub fn from_token_source(
         source: impl TokenSource<'a> + 'a,
+        input_len: usize,
+    ) -> Self {
+        Self::from_parser_token_source(BorrowedParserTokenSource(source), input_len)
+    }
+
+    /// Parse from a producer of owned-or-borrowed token spellings. The
+    /// preprocessor can hand over Arc-backed tokens one at a time; its
+    /// output need not remain in an immutable translation-unit String.
+    pub fn from_parser_token_source(
+        source: impl ParserTokenSource<'a> + 'a,
         input_len: usize,
     ) -> Self {
         Self {
@@ -122,9 +132,10 @@ impl<'a> Parser<'a> {
     fn followed_by_colon(&mut self) -> Result<bool, Diagnostic> {
         self.peek()?;
         if self.second_lookahead.is_none() {
-            self.second_lookahead = Some(self.scanner.next_token(Some(&self.scopes))?);
+            self.second_lookahead = Some(self.scanner.next_parser_token(Some(&self.scopes))?);
         }
-        Ok(self.second_lookahead.flatten().is_some_and(|token| token.text == ":"))
+        Ok(self.second_lookahead.as_ref().and_then(Option::as_ref)
+            .is_some_and(|token| token.text.as_ref() == ":"))
     }
 
     // A missing token belongs at the actual end of input, not byte zero.
@@ -151,7 +162,7 @@ impl<'a> Parser<'a> {
         if self.brace_depth == 0
             && error.message.starts_with("expected ';'")
             && self.peek().ok().flatten().is_some_and(|t| matches!(
-                t.text, "int" | "_Bool" | "char" | "short" | "long" | "_Float128" | "float" | "double" | "void" | "signed" |
+                t.text.as_ref(), "int" | "_Bool" | "char" | "short" | "long" | "_Float128" | "float" | "double" | "void" | "signed" |
                     "unsigned" | "static" | "extern" | "register" | "typedef" | "struct" | "union" | "enum"
             ) || t.kind == TokenKind::TypedefName)
         {
@@ -165,7 +176,7 @@ impl<'a> Parser<'a> {
                 Ok(None) => return false,
                 Err(_) => continue,
             };
-            if self.brace_depth == 0 && matches!(token.text, ";" | "}") {
+            if self.brace_depth == 0 && matches!(token.text.as_ref(), ";" | "}") {
                 return true;
             }
         }
@@ -241,19 +252,19 @@ impl<'a> Parser<'a> {
 
     fn peek(&mut self) -> Result<Option<Token<'a>>, Diagnostic> {
         if self.lookahead.is_none() {
-            self.lookahead = self.scanner.next_token(Some(&self.scopes))?;
+            self.lookahead = self.scanner.next_parser_token(Some(&self.scopes))?;
         }
         // Scope changes can occur while a token is held in lookahead.
         if let Some(token) = self.lookahead.as_mut() {
             if matches!(token.kind, TokenKind::Identifier | TokenKind::TypedefName) {
-                token.kind = if self.scopes.is_typedef(token.text) {
+                token.kind = if self.scopes.is_typedef(token.text.as_ref()) {
                     TokenKind::TypedefName
                 } else {
                     TokenKind::Identifier
                 };
             }
         }
-        Ok(self.lookahead)
+        Ok(self.lookahead.clone())
     }
 
     fn take(&mut self) -> Result<Option<Token<'a>>, Diagnostic> {
@@ -263,7 +274,7 @@ impl<'a> Parser<'a> {
             self.lookahead = after;
         }
         if let Some(token) = next {
-            match token.text {
+            match token.text.as_ref() {
                 "{" => self.brace_depth += 1,
                 "}" => self.brace_depth = self.brace_depth.saturating_sub(1),
                 _ => {}
@@ -276,12 +287,12 @@ impl<'a> Parser<'a> {
         // Do not consume a mismatching token: the recovery API needs to see
         // structural delimiters to resume at the next external declaration.
         match self.peek()? {
-            Some(token) if token.text == expected =>
+            Some(token) if token.text.as_ref() == expected =>
                 Ok(self.take()?.expect("matching token was peeked")),
             Some(token) => Err(Diagnostic::coded(
                 token.span,
                 DiagnosticCode::SyntaxExpectedToken,
-                format!("expected '{expected}', found '{}'", token.text),
+                format!("expected '{expected}', found '{}'", token.text.as_ref()),
             )),
             None => Err(Diagnostic::coded(
                 self.eof_span(),
@@ -296,7 +307,7 @@ impl<'a> Parser<'a> {
         // the left. Assignment-expression contexts (e.g. function arguments
         // and initializer elements) call parse_assign directly.
         let mut lhs = self.parse_assign()?;
-        while self.peek()?.is_some_and(|token| token.text == ",") {
+        while self.peek()?.is_some_and(|token| token.text.as_ref() == ",") {
             self.take()?;
             let rhs = self.parse_assign()?;
             let span = if self.expression_spans {
@@ -312,7 +323,7 @@ impl<'a> Parser<'a> {
 
     fn parse_conditional(&mut self) -> Result<Expr, Diagnostic> {
         let condition = self.parse_binary(0)?;
-        if !self.peek()?.is_some_and(|token| token.text == "?") {
+        if !self.peek()?.is_some_and(|token| token.text.as_ref() == "?") {
             return Ok(condition);
         }
         self.take()?;
@@ -335,7 +346,7 @@ impl<'a> Parser<'a> {
 
     fn parse_assign(&mut self) -> Result<Expr, Diagnostic> {
         let lhs = self.parse_conditional()?;
-        if let Some(op) = self.peek()?.and_then(|t| match t.text {
+        if let Some(op) = self.peek()?.and_then(|t| match t.text.as_ref() {
             "=" => Some(None),
             "+=" => Some(Some(BinOp::Add)),
             "-=" => Some(Some(BinOp::Sub)),
@@ -392,7 +403,7 @@ impl<'a> Parser<'a> {
 
     fn parse_binary(&mut self, min_prec: u8) -> Result<Expr, Diagnostic> {
         let mut lhs = self.parse_unary()?;
-        while let Some((op, prec)) = self.peek()?.and_then(|t| Self::binary_op(t.text)) {
+        while let Some((op, prec)) = self.peek()?.and_then(|t| Self::binary_op(t.text.as_ref())) {
             if prec < min_prec {
                 break;
             }
@@ -410,14 +421,14 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_unary(&mut self) -> Result<Expr, Diagnostic> {
-        if self.peek()?.is_some_and(|token| token.text == "sizeof") {
+        if self.peek()?.is_some_and(|token| token.text.as_ref() == "sizeof") {
             let keyword = self.take()?.expect("peeked sizeof");
-            if self.peek()?.is_some_and(|t| t.text == "(") {
+            if self.peek()?.is_some_and(|t| t.text.as_ref() == "(") {
                 self.take()?;
                 // A typedef-aware type-name lookahead is essential:
                 // sizeof(T) and sizeof(variable) have different AST forms.
                 let type_name = self.peek()?.is_some_and(|next| {
-                    matches!(next.text, "int" | "_Bool" | "char" | "short" | "long" | "_Float128" |
+                    matches!(next.text.as_ref(), "int" | "_Bool" | "char" | "short" | "long" | "_Float128" |
                         "float" | "double" | "void" | "signed" | "unsigned" |
                         "struct" | "union" | "enum" | "const" | "restrict" |
                         "__restrict" | "__restrict__")
@@ -432,7 +443,7 @@ impl<'a> Parser<'a> {
                             "sizeof requires an abstract type-name declarator"));
                     }
                     let close = self.expect(")")?;
-                    if self.peek()?.is_some_and(|token| token.text == "{") {
+                    if self.peek()?.is_some_and(|token| token.text.as_ref() == "{") {
                         // sizeof (type){initializer} applies to the compound
                         // literal expression, not sizeof(type). The object
                         // itself remains unevaluated during sizeof.
@@ -458,7 +469,7 @@ impl<'a> Parser<'a> {
             return Ok(self.located(Expr::SizeofExpr(Box::new(operand)),
                 Span { lo: keyword.span.lo, hi: end }));
         }
-        if let Some(increment) = self.peek()?.and_then(|t| match t.text {
+        if let Some(increment) = self.peek()?.and_then(|t| match t.text.as_ref() {
             "++" => Some(true),
             "--" => Some(false),
             _ => None,
@@ -470,7 +481,7 @@ impl<'a> Parser<'a> {
                 target: Box::new(inner), increment, postfix: false,
             }, Span { lo: prefix.span.lo, hi: end }));
         }
-        if let Some(op) = self.peek()?.and_then(|t| match t.text {
+        if let Some(op) = self.peek()?.and_then(|t| match t.text.as_ref() {
             "+" => Some(UnOp::Plus),
             "-" => Some(UnOp::Neg),
             "!" => Some(UnOp::Not),
@@ -487,44 +498,44 @@ impl<'a> Parser<'a> {
         }
         // Keep synchronization tokens available to the recovery path.
         if let Some(token) = self.peek()? {
-            if matches!(token.text, ";" | "}") {
+            if matches!(token.text.as_ref(), ";" | "}") {
                 return Err(Diagnostic::coded(token.span, DiagnosticCode::SyntaxExpectedExpression, "expected expression"));
             }
         }
         let mut expr = match self.take()? {
             Some(t) if t.kind == TokenKind::String => {
-                let bytes = crate::string_literal::decode_narrow_string(t.text)
+                let bytes = crate::string_literal::decode_narrow_string(t.text.as_ref())
                     .map_err(|reason| Diagnostic::coded(
                         t.span, DiagnosticCode::LexicalInvalidCharacter, reason))?;
                 self.located(Expr::StringLiteral(bytes), t.span)
             }
             Some(t) if t.kind == TokenKind::Character => {
-                let value = crate::char_literal::parse_ascii_character(t.text)
+                let value = crate::char_literal::parse_ascii_character(t.text.as_ref())
                     .map_err(|reason| Diagnostic::coded(
                         t.span, DiagnosticCode::LexicalInvalidCharacter, reason))?;
                 self.located(Expr::Int(value), t.span)
             }
             Some(t) if t.kind == TokenKind::FloatingNumber => {
-                let rank = crate::floating_literal::floating_rank(t.text)
+                let rank = crate::floating_literal::floating_rank(t.text.as_ref())
                     .map_err(|reason| Diagnostic::coded(
                         t.span, DiagnosticCode::LexicalNumericSuffix, reason))?;
-                self.located(Expr::FloatLiteral(t.text.to_owned(), rank), t.span)
+                self.located(Expr::FloatLiteral(t.text.to_string(), rank), t.span)
             }
             Some(t) if t.kind == TokenKind::Number => {
-                let expr = crate::integer_literal::parse_integer_expression(t.text)
+                let expr = crate::integer_literal::parse_integer_expression(t.text.as_ref())
                     .map_err(|reason| Diagnostic::coded(
                         t.span, DiagnosticCode::SyntaxIntegerOverflow, reason))?;
                 self.located(expr, t.span)
             }
             Some(t) if matches!(t.kind, TokenKind::Identifier | TokenKind::TypedefName) =>
-                self.located(Expr::Name(t.text.to_owned()), t.span),
-            Some(t) if t.text == "(" => {
+                self.located(Expr::Name(t.text.to_string()), t.span),
+            Some(t) if t.text.as_ref() == "(" => {
                 // Typedef-aware type-name recognition distinguishes (T)x from
                 // (x) without rewinding the incremental lexer. Parse the
                 // full *abstract declarator* after the base type so a cast
                 // like (void*)0 is not mistaken for (void) followed by *.
                 let cast_type = self.peek()?.is_some_and(|next| {
-                    matches!(next.text, "int" | "_Bool" | "char" | "short" | "long" | "_Float128" | "float" | "double" | "void" |
+                    matches!(next.text.as_ref(), "int" | "_Bool" | "char" | "short" | "long" | "_Float128" | "float" | "double" | "void" |
                         "signed" | "unsigned" | "struct" | "union" | "enum" |
                         "const" | "restrict" | "__restrict" | "__restrict__")
                         || next.kind == TokenKind::TypedefName
@@ -538,7 +549,7 @@ impl<'a> Parser<'a> {
                             "cast requires an abstract type-name declarator"));
                     }
                     let close = self.expect(")")?;
-                    if self.peek()?.is_some_and(|token| token.text == "{") {
+                    if self.peek()?.is_some_and(|token| token.text.as_ref() == "{") {
                         let initializer = self.parse_initializer()?;
                         let hi = initializer.location().map_or(close.span.hi, |span| span.hi);
                         self.located(Expr::CompoundLiteral(ty, Box::new(initializer)),
@@ -561,14 +572,14 @@ impl<'a> Parser<'a> {
                 self.eof_span(), DiagnosticCode::SyntaxExpectedExpression, "expected expression")),
         };
         loop {
-            match self.peek()?.map(|t| t.text) {
+            match self.peek()?.map(|t| t.text).as_deref() {
                 Some("(") => {
                     self.take()?;
                     let mut args = Vec::new();
-                    if !self.peek()?.is_some_and(|t| t.text == ")") {
+                    if !self.peek()?.is_some_and(|t| t.text.as_ref() == ")") {
                         loop {
                             args.push(self.parse_assign()?);
-                            if !self.peek()?.is_some_and(|t| t.text == ",") {
+                            if !self.peek()?.is_some_and(|t| t.text.as_ref() == ",") {
                                 break;
                             }
                             self.take()?;
@@ -588,14 +599,14 @@ impl<'a> Parser<'a> {
                         Span { lo: start, hi: close.span.hi });
                 }
                 Some(".") | Some("->") => {
-                    let arrow = self.take()?.expect("peeked operator").text == "->";
+                    let arrow = self.take()?.expect("peeked operator").text.as_ref() == "->";
                     let token = self.take()?.ok_or_else(||
                         Diagnostic::new(self.eof_span(), "expected structure member name"))?;
                     if !matches!(token.kind, TokenKind::Identifier | TokenKind::TypedefName) {
                         return Err(Diagnostic::new(token.span, "expected structure member name"));
                     }
                     let start = expr.location().map_or(token.span.lo, |span| span.lo);
-                    expr = self.located(Expr::Member(Box::new(expr), token.text.to_owned(), arrow),
+                    expr = self.located(Expr::Member(Box::new(expr), token.text.to_string(), arrow),
                         Span { lo: start, hi: token.span.hi });
                 }
                 Some("++") | Some("--") => {
@@ -603,7 +614,7 @@ impl<'a> Parser<'a> {
                     let start = expr.location().map_or(token.span.lo, |loc| loc.lo);
                     expr = self.located(Expr::Update {
                         target: Box::new(expr),
-                        increment: token.text == "++",
+                        increment: token.text.as_ref() == "++",
                         postfix: true,
                     }, Span { lo: start, hi: token.span.hi });
                 }
@@ -631,7 +642,7 @@ impl<'a> Parser<'a> {
                 self.eof_span(), DiagnosticCode::SyntaxInvalidDeclaration,
                 "unterminated GNU attribute list"
             ))?;
-            if token.text == ")" {
+            if token.text.as_ref() == ")" {
                 self.take()?;
                 break;
             }
@@ -642,7 +653,7 @@ impl<'a> Parser<'a> {
             }
             self.take()?;
             count += 1;
-            let name = gnu_attribute_spelling(token.text);
+            let name = gnu_attribute_spelling(token.text.as_ref());
             match name {
                 // These are optional compiler optimization or diagnostic
                 // promises. Ignoring them is conservative for generated code.
@@ -655,7 +666,7 @@ impl<'a> Parser<'a> {
                             DiagnosticCode::SyntaxInvalidDeclaration,
                             "malloc attribute requires a function declaration"));
                     }
-                    if self.peek()?.is_some_and(|t| t.text == "(") {
+                    if self.peek()?.is_some_and(|t| t.text.as_ref() == "(") {
                         self.take()?;
                         let deallocator = self.take()?.ok_or_else(|| Diagnostic::coded(
                             self.eof_span(), DiagnosticCode::SyntaxInvalidDeclaration,
@@ -691,10 +702,10 @@ impl<'a> Parser<'a> {
                 "nothrow" | "leaf" | "pure" | "const" | "noreturn" | "cold"
                 | "warn_unused_result" | "unused" | "deprecated"
                 | "returns_nonnull" => {
-                    if self.peek()?.is_some_and(|t| t.text == "(") {
+                    if self.peek()?.is_some_and(|t| t.text.as_ref() == "(") {
                         return Err(Diagnostic::coded(token.span,
                             DiagnosticCode::SyntaxInvalidDeclaration,
-                            format!("unsupported arguments to GNU attribute '{}'", token.text)));
+                            format!("unsupported arguments to GNU attribute '{}'", token.text.as_ref())));
                     }
                 }
                 "format" => {
@@ -712,7 +723,7 @@ impl<'a> Parser<'a> {
                         self.eof_span(), DiagnosticCode::SyntaxInvalidDeclaration,
                         "expected GNU format archetype"
                     ))?;
-                    if !matches!(gnu_attribute_spelling(kind.text),
+                    if !matches!(gnu_attribute_spelling(kind.text.as_ref()),
                         "printf" | "gnu_printf" | "scanf" | "gnu_scanf")
                     {
                         return Err(Diagnostic::coded(kind.span,
@@ -757,10 +768,10 @@ impl<'a> Parser<'a> {
                     self.expect(")")?;
                 }
                 "nonnull" => {
-                    if self.peek()?.is_some_and(|t| t.text == "(") {
+                    if self.peek()?.is_some_and(|t| t.text.as_ref() == "(") {
                         self.take()?;
                         // No arguments denotes all pointer parameters.
-                        if !self.peek()?.is_some_and(|t| t.text == ")") {
+                        if !self.peek()?.is_some_and(|t| t.text.as_ref() == ")") {
                             loop {
                                 let argument = self.take()?.ok_or_else(|| Diagnostic::coded(
                                     self.eof_span(), DiagnosticCode::SyntaxInvalidDeclaration,
@@ -773,7 +784,7 @@ impl<'a> Parser<'a> {
                                         DiagnosticCode::SyntaxInvalidDeclaration,
                                         "nonnull attribute requires positive integer parameter positions"));
                                 }
-                                if !self.peek()?.is_some_and(|t| t.text == ",") { break; }
+                                if !self.peek()?.is_some_and(|t| t.text.as_ref() == ",") { break; }
                                 self.take()?;
                             }
                         }
@@ -792,7 +803,7 @@ impl<'a> Parser<'a> {
                         self.eof_span(), DiagnosticCode::SyntaxInvalidDeclaration,
                         "expected access mode"
                     ))?;
-                    if !matches!(gnu_attribute_spelling(mode.text),
+                    if !matches!(gnu_attribute_spelling(mode.text.as_ref()),
                         "read_only" | "write_only" | "read_write" | "none")
                     {
                         return Err(Diagnostic::coded(mode.span,
@@ -812,7 +823,7 @@ impl<'a> Parser<'a> {
                                 DiagnosticCode::SyntaxInvalidDeclaration,
                                 "access attribute requires positive integer parameter indexes"));
                         }
-                        if position == 1 || !self.peek()?.is_some_and(|t| t.text == ",") {
+                        if position == 1 || !self.peek()?.is_some_and(|t| t.text.as_ref() == ",") {
                             break;
                         }
                         self.take()?;
@@ -827,16 +838,16 @@ impl<'a> Parser<'a> {
                 _ => return Err(Diagnostic::coded(token.span,
                     DiagnosticCode::SyntaxInvalidDeclaration,
                     format!("unsupported GNU attribute '{}' (possible ABI or semantic effect)",
-                        token.text))),
+                        token.text.as_ref()))),
             }
             if !function {
                 return Err(Diagnostic::coded(token.span,
                     DiagnosticCode::SyntaxInvalidDeclaration,
                     "GNU function attribute requires a function declarator"));
             }
-            if self.peek()?.is_some_and(|t| t.text == ",") {
+            if self.peek()?.is_some_and(|t| t.text.as_ref() == ",") {
                 self.take()?;
-            } else if !self.peek()?.is_some_and(|t| t.text == ")") {
+            } else if !self.peek()?.is_some_and(|t| t.text.as_ref() == ")") {
                 let span = self.peek()?.map_or(self.eof_span(), |t| t.span);
                 return Err(Diagnostic::coded(span,
                     DiagnosticCode::SyntaxInvalidDeclaration,
@@ -856,24 +867,24 @@ impl<'a> Parser<'a> {
     /// parameter declarators may omit their name.
     fn parse_declarator_shape(&mut self, allow_abstract: bool) -> Result<Declarator, Diagnostic> {
         let mut stars = Vec::new();
-        while self.peek()?.is_some_and(|token| token.text == "*") {
+        while self.peek()?.is_some_and(|token| token.text.as_ref() == "*") {
             self.take()?;
             stars.push(self.parse_qualifiers()?);
         }
-        let mut direct = if self.peek()?.is_some_and(|token| token.text == "(") {
+        let mut direct = if self.peek()?.is_some_and(|token| token.text.as_ref() == "(") {
             self.take()?;
             let inner = self.parse_declarator_shape(allow_abstract)?;
             self.expect(")")?;
             inner
         } else if let Some(token) = self.peek()?.filter(|token| {
             matches!(token.kind, TokenKind::Identifier | TokenKind::TypedefName)
-                && !matches!(token.text, "int" | "_Bool" | "char" | "short" | "long" | "_Float128" | "float" | "double" | "void"
+                && !matches!(token.text.as_ref(), "int" | "_Bool" | "char" | "short" | "long" | "_Float128" | "float" | "double" | "void"
                     | "unsigned" | "signed" | "const" | "restrict" | "__restrict" | "__restrict__"
                     | "typedef" | "static" | "extern" | "register"
                     | "struct" | "union" | "enum" | "if" | "else" | "while" | "do" | "for" | "switch" | "case" | "default" | "return" | "break" | "continue")
         }) {
             self.take()?;
-            Declarator::Name(token.text.to_owned(), self.expression_spans.then_some(token.span))
+            Declarator::Name(token.text.to_string(), self.expression_spans.then_some(token.span))
         } else if allow_abstract {
             Declarator::Name(String::new(), None)
         } else {
@@ -883,22 +894,22 @@ impl<'a> Parser<'a> {
         };
 
         loop {
-            if self.peek()?.is_some_and(|token| token.text == "[") {
+            if self.peek()?.is_some_and(|token| token.text.as_ref() == "[") {
                 self.take()?;
-                let bound = if self.peek()?.is_some_and(|token| token.text == "]") {
+                let bound = if self.peek()?.is_some_and(|token| token.text.as_ref() == "]") {
                     None
                 } else {
                     Some(self.parse_expr()?)
                 };
                 self.expect("]")?;
                 direct = Declarator::Array(Box::new(direct), bound);
-            } else if self.peek()?.is_some_and(|token| token.text == "(") {
+            } else if self.peek()?.is_some_and(|token| token.text.as_ref() == "(") {
                 self.take()?;
                 let (params, variadic) = self.parse_parameter_list()?;
                 self.expect(")")?;
                 direct = Declarator::Function(Box::new(direct), params, variadic);
             } else if self.peek()?.is_some_and(|token|
-                token.text == "__attribute__" || token.text == "__attribute")
+                token.text.as_ref() == "__attribute__" || token.text.as_ref() == "__attribute")
             {
                 self.parse_gnu_declarator_attributes(
                     match &direct {
@@ -923,7 +934,7 @@ impl<'a> Parser<'a> {
     /// advisory GNU attributes it must be preserved through native lowering.
     /// GCC accepts adjacent string literals, including an empty prefix.
     fn parse_asm_linkage_label(&mut self) -> Result<Option<String>, Diagnostic> {
-        if !self.peek()?.is_some_and(|t| matches!(t.text, "__asm__" | "__asm")) {
+        if !self.peek()?.is_some_and(|t| matches!(t.text.as_ref(), "__asm__" | "__asm")) {
             return Ok(None);
         }
         let keyword = self.take()?.expect("peeked asm");
@@ -932,7 +943,7 @@ impl<'a> Parser<'a> {
         let mut fragments = 0usize;
         while self.peek()?.is_some_and(|t| t.kind == TokenKind::String) {
             let token = self.take()?.expect("peeked string");
-            let decoded = crate::string_literal::decode_narrow_string(token.text)
+            let decoded = crate::string_literal::decode_narrow_string(token.text.as_ref())
                 .map_err(|reason| Diagnostic::coded(token.span,
                     DiagnosticCode::LexicalInvalidCharacter, reason))?;
             if decoded[..decoded.len().saturating_sub(1)].contains(&0) {
@@ -957,16 +968,16 @@ impl<'a> Parser<'a> {
 
     fn parse_parameter_list(&mut self) -> Result<(Vec<Decl>, bool), Diagnostic> {
         let mut params = Vec::new();
-        if self.peek()?.is_some_and(|token| token.text == ")") {
+        if self.peek()?.is_some_and(|token| token.text.as_ref() == ")") {
             return Ok((params, false));
         }
         loop {
             let token_span = self.peek()?.map_or(self.eof_span(), |token| token.span);
-            if self.peek()?.is_some_and(|token| matches!(token.text, "," | ")")) {
+            if self.peek()?.is_some_and(|token| matches!(token.text.as_ref(), "," | ")")) {
                 return Err(Diagnostic::coded(token_span, DiagnosticCode::SyntaxExpectedParameter,
                     "expected parameter type"));
             }
-            let storage = if self.peek()?.is_some_and(|t| t.text == "register") {
+            let storage = if self.peek()?.is_some_and(|t| t.text.as_ref() == "register") {
                 self.take()?;
                 StorageClass::Register
             } else {
@@ -977,7 +988,7 @@ impl<'a> Parser<'a> {
                     DiagnosticCode::SyntaxExpectedParameter, "expected parameter type"))?;
             // The entire parameter list (void) denotes no parameters.
             if base == Type::Void && params.is_empty() && storage == StorageClass::Default {
-                if self.peek()?.is_some_and(|token| token.text == ")") {
+                if self.peek()?.is_some_and(|token| token.text.as_ref() == ")") {
                     return Ok((params, false));
                 }
                 // An incomplete (void at EOF is a missing ')', not an
@@ -1000,11 +1011,11 @@ impl<'a> Parser<'a> {
                 init: None,
                 span: Span { lo, hi: lo },
             });
-            if !self.peek()?.is_some_and(|token| token.text == ",") {
+            if !self.peek()?.is_some_and(|token| token.text.as_ref() == ",") {
                 break;
             }
             self.take()?;
-            if self.peek()?.is_some_and(|token| token.text == "...") {
+            if self.peek()?.is_some_and(|token| token.text.as_ref() == "...") {
                 self.take()?;
                 return Ok((params, true));
             }
@@ -1015,12 +1026,12 @@ impl<'a> Parser<'a> {
     /// Parse C braced initializers recursively without enabling comma
     /// expressions in the ordinary expression grammar.
     fn parse_initializer(&mut self) -> Result<Expr, Diagnostic> {
-        if !self.peek()?.is_some_and(|t| t.text == "{") {
+        if !self.peek()?.is_some_and(|t| t.text.as_ref() == "{") {
             return self.parse_assign();
         }
         let open = self.take()?.expect("peeked opening brace");
         let mut values = Vec::new();
-        if self.peek()?.is_some_and(|t| t.text == "}") {
+        if self.peek()?.is_some_and(|t| t.text.as_ref() == "}") {
             return Err(Diagnostic::new(self.peek()?.expect("peeked").span,
                 "empty aggregate initializers are unsupported"));
         }
@@ -1028,7 +1039,7 @@ impl<'a> Parser<'a> {
             let mut path = Vec::new();
             let start = self.peek()?.map_or(self.eof_span(), |t| t.span);
             while let Some(token) = self.peek()? {
-                match token.text {
+                match token.text.as_ref() {
                     "." => {
                         self.take()?;
                         let field = self.take()?.ok_or_else(||
@@ -1036,7 +1047,7 @@ impl<'a> Parser<'a> {
                         if !matches!(field.kind, TokenKind::Identifier | TokenKind::TypedefName) {
                             return Err(Diagnostic::new(field.span, "expected field designator name"));
                         }
-                        path.push(Designator::Field(field.text.to_owned()));
+                        path.push(Designator::Field(field.text.to_string()));
                     }
                     "[" => {
                         self.take()?;
@@ -1056,9 +1067,9 @@ impl<'a> Parser<'a> {
                     Span { lo: start.lo, hi: start.hi })
             };
             values.push(value);
-            if !self.peek()?.is_some_and(|t| t.text == ",") { break; }
+            if !self.peek()?.is_some_and(|t| t.text.as_ref() == ",") { break; }
             self.take()?;
-            if self.peek()?.is_some_and(|t| t.text == "}") { break; }
+            if self.peek()?.is_some_and(|t| t.text.as_ref() == "}") { break; }
         }
         let close = self.expect("}")?;
         Ok(self.located(Expr::Initializer(values),
@@ -1084,7 +1095,7 @@ impl<'a> Parser<'a> {
     /// Callers inside blocks flatten these into statements in the same scope.
     fn parse_decl_group(&mut self, is_typedef: bool) -> Result<Vec<Decl>, Diagnostic> {
         let storage_span = self.peek()?.map_or(self.eof_span(), |t| t.span);
-        let storage = match self.peek()?.map(|t| t.text) {
+        let storage = match self.peek()?.map(|t| t.text).as_deref() {
             Some("static") => { self.take()?; StorageClass::Static },
             Some("extern") => { self.take()?; StorageClass::Extern },
             Some("register") => { self.take()?; StorageClass::Register },
@@ -1102,7 +1113,7 @@ impl<'a> Parser<'a> {
                 self.parse_declarator_shape(false)?.finish(base.clone());
             self.scopes.declare(&name,
                 if is_typedef { Binding::Typedef } else { Binding::Ordinary });
-            let initializer_operator = self.peek()?.filter(|t| t.text == "=").map(|t| t.span);
+            let initializer_operator = self.peek()?.filter(|t| t.text.as_ref() == "=").map(|t| t.span);
             let init = if initializer_operator.is_some() {
                 self.take()?;
                 Some(self.parse_initializer()?)
@@ -1119,7 +1130,7 @@ impl<'a> Parser<'a> {
                 storage, name, name_span, ty, asm_label: None, init,
                 span: Span { lo: start, hi: start },
             });
-            if self.peek()?.is_some_and(|t| t.text == ",") {
+            if self.peek()?.is_some_and(|t| t.text.as_ref() == ",") {
                 self.take()?;
                 continue;
             }
@@ -1134,13 +1145,13 @@ impl<'a> Parser<'a> {
     fn parse_tag_or_decl(&mut self) -> Result<Stmt, Diagnostic> {
         let (base, start) = self.parse_type()?
             .ok_or_else(|| Diagnostic::new(self.eof_span(), "expected tag type"))?;
-        if self.peek()?.is_some_and(|t| t.text == ";") {
+        if self.peek()?.is_some_and(|t| t.text.as_ref() == ";") {
             self.take()?;
             return Ok(Stmt::Tag(base));
         }
         let (name, ty, _, name_span) = self.parse_declarator_shape(false)?.finish(base);
         self.scopes.declare(&name, Binding::Ordinary);
-        let init = if self.peek()?.is_some_and(|t| t.text == "=") {
+        let init = if self.peek()?.is_some_and(|t| t.text.as_ref() == "=") {
             self.take()?;
             Some(self.parse_initializer()?)
         } else { None };
@@ -1153,7 +1164,7 @@ impl<'a> Parser<'a> {
 
     fn parse_stmt(&mut self) -> Result<Stmt, Diagnostic> {
         let token = self.peek()?.ok_or_else(|| Diagnostic::new(self.eof_span(), "expected statement"))?;
-        match token.text {
+        match token.text.as_ref() {
             "{" => Ok(self.parse_block()?.0),
             ";" => { self.take()?; Ok(Stmt::Expr(None)) },
             "goto" => {
@@ -1164,11 +1175,11 @@ impl<'a> Parser<'a> {
                     return Err(Diagnostic::new(target.span, "goto requires a label identifier"));
                 }
                 self.expect(";")?;
-                Ok(Stmt::Goto { target: target.text.to_owned(), span: target.span })
+                Ok(Stmt::Goto { target: target.text.to_string(), span: target.span })
             }
             "return" => {
                 self.take()?;
-                let value = if self.peek()?.is_some_and(|t| t.text == ";") { None } else { Some(self.parse_expr()?) };
+                let value = if self.peek()?.is_some_and(|t| t.text.as_ref() == ";") { None } else { Some(self.parse_expr()?) };
                 self.expect(";")?;
                 Ok(Stmt::Return(value))
             }
@@ -1177,7 +1188,7 @@ impl<'a> Parser<'a> {
                 let cond = self.parse_expr()?;
                 self.expect(")")?;
                 let then = Box::new(self.parse_stmt()?);
-                let otherwise = if self.peek()?.is_some_and(|t| t.text == "else") {
+                let otherwise = if self.peek()?.is_some_and(|t| t.text.as_ref() == "else") {
                     self.take()?; Some(Box::new(self.parse_stmt()?))
                 } else { None };
                 Ok(Stmt::If { cond, then, otherwise })
@@ -1214,12 +1225,12 @@ impl<'a> Parser<'a> {
                 // typedef classification. Restore it even on syntax errors.
                 self.scopes.enter();
                 let parsed = (|| {
-                    let init = if self.peek()?.is_some_and(|t| t.text == ";") {
+                    let init = if self.peek()?.is_some_and(|t| t.text.as_ref() == ";") {
                         self.take()?;
                         None
                     } else {
                         let token = self.peek()?.expect("for initializer token");
-                        let stmt = match token.text {
+                        let stmt = match token.text.as_ref() {
                             "typedef" => {
                                 self.take()?;
                                 Stmt::Typedef(self.parse_decl(true)?)
@@ -1238,13 +1249,13 @@ impl<'a> Parser<'a> {
                         };
                         Some(Box::new(stmt))
                     };
-                    let cond = if self.peek()?.is_some_and(|t| t.text == ";") {
+                    let cond = if self.peek()?.is_some_and(|t| t.text.as_ref() == ";") {
                         None
                     } else {
                         Some(self.parse_expr()?)
                     };
                     self.expect(";")?;
-                    let step = if self.peek()?.is_some_and(|t| t.text == ")") {
+                    let step = if self.peek()?.is_some_and(|t| t.text.as_ref() == ")") {
                         None
                     } else {
                         Some(self.parse_expr()?)
@@ -1279,7 +1290,7 @@ impl<'a> Parser<'a> {
                 self.expect(":")?;
                 // ISO C99 permits labels on statements, not declarations.
                 let next = self.peek()?;
-                let is_decl_keyword = next.is_some_and(|token| matches!(token.text,
+                let is_decl_keyword = next.is_some_and(|token| matches!(token.text.as_ref(),
                     "typedef" | "static" | "extern" | "register" | "struct" | "union" | "enum" |
                     "int" | "_Bool" | "char" | "short" | "long" | "_Float128" |
                     "float" | "double" | "void" | "unsigned" | "signed" |
@@ -1289,7 +1300,7 @@ impl<'a> Parser<'a> {
                 if is_decl_keyword || is_typedef_decl {
                     return Err(Diagnostic::new(name.span, "C99 label must precede a statement, not a declaration"));
                 }
-                Ok(Stmt::Label { name: name.text.to_owned(), span: name.span,
+                Ok(Stmt::Label { name: name.text.to_string(), span: name.span,
                     body: Box::new(self.parse_stmt()?) })
             }
             _ if token.kind == TokenKind::TypedefName => Ok(Stmt::Decl(self.parse_decl(false)?)),
@@ -1311,14 +1322,14 @@ impl<'a> Parser<'a> {
                         "unterminated function body",
                     ));
                 };
-                if token.text == "}" {
+                if token.text.as_ref() == "}" {
                     let end = self.take()?.expect("peeked token").span.hi;
                     return Ok((Stmt::Block(statements), end));
                 }
                 // A declaration-list is one C block item, not a nested
                 // scope. Flatten its individual checked declarations into
                 // this same block so later statements can use every name.
-                let declaration = match token.text {
+                let declaration = match token.text.as_ref() {
                     "typedef" => {
                         self.take()?;
                         Some(true)
@@ -1353,14 +1364,14 @@ impl<'a> Parser<'a> {
         let token = self.peek()?.ok_or_else(|| Diagnostic::new(
             first.span, "type qualifier requires a type specifier"
         ))?;
-        let ty = match token.text {
+        let ty = match token.text.as_ref() {
             "enum" => {
                 self.take()?;
                 let tag = self.peek()?.filter(|t| matches!(t.kind,
                     TokenKind::Identifier | TokenKind::TypedefName))
-                    .map(|t| t.text.to_owned());
+                    .map(|t| t.text.to_string());
                 if tag.is_some() { self.take()?; }
-                if !self.peek()?.is_some_and(|t| t.text == "{") {
+                if !self.peek()?.is_some_and(|t| t.text.as_ref() == "{") {
                     let tag = tag.ok_or_else(|| Diagnostic::new(token.span,
                         "anonymous enum requires enumerators"))?;
                     let mut ty = Type::TagRef(TagKind::Enum, tag);
@@ -1371,7 +1382,7 @@ impl<'a> Parser<'a> {
                     return Ok(Some((ty, first.span.lo)));
                 }
                 self.take()?;
-                if self.peek()?.is_some_and(|t| t.text == "}") {
+                if self.peek()?.is_some_and(|t| t.text.as_ref() == "}") {
                     return Err(Diagnostic::new(token.span, "empty enums are unsupported"));
                 }
                 let mut enumerators = Vec::new();
@@ -1381,26 +1392,26 @@ impl<'a> Parser<'a> {
                     if !matches!(name.kind, TokenKind::Identifier | TokenKind::TypedefName) {
                         return Err(Diagnostic::new(name.span, "expected enumerator name"));
                     }
-                    let value = if self.peek()?.is_some_and(|t| t.text == "=") {
+                    let value = if self.peek()?.is_some_and(|t| t.text.as_ref() == "=") {
                         self.take()?;
                         Some(self.parse_assign()?)
                     } else { None };
-                    enumerators.push((name.text.to_owned(), value));
-                    if !self.peek()?.is_some_and(|t| t.text == ",") { break; }
+                    enumerators.push((name.text.to_string(), value));
+                    if !self.peek()?.is_some_and(|t| t.text.as_ref() == ",") { break; }
                     self.take()?;
-                    if self.peek()?.is_some_and(|t| t.text == "}") { break; }
+                    if self.peek()?.is_some_and(|t| t.text.as_ref() == "}") { break; }
                 }
                 self.expect("}")?;
                 Type::Enum { tag, enumerators }
             }
             "struct" | "union" => {
-                let is_union = token.text == "union";
+                let is_union = token.text.as_ref() == "union";
                 self.take()?;
                 let tag = self.peek()?.filter(|t| matches!(t.kind,
                     TokenKind::Identifier | TokenKind::TypedefName))
-                    .map(|t| t.text.to_owned());
+                    .map(|t| t.text.to_string());
                 if tag.is_some() { self.take()?; }
-                if !self.peek()?.is_some_and(|t| t.text == "{") {
+                if !self.peek()?.is_some_and(|t| t.text.as_ref() == "{") {
                     let tag = tag.ok_or_else(|| Diagnostic::new(token.span,
                         "anonymous struct or union requires a member definition"))?;
                     let kind = if is_union { TagKind::Union } else { TagKind::Struct };
@@ -1413,7 +1424,7 @@ impl<'a> Parser<'a> {
                 }
                 self.take()?;
                 let mut members = Vec::new();
-                while !self.peek()?.is_some_and(|t| t.text == "}") {
+                while !self.peek()?.is_some_and(|t| t.text.as_ref() == "}") {
                     let (base, start) = self.parse_type()?.ok_or_else(||
                         Diagnostic::new(self.eof_span(), "unterminated struct definition"))?;
                     // A C struct/union member declaration has a *shared* base
@@ -1424,7 +1435,7 @@ impl<'a> Parser<'a> {
                     // named function member or unsupported bit-field admitted.
                     let first = members.len();
                     loop {
-                        let unnamed_bitfield = self.peek()?.is_some_and(|t| t.text == ":");
+                        let unnamed_bitfield = self.peek()?.is_some_and(|t| t.text.as_ref() == ":");
                         let (name, ty, params, name_span) =
                             if unnamed_bitfield {
                                 (String::new(), base.clone(), None, None)
@@ -1435,7 +1446,7 @@ impl<'a> Parser<'a> {
                             return Err(Diagnostic::new(Span { lo: start, hi: start },
                                 "struct member cannot have function type"));
                         }
-                        let ty = if self.peek()?.is_some_and(|t| t.text == ":") {
+                        let ty = if self.peek()?.is_some_and(|t| t.text.as_ref() == ":") {
                             self.take()?;
                             let width = self.parse_assign()?;
                             Type::BitField(Box::new(ty), Box::new(width))
@@ -1447,7 +1458,7 @@ impl<'a> Parser<'a> {
                             asm_label: None, init: None,
                             span: Span { lo: start, hi: start },
                         });
-                        if self.peek()?.is_some_and(|t| t.text == ",") {
+                        if self.peek()?.is_some_and(|t| t.text.as_ref() == ",") {
                             self.take()?;
                             continue;
                         }
@@ -1472,7 +1483,7 @@ impl<'a> Parser<'a> {
             "_Float128" => { self.take()?; Type::Floating(FloatRank::Float128) }
             "double" => {
                 self.take()?;
-                if self.peek()?.is_some_and(|t| t.text == "long") {
+                if self.peek()?.is_some_and(|t| t.text.as_ref() == "long") {
                     self.take()?;
                     Type::Floating(FloatRank::LongDouble)
                 } else { Type::Floating(FloatRank::Double) }
@@ -1490,7 +1501,7 @@ impl<'a> Parser<'a> {
                 let mut long_count = 0u8;
                 let mut sign: Option<bool> = None;
                 while let Some(next) = self.peek()? {
-                    match next.text {
+                    match next.text.as_ref() {
                         "char" if !is_char && !is_int && !is_short && long_count == 0 => is_char = true,
                         "short" if !is_short && !is_char && long_count == 0 => is_short = true,
                         "int" if !is_int && !is_char => is_int = true,
@@ -1529,7 +1540,7 @@ impl<'a> Parser<'a> {
             }
             _ if token.kind == TokenKind::TypedefName => {
                 self.take()?;
-                Type::Alias(token.text.to_owned())
+                Type::Alias(token.text.to_string())
             }
             _ => return Err(Diagnostic::new(token.span, "expected a type specifier")),
         };
@@ -1547,7 +1558,7 @@ impl<'a> Parser<'a> {
     fn parse_qualifiers(&mut self) -> Result<Qualifiers, Diagnostic> {
         let mut result = Qualifiers::default();
         while let Some(token) = self.peek()? {
-            match token.text {
+            match token.text.as_ref() {
                 "const" => result.is_const = true,
                 "restrict" | "__restrict" | "__restrict__" => result.is_restrict = true,
                 _ => break,
@@ -1567,7 +1578,7 @@ impl ItemSource for Parser<'_> {
         // following declaration; it changes neither type nor ABI. Admit
         // precisely this file-scope prefix, without dropping the declaration
         // or interpreting arbitrary GNU extensions as harmless.
-        if self.peek()?.is_some_and(|t| t.text == "__extension__") {
+        if self.peek()?.is_some_and(|t| t.text.as_ref() == "__extension__") {
             let marker = self.take()?.expect("peeked __extension__");
             if self.peek()?.is_none() {
                 return Err(Diagnostic::coded(marker.span,
@@ -1575,10 +1586,10 @@ impl ItemSource for Parser<'_> {
                     "GNU __extension__ requires a following declaration"));
             }
         }
-        let is_typedef = self.peek()?.is_some_and(|t| t.text == "typedef");
+        let is_typedef = self.peek()?.is_some_and(|t| t.text.as_ref() == "typedef");
         if is_typedef { self.take()?; }
         let storage_span = self.peek()?.map_or(self.eof_span(), |t| t.span);
-        let storage = match self.peek()?.map(|t| t.text) {
+        let storage = match self.peek()?.map(|t| t.text).as_deref() {
             Some("static") => { self.take()?; StorageClass::Static },
             Some("extern") => { self.take()?; StorageClass::Extern },
             Some("register") => { self.take()?; StorageClass::Register },
@@ -1599,7 +1610,7 @@ impl ItemSource for Parser<'_> {
             }
             return Ok(None);
         };
-        if self.peek()?.is_some_and(|t| t.text == ";") {
+        if self.peek()?.is_some_and(|t| t.text.as_ref() == ";") {
             if !matches!(&base, Type::Struct { .. } | Type::Union { .. } | Type::Enum { .. } | Type::TagRef(..)) {
                 return Err(Diagnostic::coded(self.peek()?.expect("peeked").span,
                     DiagnosticCode::SyntaxExpectedDeclarator,
@@ -1617,7 +1628,7 @@ impl ItemSource for Parser<'_> {
         let asm_label = self.parse_asm_linkage_label()?;
         // GNU permits advisory function attributes following the asm label.
         while self.peek()?.is_some_and(|t|
-            matches!(t.text, "__attribute__" | "__attribute"))
+            matches!(t.text.as_ref(), "__attribute__" | "__attribute"))
         {
             let signature = match &ty {
                 Type::Function { params, .. } => Some((params.len(), false)),
@@ -1636,7 +1647,7 @@ impl ItemSource for Parser<'_> {
         self.pending_file_binding = Some((name.clone(), self.scopes.lookup(&name)));
         self.scopes.declare(&name, if is_typedef { Binding::Typedef } else { Binding::Ordinary });
 
-        if let Some(brace) = self.peek()?.filter(|token| token.text == "{") {
+        if let Some(brace) = self.peek()?.filter(|token| token.text.as_ref() == "{") {
             let Type::Function { result, .. } = ty else {
                 return Err(Diagnostic::coded(brace.span, DiagnosticCode::SyntaxInvalidDeclaration,
                     "function body requires a function declarator"));
@@ -1663,7 +1674,7 @@ impl ItemSource for Parser<'_> {
                 span: Span { lo: start, hi: end },
             })));
         }
-        let initializer_operator = self.peek()?.filter(|t| t.text == "=").map(|t| t.span);
+        let initializer_operator = self.peek()?.filter(|t| t.text.as_ref() == "=").map(|t| t.span);
         let init = if initializer_operator.is_some() {
             self.take()?;
             Some(self.parse_initializer()?)
