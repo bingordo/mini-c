@@ -2327,7 +2327,7 @@ mod run_tests {
         // The invocation is one token. Without the new substitution guard,
         // all eighty replacement tokens would be allocated into a Vec
         // before the existing visit counter could inspect any of them.
-        let macro_body = std::iter::repeat("17").take(80).collect::<Vec<_>>().join(" ");
+        let macro_body = std::iter::repeat_n("17", 80).collect::<Vec<_>>().join(" ");
         let source = format!("#define BIG {macro_body}\nBIG\n");
         let (mut sess, id, cap) = seed(&source);
         let mut pp = Preprocessor::new(&mut sess);
