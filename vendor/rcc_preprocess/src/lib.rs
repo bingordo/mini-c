@@ -164,6 +164,9 @@ pub struct Preprocessor<'a> {
     /// so downstream phases can still observe the failure via
     /// `Handler::has_errors`.
     halted: bool,
+    /// Advisory cancellation from a bounded downstream consumer that exited
+    /// before EOF. This is not an error and emits no new diagnostics.
+    cancelled: Cell<bool>,
 }
 
 impl<'a> Preprocessor<'a> {
@@ -203,7 +206,15 @@ impl<'a> Preprocessor<'a> {
             output_limit_reported: false,
             predefined_installed: false,
             halted: false,
+            cancelled: Cell::new(false),
         }
+    }
+
+    /// Stop preprocessing as soon as control returns to the source walk.
+    /// Useful for bounded producers whose downstream parser has exited.
+    /// This is intentionally distinct from the fatal #error diagnostic.
+    pub fn request_cancel(&self) {
+        self.cancelled.set(true);
     }
 
     /// Run preprocessing and return the expanded token stream.
@@ -294,6 +305,9 @@ impl<'a> Preprocessor<'a> {
     where
         F: FnMut(&Self, Vec<PpToken>),
     {
+        if self.cancelled.get() {
+            return;
+        }
         if !self.predefined_installed {
             // The Mini-C adapter loads the root with a bounded read. Also
             // account for roots supplied by clients of this public API.
@@ -336,6 +350,9 @@ impl<'a> Preprocessor<'a> {
         let mut accounted = 0usize;
         let mut cond = cond_stack::CondStack::new();
         while let Some(line) = ls.next_line() {
+            if self.cancelled.get() {
+                break;
+            }
             // Charge actual scanner work before dispatching a directive, so
             // nested includes share the same cumulative token budget.
             if !self.account_stream_scan(scanned.get(), &mut accounted, last_span.get()) {
@@ -387,7 +404,7 @@ impl<'a> Preprocessor<'a> {
         // The final scanner pull can consume an EOF or blank logical line
         // without producing a LineStream item. Account for those tokens too.
         self.account_stream_scan(scanned.get(), &mut accounted, last_span.get());
-        if !self.halted {
+        if !self.halted && !self.cancelled.get() {
             self.flush_pending_text_sink(&mut pending_text, emitted_tokens, sink);
         }
 
@@ -399,7 +416,7 @@ impl<'a> Preprocessor<'a> {
         // makes `#error` fatal, so piling unrelated E0018 on top
         // would just be noise about a translation unit that already
         // failed.
-        if !self.halted {
+        if !self.halted && !self.cancelled.get() {
             for frame in cond.into_unclosed() {
                 let diag = cond_stack::missing_endif(frame.open_span);
                 self.session.handler.emit(&diag);
@@ -601,7 +618,7 @@ impl<'a> Preprocessor<'a> {
     where
         F: FnMut(&Self, Vec<PpToken>),
     {
-        if self.halted {
+        if self.halted || self.cancelled.get() {
             return;
         }
         if additional.len() > self.output_token_limit.saturating_sub(*emitted_tokens) {
