@@ -3,6 +3,7 @@
 //! never retained in the checker. No filesystem, global state or output side effects.
 pub mod types;
 pub mod const_eval;
+pub mod builtins;
 
 use std::collections::{HashMap, HashSet};
 use std::cell::{Cell, RefCell};
@@ -2456,32 +2457,49 @@ impl Checker {
                 }))
             }
             Expr::Call(callee, args) => {
-                // Recognize only the source-pinned GCC integer builtin required
-                // by FreeBSD ffs. Do not invent prototypes for other builtins,
-                // or steal a visible user declaration of the same name.
+                // One typed builtin registry owns spelling, arity and target
+                // lowering admission. Never turn an unimplemented GNU atomic
+                // into a plain external call, regardless of a visible symbol.
                 if let Expr::Name(name) = callee.without_location() {
-                    if name == "__builtin_ctz" && self.lookup(name).is_none() {
-                        if args.len() != 1 {
-                            return Err(Diagnostic::coded(span,
-                                DiagnosticCode::SemanticWrongArgumentCount,
-                                "__builtin_ctz expects exactly one argument"));
+                    if let Some(spec) = builtins::lookup(name) {
+                        if spec.lowering == builtins::LoweringClass::AtomicIrRequired
+                            || self.lookup(name).is_none()
+                        {
+                            if args.len() != spec.argument_count {
+                                return Err(Diagnostic::coded(span,
+                                    DiagnosticCode::SemanticWrongArgumentCount,
+                                    format!("{name} expects exactly {} argument{}",
+                                        spec.argument_count,
+                                        if spec.argument_count == 1 { "" } else { "s" })));
+                            }
+                            match spec.id {
+                                builtins::BuiltinId::Ctz32 => {
+                                    let argument = &args[0];
+                                    let argument_span = argument.location().unwrap_or(span);
+                                    let typed = self.check_expr(argument, argument_span)?.rvalue();
+                                    if !typed.ty.is_integer() {
+                                        return Err(Diagnostic::coded(argument_span,
+                                            DiagnosticCode::SemanticInvalidOperatorOperands,
+                                            "__builtin_ctz requires an integer argument"));
+                                    }
+                                    // The backend already implements this
+                                    // single-evaluation unsigned-int builtin.
+                                    let uint = CType::Integer {
+                                        rank: IntRank::Int, unsigned: true,
+                                    };
+                                    let argument = self.convert(typed, &uint);
+                                    return Ok(CheckedExpr::value(CType::int(),
+                                        CheckedExprKind::BuiltinCtz(Box::new(argument))));
+                                }
+                                _ => return Err(Diagnostic::coded(span,
+                                    DiagnosticCode::SemanticInvalidOperatorOperands,
+                                    format!("{name} requires checked atomic IR lowering; it cannot be emitted as an ordinary function call"))),
+                            }
                         }
-                        let argument = &args[0];
-                        let argument_span = argument.location().unwrap_or(span);
-                        let typed = self.check_expr(argument, argument_span)?.rvalue();
-                        if !typed.ty.is_integer() {
-                            return Err(Diagnostic::coded(argument_span,
-                                DiagnosticCode::SemanticInvalidOperatorOperands,
-                                "__builtin_ctz requires an integer argument"));
-                        }
-                        // GCC's signature is int __builtin_ctz(unsigned int).
-                        // Conversion, including signed-negative inputs, happens
-                        // before counting zero bits. The zero case is GCC UB;
-                        // do not silently define a special return value here.
-                        let uint = CType::Integer { rank: IntRank::Int, unsigned: true };
-                        let argument = self.convert(typed, &uint);
-                        return Ok(CheckedExpr::value(CType::int(),
-                            CheckedExprKind::BuiltinCtz(Box::new(argument))));
+                    } else if builtins::reserved_name(name) {
+                        return Err(Diagnostic::coded(span,
+                            DiagnosticCode::SemanticInvalidOperatorOperands,
+                            format!("unsupported compiler builtin {name}; no implicit external call")));
                     }
                 }
                 let callee_span = callee.location().unwrap_or(span);
