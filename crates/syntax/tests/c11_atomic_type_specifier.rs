@@ -25,10 +25,10 @@ fn parenthesized_atomic_types_remain_distinct_from_ordinary_types() {
         Type::Atomic(Box::new(Type::Pointer(Box::new(Type::Int)))));
     assert_eq!(parsed_type("const _Atomic(int) counter;"),
         Type::Qualified(Box::new(atomic.clone()),
-            Qualifiers { is_const: true, is_restrict: false }));
+            Qualifiers { is_const: true, is_restrict: false, is_atomic: false }));
     assert_eq!(parsed_type("_Atomic(int) const counter;"),
         Type::Qualified(Box::new(atomic),
-            Qualifiers { is_const: true, is_restrict: false }));
+            Qualifiers { is_const: true, is_restrict: false, is_atomic: false }));
 }
 
 #[test]
