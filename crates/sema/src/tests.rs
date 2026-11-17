@@ -19,6 +19,19 @@ fn reject(src: &str, message: &str) {
 
 
 #[test]
+fn c11_atomic_type_specifier_remains_fail_closed_before_codegen() {
+    for source in [
+        "_Atomic(int) counter;",
+        "const _Atomic(int) counter;",
+        "_Atomic(int) *p;",
+        "typedef _Atomic(int) AtomicInt;",
+        "int f(void) { _Atomic(int) local; return 0; }",
+    ] {
+        reject(source, "C11 _Atomic type is unsupported");
+    }
+}
+
+#[test]
 fn indexing_checks_lvalue_and_pointee_arithmetic() {
     let items = check(
         "int use(int p[4], int i) { p[i] = 9; *(1 + p) = 7; return i[p]; }"
