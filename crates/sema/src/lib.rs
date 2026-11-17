@@ -2468,9 +2468,11 @@ impl Checker {
                             if args.len() != spec.argument_count {
                                 return Err(Diagnostic::coded(span,
                                     DiagnosticCode::SemanticWrongArgumentCount,
-                                    format!("{name} expects exactly {} argument{}",
-                                        spec.argument_count,
-                                        if spec.argument_count == 1 { "" } else { "s" })));
+                                    if spec.argument_count == 1 {
+                                        format!("{name} expects exactly one argument")
+                                    } else {
+                                        format!("{name} expects exactly {} arguments", spec.argument_count)
+                                    }));
                             }
                             match spec.id {
                                 builtins::BuiltinId::Ctz32 => {
