@@ -2670,4 +2670,31 @@ mod tests {
         }
     }
 
+
+    #[test]
+    fn asm2_basic_asm_is_a_function_body_statement_not_linkage_alias() {
+        let source = r#"int f(void) { __asm__ volatile ("nop" ";" "mfence"); asm(""); return 1; }"#;
+        let Some(ExternalItem::Function(function)) =
+            Parser::new(source).next_item().unwrap() else { panic!("function expected"); };
+        let Stmt::Block(statements) = function.body else { panic!("body expected"); };
+        assert!(matches!(&statements[0],
+            Stmt::BasicAsm { template, .. } if template == "nop;mfence"));
+        assert!(matches!(&statements[1],
+            Stmt::BasicAsm { template, .. } if template.is_empty()));
+        assert!(matches!(&statements[2], Stmt::Return(_)));
+    }
+
+    #[test]
+    fn asm2_basic_asm_rejects_extended_asm_and_nonliteral_templates() {
+        for source in [
+            r#"int f(void) { asm("nop" : : : "memory"); return 0; }"#,
+            r#"int f(void) { asm goto ("jmp %l0" : : : : label); label: return 0; }"#,
+            r#"int f(void) { asm(0); return 0; }"#,
+            r#"int f(void) { asm("nop" "\\0" "ret"); return 0; }"#,
+            r#"int f(void) { asm("nop" { return 0; }"#,
+        ] {
+            assert!(Parser::new(source).next_item().is_err(),
+                "accepted unsupported basic asm spelling: {source}");
+        }
+    }
 }
