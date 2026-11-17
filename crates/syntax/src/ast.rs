@@ -116,6 +116,10 @@ pub enum Stmt {
     /// A standalone tag declaration or definition without an object declarator.
     Tag(Type),
     Expr(Option<Expr>),
+    /// GNU basic asm statement. A separate declaration-asm-label parser handles
+    /// ELF symbol aliases; this is executable code and must never be discarded.
+    /// Outputs, inputs, clobbers and asm goto are deliberately NOT modeled yet.
+    BasicAsm { template: String, span: Span },
     Return(Option<Expr>),
     If {
         cond: Expr,
