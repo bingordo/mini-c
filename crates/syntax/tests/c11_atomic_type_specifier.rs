@@ -41,3 +41,22 @@ fn parenthesized_atomic_type_is_valid_syntax_but_bad_forms_reject() {
         assert!(Parser::new(source).next_item().is_err(), "{source}");
     }
 }
+
+#[test]
+fn atomic_qualifier_is_not_lost_in_declaration_or_pointer_binding() {
+    let atomic = Qualifiers { is_const: false, is_restrict: false, is_atomic: true };
+    let const_atomic = Qualifiers { is_const: true, is_restrict: false, is_atomic: true };
+    assert_eq!(parsed_type("_Atomic int counter;"),
+        Type::Qualified(Box::new(Type::Int), atomic));
+    assert_eq!(parsed_type("int _Atomic counter;"),
+        Type::Qualified(Box::new(Type::Int), atomic));
+    assert_eq!(parsed_type("const _Atomic int counter;"),
+        Type::Qualified(Box::new(Type::Int), const_atomic));
+    assert_eq!(parsed_type("int * _Atomic pointer;"),
+        Type::Qualified(Box::new(Type::Pointer(Box::new(Type::Int))), atomic));
+    assert_eq!(parsed_type("_Atomic int *pointer;"),
+        Type::Pointer(Box::new(Type::Qualified(Box::new(Type::Int), atomic))));
+    assert_eq!(parsed_type("int * const _Atomic pointer;"),
+        Type::Qualified(Box::new(Type::Pointer(Box::new(Type::Int))), const_atomic));
+    assert!(Parser::new("_Atomic _Atomic int counter;").next_item().is_err());
+}
