@@ -391,6 +391,10 @@ impl Checker {
                     "C11 _Atomic type is unsupported until atomic-aware checked types and TypeId lowering are implemented"));
             }
             Type::Qualified(inner, qualifiers) => {
+                if qualifiers.is_atomic {
+                    return Err(type_error(span,
+                        "C11 _Atomic type is unsupported until atomic-aware checked types and TypeId lowering are implemented"));
+                }
                 let base = self.resolve(inner, span)?;
                 if qualifiers.is_restrict && !matches!(base.unqualified(), CType::Pointer(_)) {
                     return Err(type_error(span, "restrict requires a pointer object type"));
@@ -1577,6 +1581,9 @@ impl Checker {
                 rank: IntRank::Char, unsigned: !self.target.char_is_signed,
             },
             Type::Qualified(inner, qualifiers) => {
+                if qualifiers.is_atomic {
+                    return Err(type_error(span, "C11 _Atomic type is unsupported in casts"));
+                }
                 if qualifiers.is_restrict {
                     return Err(type_error(span, "restrict requires a pointer object type"));
                 }
@@ -1833,6 +1840,9 @@ impl Checker {
             Type::Pointer(inner) => CType::Pointer(Box::new(
                 self.resolve_sizeof_type(inner, span)?)),
             Type::Qualified(inner, qualifiers) => {
+                if qualifiers.is_atomic {
+                    return Err(type_error(span, "C11 _Atomic type is unsupported in sizeof"));
+                }
                 let inner = self.resolve_sizeof_type(inner, span)?;
                 if qualifiers.is_restrict && !matches!(inner.unqualified(), CType::Pointer(_)) {
                     return Err(type_error(span, "restrict requires pointer type"));
