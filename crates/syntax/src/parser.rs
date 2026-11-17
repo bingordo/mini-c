@@ -1583,7 +1583,7 @@ impl<'a> Parser<'a> {
         let trailing = self.parse_qualifiers()?;
         qualifiers.is_const |= trailing.is_const;
         qualifiers.is_restrict |= trailing.is_restrict;
-                    qualifiers.is_atomic |= trailing.is_atomic;
+        qualifiers.is_atomic |= trailing.is_atomic;
         let ty = if qualifiers.any() {
             Type::Qualified(Box::new(ty), qualifiers)
         } else { ty };
