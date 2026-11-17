@@ -385,6 +385,11 @@ impl Checker {
 
     fn resolve(&mut self, ty: &Type, span: Span) -> Result<CType, Diagnostic> {
         Ok(match ty {
+            Type::Atomic(_) => {
+                // Atomic loads/stores and alignment are not ordinary C accesses.
+                return Err(type_error(span,
+                    "C11 _Atomic type is unsupported until atomic-aware checked types and TypeId lowering are implemented"));
+            }
             Type::Qualified(inner, qualifiers) => {
                 let base = self.resolve(inner, span)?;
                 if qualifiers.is_restrict && !matches!(base.unqualified(), CType::Pointer(_)) {
