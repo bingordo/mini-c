@@ -22,6 +22,11 @@ fn reject(src: &str, message: &str) {
 fn c11_atomic_type_specifier_remains_fail_closed_before_codegen() {
     for source in [
         "_Atomic(int) counter;",
+        "_Atomic int counter;",
+        "int _Atomic counter;",
+        "int * _Atomic pointer;",
+        "const _Atomic int counter;",
+        "int f(void) { _Atomic int local; return 0; }",
         "const _Atomic(int) counter;",
         "_Atomic(int) *p;",
         "typedef _Atomic(int) AtomicInt;",
