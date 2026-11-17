@@ -1174,10 +1174,55 @@ impl<'a> Parser<'a> {
         }))
     }
 
+    /// GNU basic asm is a *statement*, not a declaration-level symbol alias.
+    /// Preserve the decoded template exactly, including adjacent C strings.
+    /// Extended-asm operands and asm goto are not silently accepted.
+    fn parse_basic_asm_stmt(&mut self) -> Result<Stmt, Diagnostic> {
+        let keyword = self.take()?.expect("peeked basic asm keyword");
+        // GNU basic asm is implicitly volatile. Accept the explicit synonym
+        // while retaining just the template until the effect IR is implemented.
+        if self.peek()?.is_some_and(|token| matches!(
+            token.text.as_ref(), "volatile" | "__volatile" | "__volatile__"
+        )) {
+            self.take()?;
+        }
+        self.expect("(")?;
+        let mut bytes = Vec::new();
+        let mut fragments = 0usize;
+        while self.peek()?.is_some_and(|token| token.kind == TokenKind::String) {
+            let token = self.take()?.expect("peeked basic asm string");
+            let decoded = crate::string_literal::decode_narrow_string(token.text.as_ref())
+                .map_err(|reason| Diagnostic::new(token.span, reason))?;
+            bytes.extend_from_slice(&decoded[..decoded.len()-1]);
+            if bytes.len() > 16384 {
+                return Err(Diagnostic::new(token.span, "basic asm template exceeds 16KiB"));
+            }
+            fragments += 1;
+        }
+        if fragments == 0 {
+            return Err(Diagnostic::new(keyword.span,
+                "basic asm requires a literal string template"));
+        }
+        // A NUL inside source text would truncate assembler input.
+        if bytes.contains(&0) {
+            return Err(Diagnostic::new(keyword.span, "basic asm template contains NUL"));
+        }
+        let template = String::from_utf8(bytes).map_err(|_| Diagnostic::new(
+            keyword.span, "basic asm template must be UTF-8"))?;
+        // A colon, operand expression or goto between the string and ')'
+        // fails closed here, rather than being mistaken for basic asm.
+        self.expect(")")?;
+        let semi = self.expect(";")?;
+        Ok(Stmt::BasicAsm {
+            template, span: Span { lo: keyword.span.lo, hi: semi.span.hi },
+        })
+    }
+
     fn parse_stmt(&mut self) -> Result<Stmt, Diagnostic> {
         let token = self.peek()?.ok_or_else(|| Diagnostic::new(self.eof_span(), "expected statement"))?;
         match token.text.as_ref() {
             "{" => Ok(self.parse_block()?.0),
+            "asm" | "__asm" | "__asm__" => self.parse_basic_asm_stmt(),
             ";" => { self.take()?; Ok(Stmt::Expr(None)) },
             "goto" => {
                 self.take()?;
