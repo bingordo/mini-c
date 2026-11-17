@@ -1377,6 +1377,27 @@ impl<'a> Parser<'a> {
             first.span, "type qualifier requires a type specifier"
         ))?;
         let ty = match token.text.as_ref() {
+            "_Atomic" => {
+                // C11 _Atomic(type-name) is a type specifier, not a qualifier.
+                // Retain it in the AST so semantic analysis cannot mistake
+                // these accesses for ordinary memory operations.
+                self.take()?;
+                self.expect("(")?;
+                let (base, _) = self.parse_type()?.ok_or_else(|| {
+                    Diagnostic::coded(self.eof_span(),
+                        DiagnosticCode::SyntaxInvalidDeclaration,
+                        "expected type name in _Atomic(...)")
+                })?;
+                let (name, inner, nested, _) =
+                    self.parse_declarator_shape(true)?.finish(base);
+                if !name.is_empty() || nested.is_some() {
+                    return Err(Diagnostic::coded(token.span,
+                        DiagnosticCode::SyntaxInvalidDeclaration,
+                        "_Atomic(...) requires a type name"));
+                }
+                self.expect(")")?;
+                Type::Atomic(Box::new(inner))
+            }
             "enum" => {
                 self.take()?;
                 let tag = self.peek()?.filter(|t| matches!(t.kind,
@@ -1574,9 +1595,18 @@ impl<'a> Parser<'a> {
                 "const" => result.is_const = true,
                 "restrict" | "__restrict" | "__restrict__" => result.is_restrict = true,
                 "_Atomic" => {
-                    // Do not strip this qualifier: atomic load/store/RMW
-                    // semantics and alignment are not represented in the
-                    // checked Mini-C type system or native backend yet.
+                    // Leave _Atomic(type-name) to parse_type. Bare _Atomic
+                    // qualifiers must continue to fail closed.
+                    self.peek()?;
+                    if self.second_lookahead.is_none() {
+                        self.second_lookahead = Some(
+                            self.scanner.next_parser_token(Some(&self.scopes))?
+                        );
+                    }
+                    if self.second_lookahead.as_ref().and_then(Option::as_ref)
+                        .is_some_and(|next| next.text.as_ref() == "(") {
+                        break;
+                    }
                     return Err(Diagnostic::coded(
                         token.span,
                         DiagnosticCode::SyntaxInvalidDeclaration,
@@ -2075,7 +2105,6 @@ mod tests {
         // The existing GCC bootstrap remains the supported path.
         for source in [
             "_Atomic int counter;",
-            "_Atomic(int) counter;",
             "int _Atomic counter;",
             "typedef _Atomic int Counter;",
             "struct S { _Atomic int state; };",
