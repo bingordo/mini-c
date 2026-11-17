@@ -2581,6 +2581,9 @@ impl Lower<'_> {
                 }
                 Ok(true)
             }
+            CheckedStmt::BasicAsm { .. } => Err(
+                "GNU basic asm is preserved by the parser but unsupported by the Cranelift backend; use the native ASM2 path once implemented".into()
+            ),
             CheckedStmt::Expr(expr) => {
                 if let Some(expr) = expr { self.expression(b, expr)?; }
                 Ok(true)
