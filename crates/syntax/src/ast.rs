@@ -84,6 +84,9 @@ pub enum Type {
     Alias(Ident),
     /// Qualifiers bind to this type, not to the nearest pointer's pointee.
     Qualified(Box<Type>, Qualifiers),
+    /// C11 `_Atomic(type-name)` is not interchangeable with ordinary storage.
+    /// Preserve the spelling for checked lowering; never erase its semantics.
+    Atomic(Box<Type>),
     Signed(Box<Type>),
     Unsigned(Box<Type>),
     Pointer(Box<Type>),
