@@ -2362,7 +2362,7 @@ fn s21_gcc_ctz_builtin_rejects_malformed_uses() {
     reject("int f(void) { return __builtin_ctz(); }", "expects exactly one argument");
     reject("int f(void) { return __builtin_ctz(1, 2); }", "expects exactly one argument");
     reject("int f(void) { int x=7; return __builtin_ctz(&x); }", "requires an integer argument");
-    reject("int f(void) { return __builtin_ctzll(1); }", "undeclared identifier");
+    reject("int f(void) { return __builtin_ctzll(1); }", "unsupported compiler builtin");
     reject("int __builtin_ctz; int f(void) { return __builtin_ctz(8); }", "not a function");
     // A builtin evaluation is not a C integer constant expression (even if
     // the backend might fold its bits); don't add GNU constant-folding here.
@@ -2639,4 +2639,34 @@ fn wasm32_target_rejects_invalid_pointer_width() {
     assert!(Target{pointer_bits:16,..Target::wasm32()}.validate().is_err());
     assert!(Target{pointer_bits:128,..Target::wasm32()}.validate().is_err());
     assert_eq!((Target::default().pointer_bits,Target::default().long_bits),(64,64));
+}
+
+#[test]
+fn generic_builtin_registry_checks_arity_and_does_not_lower_atomic_calls_as_c_calls() {
+    for source in [
+        "int f(int *p) { return __atomic_load_n(p, 5); }",
+        "void f(int *p) { __atomic_store_n(p, 7, 5); }",
+        "int f(int *p) { return __atomic_exchange_n(p, 7, 5); }",
+        "int f(int *p) { return __atomic_fetch_add(p, 1, 5); }",
+        "int f(int *p) { return __atomic_fetch_sub(p, 1, 5); }",
+        "int f(int *p) { return __atomic_fetch_and(p, 1, 5); }",
+        "int f(int *p) { return __atomic_fetch_or(p, 1, 5); }",
+        "int f(int *p) { return __atomic_fetch_xor(p, 1, 5); }",
+        "int f(int *p, int *q) { return __atomic_compare_exchange_n(p, q, 1, 0, 5, 2); }",
+        "void f(void) { __atomic_thread_fence(5); }",
+        "void f(void) { __atomic_signal_fence(5); }",
+        // Even a declared function with a GNU-atomic spelling cannot evade
+        // the checked IR requirement or silently use ordinary call lowering.
+        "extern int __atomic_load_n(int *, int); int f(int *p) { return __atomic_load_n(p, 5); }",
+    ] {
+        reject(source, "requires checked atomic IR lowering");
+    }
+    reject("int f(void) { return __atomic_load_n(); }", "expects exactly 2 arguments");
+    reject("void f(void) { __atomic_thread_fence(); }", "expects exactly one argument");
+    reject("int f(int *p) { return __atomic_compare_exchange_n(p); }",
+        "expects exactly 6 arguments");
+    reject("int f(int *p) { return __atomic_load(p); }", "unsupported compiler builtin");
+    reject("int f(int *p) { return __sync_fetch_and_add(p, 1); }",
+        "unsupported compiler builtin");
+    check("int custom(int x) { return x; } int f(void) { return custom(4); }").unwrap();
 }
