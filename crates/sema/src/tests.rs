@@ -2625,7 +2625,7 @@ fn wasm32_target_rejects_invalid_pointer_width() {
 
 #[test]
 fn asm2_checked_basic_asm_retains_opaque_effect_and_exact_template() {
-    let items = check(r#"int f(void) { __asm__ volatile ("nop" "\\n" "mfence"); return 7; }"#)
+    let items = check(r#"int f(void) { __asm__ volatile ("nop" "\n" "mfence"); return 7; }"#)
         .expect("basic asm should parse and type-check");
     let CheckedItem::Function(f) = &items[0] else { panic!("function expected"); };
     let CheckedStmt::Block(stmts) = &f.body else { panic!("body expected"); };
