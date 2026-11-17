@@ -2690,7 +2690,7 @@ mod tests {
             r#"int f(void) { asm("nop" : : : "memory"); return 0; }"#,
             r#"int f(void) { asm goto ("jmp %l0" : : : : label); label: return 0; }"#,
             r#"int f(void) { asm(0); return 0; }"#,
-            r#"int f(void) { asm("nop" "\\0" "ret"); return 0; }"#,
+            r#"int f(void) { asm("nop" "\0" "ret"); return 0; }"#,
             r#"int f(void) { asm("nop" { return 0; }"#,
         ] {
             assert!(Parser::new(source).next_item().is_err(),
