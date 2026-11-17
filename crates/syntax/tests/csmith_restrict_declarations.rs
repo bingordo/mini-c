@@ -26,7 +26,7 @@ fn pointer_restrict_specifiers_preserve_parameter_types() {
             panic!("expected function type");
         };
         assert_eq!(*result, Type::Pointer(Box::new(Type::Void)));
-        let restrict = Qualifiers { is_const: false, is_restrict: true };
+        let restrict = Qualifiers { is_const: false, is_restrict: true, is_atomic: false };
         assert_eq!(params, vec![
             Type::Qualified(Box::new(Type::Pointer(Box::new(Type::Void))), restrict),
             Type::Qualified(Box::new(Type::Pointer(
@@ -42,7 +42,7 @@ fn restrict_applies_to_each_pointer_level_not_the_pointee() {
     let Some(ExternalItem::Declaration(decl))=Parser::new(source).next_item().unwrap()
         else { panic!("expected function declaration"); };
     let Type::Function { params, .. }=decl.ty else { panic!("function type"); };
-    let restrict = Qualifiers { is_const: false, is_restrict: true };
+    let restrict = Qualifiers { is_const: false, is_restrict: true, is_atomic: false };
     assert_eq!(params, vec![Type::Qualified(Box::new(Type::Pointer(Box::new(
         Type::Qualified(Box::new(Type::Pointer(Box::new(Type::Int))), restrict)
     ))), restrict)]);
