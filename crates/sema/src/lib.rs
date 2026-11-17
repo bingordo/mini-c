@@ -133,6 +133,9 @@ pub enum CheckedStmt {
     Typedef { name: String, ty: CType },
     Tag,
     Expr(Option<CheckedExpr>),
+    /// Executable opaque basic asm: never treat it as a pure expression or
+    /// discard its side effects. Native effectful lowering is tracked by ASM2.
+    BasicAsm { template: String, span: Span },
     Return(Option<CheckedExpr>),
     If { cond: CheckedExpr, then: Box<CheckedStmt>, otherwise: Option<Box<CheckedStmt>> },
     While { cond: CheckedExpr, body: Box<CheckedStmt> },
@@ -1346,6 +1349,9 @@ impl Checker {
             Stmt::Expr(expr) => {
                 CheckedStmt::Expr(expr.as_ref().map(|e| self.check_expr(e, span)).transpose()?)
             }
+            Stmt::BasicAsm { template, span } => CheckedStmt::BasicAsm {
+                template: template.clone(), span: *span,
+            },
             Stmt::Return(value) => {
                 let expected = self.result_ty.clone().expect("return outside function");
                 let checked = match (value, &expected) {
