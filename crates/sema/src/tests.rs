@@ -2641,32 +2641,122 @@ fn wasm32_target_rejects_invalid_pointer_width() {
     assert_eq!((Target::default().pointer_bits,Target::default().long_bits),(64,64));
 }
 
+/// Parse the generated C through the actual frontend and inspect its checked
+/// operation, rather than asserting against hand-written syntax snapshots.
+fn checked_atomic_in_generated_c(source: &str) -> CheckedAtomicBuiltin {
+    let items=check(source).unwrap_or_else(|error|
+        panic!("generated atomic C was rejected: {source}\n{error:?}"));
+    let CheckedItem::Function(function) = &items[0] else { panic!("function expected") };
+    let CheckedStmt::Block(statements) = &function.body else { panic!("block expected") };
+    let CheckedStmt::Expr(Some(expr)) = &statements[0] else {
+        panic!("checked atomic statement expected in {source}")
+    };
+    let CheckedExprKind::BuiltinAtomic(operation) = &expr.kind else {
+        panic!("atomic builtin became ordinary call in {source}: {:?}", expr.kind)
+    };
+    operation.as_ref().clone()
+}
+
+fn generated_atomic_c(name: &str, integer: &str, operands: &str) -> String {
+    format!("void f({integer} *p, {integer} *e) {{ {name}({operands}); }}")
+}
+
 #[test]
-fn generic_builtin_registry_checks_arity_and_does_not_lower_atomic_calls_as_c_calls() {
-    for source in [
-        "int f(int *p) { return __atomic_load_n(p, 5); }",
-        "void f(int *p) { __atomic_store_n(p, 7, 5); }",
-        "int f(int *p) { return __atomic_exchange_n(p, 7, 5); }",
-        "int f(int *p) { return __atomic_fetch_add(p, 1, 5); }",
-        "int f(int *p) { return __atomic_fetch_sub(p, 1, 5); }",
-        "int f(int *p) { return __atomic_fetch_and(p, 1, 5); }",
-        "int f(int *p) { return __atomic_fetch_or(p, 1, 5); }",
-        "int f(int *p) { return __atomic_fetch_xor(p, 1, 5); }",
-        "int f(int *p, int *q) { return __atomic_compare_exchange_n(p, q, 1, 0, 5, 2); }",
-        "void f(void) { __atomic_thread_fence(5); }",
-        "void f(void) { __atomic_signal_fence(5); }",
-        // Even a declared function with a GNU-atomic spelling cannot evade
-        // the checked IR requirement or silently use ordinary call lowering.
-        "extern int __atomic_load_n(int *, int); int f(int *p) { return __atomic_load_n(p, 5); }",
-    ] {
-        reject(source, "requires checked atomic IR lowering");
+fn generated_atomic_source_operands_widths_orders_and_builtin_kinds() {
+    use builtins::{BuiltinId as A, REGISTRY, valid_atomic_orders};
+    let mut accepted=0usize;
+    let mut rejected=0usize;
+    for (integer, bytes) in [("char",1_u8),("short",2),("int",4),("long",8)] {
+        for spec in REGISTRY.iter().filter(|s|s.id!=A::Ctz32) {
+            for order in 0..6_u8 {
+                let (arguments, runtime_args) = match spec.id {
+                    A::AtomicThreadFence | A::AtomicSignalFence =>
+                        (format!("{order}"), 0),
+                    A::AtomicLoadN => (format!("p,{order}"),1),
+                    A::AtomicCompareExchangeN =>
+                        (format!("p,e,7,1,{order},0"),3),
+                    _ => (format!("p,7,{order}"),2),
+                };
+                let source=generated_atomic_c(spec.name,integer,&arguments);
+                let allowed=valid_atomic_orders(spec.id,order,
+                    (spec.id==A::AtomicCompareExchangeN).then_some(0));
+                if allowed {
+                    let checked=checked_atomic_in_generated_c(&source);
+                    assert_eq!(checked.builtin,spec.id);
+                    assert_eq!(checked.operands.len(),runtime_args);
+                    assert_eq!(checked.bytes,if runtime_args==0 {0}else{bytes});
+                    assert_eq!(checked.alignment,if runtime_args==0 {0}else{bytes});
+                    assert_eq!(checked.success_order,order);
+                    assert_eq!(checked.failure_order,
+                        (spec.id==A::AtomicCompareExchangeN).then_some(0));
+                    assert_eq!(checked.weak,spec.id==A::AtomicCompareExchangeN);
+                    accepted+=1;
+                } else {
+                    reject(&source,"invalid C11 success/failure memory-order");
+                    rejected+=1;
+                }
+            }
+        }
     }
-    reject("int f(void) { return __atomic_load_n(); }", "expects exactly 2 arguments");
-    reject("void f(void) { __atomic_thread_fence(); }", "expects exactly one argument");
-    reject("int f(int *p) { return __atomic_compare_exchange_n(p); }",
-        "expects exactly 6 arguments");
-    reject("int f(int *p) { return __atomic_load(p); }", "unsupported compiler builtin");
-    reject("int f(int *p) { return __sync_fetch_and_add(p, 1); }",
-        "unsupported compiler builtin");
-    check("int custom(int x) { return x; } int f(void) { return custom(4); }").unwrap();
+    assert!(accepted>100 && rejected>0,"missing source matrix coverage");
+}
+
+#[test]
+fn generated_atomic_cas_order_matrix_both_modes_and_negative_types() {
+    use builtins::{BuiltinId as A, valid_atomic_orders};
+    let mut cases=0;
+    for weak in 0..2_u8 {
+        for success in 0..6_u8 {
+            for failure in 0..6_u8 {
+                let text=generated_atomic_c("__atomic_compare_exchange_n","int",
+                    &format!("p,e,7,{weak},{success},{failure}"));
+                if valid_atomic_orders(A::AtomicCompareExchangeN,success,Some(failure)) {
+                    let checked=checked_atomic_in_generated_c(&text);
+                    assert_eq!((checked.weak,checked.success_order,checked.failure_order),
+                        (weak!=0,success,Some(failure)));
+                } else {
+                    reject(&text,"invalid C11 success/failure memory-order");
+                }
+                cases+=1;
+            }
+        }
+    }
+    assert_eq!(cases,72);
+    for name in ["__atomic_load_n", "__atomic_store_n",
+                 "__atomic_exchange_n", "__atomic_fetch_add"] {
+        let src=generated_atomic_c(name,"int","p,7,5");
+        if name=="__atomic_load_n" {
+            reject(&src,"expects exactly 2 arguments");
+        } else {
+            assert_eq!(checked_atomic_in_generated_c(&src).bytes,4);
+        }
+    }
+    for (source, diagnostic) in [
+        ("void f(int *p) { __atomic_store_n(p,7,2); }","invalid C11"),
+        ("void f(int *p) { __atomic_load_n(p,3); }","invalid C11"),
+        ("void f(int *p) { __atomic_fetch_add(p,7,6); }","invalid C11"),
+        ("void f(int *p) { int order=5; __atomic_load_n(p,order); }","integer constant expression"),
+        ("void f(int *p) { __atomic_load_n(7,5); }","requires a pointer"),
+        ("void f(void *p) { __atomic_load_n(p,5); }","requires an integer object"),
+        ("void f(const int *p) { __atomic_store_n(p,7,5); }","requires a writable"),
+        ("void f(int *p,const int *e) { __atomic_compare_exchange_n(p,e,7,1,5,2); }","matching writable"),
+        ("void f(int *p,short *e) { __atomic_compare_exchange_n(p,e,7,1,5,2); }","matching writable"),
+        ("void f(int *p,int *e) { __atomic_compare_exchange_n(p,e,7,2,5,2); }","weak flag must be"),
+        ("void f(int *p,int *e) { int weak=1; __atomic_compare_exchange_n(p,e,7,weak,5,2); }","integer constant expression"),
+        ("void f(int *p) { __atomic_compare_exchange_n(p); }","expects exactly 6 arguments"),
+        ("void f(void) { __atomic_thread_fence(); }","expects exactly one argument"),
+        ("void f(int *p) { __atomic_load(p); }","unsupported compiler builtin"),
+        ("void f(int *p) { __sync_fetch_and_add(p,1); }","unsupported compiler builtin"),
+    ] {
+        reject(source,diagnostic);
+    }
+    // A source-visible symbol with an atomic builtin spelling must NOT turn
+    // the checked operation into a generic external function call.
+    let src="extern int __atomic_load_n(int*,int); \
+        void f(int *p) { __atomic_load_n(p,5); }";
+    let items=check(src).unwrap();
+    let CheckedItem::Function(function)=&items[1] else {panic!("function")};
+    let CheckedStmt::Block(statements)=&function.body else {panic!("block")};
+    let CheckedStmt::Expr(Some(expression))=&statements[0] else {panic!("expr")};
+    assert!(matches!(expression.kind,CheckedExprKind::BuiltinAtomic(_)));
 }
