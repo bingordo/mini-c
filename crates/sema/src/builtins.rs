@@ -72,6 +72,31 @@ pub const REGISTRY: [BuiltinSpec; 12] = [
     atomic(BuiltinId::AtomicSignalFence, "__atomic_signal_fence", 1, 0, None, None),
 ];
 
+/// Independent source C11 order oracle used before backend IR construction.
+/// Validity deliberately does not depend on compiler-ir, preserving frontend
+/// layering; compiler-ci tests the two registries against one another.
+pub fn valid_atomic_orders(id: BuiltinId, success: u8, failure: Option<u8>) -> bool {
+    if success > 5 { return false; }
+    match id {
+        BuiltinId::Ctz32 => false,
+        BuiltinId::AtomicLoadN => failure.is_none() && matches!(success, 0|1|2|5),
+        BuiltinId::AtomicStoreN => failure.is_none() && matches!(success, 0|3|5),
+        BuiltinId::AtomicCompareExchangeN => {
+            let Some(failure) = failure else { return false };
+            match success {
+                0 => failure == 0,
+                1 => matches!(failure, 0|1),
+                2 => matches!(failure, 0|1|2),
+                3 => failure == 0,
+                4 => matches!(failure, 0|1|2),
+                5 => matches!(failure, 0|1|2|5),
+                _ => false,
+            }
+        }
+        _ => failure.is_none(),
+    }
+}
+
 pub fn lookup(name: &str) -> Option<&'static BuiltinSpec> {
     REGISTRY.iter().find(|entry| entry.name == name)
 }
