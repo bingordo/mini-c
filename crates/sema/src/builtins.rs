@@ -86,9 +86,9 @@ pub fn valid_atomic_orders(id: BuiltinId, success: u8, failure: Option<u8>) -> b
             match success {
                 0 => failure == 0,
                 1 => matches!(failure, 0|1),
-                2 => matches!(failure, 0|1|2),
+                2 => matches!(failure, 0..=2),
                 3 => failure == 0,
-                4 => matches!(failure, 0|1|2),
+                4 => matches!(failure, 0..=2),
                 5 => matches!(failure, 0|1|2|5),
                 _ => false,
             }
