@@ -2633,3 +2633,26 @@ fn asm2_checked_basic_asm_retains_opaque_effect_and_exact_template() {
         if template == "nop\nmfence"));
     assert!(matches!(&stmts[1], CheckedStmt::Return(_)));
 }
+
+#[test]
+fn asm2_extended_clobber_only_check_and_reject_untracked_registers() {
+    let items=check(r#"int f(void) {
+        __asm__ volatile("mfence" : : : "memory");
+        asm("" ::: "cc", "memory");
+        return 3;
+    }"#).expect("clobber-only extended asm must check");
+    let CheckedItem::Function(f)=&items[0] else {panic!("function expected")};
+    let CheckedStmt::Block(stmts)=&f.body else {panic!("compound expected")};
+    assert!(matches!(&stmts[0],CheckedStmt::ExtendedAsm{template,clobbers,..}
+        if template=="mfence" && clobbers==&["memory"]));
+    assert!(matches!(&stmts[1],CheckedStmt::ExtendedAsm{template,clobbers,..}
+        if template.is_empty() && clobbers==&["cc","memory"]));
+    for text in [
+        r#"int f(void) { asm("nop" ::: "rax"); return 0; }"#,
+        r#"int f(void) { asm("nop" ::: "xmm0"); return 0; }"#,
+        r#"int f(void) { asm("nop" ::: "memory", "memory"); return 0; }"#,
+        r#"int f(void) { asm("nop" ::: "flags"); return 0; }"#,
+    ] {
+        assert!(check(text).is_err(),"untracked asm clobber accepted: {text}");
+    }
+}
