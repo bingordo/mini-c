@@ -1377,7 +1377,7 @@ impl Checker {
                     if output.constraint!="=r" {
                         return Err(type_error(output.span,"extended asm output requires =r"));
                     }
-                    if !matches!(output.expr.without_location(),Expr::Ident(_)) {
+                    if !matches!(output.expr.without_location(),Expr::Name(_)) {
                         return Err(type_error(output.span,"extended asm output currently requires local variable"));
                     }
                     let expr=self.check_expr(&output.expr,output.span)?;
