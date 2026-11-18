@@ -120,6 +120,14 @@ pub enum Stmt {
     /// ELF symbol aliases; this is executable code and must never be discarded.
     /// Outputs, inputs, clobbers and asm goto are deliberately NOT modeled yet.
     BasicAsm { template: String, span: Span },
+    /// GCC extended asm with exactly zero outputs and inputs. The first
+    /// supported clobbers are `memory` and `cc`, both explicitly tracked.
+    /// Register constraints, operands and asm goto are not accepted yet.
+    ExtendedAsm {
+        template: String,
+        clobbers: Vec<String>,
+        span: Span,
+    },
     Return(Option<Expr>),
     If {
         cond: Expr,
