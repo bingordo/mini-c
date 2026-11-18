@@ -2787,7 +2787,7 @@ fn asm2_p13b_two_input_early_clobber_checked_types_and_roles() {
     for (ty,suffix) in [("int","l"),("long","q")] {
         for op in ["add","sub"] {
             let src=format!(
-                "{ty} f({ty} x,{ty} y){{{ty} z=0;__asm__ volatile(\\\"mov{suffix} %1,%0;{op}{suffix} %2,%0\\\":\\\"=&r\\\"(z):\\\"r\\\"(x),\\\"r\\\"(y):\\\"cc\\\");return z;}}"
+                "{ty} f({ty} x,{ty} y){{{ty} z=0;__asm__ volatile(\"mov{suffix} %1,%0;{op}{suffix} %2,%0\":\"=&r\"(z):\"r\"(x),\"r\"(y):\"cc\");return z;}}"
             );
             let items=check(&src).expect("P13B two-input independent GP asm");
             let CheckedItem::Function(f)=&items[0] else {panic!("expected function")};
@@ -2803,17 +2803,16 @@ fn asm2_p13b_two_input_early_clobber_checked_types_and_roles() {
 #[test]
 fn asm2_p13b_rejects_invalid_two_input_roles_and_widths() {
     for (output,input_constraints) in [
-        ("=r","\\\"r\\\"(x),\\\"r\\\"(y)"),
-        ("+r","\\\"r\\\"(x),\\\"r\\\"(y)"),
-        ("=&r","\\\"r\\\"(x),\\\"0\\\"(y)"),
-        ("=&r","\\\"0\\\"(x),\\\"r\\\"(y)"),
-        ("=&r","\\\"r\\\"(x),\\\"r\\\"(y),\\\"r\\\"(x)"),
+        ("=r","\"r\"(x),\"r\"(y)"),
+        ("+r","\"r\"(x),\"r\"(y)"),
+        ("=&r","\"r\"(x),\"0\"(y)"),
+        ("=&r","\"0\"(x),\"r\"(y)"),
+        ("=&r","\"r\"(x),\"r\"(y),\"r\"(x)"),
     ] {
-        let src=format!("int f(int x,int y){{int out=0;__asm__ volatile(\\\"movl %1,%0;addl %2,%0\\\":\\\"{output}\\\"(out):{input_constraints}:\\\"cc\\\");return out;}}");
+        let src=format!("int f(int x,int y){{int out=0;__asm__ volatile(\"movl %1,%0;addl %2,%0\":\"{output}\"(out):{input_constraints}:\"cc\");return out;}}");
         assert!(check(&src).is_err(),"unexpectedly admitted invalid P13B operands: {src}");
     }
     let wrong_width=r#"long f(long x,int y){long out=0;__asm__ volatile("movq %1,%0;addq %2,%0":"=&r"(out):"r"(x),"r"(y):"cc");return out;}"#;
-    // Different-sized scalar types can be source-checked individually,
-    // but the compiler's TypeId lowering must reject the mixed-width asm.
-    assert!(check(wrong_width).is_ok());
+    // Incorrect mixed-width sources must not reach machine allocation.
+    assert!(check(wrong_width).is_err());
 }
