@@ -1368,14 +1368,14 @@ impl Checker {
                 template: template.clone(), span: *span,
             },
             Stmt::ExtendedAsm { template, outputs, inputs, clobbers, span } => {
-                // Review just one GP output and input at this stage.
+                // Bound the first tied-GP slice to one output and at most one input.
                 if outputs.len()>1 || inputs.len()>1 {
                     return Err(type_error(*span,"extended asm supports at most one GP output and input"));
                 }
                 let mut checked_outputs=Vec::new();
                 for output in outputs {
-                    if output.constraint!="=r" {
-                        return Err(type_error(output.span,"extended asm output requires =r"));
+                    if !matches!(output.constraint.as_str(),"=r"|"+r") {
+                        return Err(type_error(output.span,"extended asm output requires =r or +r"));
                     }
                     if !matches!(output.expr.without_location(),Expr::Name(_)) {
                         return Err(type_error(output.span,"extended asm output currently requires local variable"));
@@ -1392,16 +1392,35 @@ impl Checker {
                         constraint:output.constraint.clone(),expr,
                     });
                 }
+                // +r is both the input and output of operand %0, with no
+                // separate input operand. Numeric 0 ties one input to the
+                // only =r output. Do not admit ties to a +r output, aliases
+                // to nonexistent outputs, or unmodeled early clobbers.
+                if !checked_outputs.is_empty() {
+                    let out=&checked_outputs[0];
+                    if out.constraint=="+r" && !inputs.is_empty() {
+                        return Err(type_error(*span,"+r output cannot have a separate input in the bounded ASM2 form"));
+                    }
+                }
                 let mut checked_inputs=Vec::new();
                 for input in inputs {
-                    if input.constraint!="r" {
-                        return Err(type_error(input.span,"extended asm input requires r"));
+                    if !matches!(input.constraint.as_str(),"r"|"0") {
+                        return Err(type_error(input.span,"extended asm input requires r or matching 0"));
+                    }
+                    if input.constraint=="0" && (checked_outputs.len()!=1
+                        || checked_outputs[0].constraint!="=r") {
+                        return Err(type_error(input.span,"matching 0 requires exactly one =r output"));
                     }
                     let expr=self.check_expr(&input.expr,input.span)?;
                     if !matches!(expr.ty.unqualified(),CType::Integer { .. })
                         || !matches!(expr.ty.size_bytes(self.target),Some(4|8))
                     {
                         return Err(type_error(input.span,"extended asm input must be i32/i64 scalar"));
+                    }
+                    if input.constraint=="0" &&
+                        expr.ty.size_bytes(self.target)!=checked_outputs[0].expr.ty.size_bytes(self.target)
+                    {
+                        return Err(type_error(input.span,"matching 0 input/output GP widths must agree"));
                     }
                     checked_inputs.push(CheckedAsmOperand{
                         constraint:input.constraint.clone(),expr:expr.rvalue(),
