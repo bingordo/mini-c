@@ -1363,7 +1363,7 @@ impl Checker {
                 for (index,clobber) in clobbers.iter().enumerate() {
                     if !matches!(clobber.as_str(),"memory"|"cc") {
                         return Err(type_error(*span,
-                            &format!("unsupported extended asm clobber #{index}: {clobber}")));
+                            format!("unsupported extended asm clobber #{index}: {clobber}")));
                     }
                     if clobbers[..index].contains(clobber) {
                         return Err(type_error(*span,"duplicate extended asm clobber"));
