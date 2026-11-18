@@ -1177,6 +1177,29 @@ impl<'a> Parser<'a> {
     /// GNU basic asm is a *statement*, not a declaration-level symbol alias.
     /// Preserve the decoded template exactly, including adjacent C strings.
     /// Extended-asm operands and asm goto are not silently accepted.
+    /// One positional GNU extended-asm operand. Named operands and
+    /// constraint alternatives remain unsupported until allocator binding.
+    fn parse_asm_operand(&mut self) -> Result<AsmOperand, Diagnostic> {
+        let token=self.take()?.ok_or_else(||Diagnostic::new(
+            self.eof_span(),"expected asm constraint string"))?;
+        if token.kind!=TokenKind::String {
+            return Err(Diagnostic::new(token.span,"asm constraint must be a string literal"));
+        }
+        let bytes=crate::string_literal::decode_narrow_string(token.text.as_ref())
+            .map_err(|reason|Diagnostic::new(token.span,reason))?;
+        let name=String::from_utf8(bytes[..bytes.len()-1].to_vec())
+            .map_err(|_|Diagnostic::new(token.span,"asm constraint must be UTF-8"))?;
+        if name.contains('\0') {
+            return Err(Diagnostic::new(token.span,"asm constraint contains NUL"));
+        }
+        self.expect("(")?;
+        let expr=self.parse_assign()?;
+        let end=self.expect(")")?;
+        Ok(AsmOperand {constraint:name,expr,span:Span{
+            lo:token.span.lo,hi:end.span.hi,
+        }})
+    }
+
     fn parse_basic_asm_stmt(&mut self) -> Result<Stmt, Diagnostic> {
         let keyword = self.take()?.expect("peeked basic asm keyword");
         // GNU basic asm is implicitly volatile. Accept the explicit synonym
@@ -1214,11 +1237,23 @@ impl<'a> Parser<'a> {
         // Each empty section is still explicitly required; the syntax
         // cannot silently reinterpret an operand expression as a clobber.
         let extended=self.peek()?.is_some_and(|t|t.text.as_ref()==":");
+        let mut outputs=Vec::new();
+        let mut inputs=Vec::new();
         let mut clobbers=Vec::new();
         if extended {
-            self.expect(":")?; // empty outputs
-            self.expect(":")?; // empty inputs
-            self.expect(":")?; // clobber list
+            self.expect(":")?;
+            if self.peek()?.is_some_and(|t|t.kind==TokenKind::String) {
+                outputs.push(self.parse_asm_operand()?);
+            }
+            self.expect(":")?;
+            if self.peek()?.is_some_and(|t|t.kind==TokenKind::String) {
+                inputs.push(self.parse_asm_operand()?);
+            }
+            if self.peek()?.is_some_and(|t|t.text.as_ref()==":") {
+                self.expect(":")?;
+            } else if !self.peek()?.is_some_and(|t|t.text.as_ref()==")") {
+                return Err(Diagnostic::new(self.eof_span(),"expected asm clobber ':' or ')'"));
+            }
             if self.peek()?.is_some_and(|t|t.kind==TokenKind::String) {
                 loop {
                     let token=self.take()?.expect("peeked asm clobber string");
@@ -1247,7 +1282,7 @@ impl<'a> Parser<'a> {
         let semi = self.expect(";")?;
         let span=Span {lo:keyword.span.lo,hi:semi.span.hi};
         if extended {
-            Ok(Stmt::ExtendedAsm {template,clobbers,span})
+            Ok(Stmt::ExtendedAsm {template,outputs,inputs,clobbers,span})
         } else {
             Ok(Stmt::BasicAsm {template,span})
         }
