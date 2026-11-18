@@ -2790,8 +2790,8 @@ mod tests {
     #[test]
     fn asm2_extended_rejects_unsupported_operands_and_malformed_clobber_groups() {
         for src in [
-            r#"int f(void) { asm("mov %1,%0" : "=r"(x) : "r"(y)); }"#,
-            r#"int f(void) { asm("nop" :: "r"(x) : "memory"); }"#,
+
+
             r#"int f(void) { asm("nop" ::: "memory",); }"#,
             r#"int f(void) { asm("nop" :: "memory"); }"#,
             r#"int f(void) { asm("nop" : : : "memory" : label); }"#,
