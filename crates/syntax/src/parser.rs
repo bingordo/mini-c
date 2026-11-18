@@ -2722,7 +2722,7 @@ mod tests {
     #[test]
     fn asm2_basic_asm_rejects_extended_asm_and_nonliteral_templates() {
         for source in [
-            r#"int f(void) { asm("nop" : : : "memory"); return 0; }"#,
+            r#"int f(void) { asm("nop" : "r"(x) : "memory"); return 0; }"#,
             r#"int f(void) { asm goto ("jmp %l0" : : : : label); label: return 0; }"#,
             r#"int f(void) { asm(0); return 0; }"#,
             r#"int f(void) { asm("nop" "\0" "ret"); return 0; }"#,
@@ -2730,6 +2730,40 @@ mod tests {
         ] {
             assert!(Parser::new(source).next_item().is_err(),
                 "accepted unsupported basic asm spelling: {source}");
+        }
+    }
+
+    #[test]
+    fn asm2_extended_clobber_only_syntax_is_separate_from_basic_asm() {
+        let src=r#"int f(void) {
+            __asm__ volatile ("mfence" : : : "memory");
+            asm ("" : : : "cc", "memory");
+            asm ("nop" : : :);
+            return 1;
+        }"#;
+        let Some(ExternalItem::Function(f)) =
+            Parser::new(src).next_item().unwrap() else {panic!("expected function")};
+        let Stmt::Block(stmts)=f.body else {panic!("expected compound body")};
+        assert!(matches!(&stmts[0],Stmt::ExtendedAsm{template,clobbers,..}
+            if template=="mfence" && clobbers==&["memory"]));
+        assert!(matches!(&stmts[1],Stmt::ExtendedAsm{template,clobbers,..}
+            if template.is_empty() && clobbers==&["cc","memory"]));
+        assert!(matches!(&stmts[2],Stmt::ExtendedAsm{template,clobbers,..}
+            if template=="nop" && clobbers.is_empty()));
+    }
+
+    #[test]
+    fn asm2_extended_rejects_unsupported_operands_and_malformed_clobber_groups() {
+        for src in [
+            r#"int f(void) { asm("mov %1,%0" : "=r"(x) : "r"(y)); }"#,
+            r#"int f(void) { asm("nop" :: "r"(x) : "memory"); }"#,
+            r#"int f(void) { asm("nop" ::: "memory",); }"#,
+            r#"int f(void) { asm("nop" :: "memory"); }"#,
+            r#"int f(void) { asm("nop" : : : "memory" : label); }"#,
+            r#"int f(void) { asm("nop" : : : 3); }"#,
+        ] {
+            assert!(Parser::new(src).next_item().is_err(),
+                "unexpectedly accepted unsupported extended asm: {src}");
         }
     }
 }
