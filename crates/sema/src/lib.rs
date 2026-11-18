@@ -1430,11 +1430,32 @@ impl Checker {
                         constraint:input.constraint.clone(),expr:expr.rvalue(),
                     });
                 }
-                // Without register-allocation constraint support, only
-                // compiler-memory and condition-code clobber declarations
-                // are representable. Explicit register clobbers fail closed.
+                // P12 bounded x86 GP clobbers: canonical architectural
+                // numbers make 32/64-bit aliases conflict (eax == rax,
+                // r10d == r10). RSP, RBP and preserved GP registers remain
+                // unsupported until their ABI interactions are modeled.
+                // This does not authorize arbitrary source templates.
+                let gp_clobber=|name:&str|->Option<u8> {Some(match name {
+                    "eax"|"rax"=>0, "ecx"|"rcx"=>1, "edx"|"rdx"=>2,
+                    "esi"|"rsi"=>6, "edi"|"rdi"=>7,
+                    "r8d"|"r8"=>8, "r9d"|"r9"=>9,
+                    "r10d"|"r10"=>10, "r11d"|"r11"=>11,
+                    _=>return None,
+                })};
+                let mut clobbered_gp=0u16;
                 for (index,clobber) in clobbers.iter().enumerate() {
-                    if !matches!(clobber.as_str(),"memory"|"cc") {
+                    if let Some(reg)=gp_clobber(clobber) {
+                        if outputs.len()!=1 {
+                            return Err(type_error(*span,
+                                "explicit GP clobbers require a checked one-output ASM2 operation"));
+                        }
+                        let bit=1u16 << reg;
+                        if clobbered_gp & bit != 0 {
+                            return Err(type_error(*span,
+                                "duplicate aliased extended asm GP clobber"));
+                        }
+                        clobbered_gp |= bit;
+                    } else if !matches!(clobber.as_str(),"memory"|"cc") {
                         return Err(type_error(*span,
                             format!("unsupported extended asm clobber #{index}: {clobber}")));
                     }

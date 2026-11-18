@@ -2682,7 +2682,7 @@ fn asm2_p5_rejects_invalid_gp_constraints_and_outputs() {
         r#"int f(int x){ asm("nop" : "=r"(x+1) : "r"(x)); return x; }"#,
         r#"int f(int x){ asm("nop" : "=r"(x) : "m"(x)); return x; }"#,
         r#"int f(int x){ asm("nop" : "=r"(x) : "1"(x)); return x; }"#,
-        r#"int f(int x){ asm("nop" : "=r"(x) : "r"(x) : "rax"); return x; }"#,
+        r#"int f(int x){ asm("nop" : "=r"(x) : "r"(x) : "rbx"); return x; }"#,
     ] {
         assert!(check(source).is_err(),"accepted unsupported GP constraint: {source}");
     }
@@ -2748,4 +2748,36 @@ fn asm2_p11_rejects_invalid_early_clobber_contracts() {
         r#"int f(int x){int y=0; asm("movl %1,%0":"=&r"(y):"m"(x)); return y;}"#,
         r#"int f(int x){const int y=0; asm("movl %1,%0":"=&r"(y):"r"(x)); return y;}"#,
     ] {assert!(check(src).is_err(),"admitted invalid early-clobber asm: {src}");}
+}
+
+#[test]
+fn asm2_p12_checked_gp_clobbers_allow_bounded_aliases() {
+    for (source, expected) in [
+        (r#"int f(int x){int y=0;__asm__ volatile("movl %1,%0":"=r"(y):"r"(x):"rax","rdx");return y;}"#,vec!["rax","rdx"]),
+        (r#"long f(long x){long y=0;__asm__ volatile("movq %1,%0;addq $5,%0":"=&r"(y):"r"(x):"eax","ecx","r10d","cc");return y;}"#,vec!["eax","ecx","r10d","cc"]),
+        (r#"int f(int x){__asm__ volatile("addl $3,%0":"+r"(x)::"r8","r9d","memory","cc");return x;}"#,vec!["r8","r9d","memory","cc"]),
+    ] {
+        let items=check(source).expect("checked P12 clobbers");
+        let CheckedItem::Function(function)=&items[0] else {panic!("expected function")};
+        let CheckedStmt::Block(statements)=&function.body else {panic!("expected block")};
+        let asm=statements.iter().find_map(|stmt|match stmt {
+            CheckedStmt::ExtendedAsm{clobbers,..}=>Some(clobbers),_=>None
+        }).expect("checked asm");
+        assert_eq!(asm.iter().map(String::as_str).collect::<Vec<_>>(),expected);
+    }
+}
+
+#[test]
+fn asm2_p12_rejects_gp_clobber_aliases_and_unsupported_registers() {
+    for clobbers in [
+        "\"rax\",\"eax\"", "\"r10\",\"r10d\"", "\"rcx\",\"ecx\"",
+        "\"r15\"", "\"rbx\"", "\"rbp\"", "\"rsp\"",
+        "\"xmm0\"", "\"ax\"", "\"flags\"", "\"r16\"",
+    ] {
+        let source=format!(
+            "int f(int x){{int y=0; __asm__ volatile(\"movl %1,%0\":\"=r\"(y):\"r\"(x):{clobbers});return y;}}"
+        );
+        assert!(check(&source).is_err(),"admitted unsupported/aliased GP clobbers {clobbers}");
+    }
+    assert!(check(r#"int f(void){__asm__ volatile("nop":::"rax");return 0;}"#).is_err());
 }
