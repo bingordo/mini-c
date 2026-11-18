@@ -2682,7 +2682,7 @@ fn asm2_p5_rejects_invalid_gp_constraints_and_outputs() {
         r#"int f(int x){ asm("nop" : "=r"(x+1) : "r"(x)); return x; }"#,
         r#"int f(int x){ asm("nop" : "=r"(x) : "m"(x)); return x; }"#,
         r#"int f(int x){ asm("nop" : "=r"(x) : "1"(x)); return x; }"#,
-        r#"int f(int x){ asm("nop" : "=r"(x) : "r"(x) : "rax"); return x; }"#,
+        r#"int f(int x){ asm("nop" : "=r"(x) : "r"(x) : "rbx"); return x; }"#,
     ] {
         assert!(check(source).is_err(),"accepted unsupported GP constraint: {source}");
     }
