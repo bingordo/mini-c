@@ -1368,9 +1368,11 @@ impl Checker {
                 template: template.clone(), span: *span,
             },
             Stmt::ExtendedAsm { template, outputs, inputs, clobbers, span } => {
-                // Bound the first tied-GP slice to one output and at most one input.
-                if outputs.len()>1 || inputs.len()>1 {
-                    return Err(type_error(*span,"extended asm supports at most one GP output and input"));
+                // Bounded GP slice: one output, up to two explicit independent inputs.
+                // Multiple inputs require =&r early-clobber and are validated
+                // again against the exact reviewed two-input template.
+                if outputs.len()>1 || inputs.len()>2 {
+                    return Err(type_error(*span,"extended asm supports one GP output and at most two inputs"));
                 }
                 let mut checked_outputs=Vec::new();
                 for output in outputs {
@@ -1402,8 +1404,13 @@ impl Checker {
                     if out.constraint=="+r" && !inputs.is_empty() {
                         return Err(type_error(*span,"+r output cannot have a separate input in the bounded ASM2 form"));
                     }
-                    if out.constraint=="=&r" && (inputs.len()!=1 || inputs[0].constraint!="r") {
-                        return Err(type_error(*span,"=&r requires exactly one independent r input"));
+                    if out.constraint=="=&r" &&
+                        (inputs.is_empty() || inputs.len()>2
+                            || inputs.iter().any(|i|i.constraint!="r")) {
+                        return Err(type_error(*span,"=&r requires one or two independent r inputs"));
+                    }
+                    if inputs.len()==2 && out.constraint!="=&r" {
+                        return Err(type_error(*span,"two GP inputs require one =&r early-clobber output"));
                     }
                 }
                 let mut checked_inputs=Vec::new();
@@ -1425,6 +1432,12 @@ impl Checker {
                         expr.ty.size_bytes(self.target)!=checked_outputs[0].expr.ty.size_bytes(self.target)
                     {
                         return Err(type_error(input.span,"matching 0 input/output GP widths must agree"));
+                    }
+                    if inputs.len()==2 &&
+                        expr.ty.size_bytes(self.target)!=checked_outputs[0].expr.ty.size_bytes(self.target)
+                    {
+                        return Err(type_error(input.span,
+                            "two independent ASM2 GP input widths must match the output"));
                     }
                     checked_inputs.push(CheckedAsmOperand{
                         constraint:input.constraint.clone(),expr:expr.rvalue(),

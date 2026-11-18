@@ -2743,7 +2743,7 @@ fn asm2_p11_rejects_invalid_early_clobber_contracts() {
     for src in [
         r#"int f(int x){int y=0; asm("movl %1,%0":"=&r"(y):"0"(x)); return y;}"#,
         r#"int f(int x){int y=0; asm("movl %1,%0":"=&r"(y):); return y;}"#,
-        r#"int f(int x){int y=0; asm("movl %1,%0":"=&r"(y):"r"(x),"r"(x)); return y;}"#,
+        r#"int f(int x){int y=0; asm("movl %1,%0":"=&r"(y):"r"(x),"0"(x)); return y;}"#,
         r#"int f(int x){int y=0; asm("movl %1,%0":"=&m"(y):"r"(x)); return y;}"#,
         r#"int f(int x){int y=0; asm("movl %1,%0":"=&r"(y):"m"(x)); return y;}"#,
         r#"int f(int x){const int y=0; asm("movl %1,%0":"=&r"(y):"r"(x)); return y;}"#,
@@ -2780,4 +2780,39 @@ fn asm2_p12_rejects_gp_clobber_aliases_and_unsupported_registers() {
         assert!(check(&source).is_err(),"admitted unsupported/aliased GP clobbers {clobbers}");
     }
     assert!(check(r#"int f(void){__asm__ volatile("nop":::"rax");return 0;}"#).is_err());
+}
+
+#[test]
+fn asm2_p13b_two_input_early_clobber_checked_types_and_roles() {
+    for (ty,suffix) in [("int","l"),("long","q")] {
+        for op in ["add","sub"] {
+            let src=format!(
+                "{ty} f({ty} x,{ty} y){{{ty} z=0;__asm__ volatile(\"mov{suffix} %1,%0;{op}{suffix} %2,%0\":\"=&r\"(z):\"r\"(x),\"r\"(y):\"cc\");return z;}}"
+            );
+            let items=check(&src).expect("P13B two-input independent GP asm");
+            let CheckedItem::Function(f)=&items[0] else {panic!("expected function")};
+            let CheckedStmt::Block(stmts)=&f.body else {panic!("expected block")};
+            let stmt=stmts.iter().find(|s|matches!(s,CheckedStmt::ExtendedAsm{..})).unwrap();
+            let CheckedStmt::ExtendedAsm{outputs,inputs,..}=stmt else {unreachable!()};
+            assert_eq!(outputs[0].constraint,"=&r");
+            assert_eq!(inputs.iter().map(|i|i.constraint.as_str()).collect::<Vec<_>>(),["r","r"]);
+        }
+    }
+}
+
+#[test]
+fn asm2_p13b_rejects_invalid_two_input_roles_and_widths() {
+    for (output,input_constraints) in [
+        ("=r","\"r\"(x),\"r\"(y)"),
+        ("+r","\"r\"(x),\"r\"(y)"),
+        ("=&r","\"r\"(x),\"0\"(y)"),
+        ("=&r","\"0\"(x),\"r\"(y)"),
+        ("=&r","\"r\"(x),\"r\"(y),\"r\"(x)"),
+    ] {
+        let src=format!("int f(int x,int y){{int out=0;__asm__ volatile(\"movl %1,%0;addl %2,%0\":\"{output}\"(out):{input_constraints}:\"cc\");return out;}}");
+        assert!(check(&src).is_err(),"unexpectedly admitted invalid P13B operands: {src}");
+    }
+    let wrong_width=r#"long f(long x,int y){long out=0;__asm__ volatile("movq %1,%0;addq %2,%0":"=&r"(out):"r"(x),"r"(y):"cc");return out;}"#;
+    // Incorrect mixed-width sources must not reach machine allocation.
+    assert!(check(wrong_width).is_err());
 }

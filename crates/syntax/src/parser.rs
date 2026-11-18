@@ -1247,7 +1247,21 @@ impl<'a> Parser<'a> {
             }
             self.expect(":")?;
             if self.peek()?.is_some_and(|t|t.kind==TokenKind::String) {
-                inputs.push(self.parse_asm_operand()?);
+                loop {
+                    inputs.push(self.parse_asm_operand()?);
+                    if inputs.len()>2 {
+                        return Err(Diagnostic::new(self.eof_span(),
+                            "ASM2 extended asm permits at most two input operands"));
+                    }
+                    if !self.peek()?.is_some_and(|t|t.text.as_ref()==",") {
+                        break;
+                    }
+                    self.take()?;
+                    if !self.peek()?.is_some_and(|t|t.kind==TokenKind::String) {
+                        return Err(Diagnostic::new(self.eof_span(),
+                            "ASM2 asm input list requires a constraint string after comma"));
+                    }
+                }
             }
             if self.peek()?.is_some_and(|t|t.text.as_ref()==":") {
                 self.expect(":")?;
