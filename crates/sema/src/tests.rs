@@ -2681,9 +2681,41 @@ fn asm2_p5_rejects_invalid_gp_constraints_and_outputs() {
         r#"int f(void){ const int x=3; asm("nop" : "=r"(x) :); return x; }"#,
         r#"int f(int x){ asm("nop" : "=r"(x+1) : "r"(x)); return x; }"#,
         r#"int f(int x){ asm("nop" : "=r"(x) : "m"(x)); return x; }"#,
-        r#"int f(int x){ asm("nop" : "=r"(x) : "0"(x)); return x; }"#,
+        r#"int f(int x){ asm("nop" : "=r"(x) : "1"(x)); return x; }"#,
         r#"int f(int x){ asm("nop" : "=r"(x) : "r"(x) : "rax"); return x; }"#,
     ] {
         assert!(check(source).is_err(),"accepted unsupported GP constraint: {source}");
     }
+}
+
+#[test]
+fn asm2_p9_checked_readwrite_and_matching_gp_contracts() {
+    for (src,output,input) in [
+        (r#"int f(int x){ __asm__ volatile("addl $7,%0" : "+r"(x) : : "cc"); return x; }"#,"+r",None),
+        (r#"long f(long x){ __asm__ volatile("subq $9,%0" : "+r"(x) : : "cc"); return x; }"#,"+r",None),
+        (r#"int f(int x){ int y; __asm__ volatile("addl $7,%0" : "=r"(y) : "0"(x) : "cc"); return y; }"#,"=r",Some("0")),
+        (r#"long f(long x){ long y; __asm__ volatile("subq $9,%0" : "=r"(y) : "0"(x) : "cc"); return y; }"#,"=r",Some("0")),
+    ] {
+        let items=check(src).expect("bounded tied GP output should pass sema");
+        let CheckedItem::Function(f)=&items[0] else {panic!("function expected")};
+        let CheckedStmt::Block(stmts)=&f.body else {panic!("body expected")};
+        let CheckedStmt::ExtendedAsm{outputs,inputs,..}=&stmts[stmts.len()-2]
+            else {panic!("extended asm expected")};
+        assert_eq!(outputs.len(),1);
+        assert_eq!(outputs[0].constraint,output);
+        assert_eq!(inputs.first().map(|i|i.constraint.as_str()),input);
+    }
+}
+#[test]
+fn asm2_p9_rejects_invalid_tied_gp_semantics() {
+    for src in [
+        r#"int f(int x){ asm("addl $1,%0" : "+r"(x) : "r"(x) : "cc"); return x; }"#,
+        r#"int f(int x){ asm("addl $1,%0" : "+r"(x) : "0"(x) : "cc"); return x; }"#,
+        r#"int f(int x){ int y; asm("addl $1,%0" : "=r"(y) : "1"(x) : "cc"); return y; }"#,
+        r#"int f(int x){ int y; asm("addl $1,%0" : "=r"(y) : "0"(x), "0"(x) : "cc"); return y; }"#,
+        r#"int f(long x){ int y; asm("addl $1,%0" : "=r"(y) : "0"(x) : "cc"); return y; }"#,
+        r#"int f(int x){ asm("addl $1,%0" : "+m"(x) : : "cc"); return x; }"#,
+        r#"int f(int x){ asm("addl $1,%0" : "=&r"(x) : : "cc"); return x; }"#,
+        r#"int f(void){ const int x=1; asm("addl $1,%0" : "+r"(x) : : "cc"); return x; }"#,
+    ] {assert!(check(src).is_err(),"accepted unsafe tied asm operand: {src}");}
 }
