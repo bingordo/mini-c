@@ -1900,6 +1900,125 @@ impl Checker {
         })
     }
 
+    /// A single checked source entry point for all GNU atomic builtin spellings.
+    /// This produces a typed operation plan but never a generic C Call. Target
+    /// code generation remains gated until true atomic lowering is available.
+    fn check_atomic_builtin(
+        &self, spec: &builtins::BuiltinSpec, args: &[Expr], span: Span,
+    ) -> Result<CheckedExpr, Diagnostic> {
+        use builtins::BuiltinId as A;
+        let success = self.atomic_builtin_constant_arg(
+            &args[spec.memory_order_argument.expect("atomic builtin has order")],
+            span, "memory order")?;
+        let failure = spec.failure_order_argument.map(|index|
+            self.atomic_builtin_constant_arg(&args[index], span, "failure memory order")
+        ).transpose()?;
+        if !builtins::valid_atomic_orders(spec.id, success, failure) {
+            return Err(type_error(span, format!(
+                "{} has an invalid C11 success/failure memory-order combination", spec.name)));
+        }
+        let weak = spec.weak_argument.map(|index|
+            self.atomic_builtin_constant_arg(&args[index], span, "weak compare-exchange flag")
+        ).transpose()?;
+        if weak.is_some_and(|flag| flag > 1) {
+            return Err(type_error(span, "atomic compare-exchange weak flag must be 0 or 1"));
+        }
+        let weak = weak.unwrap_or(0) != 0;
+        let mut operands = Vec::new();
+        let (result_ty, bytes, alignment) =
+            if matches!(spec.id, A::AtomicThreadFence | A::AtomicSignalFence) {
+                (CType::Void, 0, 0)
+            } else {
+                let address = self.check_expr(&args[0],
+                    args[0].location().unwrap_or(span))?.rvalue();
+                let CType::Pointer(pointee) = &address.ty else {
+                    return Err(type_error(span, format!(
+                        "{} requires a pointer to an integer object", spec.name)));
+                };
+                let CType::Integer { rank, .. } = pointee.unqualified() else {
+                    return Err(type_error(span, format!(
+                        "{} requires an integer object (pointer and aggregate atomics are pending)",
+                        spec.name)));
+                };
+                let width = self.target.bits(*rank);
+                let bytes = u8::try_from(width / 8)
+                    .map_err(|_| type_error(span, "unsupported atomic integer width"))?;
+                let alignment = pointee.align_bytes(self.target)
+                    .and_then(|align| u8::try_from(align).ok())
+                    .ok_or_else(|| type_error(span, "unsupported atomic integer alignment"))?;
+                if !matches!(width, 8 | 16 | 32 | 64) ||
+                    alignment < bytes || !alignment.is_power_of_two()
+                {
+                    return Err(type_error(span, "atomic object requires a naturally aligned 8/16/32/64-bit integer"));
+                }
+                if spec.id != A::AtomicLoadN && pointee.is_const() {
+                    return Err(type_error(span, format!(
+                        "{} requires a writable integer object", spec.name)));
+                }
+                let value_ty = pointee.unqualified().clone();
+                operands.push(address);
+                let result_ty = match spec.id {
+                    A::AtomicLoadN => value_ty,
+                    A::AtomicStoreN | A::AtomicExchangeN |
+                    A::AtomicFetchAdd | A::AtomicFetchSub |
+                    A::AtomicFetchAnd | A::AtomicFetchOr | A::AtomicFetchXor => {
+                        let argument = &args[1];
+                        let checked = self.check_expr(argument,
+                            argument.location().unwrap_or(span))?;
+                        operands.push(self.convert_for_assignment(
+                            checked, &value_ty, argument, argument.location().unwrap_or(span))?);
+                        if spec.id == A::AtomicStoreN { CType::Void } else { value_ty }
+                    }
+                    A::AtomicCompareExchangeN => {
+                        // GNU CAS passes expected by reference. The conditional
+                        // failure writeback is observable even when Bool unused.
+                        let expected = self.check_expr(&args[1],
+                            args[1].location().unwrap_or(span))?.rvalue();
+                        let CType::Pointer(expected_pointee) = &expected.ty else {
+                            return Err(type_error(span,
+                                "atomic compare-exchange expected argument must be a pointer"));
+                        };
+                        if expected_pointee.is_const() ||
+                            !expected_pointee.unqualified().same_type(&value_ty)
+                        {
+                            return Err(type_error(span,
+                                "atomic compare-exchange expected pointer requires matching writable integer type"));
+                        }
+                        operands.push(expected);
+                        let argument = &args[2];
+                        let checked = self.check_expr(argument,
+                            argument.location().unwrap_or(span))?;
+                        operands.push(self.convert_for_assignment(
+                            checked, &value_ty, argument, argument.location().unwrap_or(span))?);
+                        CType::Integer { rank: IntRank::Bool, unsigned: true }
+                    }
+                    _ => unreachable!("fences handled above; CTZ is separately checked"),
+                };
+                (result_ty, bytes, alignment)
+            };
+        Ok(CheckedExpr::value(result_ty,
+            CheckedExprKind::BuiltinAtomic(Box::new(CheckedAtomicBuiltin {
+                builtin: spec.id, operands, bytes, alignment,
+                success_order: success, failure_order: failure, weak,
+            }))))
+    }
+
+    fn atomic_builtin_constant_arg(
+        &self, expr: &Expr, span: Span, label: &str,
+    ) -> Result<u8, Diagnostic> {
+        let actual_span = expr.location().unwrap_or(span);
+        let checked = self.check_expr(expr, actual_span)?.rvalue();
+        if !checked.ty.is_integer() {
+            return Err(type_error(actual_span, format!(
+                "atomic {label} requires an integer constant expression")));
+        }
+        let value = const_eval::evaluate(&checked, self.target)
+            .map_err(|_| type_error(actual_span,
+                format!("atomic {label} requires an integer constant expression")))?;
+        u8::try_from(value).map_err(|_| type_error(actual_span,
+            format!("atomic {label} is outside the supported constant range")))
+    }
+
     fn check_expr(&self, expr: &Expr, span: Span) -> Result<CheckedExpr, Diagnostic> {
         match expr {
             Expr::Located(inner, located_span) => {
