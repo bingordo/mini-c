@@ -2757,7 +2757,7 @@ mod tests {
     #[test]
     fn asm2_basic_asm_rejects_extended_asm_and_nonliteral_templates() {
         for source in [
-            r#"int f(void) { asm("nop" : "r"(x) : "memory"); return 0; }"#,
+            r#"int f(void) { asm("nop" : "=r"(x) : : "memory" : label); return 0; }"#,
             r#"int f(void) { asm goto ("jmp %l0" : : : : label); label: return 0; }"#,
             r#"int f(void) { asm(0); return 0; }"#,
             r#"int f(void) { asm("nop" "\0" "ret"); return 0; }"#,
@@ -2799,6 +2799,33 @@ mod tests {
         ] {
             assert!(Parser::new(src).next_item().is_err(),
                 "unexpectedly accepted unsupported extended asm: {src}");
+        }
+    }
+    #[test]
+    fn asm2_p5_single_gp_input_and_output_are_preserved_separately() {
+        let source=r#"int f(int x) {
+            int y=0;
+            __asm__ volatile("movl %1, %0" : "=r"(y) : "r"(x) : "cc");
+            return y;
+        }"#;
+        let Some(ExternalItem::Function(f))=Parser::new(source).next_item().unwrap()
+        else {panic!("function expected")};
+        let Stmt::Block(stmts)=f.body else {panic!("block expected")};
+        assert!(matches!(&stmts[1],Stmt::ExtendedAsm{template,outputs,inputs,clobbers,..}
+            if template=="movl %1, %0"
+                && outputs.len()==1 && outputs[0].constraint=="=r"
+                && inputs.len()==1 && inputs[0].constraint=="r"
+                && clobbers==&["cc"]));
+    }
+    #[test]
+    fn asm2_p5_operand_syntax_rejects_multiple_or_malformed_constraints() {
+        for source in [
+            r#"int f(void){ asm("nop":"=r"(x),"=r"(y):"r"(z)); }"#,
+            r#"int f(void){ asm("nop":"=r"x:"r"(z)); }"#,
+            r#"int f(void){ asm("nop":"=r"(x):"r"(z),"r"(y)); }"#,
+            r#"int f(void){ asm("nop":"=r"(x):"r"(z):"memory",); }"#,
+        ] {
+            assert!(Parser::new(source).next_item().is_err(),"{source}");
         }
     }
 }
