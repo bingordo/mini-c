@@ -136,6 +136,10 @@ pub enum CheckedStmt {
     /// Executable opaque basic asm: never treat it as a pure expression or
     /// discard its side effects. Native effectful lowering is tracked by ASM2.
     BasicAsm { template: String, span: Span },
+    /// Checked, zero-operand GCC extended asm. Memory is a compiler
+    /// read/write barrier; cc is allowed only because the admitted native
+    /// instructions do not modify architectural arithmetic flags.
+    ExtendedAsm { template: String, clobbers: Vec<String>, span: Span },
     Return(Option<CheckedExpr>),
     If { cond: CheckedExpr, then: Box<CheckedStmt>, otherwise: Option<Box<CheckedStmt>> },
     While { cond: CheckedExpr, body: Box<CheckedStmt> },
@@ -1351,6 +1355,23 @@ impl Checker {
             }
             Stmt::BasicAsm { template, span } => CheckedStmt::BasicAsm {
                 template: template.clone(), span: *span,
+            },
+            Stmt::ExtendedAsm { template, clobbers, span } => {
+                // Without register-allocation constraint support, only
+                // compiler-memory and condition-code clobber declarations
+                // are representable. Explicit register clobbers fail closed.
+                for (index,clobber) in clobbers.iter().enumerate() {
+                    if !matches!(clobber.as_str(),"memory"|"cc") {
+                        return Err(type_error(*span,
+                            &format!("unsupported extended asm clobber #{index}: {clobber}")));
+                    }
+                    if clobbers[..index].contains(clobber) {
+                        return Err(type_error(*span,"duplicate extended asm clobber"));
+                    }
+                }
+                CheckedStmt::ExtendedAsm {
+                    template:template.clone(),clobbers:clobbers.clone(),span:*span,
+                }
             },
             Stmt::Return(value) => {
                 let expected = self.result_ty.clone().expect("return outside function");
