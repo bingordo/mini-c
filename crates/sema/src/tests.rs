@@ -2719,3 +2719,33 @@ fn asm2_p9_rejects_invalid_tied_gp_semantics() {
         r#"int f(void){ const int x=1; asm("addl $1,%0" : "+r"(x) : : "cc"); return x; }"#,
     ] {assert!(check(src).is_err(),"accepted unsafe tied asm operand: {src}");}
 }
+
+#[test]
+fn asm2_p11_early_clobber_gp_constraints_preserve_independent_inputs() {
+    for (src,width) in [
+        (r#"int f(int x){ int y=1; __asm__ volatile("movl %1,%0" : "=&r"(y) : "r"(x)); return x+y; }"#,4),
+        (r#"long f(long x){ long y=0; __asm__ volatile("movq %1,%0" : "=&r"(y) : "r"(x)); return y; }"#,8),
+        (r#"int f(int x){ int y=0; __asm__ volatile("movl %1,%0;addl $5,%0" : "=&r"(y) : "r"(x) : "cc"); return y; }"#,4),
+    ] {
+        let items=check(src).expect("checked early-clobber GP output");
+        let CheckedItem::Function(f)=&items[0] else {panic!("function expected")};
+        let CheckedStmt::Block(stmts)=&f.body else {panic!("block expected")};
+        let stmt=stmts.iter().find(|s| matches!(s,CheckedStmt::ExtendedAsm{..}))
+            .expect("asm statement");
+        let CheckedStmt::ExtendedAsm{outputs,inputs,..}=stmt else {unreachable!()};
+        assert_eq!(outputs[0].constraint,"=&r");
+        assert_eq!(inputs[0].constraint,"r");
+        assert!(matches!(width,4|8));
+    }
+}
+#[test]
+fn asm2_p11_rejects_invalid_early_clobber_contracts() {
+    for src in [
+        r#"int f(int x){int y=0; asm("movl %1,%0":"=&r"(y):"0"(x)); return y;}"#,
+        r#"int f(int x){int y=0; asm("movl %1,%0":"=&r"(y):); return y;}"#,
+        r#"int f(int x){int y=0; asm("movl %1,%0":"=&r"(y):"r"(x),"r"(x)); return y;}"#,
+        r#"int f(int x){int y=0; asm("movl %1,%0":"=&m"(y):"r"(x)); return y;}"#,
+        r#"int f(int x){int y=0; asm("movl %1,%0":"=&r"(y):"m"(x)); return y;}"#,
+        r#"int f(int x){const int y=0; asm("movl %1,%0":"=&r"(y):"r"(x)); return y;}"#,
+    ] {assert!(check(src).is_err(),"admitted invalid early-clobber asm: {src}");}
+}
