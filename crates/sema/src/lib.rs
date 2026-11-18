@@ -1433,6 +1433,12 @@ impl Checker {
                     {
                         return Err(type_error(input.span,"matching 0 input/output GP widths must agree"));
                     }
+                    if inputs.len()==2 &&
+                        expr.ty.size_bytes(self.target)!=checked_outputs[0].expr.ty.size_bytes(self.target)
+                    {
+                        return Err(type_error(input.span,
+                            "two independent ASM2 GP input widths must match the output"));
+                    }
                     checked_inputs.push(CheckedAsmOperand{
                         constraint:input.constraint.clone(),expr:expr.rvalue(),
                     });
