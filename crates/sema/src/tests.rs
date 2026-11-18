@@ -2656,3 +2656,33 @@ fn asm2_extended_clobber_only_check_and_reject_untracked_registers() {
         assert!(check(text).is_err(),"untracked asm clobber accepted: {text}");
     }
 }
+
+#[test]
+fn asm2_p5_checked_gp_operand_contract_survives_semantics() {
+    let source=r#"int f(int x) {
+        int y=0;
+        __asm__ volatile("movl %1, %0" : "=r"(y) : "r"(x) : "cc");
+        return y;
+    }"#;
+    let items=check(source).expect("supported operand types and contracts");
+    let CheckedItem::Function(f)=&items[0] else {panic!("expected function")};
+    let CheckedStmt::Block(stmts)=&f.body else {panic!("expected block")};
+    assert!(matches!(&stmts[1],CheckedStmt::ExtendedAsm {
+        outputs,inputs,clobbers,..
+    } if outputs.len()==1 && outputs[0].constraint=="=r"
+        && outputs[0].expr.category==Category::LValue
+        && inputs.len()==1 && inputs[0].constraint=="r"
+        && clobbers==&["cc"]));
+}
+#[test]
+fn asm2_p5_rejects_invalid_gp_constraints_and_outputs() {
+    for source in [
+        r#"int f(int x){ asm("nop" : "=m"(x) : "r"(x)); return x; }"#,
+        r#"int f(int x){ asm("nop" : "=r"(x+1) : "r"(x)); return x; }"#,
+        r#"int f(int x){ asm("nop" : "=r"(x) : "m"(x)); return x; }"#,
+        r#"int f(int x){ asm("nop" : "=r"(x) : "0"(x)); return x; }"#,
+        r#"int f(int x){ asm("nop" : "=r"(x) : "r"(x) : "rax"); return x; }"#,
+    ] {
+        assert!(check(source).is_err(),"accepted unsupported GP constraint: {source}");
+    }
+}
