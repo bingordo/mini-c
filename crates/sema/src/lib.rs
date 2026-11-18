@@ -1382,6 +1382,7 @@ impl Checker {
                     }
                     let expr=self.check_expr(&output.expr,output.span)?;
                     if expr.category!=Category::LValue
+                        || matches!(expr.ty,CType::Qualified(_))
                         || !matches!(expr.ty.unqualified(),CType::Integer { .. })
                         || !matches!(expr.ty.size_bytes(self.target),Some(4|8))
                     {
