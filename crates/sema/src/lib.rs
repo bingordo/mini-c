@@ -66,6 +66,11 @@ pub enum CheckedExprKind {
     /// GCC __builtin_ctz(unsigned int): the argument is evaluated exactly once.
     /// As in GCC, a zero operand has undefined behavior; callers must guard it.
     BuiltinCtz(Box<CheckedExpr>),
+    /// Typed GNU atomic builtin. The operands are evaluated once, and the
+    /// memory order/weak flag are checked source constants, not runtime
+    /// arguments. Native TypeId lowering must be explicit; Cranelift rejects
+    /// this until correct machine atomics exist.
+    BuiltinAtomic(Box<CheckedAtomicBuiltin>),
     Convert(Box<CheckedExpr>),
     Load(Box<CheckedExpr>),
     /// Array lvalue conversion yields a pointer to the first element,
@@ -76,6 +81,20 @@ pub enum CheckedExprKind {
     /// A non-addressable C bit-field member, stored in one 32-bit unit.
     /// It retains integer lvalue semantics for assignment and ++/--.
     BitFieldMember(Box<CheckedExpr>, u64, u8, u8),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CheckedAtomicBuiltin {
+    pub builtin: builtins::BuiltinId,
+    /// Only runtime value operands in original evaluation order. The order
+    /// and weak arguments are constants and are not evaluated at runtime.
+    pub operands: Vec<CheckedExpr>,
+    pub bytes: u8,
+    pub alignment: u8,
+    /// GNU C11 memory-order constants 0..=5.
+    pub success_order: u8,
+    pub failure_order: Option<u8>,
+    pub weak: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2493,9 +2512,7 @@ impl Checker {
                                     return Ok(CheckedExpr::value(CType::int(),
                                         CheckedExprKind::BuiltinCtz(Box::new(argument))));
                                 }
-                                _ => return Err(Diagnostic::coded(span,
-                                    DiagnosticCode::SemanticInvalidOperatorOperands,
-                                    format!("{name} requires checked atomic IR lowering; it cannot be emitted as an ordinary function call"))),
+                                _ => return self.check_atomic_builtin(spec, args, span),
                             }
                         }
                     } else if builtins::reserved_name(name) {
