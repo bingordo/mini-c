@@ -1374,8 +1374,8 @@ impl Checker {
                 }
                 let mut checked_outputs=Vec::new();
                 for output in outputs {
-                    if !matches!(output.constraint.as_str(),"=r"|"+r") {
-                        return Err(type_error(output.span,"extended asm output requires =r or +r"));
+                    if !matches!(output.constraint.as_str(),"=r"|"+r"|"=&r") {
+                        return Err(type_error(output.span,"extended asm output requires =r, +r or =&r"));
                     }
                     if !matches!(output.expr.without_location(),Expr::Name(_)) {
                         return Err(type_error(output.span,"extended asm output currently requires local variable"));
@@ -1392,14 +1392,18 @@ impl Checker {
                         constraint:output.constraint.clone(),expr,
                     });
                 }
-                // +r is both the input and output of operand %0, with no
-                // separate input operand. Numeric 0 ties one input to the
-                // only =r output. Do not admit ties to a +r output, aliases
-                // to nonexistent outputs, or unmodeled early clobbers.
+                // +r reads and writes operand %0 with no separate input. Numeric
+                // 0 ties an input to the sole =r output. An =&r early-
+                // clobber output instead needs one independent r input:
+                // the machine allocator must keep its result distinct from
+                // all input registers. Other constraints still fail closed.
                 if !checked_outputs.is_empty() {
                     let out=&checked_outputs[0];
                     if out.constraint=="+r" && !inputs.is_empty() {
                         return Err(type_error(*span,"+r output cannot have a separate input in the bounded ASM2 form"));
+                    }
+                    if out.constraint=="=&r" && (inputs.len()!=1 || inputs[0].constraint!="r") {
+                        return Err(type_error(*span,"=&r requires exactly one independent r input"));
                     }
                 }
                 let mut checked_inputs=Vec::new();
