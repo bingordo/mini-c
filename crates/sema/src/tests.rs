@@ -2678,6 +2678,7 @@ fn asm2_p5_checked_gp_operand_contract_survives_semantics() {
 fn asm2_p5_rejects_invalid_gp_constraints_and_outputs() {
     for source in [
         r#"int f(int x){ asm("nop" : "=m"(x) : "r"(x)); return x; }"#,
+        r#"int f(void){ const int x=3; asm("nop" : "=r"(x) :); return x; }"#,
         r#"int f(int x){ asm("nop" : "=r"(x+1) : "r"(x)); return x; }"#,
         r#"int f(int x){ asm("nop" : "=r"(x) : "m"(x)); return x; }"#,
         r#"int f(int x){ asm("nop" : "=r"(x) : "0"(x)); return x; }"#,
