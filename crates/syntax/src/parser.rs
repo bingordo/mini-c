@@ -1209,13 +1209,48 @@ impl<'a> Parser<'a> {
         }
         let template = String::from_utf8(bytes).map_err(|_| Diagnostic::new(
             keyword.span, "basic asm template must be UTF-8"))?;
-        // A colon, operand expression or goto between the string and ')'
-        // fails closed here, rather than being mistaken for basic asm.
+        // GCC extended asm has three colon-separated operand/clobber
+        // sections. Only the no-output/no-input subset is admitted here.
+        // Each empty section is still explicitly required; the syntax
+        // cannot silently reinterpret an operand expression as a clobber.
+        let extended=self.peek()?.is_some_and(|t|t.text.as_ref()==":");
+        let mut clobbers=Vec::new();
+        if extended {
+            self.expect(":")?; // empty outputs
+            self.expect(":")?; // empty inputs
+            self.expect(":")?; // clobber list
+            if self.peek()?.is_some_and(|t|t.kind==TokenKind::String) {
+                loop {
+                    let token=self.take()?.expect("peeked asm clobber string");
+                    let bytes=crate::string_literal::decode_narrow_string(token.text.as_ref())
+                        .map_err(|reason|Diagnostic::new(token.span,reason))?;
+                    if bytes[..bytes.len()-1].contains(&0) {
+                        return Err(Diagnostic::new(token.span,"asm clobber contains NUL"));
+                    }
+                    let name=String::from_utf8(bytes[..bytes.len()-1].to_vec())
+                        .map_err(|_|Diagnostic::new(token.span,"asm clobber must be UTF-8"))?;
+                    clobbers.push(name);
+                    if clobbers.len()>32 {
+                        return Err(Diagnostic::new(token.span,"too many asm clobbers"));
+                    }
+                    if !self.peek()?.is_some_and(|t|t.text.as_ref()==",") {
+                        break;
+                    }
+                    self.take()?;
+                    if !self.peek()?.is_some_and(|t|t.kind==TokenKind::String) {
+                        return Err(Diagnostic::new(token.span,"asm clobber list expects string after comma"));
+                    }
+                }
+            }
+        }
         self.expect(")")?;
         let semi = self.expect(";")?;
-        Ok(Stmt::BasicAsm {
-            template, span: Span { lo: keyword.span.lo, hi: semi.span.hi },
-        })
+        let span=Span {lo:keyword.span.lo,hi:semi.span.hi};
+        if extended {
+            Ok(Stmt::ExtendedAsm {template,clobbers,span})
+        } else {
+            Ok(Stmt::BasicAsm {template,span})
+        }
     }
 
     fn parse_stmt(&mut self) -> Result<Stmt, Diagnostic> {
@@ -2687,7 +2722,7 @@ mod tests {
     #[test]
     fn asm2_basic_asm_rejects_extended_asm_and_nonliteral_templates() {
         for source in [
-            r#"int f(void) { asm("nop" : : : "memory"); return 0; }"#,
+            r#"int f(void) { asm("nop" : "r"(x) : "memory"); return 0; }"#,
             r#"int f(void) { asm goto ("jmp %l0" : : : : label); label: return 0; }"#,
             r#"int f(void) { asm(0); return 0; }"#,
             r#"int f(void) { asm("nop" "\0" "ret"); return 0; }"#,
@@ -2695,6 +2730,40 @@ mod tests {
         ] {
             assert!(Parser::new(source).next_item().is_err(),
                 "accepted unsupported basic asm spelling: {source}");
+        }
+    }
+
+    #[test]
+    fn asm2_extended_clobber_only_syntax_is_separate_from_basic_asm() {
+        let src=r#"int f(void) {
+            __asm__ volatile ("mfence" : : : "memory");
+            asm ("" : : : "cc", "memory");
+            asm ("nop" : : :);
+            return 1;
+        }"#;
+        let Some(ExternalItem::Function(f)) =
+            Parser::new(src).next_item().unwrap() else {panic!("expected function")};
+        let Stmt::Block(stmts)=f.body else {panic!("expected compound body")};
+        assert!(matches!(&stmts[0],Stmt::ExtendedAsm{template,clobbers,..}
+            if template=="mfence" && clobbers==&["memory"]));
+        assert!(matches!(&stmts[1],Stmt::ExtendedAsm{template,clobbers,..}
+            if template.is_empty() && clobbers==&["cc","memory"]));
+        assert!(matches!(&stmts[2],Stmt::ExtendedAsm{template,clobbers,..}
+            if template=="nop" && clobbers.is_empty()));
+    }
+
+    #[test]
+    fn asm2_extended_rejects_unsupported_operands_and_malformed_clobber_groups() {
+        for src in [
+            r#"int f(void) { asm("mov %1,%0" : "=r"(x) : "r"(y)); }"#,
+            r#"int f(void) { asm("nop" :: "r"(x) : "memory"); }"#,
+            r#"int f(void) { asm("nop" ::: "memory",); }"#,
+            r#"int f(void) { asm("nop" :: "memory"); }"#,
+            r#"int f(void) { asm("nop" : : : "memory" : label); }"#,
+            r#"int f(void) { asm("nop" : : : 3); }"#,
+        ] {
+            assert!(Parser::new(src).next_item().is_err(),
+                "unexpectedly accepted unsupported extended asm: {src}");
         }
     }
 }
