@@ -127,6 +127,11 @@ pub struct CheckedDecl {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct CheckedAsmOperand {
+    pub constraint: String,
+    pub expr: CheckedExpr,
+}
+#[derive(Debug, Clone, PartialEq)]
 pub enum CheckedStmt {
     Block(Vec<CheckedStmt>),
     Decl(CheckedDecl),
@@ -139,7 +144,13 @@ pub enum CheckedStmt {
     /// Checked, zero-operand GCC extended asm. Memory is a compiler
     /// read/write barrier; cc is allowed only because the admitted native
     /// instructions do not modify architectural arithmetic flags.
-    ExtendedAsm { template: String, clobbers: Vec<String>, span: Span },
+    ExtendedAsm {
+        template: String,
+        outputs: Vec<CheckedAsmOperand>,
+        inputs: Vec<CheckedAsmOperand>,
+        clobbers: Vec<String>,
+        span: Span,
+    },
     Return(Option<CheckedExpr>),
     If { cond: CheckedExpr, then: Box<CheckedStmt>, otherwise: Option<Box<CheckedStmt>> },
     While { cond: CheckedExpr, body: Box<CheckedStmt> },
@@ -1356,7 +1367,46 @@ impl Checker {
             Stmt::BasicAsm { template, span } => CheckedStmt::BasicAsm {
                 template: template.clone(), span: *span,
             },
-            Stmt::ExtendedAsm { template, clobbers, span } => {
+            Stmt::ExtendedAsm { template, outputs, inputs, clobbers, span } => {
+                // Review just one GP output and input at this stage.
+                if outputs.len()>1 || inputs.len()>1 {
+                    return Err(type_error(*span,"extended asm supports at most one GP output and input"));
+                }
+                let mut checked_outputs=Vec::new();
+                for output in outputs {
+                    if output.constraint!="=r" {
+                        return Err(type_error(output.span,"extended asm output requires =r"));
+                    }
+                    if !matches!(output.expr.without_location(),Expr::Name(_)) {
+                        return Err(type_error(output.span,"extended asm output currently requires local variable"));
+                    }
+                    let expr=self.check_expr(&output.expr,output.span)?;
+                    if expr.category!=Category::LValue
+                        || matches!(expr.ty,CType::Qualified(_))
+                        || !matches!(expr.ty.unqualified(),CType::Integer { .. })
+                        || !matches!(expr.ty.size_bytes(self.target),Some(4|8))
+                    {
+                        return Err(type_error(output.span,"extended asm output must be writable i32/i64 lvalue"));
+                    }
+                    checked_outputs.push(CheckedAsmOperand {
+                        constraint:output.constraint.clone(),expr,
+                    });
+                }
+                let mut checked_inputs=Vec::new();
+                for input in inputs {
+                    if input.constraint!="r" {
+                        return Err(type_error(input.span,"extended asm input requires r"));
+                    }
+                    let expr=self.check_expr(&input.expr,input.span)?;
+                    if !matches!(expr.ty.unqualified(),CType::Integer { .. })
+                        || !matches!(expr.ty.size_bytes(self.target),Some(4|8))
+                    {
+                        return Err(type_error(input.span,"extended asm input must be i32/i64 scalar"));
+                    }
+                    checked_inputs.push(CheckedAsmOperand{
+                        constraint:input.constraint.clone(),expr:expr.rvalue(),
+                    });
+                }
                 // Without register-allocation constraint support, only
                 // compiler-memory and condition-code clobber declarations
                 // are representable. Explicit register clobbers fail closed.
@@ -1370,7 +1420,9 @@ impl Checker {
                     }
                 }
                 CheckedStmt::ExtendedAsm {
-                    template:template.clone(),clobbers:clobbers.clone(),span:*span,
+                    template:template.clone(),
+                    outputs:checked_outputs,inputs:checked_inputs,
+                    clobbers:clobbers.clone(),span:*span,
                 }
             },
             Stmt::Return(value) => {

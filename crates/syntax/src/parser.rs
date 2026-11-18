@@ -1,6 +1,6 @@
 //! Incremental parser for the first supported subset of external declarations.
 //! Each complete function body is returned separately; earlier bodies are not retained.
-use crate::ast::{BinOp, Decl, Designator, Expr, FloatRank, Function, Qualifiers, Span, Stmt, StorageClass, TagKind, Type, UnOp};
+use crate::ast::{AsmOperand, BinOp, Decl, Designator, Expr, FloatRank, Function, Qualifiers, Span, Stmt, StorageClass, TagKind, Type, UnOp};
 use crate::diag::{Diagnostic, DiagnosticCode};
 use crate::lexer::{BorrowedParserTokenSource, ParserToken, ParserTokenSource, Scanner, TokenKind, TokenSource};
 use crate::stream::{ExternalItem, ItemSource};
@@ -1177,6 +1177,29 @@ impl<'a> Parser<'a> {
     /// GNU basic asm is a *statement*, not a declaration-level symbol alias.
     /// Preserve the decoded template exactly, including adjacent C strings.
     /// Extended-asm operands and asm goto are not silently accepted.
+    /// One positional GNU extended-asm operand. Named operands and
+    /// constraint alternatives remain unsupported until allocator binding.
+    fn parse_asm_operand(&mut self) -> Result<AsmOperand, Diagnostic> {
+        let token=self.take()?.ok_or_else(||Diagnostic::new(
+            self.eof_span(),"expected asm constraint string"))?;
+        if token.kind!=TokenKind::String {
+            return Err(Diagnostic::new(token.span,"asm constraint must be a string literal"));
+        }
+        let bytes=crate::string_literal::decode_narrow_string(token.text.as_ref())
+            .map_err(|reason|Diagnostic::new(token.span,reason))?;
+        let name=String::from_utf8(bytes[..bytes.len()-1].to_vec())
+            .map_err(|_|Diagnostic::new(token.span,"asm constraint must be UTF-8"))?;
+        if name.contains('\0') {
+            return Err(Diagnostic::new(token.span,"asm constraint contains NUL"));
+        }
+        self.expect("(")?;
+        let expr=self.parse_assign()?;
+        let end=self.expect(")")?;
+        Ok(AsmOperand {constraint:name,expr,span:Span{
+            lo:token.span.lo,hi:end.span.hi,
+        }})
+    }
+
     fn parse_basic_asm_stmt(&mut self) -> Result<Stmt, Diagnostic> {
         let keyword = self.take()?.expect("peeked basic asm keyword");
         // GNU basic asm is implicitly volatile. Accept the explicit synonym
@@ -1214,11 +1237,23 @@ impl<'a> Parser<'a> {
         // Each empty section is still explicitly required; the syntax
         // cannot silently reinterpret an operand expression as a clobber.
         let extended=self.peek()?.is_some_and(|t|t.text.as_ref()==":");
+        let mut outputs=Vec::new();
+        let mut inputs=Vec::new();
         let mut clobbers=Vec::new();
         if extended {
-            self.expect(":")?; // empty outputs
-            self.expect(":")?; // empty inputs
-            self.expect(":")?; // clobber list
+            self.expect(":")?;
+            if self.peek()?.is_some_and(|t|t.kind==TokenKind::String) {
+                outputs.push(self.parse_asm_operand()?);
+            }
+            self.expect(":")?;
+            if self.peek()?.is_some_and(|t|t.kind==TokenKind::String) {
+                inputs.push(self.parse_asm_operand()?);
+            }
+            if self.peek()?.is_some_and(|t|t.text.as_ref()==":") {
+                self.expect(":")?;
+            } else if !self.peek()?.is_some_and(|t|t.text.as_ref()==")") {
+                return Err(Diagnostic::new(self.eof_span(),"expected asm clobber ':' or ')'"));
+            }
             if self.peek()?.is_some_and(|t|t.kind==TokenKind::String) {
                 loop {
                     let token=self.take()?.expect("peeked asm clobber string");
@@ -1247,7 +1282,7 @@ impl<'a> Parser<'a> {
         let semi = self.expect(";")?;
         let span=Span {lo:keyword.span.lo,hi:semi.span.hi};
         if extended {
-            Ok(Stmt::ExtendedAsm {template,clobbers,span})
+            Ok(Stmt::ExtendedAsm {template,outputs,inputs,clobbers,span})
         } else {
             Ok(Stmt::BasicAsm {template,span})
         }
@@ -2722,7 +2757,7 @@ mod tests {
     #[test]
     fn asm2_basic_asm_rejects_extended_asm_and_nonliteral_templates() {
         for source in [
-            r#"int f(void) { asm("nop" : "r"(x) : "memory"); return 0; }"#,
+            r#"int f(void) { asm("nop" : "=r"(x) : : "memory" : label); return 0; }"#,
             r#"int f(void) { asm goto ("jmp %l0" : : : : label); label: return 0; }"#,
             r#"int f(void) { asm(0); return 0; }"#,
             r#"int f(void) { asm("nop" "\0" "ret"); return 0; }"#,
@@ -2755,8 +2790,8 @@ mod tests {
     #[test]
     fn asm2_extended_rejects_unsupported_operands_and_malformed_clobber_groups() {
         for src in [
-            r#"int f(void) { asm("mov %1,%0" : "=r"(x) : "r"(y)); }"#,
-            r#"int f(void) { asm("nop" :: "r"(x) : "memory"); }"#,
+
+
             r#"int f(void) { asm("nop" ::: "memory",); }"#,
             r#"int f(void) { asm("nop" :: "memory"); }"#,
             r#"int f(void) { asm("nop" : : : "memory" : label); }"#,
@@ -2764,6 +2799,33 @@ mod tests {
         ] {
             assert!(Parser::new(src).next_item().is_err(),
                 "unexpectedly accepted unsupported extended asm: {src}");
+        }
+    }
+    #[test]
+    fn asm2_p5_single_gp_input_and_output_are_preserved_separately() {
+        let source=r#"int f(int x) {
+            int y=0;
+            __asm__ volatile("movl %1, %0" : "=r"(y) : "r"(x) : "cc");
+            return y;
+        }"#;
+        let Some(ExternalItem::Function(f))=Parser::new(source).next_item().unwrap()
+        else {panic!("function expected")};
+        let Stmt::Block(stmts)=f.body else {panic!("block expected")};
+        assert!(matches!(&stmts[1],Stmt::ExtendedAsm{template,outputs,inputs,clobbers,..}
+            if template=="movl %1, %0"
+                && outputs.len()==1 && outputs[0].constraint=="=r"
+                && inputs.len()==1 && inputs[0].constraint=="r"
+                && clobbers==&["cc"]));
+    }
+    #[test]
+    fn asm2_p5_operand_syntax_rejects_multiple_or_malformed_constraints() {
+        for source in [
+            r#"int f(void){ asm("nop":"=r"(x),"=r"(y):"r"(z)); }"#,
+            r#"int f(void){ asm("nop":"=r"x:"r"(z)); }"#,
+            r#"int f(void){ asm("nop":"=r"(x):"r"(z),"r"(y)); }"#,
+            r#"int f(void){ asm("nop":"=r"(x):"r"(z):"memory",); }"#,
+        ] {
+            assert!(Parser::new(source).next_item().is_err(),"{source}");
         }
     }
 }
