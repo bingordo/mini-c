@@ -2754,8 +2754,8 @@ fn asm2_p11_rejects_invalid_early_clobber_contracts() {
 fn asm2_p12_checked_gp_clobbers_allow_bounded_aliases() {
     for (source, expected) in [
         (r#"int f(int x){int y=0;__asm__ volatile("movl %1,%0":"=r"(y):"r"(x):"rax","rdx");return y;}"#,vec!["rax","rdx"]),
-        (r#"long f(long x){long y=0;__asm__ volatile("movq %1,%0;addq $5,%0":"=&r"(y):"r"(x):"eax","ecx","r10d","cc");return y;}"#,vec!["eax","ecx","r10d","cc"]),
-        (r#"int f(int x){__asm__ volatile("addl $3,%0":"+r"(x)::"r8","r9d","memory","cc");return x;}"#,vec!["r8","r9d","memory","cc"]),
+        (r#"long f(long x){long y=0;__asm__ volatile("movq %1,%0;addq $5,%0":"=&r"(y):"r"(x):"eax","ecx","r10","cc");return y;}"#,vec!["eax","ecx","r10","cc"]),
+        (r#"int f(int x){__asm__ volatile("addl $3,%0":"+r"(x)::"r8","r9","memory","cc");return x;}"#,vec!["r8","r9","memory","cc"]),
     ] {
         let items=check(source).expect("checked P12 clobbers");
         let CheckedItem::Function(function)=&items[0] else {panic!("expected function")};
@@ -2782,6 +2782,59 @@ fn asm2_p12_rejects_gp_clobber_aliases_and_unsupported_registers() {
     assert!(check(r#"int f(void){__asm__ volatile("nop":::"rax");return 0;}"#).is_err());
 }
 
+
+#[test]
+fn asm2_p14_generated_gcc_clobber_spelling_matrix() {
+    // The GCC asm clobber namespace is not identical to the assembler's
+    // register spelling namespace: r8 is accepted, r8d is not. Check every
+    // admitted architectural id in both supported widths and input counts.
+    const ADMITTED:&[(&str,u8)]=&[
+        ("rax",0),("eax",0),("rcx",1),("ecx",1),
+        ("rdx",2),("edx",2),("rsi",6),("esi",6),
+        ("rdi",7),("edi",7),("r8",8),("r9",9),
+        ("r10",10),("r11",11),
+    ];
+    for &(name,number) in ADMITTED {
+        for (ty,suffix) in [("int","l"),("long","q")] {
+            for two_inputs in [false,true] {
+                let (params,template,inputs)=if two_inputs {
+                    (format!("{ty} x,{ty} v"),
+                     format!("mov{suffix} %1,%0;add{suffix} %2,%0"),
+                     "\"r\"(x),\"r\"(v)")
+                } else {
+                    (format!("{ty} x"),
+                     format!("mov{suffix} %1,%0"),
+                     "\"r\"(x)")
+                };
+                let output=if two_inputs {"=&r"} else {"=r"};
+                let src=format!(
+                    "{ty} f({params}){{{ty} y=0;__asm__ volatile(\"{template}\":\"{output}\"(y):{inputs}:\"{name}\",\"cc\");return y;}}"
+                );
+                let items=check(&src).unwrap_or_else(|e|
+                    panic!("valid GCC clobber {name} ({number}) rejected: {e:?}"));
+                let CheckedItem::Function(f)=&items[0] else {panic!("function")};
+                let CheckedStmt::Block(stmts)=&f.body else {panic!("block")};
+                let names=stmts.iter().find_map(|s|match s {
+                    CheckedStmt::ExtendedAsm{clobbers,..}=>Some(clobbers),_=>None,
+                }).expect("checked ASM2");
+                assert_eq!(names.iter().map(String::as_str).collect::<Vec<_>>(),vec![name,"cc"]);
+            }
+        }
+    }
+    for name in [
+        "r8d","r9d","r10d","r11d",
+        "r8w","r9w","r10w","r11w",
+        "r8b","r9b","r10b","r11b",
+        "R8","%r8","ax","al","xmm0","rbx","rsp","rbp",
+    ] {
+        for (ty,suffix) in [("int","l"),("long","q")] {
+            let src=format!(
+                "{ty} f({ty} x){{{ty} y=0;__asm__ volatile(\"mov{suffix} %1,%0\":\"=r\"(y):\"r\"(x):\"{name}\");return y;}}"
+            );
+            assert!(check(&src).is_err(),"non-GCC clobber name accepted: {name}");
+        }
+    }
+}
 #[test]
 fn asm2_p13b_two_input_early_clobber_checked_types_and_roles() {
     for (ty,suffix) in [("int","l"),("long","q")] {
