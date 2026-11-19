@@ -1443,16 +1443,17 @@ impl Checker {
                         constraint:input.constraint.clone(),expr:expr.rvalue(),
                     });
                 }
-                // P12 bounded x86 GP clobbers: canonical architectural
-                // numbers make 32/64-bit aliases conflict (eax == rax,
-                // r10d == r10). RSP, RBP and preserved GP registers remain
-                // unsupported until their ABI interactions are modeled.
+                // P14: GCC clobber *names* are not the x86 operand register
+                // spelling set. GCC accepts eax/rax but does not recognize
+                // r8d/r9d/r10d/r11d as clobber names. Preserve architectural
+                // numbers for alias interference; reject invalid source names.
+                // RSP, RBP and preserved GP registers remain unsupported.
                 // This does not authorize arbitrary source templates.
                 let gp_clobber=|name:&str|->Option<u8> {Some(match name {
                     "eax"|"rax"=>0, "ecx"|"rcx"=>1, "edx"|"rdx"=>2,
                     "esi"|"rsi"=>6, "edi"|"rdi"=>7,
-                    "r8d"|"r8"=>8, "r9d"|"r9"=>9,
-                    "r10d"|"r10"=>10, "r11d"|"r11"=>11,
+                    "r8"=>8, "r9"=>9,
+                    "r10"=>10, "r11"=>11,
                     _=>return None,
                 })};
                 let mut clobbered_gp=0u16;
