@@ -2817,7 +2817,7 @@ fn asm2_p14_generated_gcc_clobber_spelling_matrix() {
                 let names=stmts.iter().find_map(|s|match s {
                     CheckedStmt::ExtendedAsm{clobbers,..}=>Some(clobbers),_=>None,
                 }).expect("checked ASM2");
-                assert_eq!(names,[name,"cc"]);
+                assert_eq!(names.iter().map(String::as_str).collect::<Vec<_>>(),vec![name,"cc"]);
             }
         }
     }
