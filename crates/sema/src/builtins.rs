@@ -114,6 +114,40 @@ mod tests {
     use std::collections::HashSet;
 
     #[test]
+    fn memory_order_matrix_rejects_out_of_range_and_wrong_failure_shapes() {
+        // The source checker must reject invalid order encodings before any
+        // target-specific legalization or native code generation is attempted.
+        for spec in REGISTRY {
+            if spec.id == BuiltinId::Ctz32 {
+                continue;
+            }
+            for success in 0..=u8::MAX {
+                if success > 5 {
+                    assert!(!valid_atomic_orders(spec.id, success, None),
+                        "{} accepted invalid order {success}", spec.name);
+                    assert!(!valid_atomic_orders(spec.id, success, Some(0)),
+                        "{} accepted invalid success order {success}", spec.name);
+                }
+            }
+            if spec.id == BuiltinId::AtomicCompareExchangeN {
+                for success in 0..=5 {
+                    assert!(!valid_atomic_orders(spec.id, success, None),
+                        "CAS accepted a missing failure order");
+                    for failure in 6..=u8::MAX {
+                        assert!(!valid_atomic_orders(spec.id, success, Some(failure)),
+                            "CAS accepted invalid failure order {failure}");
+                    }
+                }
+            } else {
+                for success in 0..=5 {
+                    assert!(!valid_atomic_orders(spec.id, success, Some(0)),
+                        "{} accepted unexpected failure order", spec.name);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn registry_is_unique_and_has_bounded_order_operand_indices() {
         let mut names = HashSet::new();
         for spec in REGISTRY {
