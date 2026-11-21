@@ -14,6 +14,25 @@ import subprocess
 import sys
 
 PROGRAMS = {
+    # C99 void casts evaluate side effects exactly once, not optimized away
+    # before checked side effects reach the native Cranelift reference path.
+    "c99_void_cast_increment": """int main(void) {
+        int x=4; (void)(++x); return x!=5;
+    }""",
+    "c99_void_cast_call": """int bump(int *p) {
+        *p+=4; return 17;
+    } int main(void) {
+        int x=3; (void)bump(&x); return x!=7;
+    }""",
+    "c99_void_cast_void_call": """void bump(int *p) {
+        ++*p;
+    } int main(void) {
+        int x=4; (void)bump(&x); return x!=5;
+    }""",
+    "c99_void_cast_comma_sequence": """int main(void) {
+        int x=0; int y=((void)(x=7), x+1);
+        return x!=7 || y!=8;
+    }""",
     # SysV variadic SSE calls must set AL to the count of XMM registers
     # occupied by both fixed and ellipsis arguments; GCC formats the values.
     "sysv_varargs_printf_double_one": """extern int printf(const char *, ...);
