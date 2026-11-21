@@ -26,11 +26,9 @@ PROGRAMS = {
             return fn(8)!=9;
         }""",
     "c99_function_pointer_void_null_conditional": """int plus(int x){return x+1;}
-        int (*select(int b, int (*p)(int)))(int) {
-            return b ? (void*)0 : p;
-        }
         int main(void) {
-            int (*fn)(int)=select(0,plus);
+            int (*p)(int)=plus;
+            int (*fn)(int)=0 ? (void*)0 : p;
             return fn==(void*)0 || fn(5)!=6;
         }""",
     # ISO C99 6.3.2.3: integer-to-pointer conversions have an
