@@ -2520,11 +2520,15 @@ impl Checker {
                             DiagnosticCode::SemanticInvalidOperatorOperands,
                             "conditional operands require compatible types"));
                     };
-                    CType::Pointer(Box::new(
-                        if a.is_const() || b.is_const() {
-                            unified.with_const()
-                        } else { unified }
-                    ))
+                    // C99 conditional pointers produce the composite
+                    // pointed-to type with the union of cv qualifiers.
+                    let unified = if a.is_const() || b.is_const() {
+                        unified.with_const()
+                    } else { unified };
+                    let unified = if a.is_volatile() || b.is_volatile() {
+                        unified.with_volatile()
+                    } else { unified };
+                    CType::Pointer(Box::new(unified))
                 } else if matches!(&yes.ty, CType::Pointer(_))
                     && no.ty.is_integer()
                     && const_eval::evaluate(&no, self.target) == Ok(0)
