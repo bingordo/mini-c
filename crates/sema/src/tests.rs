@@ -3146,9 +3146,9 @@ fn c99_f2_null_cast_is_not_ordinary_void_pointer_compatibility() {
     reject("int (*f(void))(int){ return (void*)3; }",
         "incompatible assignment");
     reject("int f(int (*p)(int), void *v){ return p==v; }",
-        "invalid binary");
+        "operator requires compatible");
     reject("int f(int (*p)(int)){ return p==(void*)3; }",
-        "invalid binary");
+        "operator requires compatible");
     reject("int (*f(void))(int){ int *p=0; return p; }",
         "incompatible assignment");
     // An integer variable whose runtime value may be zero is NOT an ICE.
