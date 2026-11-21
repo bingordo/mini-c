@@ -2003,7 +2003,7 @@ impl Checker {
             CType::Integer { rank: IntRank::Int, .. } => 32i128,
             CType::Integer { rank: IntRank::Bool, .. } => 1i128,
             _ => return Err(type_error(span,
-                "bit-field requires _Bool, signed int or unsigned int in this milestone")),
+                "bit-field requires signed or unsigned int or _Bool in this milestone")),
         };
         let typed = self.check_expr(width, span)?.rvalue();
         if !typed.ty.is_integer() {
@@ -2013,10 +2013,12 @@ impl Checker {
             .map_err(|why| type_error(span, format!(
                 "bit-field width requires integer constant expression: {why}")))?;
         if !(if unnamed { 0..=max_width } else { 1..=max_width }).contains(&value) {
-            return Err(type_error(span, if unnamed {
-                "unnamed bit-field width exceeds its base type or is negative"
-            } else {
-                "named bit-field width must be positive and fit its base type"
+            let is_bool = max_width == 1;
+            return Err(type_error(span, match (is_bool, unnamed) {
+                (true, true) => "unnamed _Bool bit-field width must be 0 or 1",
+                (true, false) => "named _Bool bit-field width must be 1",
+                (false, true) => "unnamed bit-field width must be between 0 and 32",
+                (false, false) => "named bit-field width must be between 1 and 32",
             }));
         }
         u8::try_from(value).map_err(|_| type_error(span, "bit-field width overflow"))
