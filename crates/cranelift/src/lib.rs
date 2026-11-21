@@ -1849,6 +1849,13 @@ impl Lower<'_> {
             }
             CheckedExprKind::ArrayDecay(inner) => self.place(b, inner),
             CheckedExprKind::Convert(inner) => {
+                // Casting to void is an evaluated, discarded-value context.
+                // Preserve exactly one evaluation (including calls and ++),
+                // but do not try to assign a machine scalar type to void.
+                if expr.ty.unqualified() == &CType::Void {
+                    self.expression(b, inner)?;
+                    return Ok(b.ins().iconst(types::I32, 0)); // unused result
+                }
                 let v = self.expression(b, inner)?;
                 Self::convert(b, v, &inner.ty, &expr.ty)
             }
