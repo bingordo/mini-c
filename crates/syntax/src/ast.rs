@@ -51,15 +51,16 @@ pub struct Decl {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TagKind { Struct, Union, Enum }
 
-/// C object-type qualifiers. Restrict is retained in the syntax tree to
-/// check legal placement, but has no runtime representation.
+/// C object-type qualifiers. Restrict is retained for placement checking;
+/// const and volatile must survive into checked types (volatile is observable).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Qualifiers {
     pub is_const: bool,
+    pub is_volatile: bool,
     pub is_restrict: bool,
 }
 impl Qualifiers {
-    pub fn any(self) -> bool { self.is_const || self.is_restrict }
+    pub fn any(self) -> bool { self.is_const || self.is_volatile || self.is_restrict }
 }
 
 /// IEEE floating formats in hosted C declarations. The native compiler

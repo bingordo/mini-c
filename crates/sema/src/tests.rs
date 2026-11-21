@@ -2915,3 +2915,78 @@ fn asm3_p02b3_rejects_unreviewed_memory_shapes_and_alias_roles() {
             "unverified memory binding/constraint was accepted: {source}");
     }
 }
+
+#[test]
+fn c99_volatile_qualification_is_distinct_and_preserved() {
+    let items = check(concat!(
+        "volatile int x; const volatile int y=2; ",
+        "volatile int *p; int *volatile q; ",
+        "int f(void) { return x; }"
+    )).unwrap();
+    let CheckedItem::Declaration(x) = &items[0] else { panic!("x declaration"); };
+    assert!(x.ty.is_volatile());
+    assert!(!x.ty.is_const());
+    assert_eq!(x.ty.unqualified(), &CType::int());
+    let CheckedItem::Declaration(y) = &items[1] else { panic!("y declaration"); };
+    assert!(y.ty.is_volatile() && y.ty.is_const());
+    let CheckedItem::Declaration(p) = &items[2] else { panic!("p declaration"); };
+    let CType::Pointer(pointee) = &p.ty else { panic!("pointer to volatile"); };
+    assert!(pointee.is_volatile());
+    assert!(!p.ty.is_volatile());
+    let CheckedItem::Declaration(q) = &items[3] else { panic!("q declaration"); };
+    assert!(q.ty.is_volatile());
+    let CType::Pointer(pointee) = q.ty.unqualified() else { panic!("volatile pointer"); };
+    assert!(!pointee.is_volatile());
+    let CheckedItem::Function(fun) = &items[4] else { panic!("function"); };
+    let CheckedStmt::Block(stmts) = &fun.body else { panic!("block"); };
+    let CheckedStmt::Return(Some(result)) = &stmts[0] else { panic!("return"); };
+    assert_eq!(result.ty, CType::int());
+    let CheckedExprKind::Load(inner) = &result.kind else { panic!("volatile read must stay a load"); };
+    assert!(inner.ty.is_volatile());
+    assert!(CheckedItem::Function(fun.clone()).contains_volatile_type());
+}
+
+#[test]
+fn c99_volatile_typedef_arrays_members_and_pointer_qualifiers() {
+    let items = check(concat!(
+        "typedef volatile int VI; VI a[3];",
+        "struct S { int x; }; ",
+        "int f(volatile struct S *p) { return p->x; }"
+    )).unwrap();
+    let CheckedItem::Declaration(a) = &items[1] else { panic!("array declaration"); };
+    let CType::Array(element, Some(3)) = &a.ty else { panic!("array type"); };
+    assert!(element.is_volatile());
+    let CheckedItem::Function(fun) = &items[3] else { panic!("function"); };
+    let CheckedStmt::Block(stmts) = &fun.body else { panic!("block"); };
+    let CheckedStmt::Return(Some(result)) = &stmts[0] else { panic!("return"); };
+    let CheckedExprKind::Load(member) = &result.kind else { panic!("volatile member load"); };
+    assert!(member.ty.is_volatile());
+    assert!(CheckedItem::Function(fun.clone()).contains_volatile_type());
+    // Adding a qualifier to a pointee is valid, but discarding it is not.
+    check("void f(int *p){volatile int *q=p;}").unwrap();
+    reject("void f(volatile int *p){int *q=p;}",
+        "incompatible assignment");
+    check("unsigned long f(void){return sizeof(volatile int[4]);}").unwrap();
+}
+
+#[test]
+fn c99_volatile_function_type_and_const_assignments_fail_closed() {
+    reject("typedef int F(void); volatile F f;", "function type");
+    reject("int f(void){const volatile int x=1; x=3; return x;}",
+        "modifiable");
+    check("void f(void){int *volatile p=0; p=(int*)0;}").unwrap();
+}
+
+#[test]
+fn c99_conditional_pointer_preserves_union_of_cv_qualifiers() {
+    let items = check(concat!(
+        "const volatile int *f(const int *a, volatile int *b, int c) {",
+        " return c ? a : b; }"
+    )).unwrap();
+    let CheckedItem::Function(fun) = &items[0] else { panic!("function"); };
+    let CheckedStmt::Block(stmts) = &fun.body else { panic!("body"); };
+    let CheckedStmt::Return(Some(expr)) = &stmts[0] else { panic!("return"); };
+    let CType::Pointer(pointee) = &expr.ty else { panic!("pointer"); };
+    assert!(pointee.is_const() && pointee.is_volatile());
+    assert!(matches!(expr.kind, CheckedExprKind::Conditional(..)));
+}

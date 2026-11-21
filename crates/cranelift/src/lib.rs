@@ -741,6 +741,12 @@ impl Compiler {
 
     /// Register declarations and compile one complete checked function.
     pub fn add(&mut self, item: CheckedItem) -> Result<()> {
+        // Volatile reads and writes are observable C side effects.
+        // Never emit an ordinary load/store in lieu of a volatile operation.
+        // The canonical native TypeId IR support is compiler#1047.
+        if item.contains_volatile_type() {
+            return Err("native volatile memory accesses are unsupported until compiler IR #1047".into());
+        }
         match item {
             CheckedItem::Typedef { .. } | CheckedItem::Tag => Ok(()),
             CheckedItem::Declaration(decl) => {
@@ -3521,6 +3527,21 @@ mod tests {
             "struct D { double a,b; }; int f(double a,double b,double c,double d, \
              double e,double f,double g,struct D x) { return 0; }"
         ).is_ok(), "SSE register exhaustion must stack-pass the entire aggregate");
+    }
+
+    #[test]
+    fn c99_volatile_objects_fail_closed_before_native_output() {
+        for source in [
+            "volatile int x; int f(void) { return x + x; }",
+            "int f(volatile int *p) { return *p; }",
+            "int f(void) { int *volatile p = 0; return p != 0; }",
+            "struct S { int x; }; volatile struct S s; int f(void) { return s.x; }",
+        ] {
+            let err = compile_source(source).expect_err("volatile native code must reject");
+            assert!(err.contains("native volatile memory accesses are unsupported"),
+                "{source}: {err}");
+        }
+        assert!(compile_source("int f(int x) { return x + 1; }").is_ok());
     }
 
     #[test]

@@ -197,6 +197,88 @@ pub enum CheckedItem {
     Function(CheckedFunction),
 }
 
+
+// This walker is intentionally structural: checked lvalue-to-rvalue conversion
+// strips top-level qualifiers from its result, so native capability checking
+// must inspect every input operand and every declaration, not only final types.
+impl CheckedExpr {
+    fn contains_volatile_type(&self) -> bool {
+        if self.ty.contains_volatile() { return true; }
+        use CheckedExprKind as K;
+        match &self.kind {
+            K::Initializer(values) => values.iter().any(Self::contains_volatile_type),
+            K::SparseInitializer(values) => values.iter().any(|(_, e)| e.contains_volatile_type()),
+            K::DeepInitializer(values) => values.iter().any(|(_, e)| e.contains_volatile_type()),
+            K::CompoundLiteral(inner) | K::StaticCompoundLiteral { initializer: inner, .. } |
+            K::Unary(_, inner) | K::BuiltinCtz(inner) | K::Convert(inner) |
+            K::Load(inner) | K::ArrayDecay(inner) | K::Member(inner, _) |
+            K::BitFieldMember(inner, ..) =>
+                inner.contains_volatile_type(),
+            K::Binary(_, a, b) | K::Comma(a, b) | K::Assign(a, b) =>
+                a.contains_volatile_type() || b.contains_volatile_type(),
+            K::Conditional(a, b, c) =>
+                a.contains_volatile_type() || b.contains_volatile_type() || c.contains_volatile_type(),
+            K::CompoundAssign(_, a, b, computation_ty) =>
+                computation_ty.contains_volatile() ||
+                a.contains_volatile_type() || b.contains_volatile_type(),
+            K::Update { target, computation_ty, .. } =>
+                computation_ty.contains_volatile() || target.contains_volatile_type(),
+            K::Call(callee, args) => callee.contains_volatile_type()
+                || args.iter().any(Self::contains_volatile_type),
+            K::Literal(_) | K::FloatLiteral(_) | K::EnumConstant(_) |
+            K::StringLiteral(_) | K::Name(_) => false,
+        }
+    }
+}
+
+impl CheckedDecl {
+    fn contains_volatile_type(&self) -> bool {
+        self.ty.contains_volatile() || self.initializer.as_ref()
+            .is_some_and(CheckedExpr::contains_volatile_type)
+    }
+}
+impl CheckedStmt {
+    fn contains_volatile_type(&self) -> bool {
+        match self {
+            Self::Block(stmts) => stmts.iter().any(Self::contains_volatile_type),
+            Self::Decl(decl) => decl.contains_volatile_type(),
+            Self::Typedef { ty, .. } => ty.contains_volatile(),
+            Self::Expr(expr) | Self::Return(expr) =>
+                expr.as_ref().is_some_and(CheckedExpr::contains_volatile_type),
+            Self::ExtendedAsm { outputs, inputs, .. } =>
+                outputs.iter().chain(inputs).any(|op| op.expr.contains_volatile_type()),
+            Self::If { cond, then, otherwise } =>
+                cond.contains_volatile_type() || then.contains_volatile_type() ||
+                otherwise.as_ref().is_some_and(|stmt| stmt.contains_volatile_type()),
+            Self::While { cond, body } | Self::Switch { control: cond, body } |
+            Self::DoWhile { cond, body } =>
+                cond.contains_volatile_type() || body.contains_volatile_type(),
+            Self::Case { body, .. } | Self::Default(body) | Self::Label { body, .. } =>
+                body.contains_volatile_type(),
+            Self::For(f) => f.init.as_ref().is_some_and(|stmt| stmt.contains_volatile_type())
+                || f.cond.as_ref().is_some_and(CheckedExpr::contains_volatile_type)
+                || f.step.as_ref().is_some_and(CheckedExpr::contains_volatile_type)
+                || f.body.contains_volatile_type(),
+            Self::Tag | Self::BasicAsm { .. } | Self::Break | Self::Continue |
+            Self::Goto { .. } => false,
+        }
+    }
+}
+impl CheckedItem {
+    /// Native backends must fail closed until TypeId volatile effects exist.
+    /// Includes volatile pointer targets, local objects and nested expressions.
+    pub fn contains_volatile_type(&self) -> bool {
+        match self {
+            Self::Declaration(decl) => decl.contains_volatile_type(),
+            Self::Typedef { ty, .. } => ty.contains_volatile(),
+            Self::Function(f) => f.signature.contains_volatile()
+                || f.params.iter().any(CheckedDecl::contains_volatile_type)
+                || f.body.contains_volatile_type(),
+            Self::Tag => false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SymbolKind { Object, Function, Typedef, Enumerator }
 
@@ -352,6 +434,7 @@ impl Checker {
     fn complete_tag_type(&self, ty: CType, span: Span) -> Result<CType, Diagnostic> {
         match ty {
             CType::Qualified(inner) => Ok(self.complete_tag_type(*inner, span)?.with_const()),
+            CType::Volatile(inner) => Ok(self.complete_tag_type(*inner, span)?.with_volatile()),
             CType::TagRef { name, identity, .. } => self.tag_definitions.borrow()
                 .get(&identity).cloned().ok_or_else(|| type_error(span,
                     format!("incomplete struct, union or enum tag '{name}'"))),
@@ -364,6 +447,7 @@ impl Checker {
     fn try_complete_tag_type(&self, ty: CType) -> Result<CType, Diagnostic> {
         match ty {
             CType::Qualified(inner) => Ok(self.try_complete_tag_type(*inner)?.with_const()),
+            CType::Volatile(inner) => Ok(self.try_complete_tag_type(*inner)?.with_volatile()),
             CType::TagRef { kind, name, identity } => Ok(self.tag_definitions.borrow()
                 .get(&identity).cloned()
                 .unwrap_or(CType::TagRef { kind, name, identity })),
@@ -408,17 +492,15 @@ impl Checker {
                 if qualifiers.is_restrict && !matches!(base.unqualified(), CType::Pointer(_)) {
                     return Err(type_error(span, "restrict requires a pointer object type"));
                 }
-                if qualifiers.is_const {
-                    if matches!(base.unqualified(), CType::Function { .. } | CType::VariadicFunction { .. }) {
-                        return Err(type_error(span, "const cannot qualify a function type"));
-                    }
-                    // Qualifiers of typedef array types apply to their elements.
-                    match base {
-                        CType::Array(element, count) => CType::Array(
-                            Box::new((*element).with_const()), count),
-                        other => other.with_const(),
-                    }
-                } else { base }
+                if (qualifiers.is_const || qualifiers.is_volatile)
+                    && matches!(base.unqualified(),
+                        CType::Function { .. } | CType::VariadicFunction { .. })
+                {
+                    return Err(type_error(span,
+                        "const/volatile cannot qualify a function type"));
+                }
+                let base = if qualifiers.is_const { base.with_const() } else { base };
+                if qualifiers.is_volatile { base.with_volatile() } else { base }
             }
             Type::BuiltinVaList => {
                 // x86-64 SysV GCC: typedef struct __va_list_tag {
@@ -2008,7 +2090,16 @@ impl Checker {
                 if qualifiers.is_restrict && !matches!(inner.unqualified(), CType::Pointer(_)) {
                     return Err(type_error(span, "restrict requires pointer type"));
                 }
-                if qualifiers.is_const { inner.with_const() } else { inner }
+                if qualifiers.is_const && matches!(inner.unqualified(),
+                    CType::Function { .. } | CType::VariadicFunction { .. }) {
+                    return Err(type_error(span, "const cannot qualify a function type"));
+                }
+                if qualifiers.is_volatile && matches!(inner.unqualified(),
+                    CType::Function { .. } | CType::VariadicFunction { .. }) {
+                    return Err(type_error(span, "volatile cannot qualify a function type"));
+                }
+                let inner = if qualifiers.is_const { inner.with_const() } else { inner };
+                if qualifiers.is_volatile { inner.with_volatile() } else { inner }
             }
             Type::Signed(inner) | Type::Unsigned(inner) => {
                 let unsigned = matches!(ty, Type::Unsigned(_));
@@ -2195,13 +2286,11 @@ impl Checker {
                     Diagnostic::coded(span, DiagnosticCode::SemanticUnknownMember, format!("unknown struct member '{name}'")))?;
                 // A member of a const aggregate is itself nonmodifiable.
                 // Array member qualification applies to its element type.
-                let field_ty = if object.ty.is_const() {
-                    match field.ty.clone() {
-                        CType::Array(element, count) =>
-                            CType::Array(Box::new((*element).with_const()), count),
-                        other => other.with_const(),
-                    }
-                } else { field.ty.clone() };
+                // Qualification of an aggregate lvalue propagates to its
+                // members, including the array element type (C99 6.5.2.3).
+                let mut field_ty = field.ty.clone();
+                if object.ty.is_const() { field_ty = field_ty.with_const(); }
+                if object.ty.is_volatile() { field_ty = field_ty.with_volatile(); }
                 let offset = field.offset;
                 let kind = match field.bit_field {
                     Some(info) => CheckedExprKind::BitFieldMember(
@@ -2431,11 +2520,15 @@ impl Checker {
                             DiagnosticCode::SemanticInvalidOperatorOperands,
                             "conditional operands require compatible types"));
                     };
-                    CType::Pointer(Box::new(
-                        if a.is_const() || b.is_const() {
-                            unified.with_const()
-                        } else { unified }
-                    ))
+                    // C99 conditional pointers produce the composite
+                    // pointed-to type with the union of cv qualifiers.
+                    let unified = if a.is_const() || b.is_const() {
+                        unified.with_const()
+                    } else { unified };
+                    let unified = if a.is_volatile() || b.is_volatile() {
+                        unified.with_volatile()
+                    } else { unified };
+                    CType::Pointer(Box::new(unified))
                 } else if matches!(&yes.ty, CType::Pointer(_))
                     && no.ty.is_integer()
                     && const_eval::evaluate(&no, self.target) == Ok(0)

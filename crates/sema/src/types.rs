@@ -47,6 +47,8 @@ pub enum CType {
     Void,
     /// Retain top-level const independently from runtime representation.
     Qualified(Box<CType>),
+    /// A volatile-qualified C object. Never discard before native capability checking.
+    Volatile(Box<CType>),
     Integer { rank: IntRank, unsigned: bool },
     /// Checked hosted FP type identity is retained in declarations. Native FP
     /// ABI/code generation is not yet implemented; never alias these to int.
@@ -61,13 +63,39 @@ pub enum CType {
 impl CType {
     /// Remove top-level const only. Nested pointee const must be retained.
     pub fn unqualified(&self) -> &Self {
-        match self { Self::Qualified(inner) => inner.unqualified(), other => other }
+        match self {
+            Self::Qualified(inner) | Self::Volatile(inner) => inner.unqualified(),
+            other => other,
+        }
     }
-    pub fn is_const(&self) -> bool { matches!(self, Self::Qualified(_)) }
+    pub fn is_const(&self) -> bool {
+        match self {
+            Self::Qualified(_) => true,
+            Self::Volatile(inner) => inner.is_const(),
+            _ => false,
+        }
+    }
+    pub fn is_volatile(&self) -> bool {
+        match self {
+            Self::Volatile(_) => true,
+            Self::Qualified(inner) => inner.is_volatile(),
+            _ => false,
+        }
+    }
+    pub fn contains_volatile(&self) -> bool {
+        match self {
+            Self::Volatile(_) => true,
+            Self::Qualified(inner) | Self::Pointer(inner) | Self::Array(inner, _) =>
+                inner.contains_volatile(),
+            Self::Function { result, params } |
+            Self::VariadicFunction { result, params } =>
+                result.contains_volatile() || params.iter().any(Self::contains_volatile),
+            Self::Struct { members, .. } | Self::Union { members, .. } =>
+                members.iter().any(|field| field.ty.contains_volatile()),
+            _ => false,
+        }
+    }
     pub fn with_const(self) -> Self {
-        // C array qualification applies recursively to the element type.
-        // In particular, a const multidimensional array must decay to a
-        // pointer to an array of const elements, not to mutable elements.
         match self {
             Self::Array(element, count) =>
                 Self::Array(Box::new((*element).with_const()), count),
@@ -75,10 +103,21 @@ impl CType {
             other => Self::Qualified(Box::new(other)),
         }
     }
+    pub fn with_volatile(self) -> Self {
+        match self {
+            Self::Array(element, count) =>
+                Self::Array(Box::new((*element).with_volatile()), count),
+            Self::Qualified(inner) =>
+                Self::Qualified(Box::new((*inner).with_volatile())),
+            Self::Volatile(_) => self,
+            other => Self::Volatile(Box::new(other)),
+        }
+    }
     /// C pointer assignment may add, but not discard, immediate pointee const.
     /// Nested pointer targets must be exactly compatible (not T** -> const T**).
     pub fn compatible_pointee_assignment(dest: &Self, source: &Self) -> bool {
         if source.is_const() && !dest.is_const() { return false; }
+        if source.is_volatile() && !dest.is_volatile() { return false; }
         let (dest, source) = (dest.unqualified(), source.unqualified());
         dest.same_type(source)
             || (matches!(dest, Self::Void) && source.is_object())
@@ -88,7 +127,7 @@ impl CType {
     pub fn align_bytes(&self, target: Target) -> Option<u64> {
         match self {
             Self::Void | Self::Function { .. } | Self::VariadicFunction { .. } | Self::TagRef { .. } => None,
-            Self::Qualified(inner) => inner.align_bytes(target),
+            Self::Qualified(inner) | Self::Volatile(inner) => inner.align_bytes(target),
             Self::Struct { align, .. } | Self::Union { align, .. } => Some(*align),
             Self::Array(element, _) => element.align_bytes(target),
             Self::Pointer(_) => Some(u64::from(target.pointer_bits / 8)),
@@ -106,8 +145,10 @@ impl CType {
     pub fn same_type(&self, other: &Self) -> bool {
         use CType::{Struct, Union, TagRef};
         match (self, other) {
-            (CType::Qualified(a), CType::Qualified(b)) => a.same_type(b),
-            (CType::Qualified(_), _) | (_, CType::Qualified(_)) => false,
+            (CType::Qualified(a), CType::Qualified(b)) |
+            (CType::Volatile(a), CType::Volatile(b)) => a.same_type(b),
+            (CType::Qualified(_), _) | (_, CType::Qualified(_)) |
+            (CType::Volatile(_), _) | (_, CType::Volatile(_)) => false,
             (Struct { identity: a, .. }, Struct { identity: b, .. }) |
             (Union { identity: a, .. }, Union { identity: b, .. }) =>
                 a == b,
@@ -142,6 +183,8 @@ impl CType {
         match (self, other) {
             (Self::Qualified(a), Self::Qualified(b)) =>
                 Some(Self::Qualified(Box::new(a.composite(b)?))),
+            (Self::Volatile(a), Self::Volatile(b)) =>
+                Some(Self::Volatile(Box::new(a.composite(b)?))),
             (Self::Pointer(a), Self::Pointer(b)) =>
                 Some(Self::Pointer(Box::new(a.composite(b)?))),
             (Self::Array(a, na), Self::Array(b, nb)) => {
@@ -196,7 +239,7 @@ impl CType {
     pub fn size_bytes(&self, target: Target) -> Option<u64> {
         match self {
             Self::Void | Self::Function { .. } | Self::VariadicFunction { .. } | Self::TagRef { .. } => None,
-            Self::Qualified(inner) => inner.size_bytes(target),
+            Self::Qualified(inner) | Self::Volatile(inner) => inner.size_bytes(target),
             Self::Struct { size, .. } | Self::Union { size, .. } => Some(*size),
             Self::Integer { rank, .. } => Some(u64::from(target.bits(*rank) / 8)),
             Self::Floating(rank) => Some(match rank {
