@@ -26,7 +26,7 @@ fn pointer_restrict_specifiers_preserve_parameter_types() {
             panic!("expected function type");
         };
         assert_eq!(*result, Type::Pointer(Box::new(Type::Void)));
-        let restrict = Qualifiers { is_const: false, is_volatile: false, is_restrict: true };
+        let restrict = Qualifiers { is_const: false, is_volatile: false, is_restrict: true, is_atomic: false };
         assert_eq!(params, vec![
             Type::Qualified(Box::new(Type::Pointer(Box::new(Type::Void))), restrict),
             Type::Qualified(Box::new(Type::Pointer(
@@ -42,7 +42,7 @@ fn restrict_applies_to_each_pointer_level_not_the_pointee() {
     let Some(ExternalItem::Declaration(decl))=Parser::new(source).next_item().unwrap()
         else { panic!("expected function declaration"); };
     let Type::Function { params, .. }=decl.ty else { panic!("function type"); };
-    let restrict = Qualifiers { is_const: false, is_volatile: false, is_restrict: true };
+    let restrict = Qualifiers { is_const: false, is_volatile: false, is_restrict: true, is_atomic: false };
     assert_eq!(params, vec![Type::Qualified(Box::new(Type::Pointer(Box::new(
         Type::Qualified(Box::new(Type::Pointer(Box::new(Type::Int))), restrict)
     ))), restrict)]);
@@ -57,5 +57,7 @@ fn volatile_is_preserved_but_unimplemented_c11_atomic_rejected() {
         assert!(matches!(item, Some(ExternalItem::Declaration(_))), "{source}");
     }
     // C11 atomic is NOT a synonym for C99 volatile.
-    assert!(Parser::new("_Atomic int x;").next_item().is_err());
+    // Parser retains C11 atomic qualification; checked semantics still gate its use.
+    assert!(matches!(Parser::new("_Atomic int x;").next_item().unwrap(),
+        Some(ExternalItem::Declaration(_))));
 }

@@ -12,7 +12,7 @@ fn declaration_type(source: &str) -> Type {
 
 #[test]
 fn const_preserves_pointee_vs_pointer_level() {
-    let cv = Qualifiers { is_const: true, is_volatile: false, is_restrict: false };
+    let cv = Qualifiers { is_const: true, is_volatile: false, is_restrict: false, is_atomic: false };
     assert_eq!(declaration_type("const int *p;"),
         Type::Pointer(Box::new(Type::Qualified(Box::new(Type::Int), cv))));
     assert_eq!(declaration_type("int const *p;"),
@@ -37,13 +37,13 @@ fn const_preserves_pointee_vs_pointer_level() {
 
 #[test]
 fn restrict_is_preserved_per_pointer_and_gnu_spellings_work() {
-    let restrict = Qualifiers { is_const: false, is_volatile: false, is_restrict: true };
+    let restrict = Qualifiers { is_const: false, is_volatile: false, is_restrict: true, is_atomic: false };
     for text in ["int *restrict p;", "int *__restrict p;", "int *__restrict__ p;"] {
         assert_eq!(declaration_type(text),
             Type::Qualified(Box::new(Type::Pointer(Box::new(Type::Int))), restrict),
             "{text}");
     }
-    let both = Qualifiers { is_const: true, is_volatile: false, is_restrict: true };
+    let both = Qualifiers { is_const: true, is_volatile: false, is_restrict: true, is_atomic: false };
     assert_eq!(declaration_type("int *const restrict p;"),
         Type::Qualified(Box::new(Type::Pointer(Box::new(Type::Int))), both));
 }
@@ -59,8 +59,8 @@ fn parameter_qualifiers_and_typedefs_parse_without_string_rewriting() {
 
 #[test]
 fn volatile_qualifiers_preserve_correct_declarator_level() {
-    let volatile = Qualifiers { is_const: false, is_volatile: true, is_restrict: false };
-    let cv = Qualifiers { is_const: true, is_volatile: true, is_restrict: false };
+    let volatile = Qualifiers { is_const: false, is_volatile: true, is_restrict: false, is_atomic: false };
+    let cv = Qualifiers { is_const: true, is_volatile: true, is_restrict: false, is_atomic: false };
     assert_eq!(declaration_type("volatile int *p;"),
         Type::Pointer(Box::new(Type::Qualified(Box::new(Type::Int), volatile))));
     assert_eq!(declaration_type("int volatile *p;"),
