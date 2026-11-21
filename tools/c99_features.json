@@ -151,10 +151,55 @@
       "id": "volatile-type",
       "feature": "F1",
       "expect": "accept",
-      "mini": "gap",
+      "mini": "supported",
       "kind": "valid",
-      "test_ref": "docs/C99_Frontend_Plan.md:F1",
+      "test_ref": "crates/sema/src/tests.rs:c99_volatile_qualification_is_distinct_and_preserved",
       "source": "int f(void){volatile int x=@N@;return x;}"
+    },
+    {
+      "id": "volatile-pointer-read",
+      "feature": "F1",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_volatile_typedef_arrays_members_and_pointer_qualifiers",
+      "source": "int f(volatile int *p){return *p + @N@;}"
+    },
+    {
+      "id": "volatile-pointer-object",
+      "feature": "F1",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_volatile_qualification_is_distinct_and_preserved",
+      "source": "int f(int *p){int *volatile q=p;return q == p ? @N@ : 0;}"
+    },
+    {
+      "id": "volatile-const-object",
+      "feature": "F1",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_volatile_qualification_is_distinct_and_preserved",
+      "source": "int f(void){const volatile int x=@N@;return x;}"
+    },
+    {
+      "id": "volatile-member-read",
+      "feature": "F1",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_volatile_typedef_arrays_members_and_pointer_qualifiers",
+      "source": "struct S{int x;};int f(volatile struct S *p){return p->x + @N@;}"
+    },
+    {
+      "id": "volatile-pointee-drop",
+      "feature": "F1",
+      "expect": "reject",
+      "mini": "supported",
+      "kind": "constraint",
+      "test_ref": "crates/sema/src/tests.rs:c99_volatile_typedef_arrays_members_and_pointer_qualifiers",
+      "source": "int f(volatile int *p){int *q=p;return *q + @N@;}"
     },
     {
       "id": "designated-init",
@@ -349,10 +394,55 @@
       "id": "floating-cast",
       "feature": "F2",
       "expect": "accept",
-      "mini": "gap",
+      "mini": "supported",
       "kind": "valid",
-      "test_ref": "docs/C99_Frontend_Plan.md:F2",
+      "test_ref": "crates/sema/src/tests.rs:c99_f2_real_floating_casts_retain_checked_conversion_and_type",
       "source": "int f(void){return (int)@N@.25;}"
+    },
+    {
+      "id": "float-cast-from-int",
+      "feature": "F2",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_f2_real_floating_casts_retain_checked_conversion_and_type",
+      "source": "float f(int x){return (float)x + @N@.0f;}"
+    },
+    {
+      "id": "void-cast-side-effect",
+      "feature": "F2",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_f2_cast_to_void_is_evaluated_and_discards_any_object_value",
+      "source": "int f(void){int x=@N@;(void)(++x);return x;}"
+    },
+    {
+      "id": "void-cast-function-call",
+      "feature": "F2",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_f2_cast_to_void_is_evaluated_and_discards_any_object_value",
+      "source": "void f(int x);int g(void){(void)f(@N@);return 0;}"
+    },
+    {
+      "id": "void-cast-aggregate",
+      "feature": "F2",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_f2_cast_to_void_is_evaluated_and_discards_any_object_value",
+      "source": "struct S{int x;};int f(void){struct S s={@N@};(void)s;return s.x;}"
+    },
+    {
+      "id": "void-cast-in-nonvoid-return",
+      "feature": "F2",
+      "expect": "reject",
+      "mini": "supported",
+      "kind": "constraint",
+      "test_ref": "crates/sema/src/tests.rs:c99_f2_void_cast_in_comma_and_statement_context",
+      "source": "int f(void){return (void)@N@;}"
     },
     {
       "id": "tagged-byvalue-member",
@@ -542,6 +632,51 @@
       "kind": "valid",
       "test_ref": "docs/C99_Frontend_Plan.md:F1",
       "source": "int f(void){return sizeof __func__ >= @N@;}"
+    },
+    {
+      "id": "explicit-uintptr-to-pointer",
+      "feature": "F2",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_f2_explicit_integer_to_pointer_preserves_checked_conversion",
+      "source": "typedef unsigned long uintptr_t; int *f(uintptr_t bits){return (int *)bits;} int g(int *p){return f((uintptr_t)p)==p?@N@:0;}"
+    },
+    {
+      "id": "explicit-pointer-to-const-from-uintptr",
+      "feature": "F2",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_f2_explicit_integer_to_pointer_preserves_checked_conversion",
+      "source": "typedef unsigned long uintptr_t; const int *f(uintptr_t bits){return (const int *)bits;} int g(int *p){return f((uintptr_t)p)==p?@N@:0;}"
+    },
+    {
+      "id": "implicit-nonzero-int-to-pointer",
+      "feature": "F2",
+      "expect": "reject",
+      "mini": "supported",
+      "kind": "constraint",
+      "test_ref": "crates/sema/src/tests.rs:c99_f2_explicit_pointer_cast_does_not_enable_implicit_integer_conversions",
+      "source": "int *f(void){return @N@;}"
+    },
+    {
+      "id": "implicit-int-var-to-pointer",
+      "feature": "F2",
+      "expect": "reject",
+      "mini": "supported",
+      "kind": "constraint",
+      "test_ref": "crates/sema/src/tests.rs:c99_f2_explicit_pointer_cast_does_not_enable_implicit_integer_conversions",
+      "source": "int *f(unsigned long bits){return bits;}"
+    },
+    {
+      "id": "explicit-floating-to-pointer",
+      "feature": "F2",
+      "expect": "reject",
+      "mini": "supported",
+      "kind": "constraint",
+      "test_ref": "crates/sema/src/tests.rs:c99_f2_explicit_pointer_cast_does_not_enable_implicit_integer_conversions",
+      "source": "int *f(double bits){return (int *)bits;}"
     }
   ]
 }
