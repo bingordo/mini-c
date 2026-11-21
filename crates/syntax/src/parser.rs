@@ -2868,7 +2868,7 @@ mod tests {
         for source in [
             r#"int f(void){ asm("nop":"=r"(x),"=r"(y):"r"(z)); }"#,
             r#"int f(void){ asm("nop":"=r"x:"r"(z)); }"#,
-            r#"int f(void){ asm("nop":"=r"(x):"r"(z),"r"(y)); }"#,
+            r#"int f(void){ asm("nop":"=r"(x):"r"(z),"r"(y),"r"(w)); }"#,
             r#"int f(void){ asm("nop":"=r"(x):"r"(z):"memory",); }"#,
         ] {
             assert!(Parser::new(source).next_item().is_err(),"{source}");
