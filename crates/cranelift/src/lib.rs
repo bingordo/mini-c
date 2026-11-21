@@ -313,32 +313,36 @@ fn static_initializer_bytes(
     let mut bytes = vec![0u8; size];
     let mut relocations = Vec::new();
 
-    /// Pack a checked bit-field into its declared 8-bit (_Bool) or 32-bit
-    /// (int) storage unit without overwriting neighboring members.
+    /// Pack one checked C bit-field into its declared storage unit. Use
+    /// the same type-sized 8/16/32/64-bit units as runtime read-modify-write,
+    /// preserving every neighboring field and any initialized ordinary bytes.
     fn fill_bits(
         out: &mut [u8], at: usize, info: mini_c_sema::types::BitField,
         ty: &CType, init: &CheckedExpr,
     ) -> Result<()> {
-        let is_bool = matches!(ty.unqualified(),
-            CType::Integer { rank: IntRank::Bool, .. });
-        let bytes_per_unit = if is_bool { 1usize } else { 4usize };
-        let end = at.checked_add(bytes_per_unit).ok_or("bit-field offset overflow")?;
+        let unit_bytes = usize::try_from(ty.size_bytes(Target::default())
+            .ok_or("incomplete bit-field base type")?)
+            .map_err(|_| "bit-field base type too wide")?;
+        if !matches!(unit_bytes, 1 | 2 | 4 | 8) {
+            return Err("unsupported bit-field allocation unit".into());
+        }
+        let end = at.checked_add(unit_bytes).ok_or("bit-field offset overflow")?;
         let bytes = out.get_mut(at..end)
             .ok_or("bit-field storage extends beyond aggregate")?;
         let value = mini_c_sema::const_eval::evaluate(init, Target::default())
             .map_err(|why| format!("nonconstant bit-field initializer: {why}"))?;
-        let mask = if info.width == 32 {
-            u32::MAX
+        let mask = if info.width == 64 {
+            u64::MAX
         } else {
-            (1u32 << info.width) - 1
+            (1u64 << info.width) - 1
         };
         let field_mask = mask << info.shift;
-        let mut previous = [0u8; 4];
-        previous[..bytes_per_unit].copy_from_slice(bytes);
-        let old = u32::from_le_bytes(previous);
+        let mut previous = [0u8; 8];
+        previous[..unit_bytes].copy_from_slice(bytes);
+        let old = u64::from_le_bytes(previous);
         let packed = (old & !field_mask)
-            | (((value as u32) & mask) << info.shift);
-        bytes.copy_from_slice(&packed.to_le_bytes()[..bytes_per_unit]);
+            | (((value as u64) & mask) << info.shift);
+        bytes.copy_from_slice(&packed.to_le_bytes()[..unit_bytes]);
         Ok(())
     }
 
@@ -1374,9 +1378,13 @@ impl Lower<'_> {
             let value = self.expression(b, init)?;
             let signed = matches!(ty.unqualified(),
                 CType::Integer { unsigned: false, .. });
-            let is_bool = matches!(ty.unqualified(),
-                CType::Integer { rank: IntRank::Bool, .. });
-            Self::store_bit_field(b, address, value, info.shift, info.width, signed, is_bool);
+            let unit_bits = match ty.unqualified() {
+                CType::Integer { rank, .. } =>
+                    u8::try_from(Target::default().bits(*rank))
+                        .map_err(|_| "bit-field allocation unit too wide")?,
+                _ => return Err("bit-field requires an integer base type".into()),
+            };
+            Self::store_bit_field(b, address, value, info.shift, info.width, signed, unit_bits);
             Ok(())
         } else {
             self.initialize_object(b, address, ty, init)
@@ -1518,21 +1526,32 @@ impl Lower<'_> {
         Ok(b.ins().symbol_value(types::I64, gv))
     }
 
-    /// Load one checked C bit-field using its declared storage unit:
-    /// one byte for _Bool, or one 32-bit word for int.
+    /// Native type matching a checked C bit-field allocation unit.
+    fn bit_field_unit(unit_bits: u8) -> ir::Type {
+        match unit_bits {
+            8 => types::I8,
+            16 => types::I16,
+            32 => types::I32,
+            64 => types::I64,
+            _ => unreachable!("checker only admits byte, short, int, long bit-field units"),
+        }
+    }
+
+    /// Load within the declared base-type unit and sign-extend from the
+    /// bit-field's value width, without accessing neighboring storage units.
     fn load_bit_field(
         b: &mut FunctionBuilder<'_>, address: Value,
-        shift: u8, width: u8, signed: bool, is_bool: bool,
+        shift: u8, width: u8, signed: bool, unit_bits: u8,
     ) -> Value {
-        let unit = if is_bool { types::I8 } else { types::I32 };
+        let unit = Self::bit_field_unit(unit_bits);
         let raw = b.ins().load(unit, ir::MemFlagsData::new(), address, 0);
         let shifted = if shift == 0 { raw } else {
             b.ins().ushr_imm_s(raw, i64::from(shift))
         };
-        let mask = if width == 32 { u32::MAX } else { (1u32 << width) - 1 };
-        let value = b.ins().band_imm_s(shifted, i64::from(mask));
-        if signed && width < 32 {
-            let pad = i64::from(32 - width);
+        let mask = if width == 64 { u64::MAX } else { (1u64 << width) - 1 };
+        let value = b.ins().band_imm_s(shifted, mask as i64);
+        if signed && width < unit_bits {
+            let pad = i64::from(unit_bits - width);
             let high = b.ins().ishl_imm_s(value, pad);
             b.ins().sshr_imm_s(high, pad)
         } else {
@@ -1540,40 +1559,42 @@ impl Lower<'_> {
         }
     }
 
-    /// Masked RMW within the _Bool byte or int word. Preserve adjacent
-    /// bit-fields; the returned value is narrowed to its declared width.
+    /// Masked RMW within a field's 8/16/32/64-bit allocation unit; return
+    /// the narrowed logical value (including sign-extension for signed fields).
     fn store_bit_field(
         b: &mut FunctionBuilder<'_>, address: Value, value: Value,
-        shift: u8, width: u8, signed: bool, is_bool: bool,
+        shift: u8, width: u8, signed: bool, unit_bits: u8,
     ) -> Value {
-        let unit = if is_bool { types::I8 } else { types::I32 };
-        let mask = if width == 32 { u32::MAX } else { (1u32 << width) - 1 };
+        let unit = Self::bit_field_unit(unit_bits);
+        let mask = if width == 64 { u64::MAX } else { (1u64 << width) - 1 };
         let word_mask = mask << shift;
         let old = b.ins().load(unit, ir::MemFlagsData::new(), address, 0);
-        let cleared = b.ins().band_imm_s(old, i64::from(!word_mask));
-        let truncated = b.ins().band_imm_s(value, i64::from(mask));
+        let cleared = b.ins().band_imm_s(old, (!word_mask) as i64);
+        let truncated = b.ins().band_imm_s(value, mask as i64);
         let shifted = if shift == 0 { truncated } else {
             b.ins().ishl_imm_s(truncated, i64::from(shift))
         };
         let packed = b.ins().bor(cleared, shifted);
         b.ins().store(ir::MemFlagsData::new(), packed, address, 0);
-        if signed && width < 32 {
-            let pad = i64::from(32 - width);
+        if signed && width < unit_bits {
+            let pad = i64::from(unit_bits - width);
             let high = b.ins().ishl_imm_s(truncated, pad);
             b.ins().sshr_imm_s(high, pad)
-        } else { truncated }
+        } else {
+            truncated
+        }
     }
 
-    fn bit_field_details(expr: &CheckedExpr) -> Option<(u8, u8, bool, bool)> {
+    fn bit_field_details(expr: &CheckedExpr) -> Option<(u8, u8, bool, u8)> {
         let CheckedExprKind::BitFieldMember(_, _, shift, width) = &expr.kind else {
             return None;
         };
-        let (signed, is_bool) = match expr.ty.unqualified() {
+        let (signed, unit_bits) = match expr.ty.unqualified() {
             CType::Integer { rank, unsigned } =>
-                (!unsigned, *rank == IntRank::Bool),
+                (!unsigned, u8::try_from(Target::default().bits(*rank)).ok()?),
             _ => return None,
         };
-        Some((*shift, *width, signed, is_bool))
+        Some((*shift, *width, signed, unit_bits))
     }
 
     fn place(&mut self, b: &mut FunctionBuilder<'_>, expr: &CheckedExpr) -> Result<Value> {
@@ -1842,8 +1863,8 @@ impl Lower<'_> {
             CheckedExprKind::Name(name) => self.object_address(b, name),
             CheckedExprKind::Load(inner) => {
                 let address = self.place(b, inner)?;
-                if let Some((shift, width, signed, is_bool)) = Self::bit_field_details(inner) {
-                    return Ok(Self::load_bit_field(b, address, shift, width, signed, is_bool));
+                if let Some((shift, width, signed, unit_bits)) = Self::bit_field_details(inner) {
+                    return Ok(Self::load_bit_field(b, address, shift, width, signed, unit_bits));
                 }
                 if matches!(&expr.ty, CType::Struct { .. } | CType::Union { .. }) {
                     // Aggregate values are represented by their source address
@@ -1967,8 +1988,8 @@ impl Lower<'_> {
                         .ok_or("incomplete struct assignment")?;
                     Self::copy_bytes(b, address, rhs_value, size)?;
                     Ok(address)
-                } else if let Some((shift, width, signed, is_bool)) = Self::bit_field_details(lhs) {
-                    Ok(Self::store_bit_field(b, address, rhs_value, shift, width, signed, is_bool))
+                } else if let Some((shift, width, signed, unit_bits)) = Self::bit_field_details(lhs) {
+                    Ok(Self::store_bit_field(b, address, rhs_value, shift, width, signed, unit_bits))
                 } else {
                     b.ins().store(ir::MemFlagsData::new(), rhs_value, address, 0);
                     Ok(rhs_value)
@@ -1979,8 +2000,8 @@ impl Lower<'_> {
                 // Postfix yields the loaded old value; prefix the stored new one.
                 let address = self.place(b, target)?;
                 let details = Self::bit_field_details(target);
-                let old = if let Some((shift, width, signed, is_bool)) = details {
-                    Self::load_bit_field(b, address, shift, width, signed, is_bool)
+                let old = if let Some((shift, width, signed, unit_bits)) = details {
+                    Self::load_bit_field(b, address, shift, width, signed, unit_bits)
                 } else {
                     b.ins().load(scalar_type(&target.ty)?,
                         ir::MemFlagsData::new(), address, 0)
@@ -2011,8 +2032,8 @@ impl Lower<'_> {
                     };
                     Self::convert(b, computed, computation_ty, &target.ty)?
                 };
-                let stored = if let Some((shift, width, signed, is_bool)) = details {
-                    Self::store_bit_field(b, address, stored, shift, width, signed, is_bool)
+                let stored = if let Some((shift, width, signed, unit_bits)) = details {
+                    Self::store_bit_field(b, address, stored, shift, width, signed, unit_bits)
                 } else {
                     b.ins().store(ir::MemFlagsData::new(), stored, address, 0);
                     stored
@@ -2024,8 +2045,8 @@ impl Lower<'_> {
                 // or member expression may compute an address with side effects.
                 let address = self.place(b, lhs)?;
                 let details = Self::bit_field_details(lhs);
-                let old = if let Some((shift, width, signed, is_bool)) = details {
-                    Self::load_bit_field(b, address, shift, width, signed, is_bool)
+                let old = if let Some((shift, width, signed, unit_bits)) = details {
+                    Self::load_bit_field(b, address, shift, width, signed, unit_bits)
                 } else {
                     b.ins().load(scalar_type(&lhs.ty)?,
                         ir::MemFlagsData::new(), address, 0)
@@ -2077,8 +2098,8 @@ impl Lower<'_> {
                     _ => return Err("unsupported compound assignment operator".into()),
                 };
                 let stored = Self::convert(b, computed, computation_ty, &lhs.ty)?;
-                let stored = if let Some((shift, width, signed, is_bool)) = details {
-                    Self::store_bit_field(b, address, stored, shift, width, signed, is_bool)
+                let stored = if let Some((shift, width, signed, unit_bits)) = details {
+                    Self::store_bit_field(b, address, stored, shift, width, signed, unit_bits)
                 } else {
                     b.ins().store(ir::MemFlagsData::new(), stored, address, 0);
                     stored
