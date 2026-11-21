@@ -14,6 +14,25 @@ import subprocess
 import sys
 
 PROGRAMS = {
+    # C99 6.3.2.3: (void*)integer-constant-zero is a null pointer constant
+    # even when the other pointer is to a FUNCTION. Do not extend this
+    # implicit compatibility to arbitrary void* object pointers.
+    "c99_function_pointer_void_null_constant": """int plus(int x){return x+1;}
+        int main(void) {
+            int (*fn)(int)=(void*)0;
+            if (fn!=(void*)0) return 1;
+            fn=plus;
+            if (fn==(void*)0) return 2;
+            return fn(8)!=9;
+        }""",
+    "c99_function_pointer_void_null_conditional": """int plus(int x){return x+1;}
+        int (*select(int b, int (*p)(int)))(int) {
+            return b ? (void*)0 : p;
+        }
+        int main(void) {
+            int (*fn)(int)=select(0,plus);
+            return fn==(void*)0 || fn(5)!=6;
+        }""",
     # ISO C99 6.3.2.3: integer-to-pointer conversions have an
     # implementation-defined result. On x86-64 LP64, test only conversions
     # that round-trip a real object pointer via pointer-sized unsigned long.
