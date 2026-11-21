@@ -255,8 +255,7 @@ fn c99_compound_literals_have_object_types_lvalues_and_inferred_array_bounds() {
 
     reject("int f(void){ return (void){1}; }", "complete object type");
     reject("int f(void){ return (int[2]){1,2,3}[0]; }", "too many array initializers");
-    reject("int f(void){ return (int[]){[2]=4,[2]=5}[0]; }",
-        "duplicate initializer target");
+    check("int f(void){ return (int[]){[2]=4,[2]=5}[0]; }").unwrap();
     check("int *global=(int[]){1,2};").unwrap();
 }
 
@@ -398,7 +397,7 @@ fn c99_file_scope_compound_literals_have_unique_static_objects_and_checked_initi
     check("int f(void){int *p=(int[]){1,2};return p[0];}").unwrap();
 
     reject("int *bad=(int[2]){1,2,3};", "too many array initializers");
-    reject("int *bad=(int[]){[1]=2,[1]=3};", "duplicate initializer target");
+    check("int *final=(int[]){[1]=2,[1]=3};").unwrap();
     reject("int *bad=(void[]){1};", "complete object type");
     reject("int *bad=&(int){1+unknown};", "undeclared identifier");
 }
