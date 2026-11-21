@@ -14,6 +14,24 @@ import subprocess
 import sys
 
 PROGRAMS = {
+    # ISO C99 6.3.2.3: integer-to-pointer conversions have an
+    # implementation-defined result. On x86-64 LP64, test only conversions
+    # that round-trip a real object pointer via pointer-sized unsigned long.
+    "c99_uintptr_roundtrip_scalar": """typedef unsigned long uintptr_t;
+        int *restore(uintptr_t address) { return (int *)address; }
+        int main(void) { int x=23; uintptr_t address=(uintptr_t)&x;
+            int *p=restore(address); return p!=&x || *p!=23;
+        }""",
+    "c99_uintptr_roundtrip_offset": """typedef unsigned long uintptr_t;
+        int main(void) { int a[4]={7,11,13,17};
+            uintptr_t address=(uintptr_t)&a[2];
+            int *p=(int *)address; return p!=&a[2] || *p!=13;
+        }""",
+    "c99_uintptr_explicit_const_pointer": """typedef unsigned long uintptr_t;
+        int main(void) { int x=91; uintptr_t address=(uintptr_t)&x;
+            const int *p=(const int *)address;
+            return p!=&x || *p!=91;
+        }""",
     # C99 void casts evaluate side effects exactly once, not optimized away
     # before checked side effects reach the native Cranelift reference path.
     "c99_void_cast_increment": """int main(void) {
