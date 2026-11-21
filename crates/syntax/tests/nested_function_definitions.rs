@@ -37,13 +37,10 @@ fn function_returning_callback_keeps_defining_parameter_names() {
 fn nested_callbacks_do_not_steal_definition_parameters() {
     let cases = [
         ("int (*get(void))(int) { return 0; }", vec![]),
-        ("int (*choose(int flag, int (*left)(int), int (*right)(int)))(int) {",
-            vec!["flag", "left", "right"]),
         ("int (*choose(int flag, int (*left)(int), int (*right)(int)))(int) { return left; }",
             vec!["flag", "left", "right"]),
     ];
     for (source, names) in cases {
-        if !source.contains("return") { continue; }
         let mut parser = Parser::new(source);
         let ExternalItem::Function(f) = parser.next_item().unwrap().expect("function")
             else { panic!("expected definition"); };
