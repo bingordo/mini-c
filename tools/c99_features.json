@@ -688,6 +688,42 @@
       "source": "struct S{unsigned long a:65;};int f(void){return @N@;}"
     },
     {
+      "id": "bitfield-promote-unsigned-narrow",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_bitfield_integer_promotions_follow_value_width_not_base_rank",
+      "source": "struct S{unsigned int a:3;};int f(void){struct S s={@N@%8};return -s.a<0;}"
+    },
+    {
+      "id": "bitfield-promote-unsigned-long-narrow",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_bitfield_integer_promotions_follow_value_width_not_base_rank",
+      "source": "struct S{unsigned long a:3;};int f(void){struct S s={@N@%8};return ~s.a<0;}"
+    },
+    {
+      "id": "bitfield-promote-unsigned-long-width32",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_bitfield_integer_promotions_follow_value_width_not_base_rank",
+      "source": "struct S{unsigned long a:32;};int f(void){struct S s={@N@};return +s.a+1U==0U;}"
+    },
+    {
+      "id": "bitfield-promote-compound-long",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_bitfield_integer_promotions_follow_value_width_not_base_rank",
+      "source": "struct S{unsigned long a:3;};int f(void){struct S s={@N@%8};s.a/=-1;return s.a;}"
+    },
+    {
       "id": "complex-type",
       "feature": "F5",
       "expect": "accept",
