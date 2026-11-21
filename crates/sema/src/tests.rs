@@ -2316,6 +2316,57 @@ fn completed_aggregate_tagref_parameter_accepts_compatible_by_value_argument() {
 }
 
 #[test]
+fn checked_function_pointer_aggregate_result_completes_named_tag() {
+    // The function-pointer signature retains a nominal TagRef. Its indirect
+    // aggregate call result must have the completed type for initialization.
+    let items = check(concat!(
+        "struct T{long a,b,c;};",
+        "struct T step(long n,struct T t){t.a+=n;return t;}",
+        "int main(void){struct T t={1,2,3};",
+        "struct T (*fp)(long,struct T)=step;",
+        "struct T q=fp(7,t);return q.a==8;}"
+    )).unwrap();
+    let CheckedItem::Function(main) = items.last().expect("main function") else {
+        panic!("expected checked main");
+    };
+    let CheckedStmt::Block(body) = &main.body else { panic!("expected main body"); };
+    let q = body.iter().find_map(|stmt| match stmt {
+        CheckedStmt::Decl(decl) if decl.name == "q" => Some(decl),
+        _ => None,
+    }).expect("checked indirect aggregate result");
+    let initializer = q.initializer.as_ref().expect("aggregate result initializer");
+    assert!(initializer.ty.same_type(&q.ty));
+    assert!(matches!(initializer.ty.unqualified(), CType::Struct { size: 24, .. }));
+    assert!(matches!(initializer.kind, CheckedExprKind::Call(..)));
+
+    // The same completion rule applies to unions.
+    let items = check(concat!(
+        "union U{long a;int b;};",
+        "union U make(void){union U u={5};return u;}",
+        "int main(void){union U (*fp)(void)=make;union U q=fp();return q.a==5;}"
+    )).unwrap();
+    let CheckedItem::Function(main) = items.last().expect("main function") else {
+        panic!("expected checked main");
+    };
+    let CheckedStmt::Block(body) = &main.body else { panic!("expected main body"); };
+    let q = body.iter().find_map(|stmt| match stmt {
+        CheckedStmt::Decl(decl) if decl.name == "q" => Some(decl),
+        _ => None,
+    }).expect("checked indirect union result");
+    let initializer = q.initializer.as_ref().expect("union result initializer");
+    assert!(initializer.ty.same_type(&q.ty));
+    assert!(matches!(initializer.ty.unqualified(), CType::Union { .. }));
+    assert!(matches!(initializer.kind, CheckedExprKind::Call(..)));
+
+    // Identical layout is not type compatibility for nominal aggregates.
+    reject(concat!(
+        "struct A{long x;};struct B{long x;};",
+        "struct A make(void){struct A a={1};return a;}",
+        "int main(void){struct A (*fp)(void)=make;struct B b=fp();return b.x;}"
+    ), "incompatible assignment");
+}
+
+#[test]
 fn s21_register_storage_is_automatic_and_nonaddressable() {
     let items = check("int f(register int x) { register int y=x; for(register int i=0;i<3;i++) y+=i; return y; }").unwrap();
     let CheckedItem::Function(func) = &items[0] else { panic!("expected function"); };
