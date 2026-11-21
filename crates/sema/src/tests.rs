@@ -532,7 +532,7 @@ fn static_initializers_respect_target_arithmetic_and_short_circuit() {
     check("typedef int *Ptr; Ptr global_alias = (Ptr)0; int **global_nested=(int**)0;")
         .unwrap();
     check("int *p=(int*)(unsigned long)0;").unwrap();
-    reject("int *bad=(int*)1;", "pointer cast requires a pointer or null integer constant");
+    reject("int *bad=(int*)1;", "pointer initializer requires");
     reject("int global; int *copy = &global; int *bad2 = (int*)copy;",
         "pointer initializer requires");
     reject("int global; int *copy = &global; int *bad = copy;", "pointer initializer requires");
@@ -1822,7 +1822,7 @@ fn explicit_integer_casts_handle_typedefs_and_unsigned_conversions() {
     check("int f(void) { int x=3; return (x) + 2; }").unwrap();
     check("int f(void) { unsigned int x=0; return (unsigned)(x=5); }").unwrap();
     check("int f(int *p) { return (unsigned)p; }").unwrap();
-    reject("int f(int x) { return (void)x; }", "unsupported cast type-name");
+    reject("int f(int x) { return (void)x; }", "incompatible assignment");
     check("typedef int T; int f(void) { int T=3; return (T)+1; }").unwrap();
 }
 
@@ -1857,12 +1857,10 @@ fn m10_pointer_casts_preserve_c_types_and_null_semantics() {
         .unwrap();
     check("int f(void) { int **p=(int **)0; return p == (void*)0; }").unwrap();
     check("int f(int x) { return (const int)x; }").unwrap();
-    reject("int f(int x) { int *p = (int*)x; return p==0; }",
-        "pointer cast requires a pointer or null integer constant");
-    reject("int f(void) { int *p=(int*)1; return p==0; }",
-        "pointer cast requires a pointer or null integer constant");
+    check("int f(int x) { int *p = (int*)x; return p==0; }").unwrap();
+    check("int f(void) { int *p=(int*)1; return p==0; }").unwrap();
     reject("int f(void) { int *p=(int*)0.5f; return p==0; }",
-        "pointer cast requires a pointer or null integer constant");
+        "pointer cast requires an integer or pointer operand");
 }
 
 #[test]
@@ -2932,6 +2930,200 @@ fn asm3_p02b3_rejects_unreviewed_memory_shapes_and_alias_roles() {
         assert!(check(source).is_err(),
             "unverified memory binding/constraint was accepted: {source}");
     }
+}
+
+#[test]
+fn c99_volatile_qualification_is_distinct_and_preserved() {
+    let items = check(concat!(
+        "volatile int x; const volatile int y=2; ",
+        "volatile int *p; int *volatile q; ",
+        "int f(void) { return x; }"
+    )).unwrap();
+    let CheckedItem::Declaration(x) = &items[0] else { panic!("x declaration"); };
+    assert!(x.ty.is_volatile());
+    assert!(!x.ty.is_const());
+    assert_eq!(x.ty.unqualified(), &CType::int());
+    let CheckedItem::Declaration(y) = &items[1] else { panic!("y declaration"); };
+    assert!(y.ty.is_volatile() && y.ty.is_const());
+    let CheckedItem::Declaration(p) = &items[2] else { panic!("p declaration"); };
+    let CType::Pointer(pointee) = &p.ty else { panic!("pointer to volatile"); };
+    assert!(pointee.is_volatile());
+    assert!(!p.ty.is_volatile());
+    let CheckedItem::Declaration(q) = &items[3] else { panic!("q declaration"); };
+    assert!(q.ty.is_volatile());
+    let CType::Pointer(pointee) = q.ty.unqualified() else { panic!("volatile pointer"); };
+    assert!(!pointee.is_volatile());
+    let CheckedItem::Function(fun) = &items[4] else { panic!("function"); };
+    let CheckedStmt::Block(stmts) = &fun.body else { panic!("block"); };
+    let CheckedStmt::Return(Some(result)) = &stmts[0] else { panic!("return"); };
+    assert_eq!(result.ty, CType::int());
+    let CheckedExprKind::Load(inner) = &result.kind else { panic!("volatile read must stay a load"); };
+    assert!(inner.ty.is_volatile());
+    assert!(CheckedItem::Function(fun.clone()).contains_volatile_type());
+}
+
+#[test]
+fn c99_volatile_typedef_arrays_members_and_pointer_qualifiers() {
+    let items = check(concat!(
+        "typedef volatile int VI; VI a[3];",
+        "struct S { int x; }; ",
+        "int f(volatile struct S *p) { return p->x; }"
+    )).unwrap();
+    let CheckedItem::Declaration(a) = &items[1] else { panic!("array declaration"); };
+    let CType::Array(element, Some(3)) = &a.ty else { panic!("array type"); };
+    assert!(element.is_volatile());
+    let CheckedItem::Function(fun) = &items[3] else { panic!("function"); };
+    let CheckedStmt::Block(stmts) = &fun.body else { panic!("block"); };
+    let CheckedStmt::Return(Some(result)) = &stmts[0] else { panic!("return"); };
+    let CheckedExprKind::Load(member) = &result.kind else { panic!("volatile member load"); };
+    assert!(member.ty.is_volatile());
+    assert!(CheckedItem::Function(fun.clone()).contains_volatile_type());
+    // Adding a qualifier to a pointee is valid, but discarding it is not.
+    check("void f(int *p){volatile int *q=p;}").unwrap();
+    reject("void f(volatile int *p){int *q=p;}",
+        "incompatible assignment");
+    check("unsigned long f(void){return sizeof(volatile int[4]);}").unwrap();
+}
+
+#[test]
+fn c99_volatile_function_type_and_const_assignments_fail_closed() {
+    reject("typedef int F(void); volatile F f;", "function type");
+    reject("int f(void){const volatile int x=1; x=3; return x;}",
+        "modifiable");
+    check("void f(void){int *volatile p=0; p=(int*)0;}").unwrap();
+}
+
+#[test]
+fn c99_conditional_pointer_preserves_union_of_cv_qualifiers() {
+    let items = check(concat!(
+        "const volatile int *f(const int *a, volatile int *b, int c) {",
+        " return c ? a : b; }"
+    )).unwrap();
+    let CheckedItem::Function(fun) = &items[0] else { panic!("function"); };
+    let CheckedStmt::Block(stmts) = &fun.body else { panic!("body"); };
+    let CheckedStmt::Return(Some(expr)) = &stmts[0] else { panic!("return"); };
+    let CType::Pointer(pointee) = &expr.ty else { panic!("pointer"); };
+    assert!(pointee.is_const() && pointee.is_volatile());
+    assert!(matches!(expr.kind, CheckedExprKind::Conditional(..)));
+}
+
+#[test]
+fn c99_f2_cast_to_void_is_evaluated_and_discards_any_object_value() {
+    let items = check(concat!(
+        "struct Pair { int x, y; }; ",
+        "int count; ",
+        "void notify(void); ",
+        "int f(int *p) { ",
+        " (void)(++count); (void)notify(); (void)*p; ",
+        " struct Pair pair = {1,2}; (void)pair; ",
+        " (void)count; (void)(count+1); return count; }"
+    )).unwrap();
+    let CheckedItem::Function(fun) = &items[3] else { panic!("function"); };
+    let CheckedStmt::Block(stmts) = &fun.body else { panic!("body"); };
+    // The explicit non-void casts retain a checked Convert node containing
+    // their operand, rather than silently dropping side effects during check.
+    for i in [0usize, 2, 4, 5, 6] {
+        let CheckedStmt::Expr(Some(expr)) = &stmts[i] else { panic!("expr {i}"); };
+        assert_eq!(expr.ty, CType::Void, "{i}");
+        assert!(matches!(expr.kind, CheckedExprKind::Convert(_)), "{i}");
+    }
+    let CheckedStmt::Expr(Some(expr)) = &stmts[1] else { panic!("void call"); };
+    assert_eq!(expr.ty, CType::Void);
+    // Casting a void-valued call to void is still an evaluated call.
+    assert!(matches!(expr.kind, CheckedExprKind::Call(..)));
+    let CheckedStmt::Expr(Some(expr)) = &stmts[0] else { panic!("increment"); };
+    let CheckedExprKind::Convert(inner) = &expr.kind else { panic!("convert"); };
+    assert!(matches!(inner.kind, CheckedExprKind::Update { .. }));
+}
+
+#[test]
+fn c99_f2_void_cast_in_comma_and_statement_context() {
+    let items = check(concat!(
+        "int f(int x) { return ((void)(x += 1), x); } ",
+        "void g(void) { (void)0; } "
+    )).unwrap();
+    let CheckedItem::Function(fun) = &items[0] else { panic!("function"); };
+    let CheckedStmt::Block(stmts) = &fun.body else { panic!("body"); };
+    let CheckedStmt::Return(Some(expr)) = &stmts[0] else { panic!("return"); };
+    assert_eq!(expr.ty, CType::int());
+    let CheckedExprKind::Comma(left, _) = &expr.kind else { panic!("comma"); };
+    assert_eq!(left.ty, CType::Void);
+    assert!(matches!(left.kind, CheckedExprKind::Convert(_)));
+    reject("int f(int x) { return (void)x; }", "incompatible assignment");
+    reject("int f(void) { return (void)undeclared; }", "undeclared");
+}
+
+#[test]
+fn c99_f2_real_floating_casts_retain_checked_conversion_and_type() {
+    use mini_c_syntax::ast::FloatRank;
+    let examples = [
+        ("float f(int x) { return (float)x; }",
+            CType::Floating(FloatRank::Float)),
+        ("int f(float x) { return (int)x; }", CType::int()),
+        ("double f(float x) { return (double)x; }",
+            CType::Floating(FloatRank::Double)),
+        ("float f(double x) { return (float)x; }",
+            CType::Floating(FloatRank::Float)),
+        ("long double f(int x) { return (long double)x; }",
+            CType::Floating(FloatRank::LongDouble)),
+        ("int f(float x) { return (_Bool)x; }",
+            CType::int()),
+        ("float f(float x) { return (const float)x; }",
+            CType::Floating(FloatRank::Float)),
+    ];
+    for (source, expected) in examples {
+        let items = check(source).unwrap_or_else(|why| panic!("{source}: {why:?}"));
+        let CheckedItem::Function(fun) = &items[0] else { panic!("function"); };
+        let CheckedStmt::Block(stmts) = &fun.body else { panic!("body"); };
+        let CheckedStmt::Return(Some(value)) = &stmts[0] else { panic!("return"); };
+        assert_eq!(value.ty, expected, "{source}");
+        // Explicit casts must produce typed Convert except when no
+        // representation change is needed or the return itself converts.
+        assert!(matches!(value.kind, CheckedExprKind::Convert(..)) || 
+            matches!(value.kind, CheckedExprKind::Load(..)), "{source}: {:?}", value.kind);
+    }
+    reject("int f(void) { return (float)(int*)0; }", "unsupported cast type-name");
+}
+
+#[test]
+fn c99_f2_explicit_integer_to_pointer_preserves_checked_conversion() {
+    let items = check(concat!(
+        "typedef unsigned long uintptr_t;",
+        "int *from_bits(uintptr_t bits) { return (int *)bits; }",
+        "const int *qualified(uintptr_t bits) { return (const int *)(uintptr_t)bits; }"
+    )).unwrap();
+    let CheckedItem::Function(fun) = &items[1] else { panic!("expected function"); };
+    let CheckedStmt::Block(stmts) = &fun.body else { panic!("expected body"); };
+    let CheckedStmt::Return(Some(value)) = &stmts[0] else { panic!("expected return"); };
+    let CType::Pointer(pointee) = &value.ty else { panic!("result must be pointer"); };
+    assert_eq!(pointee.as_ref(), &CType::int());
+    let CheckedExprKind::Convert(inner) = &value.kind else {
+        panic!("integer-to-pointer cast must survive in checked IR");
+    };
+    assert!(inner.ty.is_integer());
+    let CheckedItem::Function(fun) = &items[2] else { panic!("expected qualified function"); };
+    let CheckedStmt::Block(stmts) = &fun.body else { panic!("expected body"); };
+    let CheckedStmt::Return(Some(value)) = &stmts[0] else { panic!("expected return"); };
+    let CType::Pointer(pointee) = &value.ty else { panic!("qualified pointer"); };
+    assert!(pointee.is_const());
+    check("int *f(unsigned long bits) { return (int *)bits; }").unwrap();
+    check("int *f(void) { return (int *)1234UL; }").unwrap();
+    check("int *f(void) { return 0; }").unwrap();
+}
+
+#[test]
+fn c99_f2_explicit_pointer_cast_does_not_enable_implicit_integer_conversions() {
+    // Nonzero implicit integer -> pointer remains a constraint violation.
+    reject("int *f(unsigned long bits) { return bits; }", "incompatible assignment");
+    reject("int *f(void) { return 1234; }", "incompatible assignment");
+    reject("int *f(double d) { return (int *)d; }",
+        "pointer cast requires an integer or pointer operand");
+    reject("int *f(unsigned long bits) { return (int *)((void)bits); }",
+        "pointer cast requires an integer or pointer operand");
+    // A cast can add pointee const, but an implicit return still cannot
+    // discard it after the cast.
+    reject("int *f(unsigned long bits) { return (const int *)bits; }",
+        "incompatible assignment");
 }
 
 /// Parse the generated C through the actual frontend and inspect its checked
