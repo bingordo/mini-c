@@ -2821,7 +2821,17 @@ impl Checker {
                         "integer cast requires integer operand")),
                     _ => return Err(type_error(span, "unsupported cast type-name")),
                 }
-                Ok(self.convert(value, &dest))
+                // An explicit cast ends bit-field value-width promotion
+                // provenance, even when the destination is the *same*
+                // declared base type. The usual implicit convert() helper
+                // can elide an identity conversion, which would wrongly
+                // make -(unsigned long)small_unsigned_bitfield promote to int.
+                if value.bit_field_width().is_some() && value.ty.same_type(&dest) {
+                    Ok(CheckedExpr::value(dest,
+                        CheckedExprKind::Convert(Box::new(value))))
+                } else {
+                    Ok(self.convert(value, &dest))
+                }
             }
             Expr::Comma(lhs, rhs) => {
                 // Both operands undergo their ordinary value conversions.
