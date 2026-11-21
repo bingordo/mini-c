@@ -1999,12 +1999,12 @@ impl Checker {
     fn check_bit_width(
         &self, width: &Expr, ty: &CType, unnamed: bool, span: Span,
     ) -> Result<u8, Diagnostic> {
-        if !matches!(ty.unqualified(),
-            CType::Integer { rank: IntRank::Int, .. })
-        {
-            return Err(type_error(span,
-                "bit-field requires signed or unsigned int in this milestone"));
-        }
+        let max_width = match ty.unqualified() {
+            CType::Integer { rank: IntRank::Int, .. } => 32i128,
+            CType::Integer { rank: IntRank::Bool, .. } => 1i128,
+            _ => return Err(type_error(span,
+                "bit-field requires _Bool, signed int or unsigned int in this milestone")),
+        };
         let typed = self.check_expr(width, span)?.rvalue();
         if !typed.ty.is_integer() {
             return Err(type_error(span, "bit-field width must be an integer constant expression"));
@@ -2012,11 +2012,11 @@ impl Checker {
         let value = const_eval::evaluate(&typed, self.target)
             .map_err(|why| type_error(span, format!(
                 "bit-field width requires integer constant expression: {why}")))?;
-        if !(if unnamed { 0..=32 } else { 1..=32 }).contains(&value) {
+        if !(if unnamed { 0..=max_width } else { 1..=max_width }).contains(&value) {
             return Err(type_error(span, if unnamed {
-                "unnamed bit-field width must be between 0 and 32"
+                "unnamed bit-field width exceeds its base type or is negative"
             } else {
-                "named bit-field width must be between 1 and 32"
+                "named bit-field width must be positive and fit its base type"
             }));
         }
         u8::try_from(value).map_err(|_| type_error(span, "bit-field width overflow"))
