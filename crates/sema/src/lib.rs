@@ -680,10 +680,6 @@ impl Checker {
                     // Truly incomplete by-value members still fail below.
                     let (declared, bit_width) = match &member.ty {
                         Type::BitField(base, width) => {
-                            if member.name.is_empty() {
-                                return Err(type_error(member.span,
-                                    "unnamed/zero-width bit-fields require separate layout support"));
-                            }
                             (base.as_ref(), Some(width.as_ref()))
                         }
                         _ => (&member.ty, None),
@@ -691,7 +687,7 @@ impl Checker {
                     let resolved = self.resolve(declared, member.span)?;
                     let resolved = self.try_complete_tag_type(resolved)?;
                     let width = bit_width.map(|width| {
-                        self.check_bit_width(width, &resolved, member.span)
+                        self.check_bit_width(width, &resolved, member.name.is_empty(), member.span)
                     }).transpose()?;
                     fields.push((member.name.clone(), resolved, width));
                 }
@@ -2001,7 +1997,7 @@ impl Checker {
     /// Declared member types are recursively resolved and *completed* before
     /// layout, while pointers to the tag under construction stay nominal.
     fn check_bit_width(
-        &self, width: &Expr, ty: &CType, span: Span,
+        &self, width: &Expr, ty: &CType, unnamed: bool, span: Span,
     ) -> Result<u8, Diagnostic> {
         if !matches!(ty.unqualified(),
             CType::Integer { rank: IntRank::Int, .. })
@@ -2016,9 +2012,12 @@ impl Checker {
         let value = const_eval::evaluate(&typed, self.target)
             .map_err(|why| type_error(span, format!(
                 "bit-field width requires integer constant expression: {why}")))?;
-        if !(1..=32).contains(&value) {
-            return Err(type_error(span,
-                "named bit-field width must be between 1 and 32"));
+        if !(if unnamed { 0..=32 } else { 1..=32 }).contains(&value) {
+            return Err(type_error(span, if unnamed {
+                "unnamed bit-field width must be between 0 and 32"
+            } else {
+                "named bit-field width must be between 1 and 32"
+            }));
         }
         u8::try_from(value).map_err(|_| type_error(span, "bit-field width overflow"))
     }
@@ -2064,10 +2063,6 @@ impl Checker {
             }
             let (declared, bit_width) = match &member.ty {
                 Type::BitField(base, width) => {
-                    if member.name.is_empty() {
-                        return Err(type_error(member.span,
-                            "unnamed/zero-width bit-fields require separate layout support"));
-                    }
                     (base.as_ref(), Some(width.as_ref()))
                 }
                 _ => (&member.ty, None),
@@ -2075,7 +2070,7 @@ impl Checker {
             let member_ty = self.resolve_sizeof_type(declared, member.span)?;
             let member_ty = self.try_complete_tag_type(member_ty)?;
             let width = bit_width.map(|width| {
-                self.check_bit_width(width, &member_ty, member.span)
+                self.check_bit_width(width, &member_ty, member.name.is_empty(), member.span)
             }).transpose()?;
             fields.push((member.name.clone(), member_ty, width));
         }
