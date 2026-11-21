@@ -25,10 +25,10 @@ fn parenthesized_atomic_types_remain_distinct_from_ordinary_types() {
         Type::Atomic(Box::new(Type::Pointer(Box::new(Type::Int)))));
     assert_eq!(parsed_type("const _Atomic(int) counter;"),
         Type::Qualified(Box::new(atomic.clone()),
-            Qualifiers { is_const: true, is_restrict: false, is_atomic: false }));
+            Qualifiers { is_const: true, is_volatile: false, is_restrict: false, is_atomic: false }));
     assert_eq!(parsed_type("_Atomic(int) const counter;"),
         Type::Qualified(Box::new(atomic),
-            Qualifiers { is_const: true, is_restrict: false, is_atomic: false }));
+            Qualifiers { is_const: true, is_volatile: false, is_restrict: false, is_atomic: false }));
 }
 
 #[test]
@@ -44,8 +44,8 @@ fn parenthesized_atomic_type_is_valid_syntax_but_bad_forms_reject() {
 
 #[test]
 fn atomic_qualifier_is_not_lost_in_declaration_or_pointer_binding() {
-    let atomic = Qualifiers { is_const: false, is_restrict: false, is_atomic: true };
-    let const_atomic = Qualifiers { is_const: true, is_restrict: false, is_atomic: true };
+    let atomic = Qualifiers { is_const: false, is_volatile: false, is_restrict: false, is_atomic: true };
+    let const_atomic = Qualifiers { is_const: true, is_volatile: false, is_restrict: false, is_atomic: true };
     assert_eq!(parsed_type("_Atomic int counter;"),
         Type::Qualified(Box::new(Type::Int), atomic));
     assert_eq!(parsed_type("int _Atomic counter;"),
