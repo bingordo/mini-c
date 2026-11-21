@@ -394,10 +394,55 @@
       "id": "floating-cast",
       "feature": "F2",
       "expect": "accept",
-      "mini": "gap",
+      "mini": "supported",
       "kind": "valid",
-      "test_ref": "docs/C99_Frontend_Plan.md:F2",
+      "test_ref": "crates/sema/src/tests.rs:c99_f2_real_floating_casts_retain_checked_conversion_and_type",
       "source": "int f(void){return (int)@N@.25;}"
+    },
+    {
+      "id": "float-cast-from-int",
+      "feature": "F2",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_f2_real_floating_casts_retain_checked_conversion_and_type",
+      "source": "float f(int x){return (float)x + @N@.0f;}"
+    },
+    {
+      "id": "void-cast-side-effect",
+      "feature": "F2",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_f2_cast_to_void_is_evaluated_and_discards_any_object_value",
+      "source": "int f(void){int x=@N@;(void)(++x);return x;}"
+    },
+    {
+      "id": "void-cast-function-call",
+      "feature": "F2",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_f2_cast_to_void_is_evaluated_and_discards_any_object_value",
+      "source": "void f(int x);int g(void){(void)f(@N@);return 0;}"
+    },
+    {
+      "id": "void-cast-aggregate",
+      "feature": "F2",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_f2_cast_to_void_is_evaluated_and_discards_any_object_value",
+      "source": "struct S{int x;};int f(void){struct S s={@N@};(void)s;return s.x;}"
+    },
+    {
+      "id": "void-cast-in-nonvoid-return",
+      "feature": "F2",
+      "expect": "reject",
+      "mini": "supported",
+      "kind": "constraint",
+      "test_ref": "crates/sema/src/tests.rs:c99_f2_void_cast_in_comma_and_statement_context",
+      "source": "int f(void){return (void)@N@;}"
     },
     {
       "id": "tagged-byvalue-member",

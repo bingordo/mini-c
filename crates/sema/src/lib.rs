@@ -2553,7 +2553,7 @@ impl Checker {
                 // Preserve the existing integer cast rules, and accept the
                 // ordinary C pointer type-name syntax without assuming that
                 // all integer-to-pointer conversions have portable meaning.
-                let dest = if matches!(ty, Type::Pointer(..) | Type::Alias(..)
+                let dest = if matches!(ty, Type::Void | Type::Pointer(..) | Type::Alias(..)
                     | Type::Qualified(..) | Type::Floating(..))
                 {
                     self.resolve_sizeof_type(ty, span)?
@@ -2565,6 +2565,10 @@ impl Checker {
                 let dest = dest.unqualified().clone();
                 let value = self.check_expr(operand, span)?.rvalue();
                 match &dest {
+                    // ISO C99 6.5.4: (void)expr accepts any object/function
+                    // expression and evaluates it once; only its value is
+                    // discarded. Checked Convert retains observable effects.
+                    CType::Void => {},
                     CType::Integer { .. } if value.ty.is_integer()
                         || matches!(value.ty.unqualified(), CType::Floating(_)) => {},
                     CType::Floating(_) if value.ty.is_integer()
