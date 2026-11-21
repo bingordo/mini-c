@@ -442,7 +442,7 @@ impl<'a> Parser<'a> {
                 let type_name = self.peek()?.is_some_and(|next| {
                     matches!(next.text.as_ref(), "int" | "_Bool" | "char" | "short" | "long" | "_Float128" |
                         "float" | "double" | "void" | "signed" | "unsigned" |
-                        "struct" | "union" | "enum" | "const" | "restrict" |
+                        "struct" | "union" | "enum" | "const" | "volatile" | "restrict" |
                         "__restrict" | "__restrict__")
                         || next.kind == TokenKind::TypedefName
                 });
@@ -549,7 +549,7 @@ impl<'a> Parser<'a> {
                 let cast_type = self.peek()?.is_some_and(|next| {
                     matches!(next.text.as_ref(), "int" | "_Bool" | "char" | "short" | "long" | "_Float128" | "float" | "double" | "void" |
                         "signed" | "unsigned" | "struct" | "union" | "enum" |
-                        "const" | "restrict" | "__restrict" | "__restrict__")
+                        "const" | "volatile" | "restrict" | "__restrict" | "__restrict__")
                         || next.kind == TokenKind::TypedefName
                 });
                 if cast_type {
@@ -891,7 +891,7 @@ impl<'a> Parser<'a> {
         } else if let Some(token) = self.peek()?.filter(|token| {
             matches!(token.kind, TokenKind::Identifier | TokenKind::TypedefName)
                 && !matches!(token.text.as_ref(), "int" | "_Bool" | "char" | "short" | "long" | "_Float128" | "float" | "double" | "void"
-                    | "unsigned" | "signed" | "const" | "restrict" | "__restrict" | "__restrict__"
+                    | "unsigned" | "signed" | "const" | "volatile" | "restrict" | "__restrict" | "__restrict__"
                     | "typedef" | "static" | "extern" | "register"
                     | "struct" | "union" | "enum" | "if" | "else" | "while" | "do" | "for" | "switch" | "case" | "default" | "return" | "break" | "continue")
         }) {
@@ -1378,7 +1378,7 @@ impl<'a> Parser<'a> {
                             }
                             "struct" | "union" | "enum" => self.parse_tag_or_decl()?,
                             "static" | "extern" | "register" | "int" | "_Bool" | "char" | "long"
-                                | "void" | "unsigned" | "signed" | "const" | "restrict" | "__restrict" | "__restrict__" =>
+                                | "void" | "unsigned" | "signed" | "const" | "volatile" | "restrict" | "__restrict" | "__restrict__" =>
                                 Stmt::Decl(self.parse_decl(false)?),
                             _ if token.kind == TokenKind::TypedefName =>
                                 Stmt::Decl(self.parse_decl(false)?),
@@ -1424,7 +1424,7 @@ impl<'a> Parser<'a> {
             "static" | "extern" | "register" => Ok(Stmt::Decl(self.parse_decl(false)?)),
             "struct" | "union" | "enum" => self.parse_tag_or_decl(),
             "int" | "_Bool" | "char" | "short" | "long" | "_Float128" | "float" | "double" | "void" | "unsigned" | "signed"
-                | "const" | "restrict" | "__restrict" | "__restrict__" => Ok(Stmt::Decl(self.parse_decl(false)?)),
+                | "const" | "volatile" | "restrict" | "__restrict" | "__restrict__" => Ok(Stmt::Decl(self.parse_decl(false)?)),
             _ if matches!(token.kind, TokenKind::Identifier | TokenKind::TypedefName)
                 && self.followed_by_colon()? => {
                 let name = self.take()?.expect("peeked label");
@@ -1435,7 +1435,7 @@ impl<'a> Parser<'a> {
                     "typedef" | "static" | "extern" | "register" | "struct" | "union" | "enum" |
                     "int" | "_Bool" | "char" | "short" | "long" | "_Float128" |
                     "float" | "double" | "void" | "unsigned" | "signed" |
-                    "const" | "restrict" | "__restrict" | "__restrict__"));
+                    "const" | "volatile" | "restrict" | "__restrict" | "__restrict__"));
                 let is_typedef_decl = next.is_some_and(|token| token.kind == TokenKind::TypedefName)
                     && !self.followed_by_colon()?;
                 if is_decl_keyword || is_typedef_decl {
@@ -1477,7 +1477,7 @@ impl<'a> Parser<'a> {
                     }
                     "static" | "extern" | "register" | "int" | "_Bool" | "char" | "short"
                     | "long" | "_Float128" | "float" | "double" | "void"
-                    | "unsigned" | "signed" | "const" | "restrict" | "_Atomic"
+                    | "unsigned" | "signed" | "const" | "volatile" | "restrict" | "_Atomic"
                     | "__restrict" | "__restrict__" => Some(false),
                     _ if token.kind == TokenKind::TypedefName
                         && !self.followed_by_colon()? => Some(false),
@@ -1518,6 +1518,7 @@ impl<'a> Parser<'a> {
                     let mut ty = Type::TagRef(TagKind::Enum, tag);
                     let trailing = self.parse_qualifiers()?;
                     qualifiers.is_const |= trailing.is_const;
+                    qualifiers.is_volatile |= trailing.is_volatile;
                     qualifiers.is_restrict |= trailing.is_restrict;
                     if qualifiers.any() { ty = Type::Qualified(Box::new(ty), qualifiers); }
                     return Ok(Some((ty, first.span.lo)));
@@ -1559,6 +1560,7 @@ impl<'a> Parser<'a> {
                     let mut ty = Type::TagRef(kind, tag);
                     let trailing = self.parse_qualifiers()?;
                     qualifiers.is_const |= trailing.is_const;
+                    qualifiers.is_volatile |= trailing.is_volatile;
                     qualifiers.is_restrict |= trailing.is_restrict;
                     if qualifiers.any() { ty = Type::Qualified(Box::new(ty), qualifiers); }
                     return Ok(Some((ty, first.span.lo)));
@@ -1656,6 +1658,7 @@ impl<'a> Parser<'a> {
                         "unsigned" if sign.is_none() => sign = Some(true),
                         "signed" if sign.is_none() => sign = Some(false),
                         "const" => qualifiers.is_const = true,
+                        "volatile" => qualifiers.is_volatile = true,
                         "restrict" | "__restrict" | "__restrict__" =>
                             qualifiers.is_restrict = true,
                         "char" | "short" | "int" | "long" | "unsigned" | "signed" => {
@@ -1687,6 +1690,7 @@ impl<'a> Parser<'a> {
         };
         let trailing = self.parse_qualifiers()?;
         qualifiers.is_const |= trailing.is_const;
+                    qualifiers.is_volatile |= trailing.is_volatile;
         qualifiers.is_restrict |= trailing.is_restrict;
         let ty = if qualifiers.any() {
             Type::Qualified(Box::new(ty), qualifiers)
@@ -1701,6 +1705,7 @@ impl<'a> Parser<'a> {
         while let Some(token) = self.peek()? {
             match token.text.as_ref() {
                 "const" => result.is_const = true,
+                "volatile" => result.is_volatile = true,
                 "restrict" | "__restrict" | "__restrict__" => result.is_restrict = true,
                 "_Atomic" => {
                     // Do not strip this qualifier: atomic load/store/RMW
