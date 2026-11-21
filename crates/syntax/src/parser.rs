@@ -2841,7 +2841,7 @@ mod tests {
         for source in [
             r#"int f(void){ asm("nop":"=r"(x),"=r"(y):"r"(z)); }"#,
             r#"int f(void){ asm("nop":"=r"x:"r"(z)); }"#,
-            r#"int f(void){ asm("nop":"=r"(x):"r"(z),"r"(y)); }"#,
+            // Two independent GP inputs are now admitted by ASM2 P13B.
             r#"int f(void){ asm("nop":"=r"(x):"r"(z):"memory",); }"#,
         ] {
             assert!(Parser::new(source).next_item().is_err(),"{source}");
