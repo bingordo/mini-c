@@ -741,6 +741,12 @@ impl Compiler {
 
     /// Register declarations and compile one complete checked function.
     pub fn add(&mut self, item: CheckedItem) -> Result<()> {
+        // Volatile reads and writes are observable C side effects.
+        // Never emit an ordinary load/store in lieu of a volatile operation.
+        // The canonical native TypeId IR support is compiler#1047.
+        if item.contains_volatile_type() {
+            return Err("native volatile memory accesses are unsupported until compiler IR #1047".into());
+        }
         match item {
             CheckedItem::Typedef { .. } | CheckedItem::Tag => Ok(()),
             CheckedItem::Declaration(decl) => {
