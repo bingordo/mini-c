@@ -3530,6 +3530,21 @@ mod tests {
     }
 
     #[test]
+    fn c99_volatile_objects_fail_closed_before_native_output() {
+        for source in [
+            "volatile int x; int f(void) { return x + x; }",
+            "int f(volatile int *p) { return *p; }",
+            "int f(void) { int *volatile p = 0; return p != 0; }",
+            "struct S { int x; }; volatile struct S s; int f(void) { return s.x; }",
+        ] {
+            let err = compile_source(source).expect_err("volatile native code must reject");
+            assert!(err.contains("native volatile memory accesses are unsupported"),
+                "{source}: {err}");
+        }
+        assert!(compile_source("int f(int x) { return x + 1; }").is_ok());
+    }
+
+    #[test]
     fn emits_small_integer_aggregate_calls_and_returns() {
         let sources = [
             "struct Pair { long a; long b; }; \
