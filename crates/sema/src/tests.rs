@@ -1009,8 +1009,7 @@ fn c99_named_int_bitfields_layout_signedness_and_constraints() {
     reject("struct B{int a:-2;};", "named bit-field width must be between 1 and 32");
     reject("struct B{unsigned int a:3.5;};", "integer constant expression");
     reject("int width;struct B{unsigned int a:width;};", "integer constant expression");
-    reject("struct B{unsigned char a:3;};",
-        "bit-field requires signed or unsigned int");
+    check("struct B{unsigned char a:3;};").unwrap();
     check("struct B{unsigned int :0;unsigned int a:3;};").unwrap();
     reject("struct B{unsigned int a:3;};int f(void){struct B b;return &b.a!=0;}",
         "cannot take the address of a bit-field");
@@ -1105,8 +1104,7 @@ fn c99_unnamed_bitfields_skip_initializer_slots_and_zero_width_aligns_next_field
         "unnamed bit-field width must be between 0 and 32");
     reject("struct Bad {unsigned int :-1; int x;};",
         "unnamed bit-field width must be between 0 and 32");
-    reject("struct Bad {unsigned char :0; int x;};",
-        "bit-field requires signed or unsigned int");
+    check("struct Bad {unsigned char :0; int x;};").unwrap();
     reject("struct Bad {unsigned int :0;};", "empty structures are unsupported");
     reject("union Bad {unsigned int :3;};", "empty unions are unsupported");
     reject("struct Bad {unsigned int x:0;};",
@@ -1195,10 +1193,112 @@ fn c99_bool_bitfields_have_byte_units_and_mixed_int_layout() {
     reject("struct B{_Bool a:0;};", "named _Bool bit-field width must be 1");
     reject("struct B{_Bool a:2;};", "named _Bool bit-field width must be 1");
     reject("struct B{_Bool :2;int a;};", "unnamed _Bool bit-field width must be 0 or 1");
-    reject("struct B{unsigned char a:1;};", "bit-field requires signed or unsigned int");
+    check("struct B{unsigned char a:1;};").unwrap();
     reject("struct B{_Bool a:1;};int f(void){struct B b;return &b.a!=0;}",
         "cannot take the address of a bit-field");
     reject("struct B{_Bool a:1;};int f(void){struct B b;return sizeof b.a;}",
+        "sizeof cannot be applied to a bit-field");
+}
+
+#[test]
+fn c99_char_short_long_bitfields_have_target_sized_allocation_units() {
+    // The same underlying layout accepts GCC x86-64 LP64 implementation-
+    // defined bit-field base types with 8/16/32/64-bit allocation units.
+    let checked = check(concat!(
+        "struct Mix {signed char a:3;unsigned short b:11;",
+        "unsigned int c:9;unsigned long d:37;char tail;};",
+        "struct Mix m={-3,1023,299,123456789,'X'};"
+    )).unwrap();
+    let CheckedItem::Declaration(m) = checked.last().expect("declaration") else {
+        panic!("Mix declaration")
+    };
+    let CType::Struct { members, size, align, .. } = &m.ty else {panic!("Mix struct")};
+    assert_eq!((*size, *align), (16, 8));
+    assert_eq!(members.iter().map(|m| m.offset).collect::<Vec<_>>(),
+        [0, 0, 0, 0, 8]);
+    assert_eq!(members.iter().map(|m| m.bit_field.map(|b| (b.shift,b.width)))
+        .collect::<Vec<_>>(),
+        [Some((0,3)),Some((3,11)),Some((14,9)),Some((23,37)),None]);
+
+    let checked = check(concat!(
+        "struct Boundary {unsigned long first:63,second:4;char tail;};",
+        "struct Boundary b={0x7fffffffffffffffUL,9,'B'};"
+    )).unwrap();
+    let CheckedItem::Declaration(b) = checked.last().expect("declaration") else {
+        panic!("Boundary declaration")
+    };
+    let CType::Struct { members, size, align, .. } = &b.ty else {panic!("Boundary struct")};
+    assert_eq!((*size, *align), (16, 8));
+    assert_eq!(members.iter().map(|m| m.offset).collect::<Vec<_>>(), [0,8,9]);
+    assert_eq!(members[0].bit_field.map(|b| (b.shift,b.width)), Some((0,63)));
+    assert_eq!(members[1].bit_field.map(|b| (b.shift,b.width)), Some((0,4)));
+
+    let checked = check(concat!(
+        "struct Narrow {char prefix;signed char a:2;",
+        "unsigned short b:9;char tail;};",
+        "struct Narrow n={'A',-1,257,'B'};"
+    )).unwrap();
+    let CheckedItem::Declaration(n) = checked.last().expect("declaration") else {
+        panic!("Narrow declaration")
+    };
+    let CType::Struct { members, size, align, .. } = &n.ty else {panic!("Narrow struct")};
+    assert_eq!((*size, *align), (6, 2));
+    assert_eq!(members.iter().map(|m| m.offset).collect::<Vec<_>>(), [0,1,2,4]);
+    assert_eq!(members[1].bit_field.map(|b| (b.shift,b.width)), Some((0,2)));
+    assert_eq!(members[2].bit_field.map(|b| (b.shift,b.width)), Some((0,9)));
+
+    let checked = check(concat!(
+        "struct Stop {char prefix;unsigned long :0;char tail;};",
+        "struct Stop s={'A','B'};"
+    )).unwrap();
+    let CheckedItem::Declaration(s) = checked.last().expect("declaration") else {
+        panic!("Stop declaration")
+    };
+    let CType::Struct { members, size, align, .. } = &s.ty else {panic!("Stop struct")};
+    assert_eq!((*size, *align), (9, 1));
+    assert_eq!(members.iter().map(|m| m.offset).collect::<Vec<_>>(), [0,8]);
+
+    let checked = check(concat!(
+        "union U {unsigned char a:7;unsigned short b:11;unsigned long c:63;};",
+        "union U u={.a=77};"
+    )).unwrap();
+    let CheckedItem::Declaration(u) = checked.last().expect("declaration") else {
+        panic!("union declaration")
+    };
+    let CType::Union { members, size, align, .. } = &u.ty else {panic!("union")};
+    assert_eq!((*size, *align), (8, 8));
+    assert_eq!(members.iter().map(|m| m.offset).collect::<Vec<_>>(), [0,0,0]);
+    assert_eq!(members[0].bit_field.map(|b| (b.shift,b.width)), Some((0,7)));
+    assert_eq!(members[1].bit_field.map(|b| (b.shift,b.width)), Some((0,11)));
+    assert_eq!(members[2].bit_field.map(|b| (b.shift,b.width)), Some((0,63)));
+
+    check(concat!(
+        "struct Bits{signed char a:3;unsigned short b:11;unsigned long c:37;};",
+        "struct Box{struct Bits bits[2];};",
+        "struct Box g={.bits[1].c=7,.bits[0].a=-1,.bits[1].b=123};"
+    )).unwrap();
+    check(concat!(
+        "struct Bits{signed char a:3;unsigned long b:37;};",
+        "int f(void){return ((struct Bits){.a=-3,.b=9}).a;}"
+    )).unwrap();
+
+    reject("struct Bad{unsigned char a:9;};",
+        "named bit-field width must be between 1 and 8");
+    reject("struct Bad{unsigned short a:17;};",
+        "named bit-field width must be between 1 and 16");
+    reject("struct Bad{unsigned long a:65;};",
+        "named bit-field width must be between 1 and 64");
+    reject("struct Bad{unsigned short :17;int a;};",
+        "unnamed bit-field width must be between 0 and 16");
+    reject("struct Bad{unsigned char a:0;};",
+        "named bit-field width must be between 1 and 8");
+    reject("struct Bad{float a:3;};",
+        "bit-field requires _Bool, char, short, int or long");
+    reject("struct Bad{unsigned long long a:3;};",
+        "bit-field requires _Bool, char, short, int or long");
+    reject("struct Bad{unsigned short a:3;};int f(void){struct Bad b;return &b.a!=0;}",
+        "cannot take the address of a bit-field");
+    reject("struct Bad{signed char a:3;};int f(void){struct Bad b;return sizeof b.a;}",
         "sizeof cannot be applied to a bit-field");
 }
 
