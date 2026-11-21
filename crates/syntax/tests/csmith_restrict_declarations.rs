@@ -57,5 +57,7 @@ fn volatile_is_preserved_but_unimplemented_c11_atomic_rejected() {
         assert!(matches!(item, Some(ExternalItem::Declaration(_))), "{source}");
     }
     // C11 atomic is NOT a synonym for C99 volatile.
-    assert!(Parser::new("_Atomic int x;").next_item().is_err());
+    // Parser retains C11 atomic qualification; checked semantics still gate its use.
+    assert!(matches!(Parser::new("_Atomic int x;").next_item().unwrap(),
+        Some(ExternalItem::Declaration(_))));
 }
