@@ -1376,10 +1376,14 @@ impl Checker {
                 }
                 let mut checked_outputs=Vec::new();
                 for output in outputs {
-                    if !matches!(output.constraint.as_str(),"=r"|"+r"|"=&r") {
-                        return Err(type_error(output.span,"extended asm output requires =r, +r or =&r"));
+                    if !matches!(output.constraint.as_str(),"=r"|"+r"|"=&r"|"=m") {
+                        return Err(type_error(output.span,"extended asm output requires reviewed GP or =m memory constraint"));
                     }
-                    if !matches!(output.expr.without_location(),Expr::Name(_)) {
+                    // Register results still require a checked local name;
+                    // "=m" instead binds a genuine checked addressable C
+                    // lvalue, such as *p, p[i], or a writable local scalar.
+                    if output.constraint!="=m"
+                        && !matches!(output.expr.without_location(),Expr::Name(_)) {
                         return Err(type_error(output.span,"extended asm output currently requires local variable"));
                     }
                     let expr=self.check_expr(&output.expr,output.span)?;
@@ -1420,6 +1424,31 @@ impl Checker {
                     if clobbers.iter().any(|name|name!="memory") {
                         return Err(type_error(*span,
                             "ASM3 memory input supports only the compiler memory clobber"));
+                    }
+                }
+                // ASM3 P02C3: output-only memory MOV is different from a
+                // register output and from an input "m" read. Accept only
+                // one addressable, writable i32/i64 C lvalue output and
+                // one independent equal-width "r" scalar input.
+                let gp_memory_write=checked_outputs.len()==1
+                    && checked_outputs[0].constraint=="=m";
+                if gp_memory_write {
+                    if inputs.len()!=1 || inputs[0].constraint!="r" {
+                        return Err(type_error(*span,
+                            "ASM3 =m memory output requires exactly one r input"));
+                    }
+                    let output_bytes=checked_outputs[0].expr.ty.size_bytes(self.target)
+                        .ok_or_else(||type_error(*span,
+                            "ASM3 memory output width unknown"))?;
+                    let reviewed=match output_bytes {
+                        4=>"movl %1,%0",
+                        8=>"movq %1,%0",
+                        _=>return Err(type_error(*span,
+                            "ASM3 memory output requires 32/64-bit scalar")),
+                    };
+                    if template!=reviewed || clobbers.iter().any(|name|name!="memory") {
+                        return Err(type_error(*span,
+                            "ASM3 memory output requires reviewed MOV and optional memory clobber"));
                     }
                 }
                 // +r reads and writes operand %0 with no separate input. Numeric
@@ -1465,6 +1494,12 @@ impl Checker {
                     {
                         return Err(type_error(input.span,
                             "ASM3 memory input must be an addressable same-width i32/i64 C lvalue"));
+                    }
+                    if gp_memory_write && expr.ty.size_bytes(self.target)
+                        !=checked_outputs[0].expr.ty.size_bytes(self.target)
+                    {
+                        return Err(type_error(input.span,
+                            "ASM3 memory output GP input must match its object width"));
                     }
                     if input.constraint=="0" &&
                         expr.ty.size_bytes(self.target)!=checked_outputs[0].expr.ty.size_bytes(self.target)
