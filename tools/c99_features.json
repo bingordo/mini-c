@@ -694,7 +694,7 @@
       "mini": "supported",
       "kind": "valid",
       "test_ref": "crates/sema/src/tests.rs:c99_f2_void_star_zero_is_null_pointer_constant_for_function_pointers",
-      "source": "int (*choose(int x, int (*p)(int)))(int){return x ? p : (void*)(@N@-@N@);}"
+      "source": "int f(int x, int (*p)(int)){int (*q)(int)=x?p:(void*)(@N@-@N@);return q==(void*)0;}"
     },
     {
       "id": "null-void-fptr-conditional-reversed",
@@ -703,7 +703,7 @@
       "mini": "supported",
       "kind": "valid",
       "test_ref": "crates/sema/src/tests.rs:c99_f2_void_star_zero_is_null_pointer_constant_for_function_pointers",
-      "source": "int (*choose(int x, int (*p)(int)))(int){return x ? (void*)0 : p;}"
+      "source": "int f(int x, int (*p)(int)){int (*q)(int)=x?(void*)0:p;return q==(void*)0;}"
     },
     {
       "id": "null-void-fptr-equivalence",
@@ -721,7 +721,7 @@
       "mini": "supported",
       "kind": "constraint",
       "test_ref": "crates/sema/src/tests.rs:c99_f2_null_cast_is_not_ordinary_void_pointer_compatibility",
-      "source": "int (*choose(void))(int){return (void*)@N@;}"
+      "source": "int f(void){int (*p)(int)=(void*)@N@;return p==0;}"
     },
     {
       "id": "non-null-void-fptr-equality",
@@ -739,7 +739,7 @@
       "mini": "supported",
       "kind": "constraint",
       "test_ref": "crates/sema/src/tests.rs:c99_f2_null_cast_is_not_ordinary_void_pointer_compatibility",
-      "source": "int (*choose(void))(int){void *q=(void*)0;return q;}"
+      "source": "int f(void){void *q=(void*)0;int (*p)(int)=q;return p==0;}"
     },
     {
       "id": "void-variable-fptr-equality",
