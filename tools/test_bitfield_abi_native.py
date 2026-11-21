@@ -51,6 +51,44 @@ def cases() -> list[Case]:
             f"{{.a={value},.b=81,.tail=0x5a}}",
             "local.a=-1;local.b=21;",
         ))
+    # Implementation-defined GCC/Clang x86-64 C99 integer bit-field base
+    # types. Generate exact-width, narrow and full-unit cases; values include
+    # the high bit so signed/unsigned truncation and 64-bit masks are covered.
+    for rank, unit in [("char", 8), ("short", 16), ("long", 64)]:
+        for width in sorted({1, 2, 3, unit // 2, unit - 1, unit}):
+            value = (1 << (width - 1)) | 1
+            result.append(Case(
+                f"{rank}_unsigned_{width}",
+                f"unsigned {rank} a:{width};unsigned char b:3;unsigned char tail;",
+                f"{{.a=0x{value:x}UL,.b=5,.tail=0xa5}}",
+                f"local.a=0x{value >> 1:x}UL;local.b=3;",
+            ))
+        for width in sorted({2, 3, min(7, unit), unit // 2, unit}):
+            initial = -(1 << (width - 2))
+            result.append(Case(
+                f"{rank}_signed_{width}",
+                f"signed {rank} a:{width};unsigned char b:3;unsigned char tail;",
+                f"{{.a={initial},.b=5,.tail=0x5a}}",
+                "local.a=-1;local.b=3;",
+            ))
+    # Vary the declared storage unit across adjacent fields. The common
+    # bit cursor must align each field only when it crosses its own unit.
+    for a, wa, b, wb in [
+        ("char", 3, "short", 11), ("short", 11, "char", 3),
+        ("short", 14, "int", 17), ("int", 9, "long", 37),
+        ("long", 63, "short", 9), ("long", 63, "char", 5),
+        ("char", 3, "long", 60), ("long", 63, "long", 4),
+        ("int", 30, "short", 11), ("short", 15, "long", 55),
+        ("char", 7, "int", 26), ("long", 60, "int", 9),
+    ]:
+        av = (1 << wa) - 1
+        bv = (1 << wb) - 1
+        result.append(Case(
+            f"mixed_{a}{wa}_{b}{wb}",
+            f"unsigned {a} a:{wa};unsigned {b} b:{wb};char tail;",
+            f"{{.a=0x{av:x}UL,.b=0x{bv:x}UL,.tail='M'}}",
+            f"local.a=0x{av >> 1:x}UL;local.b=0x{bv >> 1:x}UL;",
+        ))
     result.extend([
         Case("int_after_char", "char prefix;unsigned int a:3,b:5;char tail;",
              "{'A',5,23,'Z'}", "local.a=3;local.b=7;"),

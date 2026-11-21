@@ -625,6 +625,69 @@
       "source": "struct B{_Bool a:2;};int f(void){return @N@;}"
     },
     {
+      "id": "bitfield-char-unsigned",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_char_short_long_bitfields_have_target_sized_allocation_units",
+      "source": "struct S{unsigned char a:3;unsigned char b:4;};int f(void){struct S s={@N@%8,7};return s.a+s.b;}"
+    },
+    {
+      "id": "bitfield-char-signed",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_char_short_long_bitfields_have_target_sized_allocation_units",
+      "source": "struct S{signed char a:3;char tail;};int f(void){struct S s={-3,@N@%20};return s.a;}"
+    },
+    {
+      "id": "bitfield-short-unsigned",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_char_short_long_bitfields_have_target_sized_allocation_units",
+      "source": "struct S{unsigned short a:11;unsigned int b:5;};int f(void){struct S s={@N@,17};return s.a+s.b;}"
+    },
+    {
+      "id": "bitfield-long-unsigned",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_char_short_long_bitfields_have_target_sized_allocation_units",
+      "source": "struct S{unsigned long a:37;char tail;};int f(void){struct S s={@N@,7};return s.a!=0;}"
+    },
+    {
+      "id": "bitfield-short-zero-width",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_char_short_long_bitfields_have_target_sized_allocation_units",
+      "source": "struct S{char a;unsigned short :0;char b;};int f(void){struct S s={@N@%100,7};return sizeof(s);}"
+    },
+    {
+      "id": "bitfield-char-overwide",
+      "feature": "F3",
+      "expect": "reject",
+      "mini": "supported",
+      "kind": "constraint",
+      "test_ref": "crates/sema/src/tests.rs:c99_char_short_long_bitfields_have_target_sized_allocation_units",
+      "source": "struct S{unsigned char a:9;};int f(void){return @N@;}"
+    },
+    {
+      "id": "bitfield-long-overwide",
+      "feature": "F3",
+      "expect": "reject",
+      "mini": "supported",
+      "kind": "constraint",
+      "test_ref": "crates/sema/src/tests.rs:c99_char_short_long_bitfields_have_target_sized_allocation_units",
+      "source": "struct S{unsigned long a:65;};int f(void){return @N@;}"
+    },
+    {
       "id": "complex-type",
       "feature": "F5",
       "expect": "accept",

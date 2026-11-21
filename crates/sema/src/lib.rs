@@ -2000,10 +2000,15 @@ impl Checker {
         &self, width: &Expr, ty: &CType, unnamed: bool, span: Span,
     ) -> Result<u8, Diagnostic> {
         let max_width = match ty.unqualified() {
-            CType::Integer { rank: IntRank::Int, .. } => 32i128,
             CType::Integer { rank: IntRank::Bool, .. } => 1i128,
+            CType::Integer { rank: IntRank::Char | IntRank::Short
+                | IntRank::Int | IntRank::Long, .. } =>
+                i128::from(match ty.unqualified() {
+                    CType::Integer { rank, .. } => self.target.bits(*rank),
+                    _ => unreachable!(),
+                }),
             _ => return Err(type_error(span,
-                "bit-field requires signed or unsigned int or _Bool in this milestone")),
+                "bit-field requires _Bool, char, short, int or long")),
         };
         let typed = self.check_expr(width, span)?.rvalue();
         if !typed.ty.is_integer() {
@@ -2014,12 +2019,15 @@ impl Checker {
                 "bit-field width requires integer constant expression: {why}")))?;
         if !(if unnamed { 0..=max_width } else { 1..=max_width }).contains(&value) {
             let is_bool = max_width == 1;
-            return Err(type_error(span, match (is_bool, unnamed) {
-                (true, true) => "unnamed _Bool bit-field width must be 0 or 1",
-                (true, false) => "named _Bool bit-field width must be 1",
-                (false, true) => "unnamed bit-field width must be between 0 and 32",
-                (false, false) => "named bit-field width must be between 1 and 32",
-            }));
+            let reason = match (is_bool, unnamed) {
+                (true, true) => "unnamed _Bool bit-field width must be 0 or 1".to_owned(),
+                (true, false) => "named _Bool bit-field width must be 1".to_owned(),
+                (false, true) => format!(
+                    "unnamed bit-field width must be between 0 and {max_width}"),
+                (false, false) => format!(
+                    "named bit-field width must be between 1 and {max_width}"),
+            };
+            return Err(type_error(span, reason));
         }
         u8::try_from(value).map_err(|_| type_error(span, "bit-field width overflow"))
     }

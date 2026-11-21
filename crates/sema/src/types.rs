@@ -9,7 +9,7 @@ pub enum IntRank { Bool, Char, Short, Int, Long, LongLong }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BitField {
-    /// Bit position within the declared little-endian storage unit (8 bits for _Bool, 32 for int).
+    /// Bit position within the field's declared 8/16/32/64-bit little-endian unit.
     pub shift: u8,
     pub width: u8,
 }
@@ -262,7 +262,7 @@ pub fn align_up(value: u64, alignment: u64) -> Option<u64> {
 }
 
 /// Resolve ordered structure members using the selected target's alignment.
-/// Named/unnamed int and _Bool bit-fields follow the x86-64 SysV/GCC layout.
+/// Named/unnamed integer and _Bool bit-fields follow the x86-64 SysV/GCC layout.
 pub fn layout_struct(
     tag: Option<String>, fields: Vec<(String, CType)>, target: Target,
 ) -> Result<CType, &'static str> {
@@ -294,15 +294,22 @@ pub fn layout_struct_with_bits(
         }
         if let Some(width) = bit_width {
             let unit_bits = match ty.unqualified() {
-                CType::Integer { rank: IntRank::Bool, .. } if width <= 1 => 8u64,
-                CType::Integer { rank: IntRank::Int, .. } if width <= 32 => 32u64,
+                CType::Integer { rank: IntRank::Bool | IntRank::Char
+                    | IntRank::Short | IntRank::Int | IntRank::Long, .. } =>
+                    u64::from(target.bits(match ty.unqualified() {
+                        CType::Integer { rank, .. } => *rank,
+                        _ => unreachable!(),
+                    })),
                 _ => return Err("unsupported bit-field type or width"),
             };
+            if !matches!(unit_bits, 8 | 16 | 32 | 64) || u64::from(width) > unit_bits {
+                return Err("unsupported bit-field type or width");
+            }
             if width == 0 && !unnamed {
                 return Err("unsupported bit-field type or width");
             }
             // An unnamed zero-width field advances to its *declared* type's
-            // storage-unit boundary (8 for _Bool, 32 for int). It does not
+            // storage-unit boundary (8/16/32/64 bits). It does not
             // impose alignment on its enclosing struct.
             if width == 0 {
                 let position = align_up(bit_cursor.unwrap_or(size * 8), unit_bits)
@@ -314,7 +321,7 @@ pub fn layout_struct_with_bits(
             // Only named fields impose their declared alignment; unnamed
             // fields still consume bits but have no initializer slots.
             if !unnamed { align = align.max(field_align); }
-            // Mixed _Bool/int groups share a global bit cursor. Each field
+            // Mixed base-type groups share a global bit cursor. Each field
             // must fit wholly within an allocation unit of its own type.
             let mut position = bit_cursor.unwrap_or_else(|| size * 8);
             let end = position.checked_add(u64::from(width))
@@ -383,10 +390,15 @@ pub fn layout_union_with_bits(
             return Err("union member must have a complete object type");
         }
         if let Some(width) = bit_width {
-            let supported = matches!(ty.unqualified(),
-                CType::Integer { rank: IntRank::Int, .. } if width <= 32)
-                || matches!(ty.unqualified(),
-                    CType::Integer { rank: IntRank::Bool, .. } if width <= 1);
+            let supported = match ty.unqualified() {
+                CType::Integer { rank: IntRank::Bool | IntRank::Char
+                    | IntRank::Short | IntRank::Int | IntRank::Long, .. } =>
+                    u16::from(width) <= match ty.unqualified() {
+                        CType::Integer { rank, .. } => target.bits(*rank),
+                        _ => unreachable!(),
+                    },
+                _ => false,
+            };
             if !supported || (width == 0 && !unnamed) {
                 return Err("unsupported bit-field type or width");
             }
