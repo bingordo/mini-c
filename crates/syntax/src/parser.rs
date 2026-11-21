@@ -1539,7 +1539,7 @@ impl<'a> Parser<'a> {
                     let mut ty = Type::TagRef(TagKind::Enum, tag);
                     let trailing = self.parse_qualifiers()?;
                     qualifiers.is_const |= trailing.is_const;
-                    qualifiers.is_volatile |= trailing.is_const;
+                    qualifiers.is_volatile |= trailing.is_volatile;
                     qualifiers.is_restrict |= trailing.is_restrict;
                     qualifiers.is_atomic |= trailing.is_atomic;
                     if qualifiers.any() { ty = Type::Qualified(Box::new(ty), qualifiers); }
@@ -1582,7 +1582,7 @@ impl<'a> Parser<'a> {
                     let mut ty = Type::TagRef(kind, tag);
                     let trailing = self.parse_qualifiers()?;
                     qualifiers.is_const |= trailing.is_const;
-                    qualifiers.is_volatile |= trailing.is_const;
+                    qualifiers.is_volatile |= trailing.is_volatile;
                     qualifiers.is_restrict |= trailing.is_restrict;
                     qualifiers.is_atomic |= trailing.is_atomic;
                     if qualifiers.any() { ty = Type::Qualified(Box::new(ty), qualifiers); }
@@ -1714,7 +1714,7 @@ impl<'a> Parser<'a> {
         };
         let trailing = self.parse_qualifiers()?;
         qualifiers.is_const |= trailing.is_const;
-        qualifiers.is_volatile |= trailing.is_const;
+        qualifiers.is_volatile |= trailing.is_volatile;
         qualifiers.is_restrict |= trailing.is_restrict;
         qualifiers.is_atomic |= trailing.is_atomic;
         let ty = if qualifiers.any() {
