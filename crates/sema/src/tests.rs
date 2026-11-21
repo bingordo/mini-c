@@ -1011,13 +1011,108 @@ fn c99_named_int_bitfields_layout_signedness_and_constraints() {
     reject("int width;struct B{unsigned int a:width;};", "integer constant expression");
     reject("struct B{unsigned char a:3;};",
         "bit-field requires signed or unsigned int");
-    reject("struct B{unsigned int :0;unsigned int a:3;};",
-        "unnamed/zero-width bit-fields require separate layout support");
+    check("struct B{unsigned int :0;unsigned int a:3;};").unwrap();
     reject("struct B{unsigned int a:3;};int f(void){struct B b;return &b.a!=0;}",
         "cannot take the address of a bit-field");
     reject("struct B{unsigned int a:3;};int f(void){struct B b;return sizeof b.a;}",
         "sizeof cannot be applied to a bit-field");
     check("struct B{unsigned int a:3;};struct B b={5};").unwrap();
+}
+
+#[test]
+fn c99_unnamed_bitfields_skip_initializer_slots_and_zero_width_aligns_next_field() {
+    // GCC/Clang x86-64: the unnamed :2 consumes bits without an initializer
+    // slot; the next named bit-field shares the same 32-bit word.
+    let checked = check(concat!(
+        "struct P {unsigned int a:3;unsigned int :2;unsigned int b:5;int tail;};",
+        "struct P p={5,17,9};"
+    )).unwrap();
+    let CheckedItem::Declaration(p) = checked.last().expect("declaration") else {
+        panic!("expected P declaration")
+    };
+    let CType::Struct { size, align, members, .. } = &p.ty else {panic!("P type")};
+    assert_eq!((*size, *align, members.len()), (8, 4, 3));
+    assert_eq!(members.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(),
+        ["a", "b", "tail"]);
+    assert_eq!(members.iter().map(|m| m.offset).collect::<Vec<_>>(), [0, 0, 4]);
+    assert_eq!(members[0].bit_field.map(|b| (b.shift, b.width)), Some((0, 3)));
+    assert_eq!(members[1].bit_field.map(|b| (b.shift, b.width)), Some((5, 5)));
+    assert!(matches!(p.initializer.as_ref().map(|e| &e.kind),
+        Some(CheckedExprKind::Initializer(values)) if values.len() == 3));
+
+    // A :0 separator starts the next bit-field at the next 32-bit unit,
+    // but an unnamed separator does not raise *struct* alignment by itself.
+    let checked = check(concat!(
+        "struct B {unsigned int a:3;unsigned int :0;unsigned int b:5;int tail;};",
+        "struct B b={3,7,99};"
+    )).unwrap();
+    let CheckedItem::Declaration(b) = checked.last().expect("declaration") else {
+        panic!("expected B declaration")
+    };
+    let CType::Struct { size, align, members, .. } = &b.ty else {panic!("B type")};
+    assert_eq!((*size, *align), (12, 4));
+    assert_eq!(members.iter().map(|m| m.offset).collect::<Vec<_>>(), [0, 4, 8]);
+    assert_eq!(members[1].bit_field.map(|b| (b.shift, b.width)), Some((0, 5)));
+
+    let checked = check(concat!(
+        "struct C {char a;unsigned int :0;char b;};",
+        "struct C c={'A','B'};"
+    )).unwrap();
+    let CheckedItem::Declaration(c) = checked.last().expect("declaration") else {
+        panic!("expected C declaration")
+    };
+    let CType::Struct { size, align, members, .. } = &c.ty else {panic!("C type")};
+    assert_eq!((*size, *align), (5, 1));
+    assert_eq!(members.iter().map(|m| m.offset).collect::<Vec<_>>(), [0, 4]);
+    assert_eq!(members.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["a", "b"]);
+
+    let checked = check(concat!(
+        "struct D {char a;unsigned int :2;char b;};",
+        "struct D d={'A','B'};"
+    )).unwrap();
+    let CheckedItem::Declaration(d) = checked.last().expect("declaration") else {
+        panic!("expected D declaration")
+    };
+    let CType::Struct { size, align, members, .. } = &d.ty else {panic!("D type")};
+    assert_eq!((*size, *align), (3, 1));
+    assert_eq!(members.iter().map(|m| m.offset).collect::<Vec<_>>(), [0, 2]);
+
+    let checked = check(concat!(
+        "union U {unsigned int :0;unsigned int a:3;long whole;};",
+        "union U u={5};"
+    )).unwrap();
+    let CheckedItem::Declaration(u) = checked.last().expect("declaration") else {
+        panic!("expected U declaration")
+    };
+    let CType::Union { size, align, members, .. } = &u.ty else {panic!("U type")};
+    assert_eq!((*size, *align, members.len()), (8, 8, 2));
+    assert_eq!(members[0].name, "a");
+    assert_eq!(members[0].bit_field.map(|b| (b.shift, b.width)), Some((0, 3)));
+
+    // Recurse through nested/designated paths and compound-literal types.
+    check(concat!(
+        "struct Bits{unsigned int a:3;unsigned int :2;unsigned int b:5;};",
+        "struct Wrap{int tag;struct Bits bits[2];};",
+        "struct Wrap w={.bits[1].b=13,.bits[0].a=5,.tag=8};"
+    )).unwrap();
+    check(concat!(
+        "struct B{unsigned int a:3;unsigned int :0;unsigned int b:5;};",
+        "int f(void){return ((struct B){.a=3,.b=7}).b;}"
+    )).unwrap();
+
+    // Width constraints still reject invalid named/unnamed declarations.
+    reject("struct Bad {unsigned int :33; int x;};",
+        "unnamed bit-field width must be between 0 and 32");
+    reject("struct Bad {unsigned int :-1; int x;};",
+        "unnamed bit-field width must be between 0 and 32");
+    reject("struct Bad {unsigned char :0; int x;};",
+        "bit-field requires signed or unsigned int");
+    reject("struct Bad {unsigned int :0;};", "empty structures are unsupported");
+    reject("union Bad {unsigned int :3;};", "empty unions are unsupported");
+    reject("struct Bad {unsigned int x:0;};",
+        "named bit-field width must be between 1 and 32");
+    reject("struct Bad {unsigned int :2;int x;int x;};",
+        "duplicate structure member");
 }
 
 #[test]

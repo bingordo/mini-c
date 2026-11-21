@@ -9,6 +9,64 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 CASES = {
+    "global_unnamed_positional": r"""
+        struct Bits {unsigned int a:3;unsigned int :2;unsigned int b:5;int tail;};
+        struct Bits x={5,17,9};
+        int main(void) {
+            return x.a!=5 || x.b!=17 || x.tail!=9 || sizeof(x)!=8;
+        }
+    """,
+    "automatic_unnamed_designated": r"""
+        struct Bits {unsigned int a:3;unsigned int :2;unsigned int b:5;int tail;};
+        int main(void) {
+            struct Bits x={.tail=13,.b=17,.a=2};
+            return x.a!=2 || x.b!=17 || x.tail!=13 || sizeof(x)!=8;
+        }
+    """,
+    "global_zero_width_barrier": r"""
+        struct Bits {unsigned int a:3;unsigned int :0;unsigned int b:5;int tail;};
+        struct Bits x={3,7,99};
+        int main(void) {
+            return x.a!=3 || x.b!=7 || x.tail!=99 || sizeof(x)!=12;
+        }
+    """,
+    "automatic_zero_width_after_char": r"""
+        struct Bits {char a;unsigned int :0;char b;};
+        int main(void) {
+            struct Bits x={'A','B'};
+            return x.a!='A' || x.b!='B' || sizeof(x)!=5;
+        }
+    """,
+    "global_nonzero_unnamed_after_char": r"""
+        struct Bits {char a;unsigned int :2;char b;};
+        struct Bits x={'A','B'};
+        int main(void) {
+            return x.a!='A' || x.b!='B' || sizeof(x)!=3;
+        }
+    """,
+    "union_unnamed_before_named": r"""
+        union Bits {unsigned int :0;unsigned int a:3;long whole;};
+        union Bits x={5};
+        int main(void) {
+            return x.a!=5 || sizeof(x)!=8;
+        }
+    """,
+    "global_nested_deep_skips_unnamed": r"""
+        struct Bits {unsigned int a:3;unsigned int :2;unsigned int b:5;};
+        struct Wrap {int tag;struct Bits bits[2];};
+        struct Wrap w={.bits[1].b=13,.bits[0].a=5,.tag=8};
+        int main(void) {
+            return w.tag!=8 || w.bits[0].a!=5 || w.bits[0].b!=0
+                || w.bits[1].a!=0 || w.bits[1].b!=13;
+        }
+    """,
+    "automatic_compound_literal_zero_width": r"""
+        struct Bits {unsigned int a:3;unsigned int :0;unsigned int b:5;};
+        int main(void) {
+            struct Bits *p=&(struct Bits){.a=5,.b=7};
+            return p->a!=5 || p->b!=7 || sizeof(*p)!=8;
+        }
+    """,
     "global_positional": r"""
         struct S {unsigned int a:3,b:5; signed int c:7;int tail;};
         struct S s={5,17,-11,9};
