@@ -46,10 +46,21 @@ impl Declarator {
                     Type::Function { result: Box::new(base), params: param_types }
                 };
                 let (name, ty, inner_params, name_span) = inner.finish(function_ty);
-                // The parameter names for a definition belong to the resulting
-                // function, not to a function nested inside a pointer type.
-                let definition_params = if matches!(&ty, Type::Function { .. } | Type::VariadicFunction { .. }) {
-                    Some(params)
+                // Preserve parameters from the function declarator bound
+                // closest to the declared identifier. A nested outer
+                // function suffix may instead describe the function type
+                // RETURNED through a pointer:
+                //
+                //   int (*select(int flag, int (*cb)(int)))(int);
+                //
+                // Here `flag` and `cb` are the definition's parameters,
+                // whereas the final unnamed `(int)` describes the returned
+                // function pointer. Never overwrite the inner definition
+                // parameters with those of the returned function.
+                let definition_params = if matches!(&ty,
+                    Type::Function { .. } | Type::VariadicFunction { .. })
+                {
+                    inner_params.or(Some(params))
                 } else {
                     inner_params
                 };

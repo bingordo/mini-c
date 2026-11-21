@@ -185,6 +185,9 @@ backend floating-point work remains independent.
 
 ## F4 — Declarators, storage duration and compatibility
 
+- [x] **F4 nested function-pointer declarations/definitions ([#210](https://github.com/bingordo/mini-c/issues/210)):** preserve the defining function's named parameter list when its return type contains a pointer to another (possibly variadic) function whose prototype uses unnamed parameters. The declarator `int (*choose(int flag, int (*callback)(int)))(int) { ... }` must use `flag` and `callback` for the *definition*, not the trailing `(int)` parameters of the returned callback. Coverage includes AST ownership, checked signatures, callback invocation, redeclaration/prototype compatibility, typedef-returned callbacks, variadics, and strict GCC/Clang valid/invalid cases. The accepted frontend constructs do **not** imply full native indirect-callback ABI support.
+- [ ] **Complete function prototype compatibility:** old-style definitions and no-prototype declaration promotions, cross-TU compatibility, function-parameter array adjustment, and more nested qualified/variadic signatures remain open; do not close F4 on the basis of the bounded nested-declarator fix.
+
 - [ ] Variable-length arrays and variably modified types, block/parameter scope rules, array parameter syntax and VLA `sizeof` evaluation.
 - [ ] C99 old-style function declaration/definition compatibility and default argument promotions; prohibit invalid redeclarations.
 - [ ] Complete type compatibility/composite types across translation units; tentative definitions, storage/linkage and C99 inline definitions.

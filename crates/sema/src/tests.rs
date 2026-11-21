@@ -3154,3 +3154,80 @@ fn c99_f2_null_cast_is_not_ordinary_void_pointer_compatibility() {
     reject("int f(int x){ int (*p)(int)=(void*)x; return p==0; }",
         "incompatible assignment");
 }
+
+#[test]
+fn c99_f4_function_returning_function_pointer_checked_signature_and_call() {
+    let items = check(concat!(
+        "int inc(int x) { return x + 1; }",
+        "int (*select(int flag, int (*callback)(int)))(int) {",
+        " return flag ? callback : (void*)0; }",
+        "int apply(int flag) {",
+        " int (*p)(int)=select(flag, inc);",
+        " return p ? p(8) : -1; }"
+    )).unwrap();
+    let CheckedItem::Function(f) = &items[1] else { panic!("select definition"); };
+    assert_eq!(f.name, "select");
+    assert_eq!(f.params.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
+        vec!["flag", "callback"]);
+    let CType::Function { result, params } = &f.signature else {
+        panic!("select must be a function");
+    };
+    assert_eq!(params.len(), 2);
+    assert_eq!(params[0], CType::int());
+    let CType::Pointer(callback) = &params[1] else { panic!("callback argument"); };
+    let CType::Pointer(returned) = result.as_ref() else { panic!("returned pointer"); };
+    assert!(callback.same_type(returned));
+    let CType::Function { result: callback_result, params: callback_params } =
+        returned.as_ref() else { panic!("returned function signature"); };
+    assert_eq!(callback_result.as_ref(), &CType::int());
+    assert_eq!(callback_params, &vec![CType::int()]);
+    let CheckedStmt::Block(stmts) = &f.body else { panic!("block"); };
+    let CheckedStmt::Return(Some(value)) = &stmts[0] else { panic!("return"); };
+    assert!(value.ty.same_type(result.as_ref()));
+    assert!(matches!(value.kind, CheckedExprKind::Conditional(..)));
+    assert!(matches!(items[2], CheckedItem::Function(_)));
+}
+
+#[test]
+fn c99_f4_callback_return_declarations_and_typedef_compatibility() {
+    check(concat!(
+        "int (*select(int, int (*)(int)))(int);",
+        "int (*select(int flag, int (*cb)(int)))(int) { return cb; }",
+        "int x(int v) { return v + 1; }",
+        "int invoke(void) { return select(1, x)(7); }"
+    )).unwrap();
+    check(concat!(
+        "typedef int (*Unary)(int);",
+        "Unary identity(int flag, Unary cb) { return cb; }",
+        "int plus(int x){return x+1;}",
+        "int invoke(void){return identity(1,plus)(4);}"
+    )).unwrap();
+    check(concat!(
+        "int (*select(int, int (*)(const int)))(const int);",
+        "int (*select(int flag, int (*cb)(int)))(int) { return cb; }"
+    )).unwrap();
+    check(concat!(
+        "int (*forward(int flag, int (*cb)(int,...)))(int,...) { return cb; }",
+        "int f(void){return forward(1, (void*)0)==0;}"
+    )).unwrap();
+}
+
+#[test]
+fn c99_f4_reject_invalid_nested_function_pointer_definitions() {
+    reject("int (*bad(int))(int) { return 0; }",
+        "function definition requires parameter names");
+    reject("int (*bad(int (*cb)(int), int))(int) { return cb; }",
+        "function definition requires parameter names");
+    reject(concat!(
+        "int (*select(int, int (*)(int)))(long);",
+        "int (*select(int flag, int (*cb)(int)))(int) { return cb; }"
+    ), "conflicting declaration");
+    reject(concat!(
+        "int (*select(int, int (*)(int *)))(int);",
+        "int (*select(int flag, int (*cb)(const int *)))(int) { return cb; }"
+    ), "conflicting declaration");
+    reject(concat!(
+        "int (*select(int, int (*)(int)))(int);",
+        "int (*select(int flag, int (*cb)(int)))(int) { return (void*)3; }"
+    ), "incompatible assignment");
+}
