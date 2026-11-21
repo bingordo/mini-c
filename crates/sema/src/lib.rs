@@ -352,6 +352,7 @@ impl Checker {
     fn complete_tag_type(&self, ty: CType, span: Span) -> Result<CType, Diagnostic> {
         match ty {
             CType::Qualified(inner) => Ok(self.complete_tag_type(*inner, span)?.with_const()),
+            CType::Volatile(inner) => Ok(self.complete_tag_type(*inner, span)?.with_volatile()),
             CType::TagRef { name, identity, .. } => self.tag_definitions.borrow()
                 .get(&identity).cloned().ok_or_else(|| type_error(span,
                     format!("incomplete struct, union or enum tag '{name}'"))),
@@ -364,6 +365,7 @@ impl Checker {
     fn try_complete_tag_type(&self, ty: CType) -> Result<CType, Diagnostic> {
         match ty {
             CType::Qualified(inner) => Ok(self.try_complete_tag_type(*inner)?.with_const()),
+            CType::Volatile(inner) => Ok(self.try_complete_tag_type(*inner)?.with_volatile()),
             CType::TagRef { kind, name, identity } => Ok(self.tag_definitions.borrow()
                 .get(&identity).cloned()
                 .unwrap_or(CType::TagRef { kind, name, identity })),
@@ -408,17 +410,15 @@ impl Checker {
                 if qualifiers.is_restrict && !matches!(base.unqualified(), CType::Pointer(_)) {
                     return Err(type_error(span, "restrict requires a pointer object type"));
                 }
-                if qualifiers.is_const {
-                    if matches!(base.unqualified(), CType::Function { .. } | CType::VariadicFunction { .. }) {
-                        return Err(type_error(span, "const cannot qualify a function type"));
-                    }
-                    // Qualifiers of typedef array types apply to their elements.
-                    match base {
-                        CType::Array(element, count) => CType::Array(
-                            Box::new((*element).with_const()), count),
-                        other => other.with_const(),
-                    }
-                } else { base }
+                if (qualifiers.is_const || qualifiers.is_volatile)
+                    && matches!(base.unqualified(),
+                        CType::Function { .. } | CType::VariadicFunction { .. })
+                {
+                    return Err(type_error(span,
+                        "const/volatile cannot qualify a function type"));
+                }
+                let base = if qualifiers.is_const { base.with_const() } else { base };
+                if qualifiers.is_volatile { base.with_volatile() } else { base }
             }
             Type::BuiltinVaList => {
                 // x86-64 SysV GCC: typedef struct __va_list_tag {
@@ -2008,7 +2008,16 @@ impl Checker {
                 if qualifiers.is_restrict && !matches!(inner.unqualified(), CType::Pointer(_)) {
                     return Err(type_error(span, "restrict requires pointer type"));
                 }
-                if qualifiers.is_const { inner.with_const() } else { inner }
+                if qualifiers.is_const && matches!(inner.unqualified(),
+                    CType::Function { .. } | CType::VariadicFunction { .. }) {
+                    return Err(type_error(span, "const cannot qualify a function type"));
+                }
+                if qualifiers.is_volatile && matches!(inner.unqualified(),
+                    CType::Function { .. } | CType::VariadicFunction { .. }) {
+                    return Err(type_error(span, "volatile cannot qualify a function type"));
+                }
+                let inner = if qualifiers.is_const { inner.with_const() } else { inner };
+                if qualifiers.is_volatile { inner.with_volatile() } else { inner }
             }
             Type::Signed(inner) | Type::Unsigned(inner) => {
                 let unsigned = matches!(ty, Type::Unsigned(_));
@@ -2195,13 +2204,11 @@ impl Checker {
                     Diagnostic::coded(span, DiagnosticCode::SemanticUnknownMember, format!("unknown struct member '{name}'")))?;
                 // A member of a const aggregate is itself nonmodifiable.
                 // Array member qualification applies to its element type.
-                let field_ty = if object.ty.is_const() {
-                    match field.ty.clone() {
-                        CType::Array(element, count) =>
-                            CType::Array(Box::new((*element).with_const()), count),
-                        other => other.with_const(),
-                    }
-                } else { field.ty.clone() };
+                // Qualification of an aggregate lvalue propagates to its
+                // members, including the array element type (C99 6.5.2.3).
+                let mut field_ty = field.ty.clone();
+                if object.ty.is_const() { field_ty = field_ty.with_const(); }
+                if object.ty.is_volatile() { field_ty = field_ty.with_volatile(); }
                 let offset = field.offset;
                 let kind = match field.bit_field {
                     Some(info) => CheckedExprKind::BitFieldMember(
