@@ -2963,8 +2963,8 @@ fn c99_volatile_typedef_arrays_members_and_pointer_qualifiers() {
     assert!(member.ty.is_volatile());
     assert!(CheckedItem::Function(fun.clone()).contains_volatile_type());
     // Adding a qualifier to a pointee is valid, but discarding it is not.
-    check("void f(int *p){volatile int *q=p; (void)q;}").unwrap();
-    reject("void f(volatile int *p){int *q=p; (void)q;}",
+    check("void f(int *p){volatile int *q=p;}").unwrap();
+    reject("void f(volatile int *p){int *q=p;}",
         "incompatible assignment");
     check("unsigned long f(void){return sizeof(volatile int[4]);}").unwrap();
 }
