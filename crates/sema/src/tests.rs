@@ -514,7 +514,7 @@ fn static_initializers_respect_target_arithmetic_and_short_circuit() {
     check("typedef int *Ptr; Ptr global_alias = (Ptr)0; int **global_nested=(int**)0;")
         .unwrap();
     check("int *p=(int*)(unsigned long)0;").unwrap();
-    reject("int *bad=(int*)1;", "pointer cast requires a pointer or null integer constant");
+    reject("int *bad=(int*)1;", "pointer initializer requires");
     reject("int global; int *copy = &global; int *bad2 = (int*)copy;",
         "pointer initializer requires");
     reject("int global; int *copy = &global; int *bad = copy;", "pointer initializer requires");
@@ -1839,12 +1839,10 @@ fn m10_pointer_casts_preserve_c_types_and_null_semantics() {
         .unwrap();
     check("int f(void) { int **p=(int **)0; return p == (void*)0; }").unwrap();
     check("int f(int x) { return (const int)x; }").unwrap();
-    reject("int f(int x) { int *p = (int*)x; return p==0; }",
-        "pointer cast requires a pointer or null integer constant");
-    reject("int f(void) { int *p=(int*)1; return p==0; }",
-        "pointer cast requires a pointer or null integer constant");
+    check("int f(int x) { int *p = (int*)x; return p==0; }").unwrap();
+    check("int f(void) { int *p=(int*)1; return p==0; }").unwrap();
     reject("int f(void) { int *p=(int*)0.5f; return p==0; }",
-        "pointer cast requires a pointer or null integer constant");
+        "pointer cast requires an integer or pointer operand");
 }
 
 #[test]
