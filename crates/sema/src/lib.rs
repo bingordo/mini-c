@@ -147,12 +147,30 @@ pub struct CheckedDecl {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct CheckedAsmOperand {
+    pub constraint: String,
+    pub expr: CheckedExpr,
+}
+#[derive(Debug, Clone, PartialEq)]
 pub enum CheckedStmt {
     Block(Vec<CheckedStmt>),
     Decl(CheckedDecl),
     Typedef { name: String, ty: CType },
     Tag,
     Expr(Option<CheckedExpr>),
+    /// Executable opaque basic asm: never treat it as a pure expression or
+    /// discard its side effects. Native effectful lowering is tracked by ASM2.
+    BasicAsm { template: String, span: Span },
+    /// Checked, zero-operand GCC extended asm. Memory is a compiler
+    /// read/write barrier; cc is allowed only because the admitted native
+    /// instructions do not modify architectural arithmetic flags.
+    ExtendedAsm {
+        template: String,
+        outputs: Vec<CheckedAsmOperand>,
+        inputs: Vec<CheckedAsmOperand>,
+        clobbers: Vec<String>,
+        span: Span,
+    },
     Return(Option<CheckedExpr>),
     If { cond: CheckedExpr, then: Box<CheckedStmt>, otherwise: Option<Box<CheckedStmt>> },
     While { cond: CheckedExpr, body: Box<CheckedStmt> },
@@ -1375,6 +1393,164 @@ impl Checker {
             Stmt::Expr(expr) => {
                 CheckedStmt::Expr(expr.as_ref().map(|e| self.check_expr(e, span)).transpose()?)
             }
+            Stmt::BasicAsm { template, span } => CheckedStmt::BasicAsm {
+                template: template.clone(), span: *span,
+            },
+            Stmt::ExtendedAsm { template, outputs, inputs, clobbers, span } => {
+                // Bounded GP slice: one output, up to two explicit independent inputs.
+                // Multiple inputs require =&r early-clobber and are validated
+                // again against the exact reviewed two-input template.
+                if outputs.len()>1 || inputs.len()>2 {
+                    return Err(type_error(*span,"extended asm supports one GP output and at most two inputs"));
+                }
+                let mut checked_outputs=Vec::new();
+                for output in outputs {
+                    if !matches!(output.constraint.as_str(),"=r"|"+r"|"=&r") {
+                        return Err(type_error(output.span,"extended asm output requires =r, +r or =&r"));
+                    }
+                    if !matches!(output.expr.without_location(),Expr::Name(_)) {
+                        return Err(type_error(output.span,"extended asm output currently requires local variable"));
+                    }
+                    let expr=self.check_expr(&output.expr,output.span)?;
+                    if expr.category!=Category::LValue
+                        || matches!(expr.ty,CType::Qualified(_))
+                        || !matches!(expr.ty.unqualified(),CType::Integer { .. })
+                        || !matches!(expr.ty.size_bytes(self.target),Some(4|8))
+                    {
+                        return Err(type_error(output.span,"extended asm output must be writable i32/i64 lvalue"));
+                    }
+                    checked_outputs.push(CheckedAsmOperand {
+                        constraint:output.constraint.clone(),expr,
+                    });
+                }
+                // ASM3 P02B3: exactly one addressable memory input can be
+                // used by a checked MOV to a fresh GP output. This checks
+                // source roles and template before lower_source_typeid sees
+                // them. The input is kept as an lvalue, never rvalue-loaded.
+                let gp_memory_read=inputs.len()==1 && inputs[0].constraint=="m";
+                if gp_memory_read {
+                    if checked_outputs.len()!=1 || checked_outputs[0].constraint!="=r" {
+                        return Err(type_error(*span,
+                            "ASM3 memory input requires one =r output"));
+                    }
+                    let output_bytes=checked_outputs[0].expr.ty.size_bytes(self.target)
+                        .ok_or_else(||type_error(*span,
+                            "ASM3 output width unknown"))?;
+                    let reviewed=match output_bytes {
+                        4=>"movl %1,%0",
+                        8=>"movq %1,%0",
+                        _=>return Err(type_error(*span,
+                            "ASM3 memory input requires 32/64-bit output")),
+                    };
+                    if template!=reviewed {
+                        return Err(type_error(*span,
+                            "ASM3 memory input requires reviewed movl/movq template"));
+                    }
+                    if clobbers.iter().any(|name|name!="memory") {
+                        return Err(type_error(*span,
+                            "ASM3 memory input supports only the compiler memory clobber"));
+                    }
+                }
+                // +r reads and writes operand %0 with no separate input. Numeric
+                // 0 ties an input to the sole =r output. An =&r early-
+                // clobber output instead needs one independent r input:
+                // the machine allocator must keep its result distinct from
+                // all input registers. Other constraints still fail closed.
+                if !checked_outputs.is_empty() {
+                    let out=&checked_outputs[0];
+                    if out.constraint=="+r" && !inputs.is_empty() {
+                        return Err(type_error(*span,"+r output cannot have a separate input in the bounded ASM2 form"));
+                    }
+                    if out.constraint=="=&r" &&
+                        (inputs.is_empty() || inputs.len()>2
+                            || inputs.iter().any(|i|i.constraint!="r")) {
+                        return Err(type_error(*span,"=&r requires one or two independent r inputs"));
+                    }
+                    if inputs.len()==2 && out.constraint!="=&r" {
+                        return Err(type_error(*span,"two GP inputs require one =&r early-clobber output"));
+                    }
+                }
+                let mut checked_inputs=Vec::new();
+                for input in inputs {
+                    if !matches!(input.constraint.as_str(),"r"|"0"|"m") {
+                        return Err(type_error(input.span,"extended asm input requires r, matching 0 or reviewed m"));
+                    }
+                    if input.constraint=="m" && !gp_memory_read {
+                        return Err(type_error(input.span,"ASM3 memory input requires one reviewed mov"));
+                    }
+                    if input.constraint=="0" && (checked_outputs.len()!=1
+                        || checked_outputs[0].constraint!="=r") {
+                        return Err(type_error(input.span,"matching 0 requires exactly one =r output"));
+                    }
+                    let expr=self.check_expr(&input.expr,input.span)?;
+                    if !matches!(expr.ty.unqualified(),CType::Integer { .. })
+                        || !matches!(expr.ty.size_bytes(self.target),Some(4|8))
+                    {
+                        return Err(type_error(input.span,"extended asm input must be i32/i64 scalar"));
+                    }
+                    if gp_memory_read && (expr.category!=Category::LValue
+                        || expr.ty.size_bytes(self.target)
+                            !=checked_outputs[0].expr.ty.size_bytes(self.target))
+                    {
+                        return Err(type_error(input.span,
+                            "ASM3 memory input must be an addressable same-width i32/i64 C lvalue"));
+                    }
+                    if input.constraint=="0" &&
+                        expr.ty.size_bytes(self.target)!=checked_outputs[0].expr.ty.size_bytes(self.target)
+                    {
+                        return Err(type_error(input.span,"matching 0 input/output GP widths must agree"));
+                    }
+                    if inputs.len()==2 &&
+                        expr.ty.size_bytes(self.target)!=checked_outputs[0].expr.ty.size_bytes(self.target)
+                    {
+                        return Err(type_error(input.span,
+                            "two independent ASM2 GP input widths must match the output"));
+                    }
+                    checked_inputs.push(CheckedAsmOperand{
+                        constraint:input.constraint.clone(),
+                        expr:if gp_memory_read {expr} else {expr.rvalue()},
+                    });
+                }
+                // P14: GCC clobber *names* are not the x86 operand register
+                // spelling set. GCC accepts eax/rax but does not recognize
+                // r8d/r9d/r10d/r11d as clobber names. Preserve architectural
+                // numbers for alias interference; reject invalid source names.
+                // RSP, RBP and preserved GP registers remain unsupported.
+                // This does not authorize arbitrary source templates.
+                let gp_clobber=|name:&str|->Option<u8> {Some(match name {
+                    "eax"|"rax"=>0, "ecx"|"rcx"=>1, "edx"|"rdx"=>2,
+                    "esi"|"rsi"=>6, "edi"|"rdi"=>7,
+                    "r8"=>8, "r9"=>9,
+                    "r10"=>10, "r11"=>11,
+                    _=>return None,
+                })};
+                let mut clobbered_gp=0u16;
+                for (index,clobber) in clobbers.iter().enumerate() {
+                    if let Some(reg)=gp_clobber(clobber) {
+                        if outputs.len()!=1 {
+                            return Err(type_error(*span,
+                                "explicit GP clobbers require a checked one-output ASM2 operation"));
+                        }
+                        let bit=1u16 << reg;
+                        if clobbered_gp & bit != 0 {
+                            return Err(type_error(*span,
+                                "duplicate aliased extended asm GP clobber"));
+                        }
+                        clobbered_gp |= bit;
+                    } else if !matches!(clobber.as_str(),"memory"|"cc") {
+                        return Err(type_error(*span,
+                            format!("unsupported extended asm clobber #{index}: {clobber}")));
+                    }
+                    if clobbers[..index].contains(clobber) {
+                        return Err(type_error(*span,"duplicate extended asm clobber"));
+                    }
+                }
+                CheckedStmt::ExtendedAsm {
+                    template:template.clone(),
+                    outputs:checked_outputs,inputs:checked_inputs,
+                    clobbers:clobbers.clone(),span:*span,
+                }
+            },
             Stmt::Return(value) => {
                 let expected = self.result_ty.clone().expect("return outside function");
                 let checked = match (value, &expected) {

@@ -114,6 +114,12 @@ pub enum Type {
     },
 }
 #[derive(Debug, Clone, PartialEq)]
+pub struct AsmOperand {
+    pub constraint: String,
+    pub expr: Expr,
+    pub span: Span,
+}
+#[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
     Block(Vec<Stmt>),
     Decl(Decl),
@@ -121,6 +127,20 @@ pub enum Stmt {
     /// A standalone tag declaration or definition without an object declarator.
     Tag(Type),
     Expr(Option<Expr>),
+    /// GNU basic asm statement. A separate declaration-asm-label parser handles
+    /// ELF symbol aliases; this is executable code and must never be discarded.
+    /// Outputs, inputs, clobbers and asm goto are deliberately NOT modeled yet.
+    BasicAsm { template: String, span: Span },
+    /// GCC extended asm with exactly zero outputs and inputs. The first
+    /// supported clobbers are `memory` and `cc`, both explicitly tracked.
+    /// Register constraints, operands and asm goto are not accepted yet.
+    ExtendedAsm {
+        template: String,
+        outputs: Vec<AsmOperand>,
+        inputs: Vec<AsmOperand>,
+        clobbers: Vec<String>,
+        span: Span,
+    },
     Return(Option<Expr>),
     If {
         cond: Expr,

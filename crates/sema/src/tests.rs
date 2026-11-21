@@ -2641,6 +2641,299 @@ fn wasm32_target_rejects_invalid_pointer_width() {
     assert_eq!((Target::default().pointer_bits,Target::default().long_bits),(64,64));
 }
 
+#[test]
+fn asm2_checked_basic_asm_retains_opaque_effect_and_exact_template() {
+    let items = check(r#"int f(void) { __asm__ volatile ("nop" "\n" "mfence"); return 7; }"#)
+        .expect("basic asm should parse and type-check");
+    let CheckedItem::Function(f) = &items[0] else { panic!("function expected"); };
+    let CheckedStmt::Block(stmts) = &f.body else { panic!("body expected"); };
+    assert!(matches!(&stmts[0], CheckedStmt::BasicAsm { template, .. }
+        if template == "nop\nmfence"));
+    assert!(matches!(&stmts[1], CheckedStmt::Return(_)));
+}
+
+#[test]
+fn asm2_extended_clobber_only_check_and_reject_untracked_registers() {
+    let items=check(r#"int f(void) {
+        __asm__ volatile("mfence" : : : "memory");
+        asm("" ::: "cc", "memory");
+        return 3;
+    }"#).expect("clobber-only extended asm must check");
+    let CheckedItem::Function(f)=&items[0] else {panic!("function expected")};
+    let CheckedStmt::Block(stmts)=&f.body else {panic!("compound expected")};
+    assert!(matches!(&stmts[0],CheckedStmt::ExtendedAsm{template,clobbers,..}
+        if template=="mfence" && clobbers==&["memory"]));
+    assert!(matches!(&stmts[1],CheckedStmt::ExtendedAsm{template,clobbers,..}
+        if template.is_empty() && clobbers==&["cc","memory"]));
+    for text in [
+        r#"int f(void) { asm("nop" ::: "rax"); return 0; }"#,
+        r#"int f(void) { asm("nop" ::: "xmm0"); return 0; }"#,
+        r#"int f(void) { asm("nop" ::: "memory", "memory"); return 0; }"#,
+        r#"int f(void) { asm("nop" ::: "flags"); return 0; }"#,
+    ] {
+        assert!(check(text).is_err(),"untracked asm clobber accepted: {text}");
+    }
+}
+
+#[test]
+fn asm2_p5_checked_gp_operand_contract_survives_semantics() {
+    let source=r#"int f(int x) {
+        int y=0;
+        __asm__ volatile("movl %1, %0" : "=r"(y) : "r"(x) : "cc");
+        return y;
+    }"#;
+    let items=check(source).expect("supported operand types and contracts");
+    let CheckedItem::Function(f)=&items[0] else {panic!("expected function")};
+    let CheckedStmt::Block(stmts)=&f.body else {panic!("expected block")};
+    assert!(matches!(&stmts[1],CheckedStmt::ExtendedAsm {
+        outputs,inputs,clobbers,..
+    } if outputs.len()==1 && outputs[0].constraint=="=r"
+        && outputs[0].expr.category==Category::LValue
+        && inputs.len()==1 && inputs[0].constraint=="r"
+        && clobbers==&["cc"]));
+}
+#[test]
+fn asm2_p5_rejects_invalid_gp_constraints_and_outputs() {
+    for source in [
+        r#"int f(int x){ asm("nop" : "=m"(x) : "r"(x)); return x; }"#,
+        r#"int f(void){ const int x=3; asm("nop" : "=r"(x) :); return x; }"#,
+        r#"int f(int x){ asm("nop" : "=r"(x+1) : "r"(x)); return x; }"#,
+        r#"int f(int x){ asm("nop" : "=r"(x) : "m"(x)); return x; }"#,
+        r#"int f(int x){ asm("nop" : "=r"(x) : "1"(x)); return x; }"#,
+        r#"int f(int x){ asm("nop" : "=r"(x) : "r"(x) : "rbx"); return x; }"#,
+    ] {
+        assert!(check(source).is_err(),"accepted unsupported GP constraint: {source}");
+    }
+}
+
+#[test]
+fn asm2_p9_checked_readwrite_and_matching_gp_contracts() {
+    for (src,output,input) in [
+        (r#"int f(int x){ __asm__ volatile("addl $7,%0" : "+r"(x) : : "cc"); return x; }"#,"+r",None),
+        (r#"long f(long x){ __asm__ volatile("subq $9,%0" : "+r"(x) : : "cc"); return x; }"#,"+r",None),
+        (r#"int f(int x){ int y; __asm__ volatile("addl $7,%0" : "=r"(y) : "0"(x) : "cc"); return y; }"#,"=r",Some("0")),
+        (r#"long f(long x){ long y; __asm__ volatile("subq $9,%0" : "=r"(y) : "0"(x) : "cc"); return y; }"#,"=r",Some("0")),
+    ] {
+        let items=check(src).expect("bounded tied GP output should pass sema");
+        let CheckedItem::Function(f)=&items[0] else {panic!("function expected")};
+        let CheckedStmt::Block(stmts)=&f.body else {panic!("body expected")};
+        let CheckedStmt::ExtendedAsm{outputs,inputs,..}=&stmts[stmts.len()-2]
+            else {panic!("extended asm expected")};
+        assert_eq!(outputs.len(),1);
+        assert_eq!(outputs[0].constraint,output);
+        assert_eq!(inputs.first().map(|i|i.constraint.as_str()),input);
+    }
+}
+#[test]
+fn asm2_p9_rejects_invalid_tied_gp_semantics() {
+    for src in [
+        r#"int f(int x){ asm("addl $1,%0" : "+r"(x) : "r"(x) : "cc"); return x; }"#,
+        r#"int f(int x){ asm("addl $1,%0" : "+r"(x) : "0"(x) : "cc"); return x; }"#,
+        r#"int f(int x){ int y; asm("addl $1,%0" : "=r"(y) : "1"(x) : "cc"); return y; }"#,
+        r#"int f(int x){ int y; asm("addl $1,%0" : "=r"(y) : "0"(x), "0"(x) : "cc"); return y; }"#,
+        r#"int f(long x){ int y; asm("addl $1,%0" : "=r"(y) : "0"(x) : "cc"); return y; }"#,
+        r#"int f(int x){ asm("addl $1,%0" : "+m"(x) : : "cc"); return x; }"#,
+        r#"int f(int x){ asm("addl $1,%0" : "=&r"(x) : : "cc"); return x; }"#,
+        r#"int f(void){ const int x=1; asm("addl $1,%0" : "+r"(x) : : "cc"); return x; }"#,
+    ] {assert!(check(src).is_err(),"accepted unsafe tied asm operand: {src}");}
+}
+
+#[test]
+fn asm2_p11_early_clobber_gp_constraints_preserve_independent_inputs() {
+    for (src,width) in [
+        (r#"int f(int x){ int y=1; __asm__ volatile("movl %1,%0" : "=&r"(y) : "r"(x)); return x+y; }"#,4),
+        (r#"long f(long x){ long y=0; __asm__ volatile("movq %1,%0" : "=&r"(y) : "r"(x)); return y; }"#,8),
+        (r#"int f(int x){ int y=0; __asm__ volatile("movl %1,%0;addl $5,%0" : "=&r"(y) : "r"(x) : "cc"); return y; }"#,4),
+    ] {
+        let items=check(src).expect("checked early-clobber GP output");
+        let CheckedItem::Function(f)=&items[0] else {panic!("function expected")};
+        let CheckedStmt::Block(stmts)=&f.body else {panic!("block expected")};
+        let stmt=stmts.iter().find(|s| matches!(s,CheckedStmt::ExtendedAsm{..}))
+            .expect("asm statement");
+        let CheckedStmt::ExtendedAsm{outputs,inputs,..}=stmt else {unreachable!()};
+        assert_eq!(outputs[0].constraint,"=&r");
+        assert_eq!(inputs[0].constraint,"r");
+        assert!(matches!(width,4|8));
+    }
+}
+#[test]
+fn asm2_p11_rejects_invalid_early_clobber_contracts() {
+    for src in [
+        r#"int f(int x){int y=0; asm("movl %1,%0":"=&r"(y):"0"(x)); return y;}"#,
+        r#"int f(int x){int y=0; asm("movl %1,%0":"=&r"(y):); return y;}"#,
+        r#"int f(int x){int y=0; asm("movl %1,%0":"=&r"(y):"r"(x),"0"(x)); return y;}"#,
+        r#"int f(int x){int y=0; asm("movl %1,%0":"=&m"(y):"r"(x)); return y;}"#,
+        r#"int f(int x){int y=0; asm("movl %1,%0":"=&r"(y):"m"(x)); return y;}"#,
+        r#"int f(int x){const int y=0; asm("movl %1,%0":"=&r"(y):"r"(x)); return y;}"#,
+    ] {assert!(check(src).is_err(),"admitted invalid early-clobber asm: {src}");}
+}
+
+#[test]
+fn asm2_p12_checked_gp_clobbers_allow_bounded_aliases() {
+    for (source, expected) in [
+        (r#"int f(int x){int y=0;__asm__ volatile("movl %1,%0":"=r"(y):"r"(x):"rax","rdx");return y;}"#,vec!["rax","rdx"]),
+        (r#"long f(long x){long y=0;__asm__ volatile("movq %1,%0;addq $5,%0":"=&r"(y):"r"(x):"eax","ecx","r10","cc");return y;}"#,vec!["eax","ecx","r10","cc"]),
+        (r#"int f(int x){__asm__ volatile("addl $3,%0":"+r"(x)::"r8","r9","memory","cc");return x;}"#,vec!["r8","r9","memory","cc"]),
+    ] {
+        let items=check(source).expect("checked P12 clobbers");
+        let CheckedItem::Function(function)=&items[0] else {panic!("expected function")};
+        let CheckedStmt::Block(statements)=&function.body else {panic!("expected block")};
+        let asm=statements.iter().find_map(|stmt|match stmt {
+            CheckedStmt::ExtendedAsm{clobbers,..}=>Some(clobbers),_=>None
+        }).expect("checked asm");
+        assert_eq!(asm.iter().map(String::as_str).collect::<Vec<_>>(),expected);
+    }
+}
+
+#[test]
+fn asm2_p12_rejects_gp_clobber_aliases_and_unsupported_registers() {
+    for clobbers in [
+        "\"rax\",\"eax\"", "\"r10\",\"r10d\"", "\"rcx\",\"ecx\"",
+        "\"r15\"", "\"rbx\"", "\"rbp\"", "\"rsp\"",
+        "\"xmm0\"", "\"ax\"", "\"flags\"", "\"r16\"",
+    ] {
+        let source=format!(
+            "int f(int x){{int y=0; __asm__ volatile(\"movl %1,%0\":\"=r\"(y):\"r\"(x):{clobbers});return y;}}"
+        );
+        assert!(check(&source).is_err(),"admitted unsupported/aliased GP clobbers {clobbers}");
+    }
+    assert!(check(r#"int f(void){__asm__ volatile("nop":::"rax");return 0;}"#).is_err());
+}
+
+
+#[test]
+fn asm2_p14_generated_gcc_clobber_spelling_matrix() {
+    // The GCC asm clobber namespace is not identical to the assembler's
+    // register spelling namespace: r8 is accepted, r8d is not. Check every
+    // admitted architectural id in both supported widths and input counts.
+    const ADMITTED:&[(&str,u8)]=&[
+        ("rax",0),("eax",0),("rcx",1),("ecx",1),
+        ("rdx",2),("edx",2),("rsi",6),("esi",6),
+        ("rdi",7),("edi",7),("r8",8),("r9",9),
+        ("r10",10),("r11",11),
+    ];
+    for &(name,number) in ADMITTED {
+        for (ty,suffix) in [("int","l"),("long","q")] {
+            for two_inputs in [false,true] {
+                let (params,template,inputs)=if two_inputs {
+                    (format!("{ty} x,{ty} v"),
+                     format!("mov{suffix} %1,%0;add{suffix} %2,%0"),
+                     "\"r\"(x),\"r\"(v)")
+                } else {
+                    (format!("{ty} x"),
+                     format!("mov{suffix} %1,%0"),
+                     "\"r\"(x)")
+                };
+                let output=if two_inputs {"=&r"} else {"=r"};
+                let src=format!(
+                    "{ty} f({params}){{{ty} y=0;__asm__ volatile(\"{template}\":\"{output}\"(y):{inputs}:\"{name}\",\"cc\");return y;}}"
+                );
+                let items=check(&src).unwrap_or_else(|e|
+                    panic!("valid GCC clobber {name} ({number}) rejected: {e:?}"));
+                let CheckedItem::Function(f)=&items[0] else {panic!("function")};
+                let CheckedStmt::Block(stmts)=&f.body else {panic!("block")};
+                let names=stmts.iter().find_map(|s|match s {
+                    CheckedStmt::ExtendedAsm{clobbers,..}=>Some(clobbers),_=>None,
+                }).expect("checked ASM2");
+                assert_eq!(names.iter().map(String::as_str).collect::<Vec<_>>(),vec![name,"cc"]);
+            }
+        }
+    }
+    for name in [
+        "r8d","r9d","r10d","r11d",
+        "r8w","r9w","r10w","r11w",
+        "r8b","r9b","r10b","r11b",
+        "R8","%r8","ax","al","xmm0","rbx","rsp","rbp",
+    ] {
+        for (ty,suffix) in [("int","l"),("long","q")] {
+            let src=format!(
+                "{ty} f({ty} x){{{ty} y=0;__asm__ volatile(\"mov{suffix} %1,%0\":\"=r\"(y):\"r\"(x):\"{name}\");return y;}}"
+            );
+            assert!(check(&src).is_err(),"non-GCC clobber name accepted: {name}");
+        }
+    }
+}
+#[test]
+fn asm2_p13b_two_input_early_clobber_checked_types_and_roles() {
+    for (ty,suffix) in [("int","l"),("long","q")] {
+        for op in ["add","sub"] {
+            let src=format!(
+                "{ty} f({ty} x,{ty} y){{{ty} z=0;__asm__ volatile(\"mov{suffix} %1,%0;{op}{suffix} %2,%0\":\"=&r\"(z):\"r\"(x),\"r\"(y):\"cc\");return z;}}"
+            );
+            let items=check(&src).expect("P13B two-input independent GP asm");
+            let CheckedItem::Function(f)=&items[0] else {panic!("expected function")};
+            let CheckedStmt::Block(stmts)=&f.body else {panic!("expected block")};
+            let stmt=stmts.iter().find(|s|matches!(s,CheckedStmt::ExtendedAsm{..})).unwrap();
+            let CheckedStmt::ExtendedAsm{outputs,inputs,..}=stmt else {unreachable!()};
+            assert_eq!(outputs[0].constraint,"=&r");
+            assert_eq!(inputs.iter().map(|i|i.constraint.as_str()).collect::<Vec<_>>(),["r","r"]);
+        }
+    }
+}
+
+#[test]
+fn asm2_p13b_rejects_invalid_two_input_roles_and_widths() {
+    for (output,input_constraints) in [
+        ("=r","\"r\"(x),\"r\"(y)"),
+        ("+r","\"r\"(x),\"r\"(y)"),
+        ("=&r","\"r\"(x),\"0\"(y)"),
+        ("=&r","\"0\"(x),\"r\"(y)"),
+        ("=&r","\"r\"(x),\"r\"(y),\"r\"(x)"),
+    ] {
+        let src=format!("int f(int x,int y){{int out=0;__asm__ volatile(\"movl %1,%0;addl %2,%0\":\"{output}\"(out):{input_constraints}:\"cc\");return out;}}");
+        assert!(check(&src).is_err(),"unexpectedly admitted invalid P13B operands: {src}");
+    }
+    let wrong_width=r#"long f(long x,int y){long out=0;__asm__ volatile("movq %1,%0;addq %2,%0":"=&r"(out):"r"(x),"r"(y):"cc");return out;}"#;
+    // Incorrect mixed-width sources must not reach machine allocation.
+    assert!(check(wrong_width).is_err());
+}
+
+
+#[test]
+fn asm3_p02b3_checked_memory_input_preserves_single_lvalue_operand() {
+    for (source,width) in [
+        (r#"int f(const int *p) { int y=0; __asm__ volatile("movl %1,%0" : "=r"(y) : "m"(*p) : "memory"); return y; }"#,4),
+        (r#"long f(const long *p) { long y=0; __asm__ volatile("movq %1,%0" : "=r"(y) : "m"(p[1])); return y; }"#,8),
+        (r#"int f(int x) { int y=0; __asm__ volatile("movl %1,%0" : "=r"(y) : "m"(x)); return y; }"#,4),
+        (r#"long f(long *p) { long y=0; __asm__ volatile("movq %1,%0" : "=r"(y) : "m"(*p)); return y; }"#,8),
+    ] {
+        let checked=check(source).expect("one checked GNU m source lvalue");
+        let CheckedItem::Function(f)=&checked[0] else {panic!("function expected")};
+        let CheckedStmt::Block(items)=&f.body else{panic!("checked block expected")};
+        let stmt=items.iter().find(|s|matches!(s,CheckedStmt::ExtendedAsm{..}))
+            .expect("extended asm statement");
+        let CheckedStmt::ExtendedAsm{outputs,inputs,template,..}=stmt else{unreachable!()};
+        assert_eq!(outputs.len(),1);
+        assert_eq!(inputs.len(),1);
+        assert_eq!(outputs[0].constraint,"=r");
+        assert_eq!(inputs[0].constraint,"m");
+        assert_eq!(inputs[0].expr.category,Category::LValue,
+            "never turn a source m address into an rvalue scalar");
+        assert!(matches!(inputs[0].expr.ty.size_bytes(Target::default()),Some(n) if n==width));
+        assert_eq!(template,if width==4 {"movl %1,%0"} else {"movq %1,%0"});
+    }
+}
+#[test]
+fn asm3_p02b3_rejects_unreviewed_memory_shapes_and_alias_roles() {
+    for source in [
+        r#"int f(int *p){int y=0;asm("movl %1,%0":"=&r"(y):"m"(*p));return y;}"#,
+        r#"int f(int *p){int y=0;asm("movl %1,%0":"=m"(y):"r"(*p));return y;}"#,
+        r#"int f(int *p){asm("addl $1,%0":"+m"(*p)::"cc");return *p;}"#,
+        r#"int f(int *p){int y=0;asm("movl %1,%0":"=r"(y):"m"(p));return y;}"#,
+        r#"int f(int *p){int y=0;asm("movl %1,%0":"=r"(y):"m"(*p),"r"(*p));return y;}"#,
+        r#"int f(int *p){int y=0;asm("addl %1,%0":"=r"(y):"m"(*p):"cc");return y;}"#,
+        r#"int f(int *p){int y=0;asm("movq %1,%0":"=r"(y):"m"(*p));return y;}"#,
+        r#"long f(int *p){long y=0;asm("movq %1,%0":"=r"(y):"m"(*p));return y;}"#,
+        r#"int f(int *p){int y=0;asm("movl %1,%0":"=r"(y):"m"(*p):"rax");return y;}"#,
+        r#"int f(int *p){int y=0;asm("movl %1,%0":"=r"(y):"m"(*p):"cc");return y;}"#,
+        r#"int f(int *p){int y=0;asm("movl %1,%0":"=r"(y):"m"(*p):"memory","memory");return y;}"#,
+        r#"int f(int x){int y=0;asm("movl %1,%0":"=r"(y):"m"(x+1));return y;}"#,
+    ] {
+        assert!(check(source).is_err(),
+            "unverified memory binding/constraint was accepted: {source}");
+    }
+}
+
 /// Parse the generated C through the actual frontend and inspect its checked
 /// operation, rather than asserting against hand-written syntax snapshots.
 fn checked_atomic_in_generated_c(source: &str) -> CheckedAtomicBuiltin {
