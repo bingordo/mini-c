@@ -1804,7 +1804,7 @@ fn explicit_integer_casts_handle_typedefs_and_unsigned_conversions() {
     check("int f(void) { int x=3; return (x) + 2; }").unwrap();
     check("int f(void) { unsigned int x=0; return (unsigned)(x=5); }").unwrap();
     check("int f(int *p) { return (unsigned)p; }").unwrap();
-    reject("int f(int x) { return (void)x; }", "unsupported cast type-name");
+    reject("int f(int x) { return (void)x; }", "incompatible assignment");
     check("typedef int T; int f(void) { int T=3; return (T)+1; }").unwrap();
 }
 
