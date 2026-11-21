@@ -9,6 +9,89 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 CASES = {
+    "override_global_bitfield_exact": r"""
+        struct B {unsigned a:3,b:5;};
+        struct B x={.a=1,.b=17,.a=6};
+        int main(void) {return x.a!=6 || x.b!=17;}
+    """,
+    "override_global_bitfield_same_unit": r"""
+        struct B {unsigned short a:5,b:9;};
+        struct B x={.a=3,.b=257,.a=13,.b=383};
+        int main(void) {return x.a!=13 || x.b!=383 || sizeof(x)!=2;}
+    """,
+    "override_global_mixed_bitfield_types": r"""
+        struct B {_Bool a:1;unsigned int b:3;unsigned long c:37;};
+        struct B x={.a=1,.c=1234567UL,.b=3,.a=0,.c=987654UL};
+        int main(void) {return x.a!=0 || x.b!=3 || x.c!=987654UL;}
+    """,
+    "override_global_union_switch_arm": r"""
+        union U {unsigned int a:3,b:5;long raw;};
+        union U u={.a=5,.raw=0,.b=23};
+        int main(void) {return u.b!=23 || sizeof(u)!=8;}
+    """,
+    "override_global_nested_bitfield_exact": r"""
+        struct B {unsigned a:3,b:5;};
+        struct Box {struct B bits[2];int tail;};
+        struct Box box={.bits[0].a=1,.bits[1].b=17,
+                        .bits[0].a=6,.bits[0].b=13,.tail=7};
+        int main(void) {
+            return box.bits[0].a!=6 || box.bits[0].b!=13
+                || box.bits[1].a!=0 || box.bits[1].b!=17
+                || box.tail!=7;
+        }
+    """,
+    "override_global_nested_union_arm": r"""
+        union U {struct B {unsigned a:3,b:5;} bits; unsigned long raw;};
+        union U u={.bits.a=5,.bits.b=23,.raw=41};
+        int main(void) {return u.raw!=41UL;}
+    """,
+    "override_local_bitfield_implicit_then_designated": r"""
+        struct B {unsigned a:3,b:5;};
+        int main(void) {
+            struct B x={1,17,.a=6};
+            return x.a!=6 || x.b!=17;
+        }
+    """,
+    "override_local_array_duplicate": r"""
+        struct B {unsigned a:3,b:5;};
+        int main(void) {
+            struct B x[2]={[1].a=1,[0].b=11,[1].a=5,[1].b=19};
+            return x[0].a!=0 || x[0].b!=11
+                || x[1].a!=5 || x[1].b!=19;
+        }
+    """,
+    "override_local_nested_union_arm": r"""
+        struct Wrap {union U {unsigned a:3,b:5;} u;int tail;};
+        int main(void) {
+            struct Wrap x={.u.a=2,.u.b=17,.tail=12};
+            return x.u.b!=17 || x.tail!=12;
+        }
+    """,
+    "override_local_side_effect_discarded": r"""
+        int called;
+        int effect(void) {called++;return 1;}
+        struct B {unsigned a:3,b:5;};
+        int main(void) {
+            struct B x={.a=effect(),.a=5,.b=17};
+            return called!=0 || x.a!=5 || x.b!=17;
+        }
+    """,
+    "override_local_union_effect_discarded": r"""
+        int called;
+        int effect(void) {called++;return 3;}
+        union U {unsigned int a:3,b:5;};
+        int main(void) {
+            union U x={.a=effect(),.b=19};
+            return called!=0 || x.b!=19;
+        }
+    """,
+    "override_compound_literal_bitfield": r"""
+        struct B {unsigned a:3,b:5;};
+        int main(void) {
+            struct B *x=&(struct B){.a=1,.b=17,.a=4};
+            return x->a!=4 || x->b!=17;
+        }
+    """,
     "global_bool_one_byte_and_normalization": r"""
         struct B {_Bool a:1,b:1;};
         struct B x={256,0};
@@ -346,7 +429,9 @@ def main() -> int:
             mini = base / f"{name}.mini"
             src.write_text(source, encoding="utf-8")
             for command in (
-                ["cc", "-std=c99", "-pedantic-errors", "-O0", str(src), "-o", str(gcc)],
+                ["cc", "-std=c99", "-pedantic-errors", "-O0",
+                 "-Wno-override-init", "-Wno-override-init-side-effects",
+                 str(src), "-o", str(gcc)],
                 [str(backend), "--emit-obj", str(obj), str(src)],
                 ["cc", str(obj), "-o", str(mini)],
                 [str(gcc)],
