@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Native GCC-vs-Mini-C C99 named 32-bit int bit-field execution comparisons."""
+"""Native GCC-vs-Mini-C C99 bit-field execution and value-promotion comparisons."""
 from __future__ import annotations
 
 import argparse
@@ -135,6 +135,134 @@ CASES = {
             return u.x!=-21 || sizeof(u)!=8;
         }
     """,
+    "promote_unsigned_int_narrow_unary": r"""
+        struct S {unsigned int a:3;};
+        int main(void) {
+            struct S s={5};
+            return +s.a!=5 || -s.a!=-5 || ~s.a!=-6;
+        }
+    """,
+    "promote_unsigned_long_narrow_unary": r"""
+        struct S {unsigned long a:3;};
+        int main(void) {
+            struct S s={5};
+            return +s.a!=5 || -s.a!=-5 || ~s.a!=-6;
+        }
+    """,
+    "promote_unsigned_long_width32_wrap": r"""
+        struct S {unsigned long a:32;};
+        int main(void) {
+            struct S s={4294967295UL};
+            return +s.a+1U!=0U;
+        }
+    """,
+    "promote_unsigned_int_width32_wrap": r"""
+        struct S {unsigned int a:32;};
+        int main(void) {
+            struct S s={4294967295U};
+            return +s.a+1U!=0U;
+        }
+    """,
+    "promote_unsigned_long_signed_binary": r"""
+        struct S {unsigned long a:3;};
+        int main(void) {
+            struct S s={3};
+            return (s.a-4>=0) || (s.a+(-5)>=0);
+        }
+    """,
+    "promote_unsigned_int_signed_binary": r"""
+        struct S {unsigned int a:3;};
+        int main(void) {
+            struct S s={3};
+            return (s.a-4>=0) || (s.a+(-5)>=0);
+        }
+    """,
+    "promote_unsigned_long_shift": r"""
+        struct S {unsigned long a:3;};
+        int main(void) {
+            struct S s={2};
+            return (s.a<<1)-5>=0;
+        }
+    """,
+    "promote_unsigned_int_shift": r"""
+        struct S {unsigned int a:3;};
+        int main(void) {
+            struct S s={5};
+            return ~(s.a>>1)>=0;
+        }
+    """,
+    "promote_unsigned_long_conditional": r"""
+        struct S {unsigned long a:3;};
+        int main(void) {
+            struct S s={0};
+            return (s.a ? s.a : -1)>=0;
+        }
+    """,
+    "promote_unsigned_int_conditional": r"""
+        struct S {unsigned int a:3;};
+        int main(void) {
+            struct S s={0};
+            return (s.a ? s.a : -1)>=0;
+        }
+    """,
+    "promote_unsigned_long_compound_divide": r"""
+        struct S {unsigned long a:3;};
+        int main(void) {
+            struct S s={3};
+            s.a/=-1;
+            return s.a!=5;
+        }
+    """,
+    "promote_unsigned_long_compound_modulo": r"""
+        struct S {unsigned long a:3;};
+        int main(void) {
+            struct S s={3};
+            s.a%=-2;
+            return s.a!=1;
+        }
+    """,
+    "promote_unsigned_long_assignment_value": r"""
+        struct S {unsigned long a:3;};
+        int main(void) {
+            struct S s={3};
+            return -(s.a=2)!=-2 || s.a!=2;
+        }
+    """,
+    "promote_unsigned_long_prefix_update": r"""
+        struct S {unsigned long a:3;};
+        int main(void) {
+            struct S s={2};
+            return -(++s.a)!=-3 || s.a!=3;
+        }
+    """,
+    "promote_unsigned_long_comma": r"""
+        struct S {unsigned long a:3;};
+        int main(void) {
+            struct S s={3};
+            return -(0,s.a)!=-3;
+        }
+    """,
+    "promote_cast_to_unsigned_long": r"""
+        struct S {unsigned long a:3;};
+        int main(void) {
+            struct S s={3};
+            return -((unsigned long)s.a)<=0;
+        }
+    """,
+    "promote_unsigned_long_wide_preserved": r"""
+        struct S {unsigned long a:37;};
+        int main(void) {
+            struct S s={0x100000001UL};
+            return +s.a!=0x100000001UL || s.a+2UL!=0x100000003UL;
+        }
+    """,
+    "promote_mixed_bitfield_conditional": r"""
+        struct S {unsigned long a:3;signed int b:3;};
+        int main(void) {
+            struct S s={0,-2};
+            return (s.a ? s.a : s.b)!=-2;
+        }
+    """,
     "typedef_integer_bitfield": r"""
         typedef unsigned int Word;
         struct S {Word flags:6,count:5;};
@@ -182,7 +310,7 @@ def main() -> int:
             if not obj.read_bytes().startswith(b"\x7fELF"):
                 raise AssertionError(f"{name}: missing native ELF")
             print(f"{name}: GCC/Mini-C bit-field native execution PASS")
-    print(f"C99 named bit-field native suite: {len(CASES)} cases passed")
+    print(f"C99 bit-field native suite: {len(CASES)} cases passed")
     return 0
 
 

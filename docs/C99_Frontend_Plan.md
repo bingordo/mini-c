@@ -35,6 +35,13 @@ The priority is **a working self-contained C99 preprocessor for practical progra
 
 Csmith original-program native execution remains scheduled under [#116](https://github.com/bingordo/mini-c/issues/116). **F5 remains deferred**; do not delay a usable C compiler or initial C++ support for exhaustive C99 conformance.
 
+## F3.4e bit-field integer promotions and expression semantics
+
+- **Promotion is based on bit-field *value width*, not the declared allocation unit.** On the x86-64 LP64 target, named unsigned bit-fields narrower than `int` promote to signed `int`, even when declared `unsigned int` or `unsigned long`; a 32-bit unsigned field promotes to `unsigned int`. Signed fields of width at most `int` promote to signed `int`; wider `long` fields retain their base type for checked native operations. Ordinary non-bit-field integer promotions are unchanged.
+- Checked IR records a value-width property via `BitFieldMember`, and the checker consults that property for unary `+/-/~`, shifts, arithmetic and relational conversions, conditional expressions, switch control, pointer offsets, increment/decrement, compound assignment and ellipsis argument promotion. Assignment, update and comma value expressions retain the bit-field value-width provenance; explicit casts discard it.
+- Source-pinned GCC native regressions cover narrow signed arithmetic, unsigned 32-bit wrapping, mixed conditional signedness, `/= -1`, `%= -2`, assignment/prefix/comma values, and explicit casts. This fixes a semantic correctness gap that field layout/byte-image tests alone could not detect.
+- The compiler does **not** claim exact GNU extended-integer expression types for nonstandard `long` bit-fields of widths 33–63, or portable behavior for implementation-defined base types; verify these separately in #169 alongside volatile semantics and production TypeId lowering.
+
 ## F3.4d integer bit-field base types and native allocation units
 
 - On the supported x86-64 LP64 ABI, the C99 checker now admits the GCC/Clang implementation-defined `signed/unsigned char` (8-bit), `short` (16-bit) and `long` (64-bit) bit-field bases, in addition to `int` (32-bit) and `_Bool` (8-bit allocation with width 1). Checked width bounds are the base type's declared width; unnamed zero-width allocation barriers use that type's unit, and named fields impose the base type's alignment.

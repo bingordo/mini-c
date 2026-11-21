@@ -1303,6 +1303,120 @@ fn c99_char_short_long_bitfields_have_target_sized_allocation_units() {
 }
 
 #[test]
+fn c99_bitfield_integer_promotions_follow_value_width_not_base_rank() {
+    let lp64 = Target::default();
+    let signed_int = CType::int();
+    let unsigned_int = CType::Integer { rank: IntRank::Int, unsigned: true };
+    let unsigned_long = CType::Integer { rank: IntRank::Long, unsigned: true };
+    let signed_long = CType::Integer { rank: IntRank::Long, unsigned: false };
+    let base = CheckedExpr::value(CType::int(), CheckedExprKind::Literal(0));
+    for (ty, width, expected) in [
+        (unsigned_int.clone(), 3, signed_int.clone()),
+        (unsigned_int.clone(), 31, signed_int.clone()),
+        (unsigned_int.clone(), 32, unsigned_int.clone()),
+        (unsigned_long.clone(), 3, signed_int.clone()),
+        (unsigned_long.clone(), 31, signed_int.clone()),
+        (unsigned_long.clone(), 32, unsigned_int.clone()),
+        (unsigned_long.clone(), 33, unsigned_long.clone()),
+        (unsigned_long.clone(), 64, unsigned_long.clone()),
+        (signed_long.clone(), 5, signed_int.clone()),
+        (signed_long.clone(), 32, signed_int.clone()),
+        (signed_long.clone(), 33, signed_long.clone()),
+        (signed_long.clone(), 64, signed_long.clone()),
+        (CType::Integer { rank: IntRank::Short, unsigned: true }, 16,
+            signed_int.clone()),
+        (CType::Integer { rank: IntRank::Char, unsigned: true }, 8,
+            signed_int.clone()),
+        (CType::Integer { rank: IntRank::Bool, unsigned: true }, 1,
+            signed_int.clone()),
+    ] {
+        let member = CheckedExpr {
+            ty, category: Category::LValue,
+            kind: CheckedExprKind::BitFieldMember(Box::new(base.clone()), 0, 0, width),
+        };
+        assert_eq!(member.integer_promotion_type(lp64), expected,
+            "promotion of bit-field lvalue of width {width}");
+        let loaded = member.rvalue();
+        assert_eq!(loaded.integer_promotion_type(lp64), expected,
+            "promotion of bit-field rvalue of width {width}");
+    }
+    // The ordinary (non-bit-field) unsigned int/long types keep their
+    // declared ranks. Only the marked bit-field expression gets width-aware
+    // integer promotion.
+    assert_eq!(lp64.promote(&unsigned_int), unsigned_int);
+    assert_eq!(lp64.promote(&unsigned_long), unsigned_long);
+
+    // An explicit same-type cast discards the bit-field's width
+    // provenance, unlike an implicit load from the same declared type.
+    let casted = check(concat!(
+        "struct Narrow {unsigned long a:3;};",
+        "unsigned long cast(void){struct Narrow s={3};return -(unsigned long)s.a;}"
+    )).unwrap();
+    let CheckedItem::Function(cast_fn) = &casted[1] else {panic!("cast function")};
+    let CheckedStmt::Block(cast_body) = &cast_fn.body else {panic!("cast body")};
+    let CheckedStmt::Return(Some(cast_result)) = &cast_body[1] else {
+        panic!("cast return");
+    };
+    assert_eq!(cast_result.ty, unsigned_long);
+    let CheckedExprKind::Unary(UnOp::Neg, cast_operand) = &cast_result.kind else {
+        panic!("expected unsigned long unary negation");
+    };
+    assert_eq!(cast_operand.ty, unsigned_long);
+    assert!(matches!(cast_operand.kind, CheckedExprKind::Convert(_)),
+        "same-type explicit cast must remain visible to promotion logic");
+    assert_eq!(cast_operand.integer_promotion_type(lp64), unsigned_long);
+
+    // The checker must materialize conversions in the typed IR for unary
+    // and binary expressions, not just infer the correct output type.
+    let checked = check(concat!(
+        "struct Bits {unsigned int a:3,full:32;unsigned long b:3,wide:37;};",
+        "int narrow(void){struct Bits s;return -s.a;}",
+        "int neglong(void){struct Bits s;return ~s.b;}",
+        "unsigned int full(void){struct Bits s;return +s.full;}",
+        "unsigned long wide(void){struct Bits s;return +s.wide;}"
+    )).unwrap();
+    for (index, expected, op) in [
+        (1, signed_int.clone(), UnOp::Neg),
+        (2, signed_int.clone(), UnOp::BitNot),
+        (3, unsigned_int.clone(), UnOp::Plus),
+        (4, unsigned_long.clone(), UnOp::Plus),
+    ] {
+        let CheckedItem::Function(func) = &checked[index] else {panic!("function")};
+        let CheckedStmt::Block(body) = &func.body else {panic!("body")};
+        let CheckedStmt::Return(Some(value)) = &body[1] else {panic!("return")};
+        let unary = if let CheckedExprKind::Convert(inner) = &value.kind {
+            inner.as_ref()
+        } else {
+            value
+        };
+        assert_eq!(unary.ty, expected, "typed result of {op:?}");
+        let CheckedExprKind::Unary(actual_op, operand) = &unary.kind else {
+            panic!("unary expression");
+        };
+        assert_eq!(*actual_op, op);
+        assert_eq!(operand.ty, expected, "checked operator input promoted");
+    }
+
+    check(concat!(
+        "struct Bits {unsigned int u:3;unsigned long l:3;};",
+        "int f(void){struct Bits s={3,3};",
+        "return -s.u<0 && ~s.u<0 && -s.l<0 && ~s.l<0;",
+        "}"
+    )).unwrap();
+    check(concat!(
+        "struct Bits {unsigned long a:3,b:32;};",
+        "int f(void){struct Bits s={3,4294967295UL};",
+        "s.a/=-1;s.b>>=1;return s.a==5 && s.b==2147483647U;",
+        "}"
+    )).unwrap();
+    check(concat!(
+        "struct Bits {unsigned int u:3;};",
+        "int f(void){struct Bits s={3};switch(s.u){case -1:return 1;case 3:return 2;",
+        "default:return 0;}}"
+    )).unwrap();
+}
+
+#[test]
 fn c99_bitfield_positional_sparse_and_nested_object_initializers_are_checked() {
     let checked = check(concat!(
         "struct S {unsigned int a:3,b:5;signed int c:7;int tail;};",
