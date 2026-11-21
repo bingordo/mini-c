@@ -514,7 +514,7 @@ fn static_initializers_respect_target_arithmetic_and_short_circuit() {
     check("typedef int *Ptr; Ptr global_alias = (Ptr)0; int **global_nested=(int**)0;")
         .unwrap();
     check("int *p=(int*)(unsigned long)0;").unwrap();
-    reject("int *bad=(int*)1;", "pointer cast requires a pointer or null integer constant");
+    reject("int *bad=(int*)1;", "pointer initializer requires");
     reject("int global; int *copy = &global; int *bad2 = (int*)copy;",
         "pointer initializer requires");
     reject("int global; int *copy = &global; int *bad = copy;", "pointer initializer requires");
@@ -1839,12 +1839,10 @@ fn m10_pointer_casts_preserve_c_types_and_null_semantics() {
         .unwrap();
     check("int f(void) { int **p=(int **)0; return p == (void*)0; }").unwrap();
     check("int f(int x) { return (const int)x; }").unwrap();
-    reject("int f(int x) { int *p = (int*)x; return p==0; }",
-        "pointer cast requires a pointer or null integer constant");
-    reject("int f(void) { int *p=(int*)1; return p==0; }",
-        "pointer cast requires a pointer or null integer constant");
+    check("int f(int x) { int *p = (int*)x; return p==0; }").unwrap();
+    check("int f(void) { int *p=(int*)1; return p==0; }").unwrap();
     reject("int f(void) { int *p=(int*)0.5f; return p==0; }",
-        "pointer cast requires a pointer or null integer constant");
+        "pointer cast requires an integer or pointer operand");
 }
 
 #[test]
@@ -3067,4 +3065,45 @@ fn c99_f2_real_floating_casts_retain_checked_conversion_and_type() {
             matches!(value.kind, CheckedExprKind::Load(..)), "{source}: {:?}", value.kind);
     }
     reject("int f(void) { return (float)(int*)0; }", "unsupported cast type-name");
+}
+
+#[test]
+fn c99_f2_explicit_integer_to_pointer_preserves_checked_conversion() {
+    let items = check(concat!(
+        "typedef unsigned long uintptr_t;",
+        "int *from_bits(uintptr_t bits) { return (int *)bits; }",
+        "const int *qualified(uintptr_t bits) { return (const int *)(uintptr_t)bits; }"
+    )).unwrap();
+    let CheckedItem::Function(fun) = &items[1] else { panic!("expected function"); };
+    let CheckedStmt::Block(stmts) = &fun.body else { panic!("expected body"); };
+    let CheckedStmt::Return(Some(value)) = &stmts[0] else { panic!("expected return"); };
+    let CType::Pointer(pointee) = &value.ty else { panic!("result must be pointer"); };
+    assert_eq!(pointee.as_ref(), &CType::int());
+    let CheckedExprKind::Convert(inner) = &value.kind else {
+        panic!("integer-to-pointer cast must survive in checked IR");
+    };
+    assert!(inner.ty.is_integer());
+    let CheckedItem::Function(fun) = &items[2] else { panic!("expected qualified function"); };
+    let CheckedStmt::Block(stmts) = &fun.body else { panic!("expected body"); };
+    let CheckedStmt::Return(Some(value)) = &stmts[0] else { panic!("expected return"); };
+    let CType::Pointer(pointee) = &value.ty else { panic!("qualified pointer"); };
+    assert!(pointee.is_const());
+    check("int *f(unsigned long bits) { return (int *)bits; }").unwrap();
+    check("int *f(void) { return (int *)1234UL; }").unwrap();
+    check("int *f(void) { return 0; }").unwrap();
+}
+
+#[test]
+fn c99_f2_explicit_pointer_cast_does_not_enable_implicit_integer_conversions() {
+    // Nonzero implicit integer -> pointer remains a constraint violation.
+    reject("int *f(unsigned long bits) { return bits; }", "incompatible assignment");
+    reject("int *f(void) { return 1234; }", "incompatible assignment");
+    reject("int *f(double d) { return (int *)d; }",
+        "pointer cast requires an integer or pointer operand");
+    reject("int *f(unsigned long bits) { return (int *)((void)bits); }",
+        "pointer cast requires an integer or pointer operand");
+    // A cast can add pointee const, but an implicit return still cannot
+    // discard it after the cast.
+    reject("int *f(unsigned long bits) { return (const int *)bits; }",
+        "incompatible assignment");
 }
