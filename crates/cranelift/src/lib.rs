@@ -3537,6 +3537,28 @@ mod tests {
     }
 
     #[test]
+    fn c99_f2_void_casts_evaluate_and_emit_object_without_void_value_type() {
+        for source in [
+            "int f(void) { int x=2; (void)(++x); return x; }",
+            "int side(int *p) { *p += 3; return *p; } \
+             int f(void) { int x=4; (void)side(&x); return x; }",
+            "int f(void) { int x=1; return ((void)(x += 7), x); }",
+            "void ping(void) {} int f(void) { (void)ping(); return 4; }",
+            "struct S { int x; }; int f(void) { struct S s={3}; (void)s; return s.x; }",
+            "int f(int *p) { (void)p; return 5; }",
+        ] {
+            let elf = compile_source(source)
+                .unwrap_or_else(|why| panic!("{source}: {why}"));
+            assert_eq!(&elf[..4], b"\\x7fELF", "{source}");
+        }
+        // Executable volatile accesses must still fail closed, even when
+        // their values are discarded by a legitimate C99 void cast.
+        let error = compile_source("volatile int x; void f(void){(void)x;}")
+            .expect_err("volatile codegen must not silently discard a read");
+        assert!(error.contains("native volatile memory accesses are unsupported"), "{error}");
+    }
+
+    #[test]
     fn c99_volatile_objects_fail_closed_before_native_output() {
         for source in [
             "volatile int x; int f(void) { return x + x; }",
