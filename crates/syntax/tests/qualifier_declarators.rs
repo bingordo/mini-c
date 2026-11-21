@@ -56,3 +56,21 @@ fn parameter_qualifiers_and_typedefs_parse_without_string_rewriting() {
     assert!(matches!(parser.next_item().unwrap().unwrap(), ExternalItem::Declaration(_)));
     assert!(parser.next_item().unwrap().is_none());
 }
+
+#[test]
+fn volatile_qualifiers_preserve_correct_declarator_level() {
+    let volatile = Qualifiers { is_const: false, is_volatile: true, is_restrict: false };
+    let cv = Qualifiers { is_const: true, is_volatile: true, is_restrict: false };
+    assert_eq!(declaration_type("volatile int *p;"),
+        Type::Pointer(Box::new(Type::Qualified(Box::new(Type::Int), volatile))));
+    assert_eq!(declaration_type("int volatile *p;"),
+        Type::Pointer(Box::new(Type::Qualified(Box::new(Type::Int), volatile))));
+    assert_eq!(declaration_type("int *volatile p;"),
+        Type::Qualified(Box::new(Type::Pointer(Box::new(Type::Int))), volatile));
+    assert_eq!(declaration_type("const volatile int x;"),
+        Type::Qualified(Box::new(Type::Int), cv));
+    assert_eq!(declaration_type("volatile const int x;"),
+        Type::Qualified(Box::new(Type::Int), cv));
+    assert_eq!(declaration_type("int *const volatile p;"),
+        Type::Qualified(Box::new(Type::Pointer(Box::new(Type::Int))), cv));
+}
