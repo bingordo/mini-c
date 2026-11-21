@@ -35,6 +35,12 @@ The priority is **a working self-contained C99 preprocessor for practical progra
 
 Csmith original-program native execution remains scheduled under [#116](https://github.com/bingordo/mini-c/issues/116). **F5 remains deferred**; do not delay a usable C compiler or initial C++ support for exhaustive C99 conformance.
 
+## F3.4c one-byte _Bool bit-fields
+
+- Checked C99 `_Bool` named bit-fields now admit the single legal width 1; unnamed zero-width and one-bit fields use byte allocation units. Existing `int` and `unsigned int` fields continue to use 32-bit allocation units. The aggregate bit cursor is shared across mixed unit types, and offsets/shifts are recorded relative to the declared field's unit.
+- Cranelift emits byte-wide masked loads and stores for `_Bool` fields (including single-byte structs), and the static ELF initializer packs into a one-byte unit, not the old mandatory four-byte `int` unit. Strict C99 GCC-vs-Mini-C native tests cover mixed unit packing, automatic/global and nested/designated initializers, compound literals, boundary separators, normalized truth values and updates. The corresponding feature-matrix cases are marked supported.
+- This is a bounded x86-64 SysV/GCC implementation; `char`, `short`, `long`, and compiler-implementation-defined signedness rules for other bit-field base types remain unsupported. Backend acceptance does not imply full TypeId IR support, or complete ABI validation of overlap, padding and volatile bit-fields. See #169.
+
 ## F3.4b practical unnamed and zero-width int bit-fields
 
 - The checked C99 frontend now retains the allocation effects of unnamed 32-bit signed/unsigned int bit-fields without admitting them as addressable/named members or initializer positions. Zero-width unnamed fields advance to the next 32-bit allocation unit. Struct aggregate alignment comes only from *named* members; unions ignore unnamed fields for their size/alignment and positional initialization.

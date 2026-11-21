@@ -589,6 +589,42 @@
       "source": "struct S{unsigned int :33;int x;};int f(void){return @N@;}"
     },
     {
+      "id": "bitfield-bool-named",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_bool_bitfields_have_byte_units_and_mixed_int_layout",
+      "source": "struct B{_Bool a:1,b:1;};int f(void){struct B b={@N@,0};return b.a+b.b;}"
+    },
+    {
+      "id": "bitfield-bool-mixed-int",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_bool_bitfields_have_byte_units_and_mixed_int_layout",
+      "source": "struct B{_Bool a:1;unsigned int b:3;_Bool c:1;};struct B b={1,@N@%8,0};int f(void){return b.a+b.b+b.c;}"
+    },
+    {
+      "id": "bitfield-bool-zero-width",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_bool_bitfields_have_byte_units_and_mixed_int_layout",
+      "source": "struct B{char first;_Bool :0;_Bool a:1;};int f(void){struct B b={@N@%30,1};return b.a;}"
+    },
+    {
+      "id": "bitfield-bool-overflow",
+      "feature": "F3",
+      "expect": "reject",
+      "mini": "supported",
+      "kind": "constraint",
+      "test_ref": "crates/sema/src/tests.rs:c99_bool_bitfields_have_byte_units_and_mixed_int_layout",
+      "source": "struct B{_Bool a:2;};int f(void){return @N@;}"
+    },
+    {
       "id": "complex-type",
       "feature": "F5",
       "expect": "accept",

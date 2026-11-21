@@ -9,6 +9,100 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 CASES = {
+    "global_bool_one_byte_and_normalization": r"""
+        struct B {_Bool a:1,b:1;};
+        struct B x={256,0};
+        int main(void) {
+            return x.a!=1 || x.b!=0 || sizeof(x)!=1;
+        }
+    """,
+    "automatic_bool_one_byte_and_updates": r"""
+        struct B {_Bool a:1,b:1;char tail;};
+        int main(void) {
+            struct B x={1,0,'Q'};
+            x.b=7;
+            x.a=0;
+            x.a++;
+            return x.a!=1 || x.b!=1 || x.tail!='Q'
+                || sizeof(x)!=2;
+        }
+    """,
+    "global_mixed_bool_int_bits": r"""
+        struct B {_Bool a:1;unsigned int b:3;_Bool c:1;char tail;};
+        struct B x={1,5,1,'Z'};
+        int main(void) {
+            return x.a!=1 || x.b!=5 || x.c!=1 || x.tail!='Z'
+                || sizeof(x)!=4;
+        }
+    """,
+    "automatic_mixed_bool_int_bits": r"""
+        struct B {_Bool a:1;unsigned int b:3;_Bool c:1;char tail;};
+        int main(void) {
+            struct B x={.c=12,.b=5,.a=1,.tail='G'};
+            x.b=6;
+            x.c=0;
+            x.c=20;
+            return x.a!=1 || x.b!=6 || x.c!=1 || x.tail!='G'
+                || sizeof(x)!=4;
+        }
+    """,
+    "global_bool_after_nine_int_bits": r"""
+        struct B {unsigned int a:9;_Bool b:1;unsigned int c:5;char tail;};
+        struct B x={511,1,29,'Z'};
+        int main(void) {
+            return x.a!=511 || x.b!=1 || x.c!=29 || x.tail!='Z'
+                || sizeof(x)!=4;
+        }
+    """,
+    "automatic_bool_after_nine_int_bits": r"""
+        struct B {unsigned int a:9;_Bool b:1;unsigned int c:5;char tail;};
+        int main(void) {
+            struct B x={.a=511,.b=0,.c=29,.tail='Y'};
+            x.b=256;
+            return x.a!=511 || x.b!=1 || x.c!=29 || x.tail!='Y'
+                || sizeof(x)!=4;
+        }
+    """,
+    "global_bool_zero_width_after_char": r"""
+        struct B {char first;_Bool :0;_Bool a:1;char tail;};
+        struct B x={'A',1,'B'};
+        int main(void) {
+            return x.first!='A' || x.a!=1 || x.tail!='B'
+                || sizeof(x)!=3;
+        }
+    """,
+    "automatic_bool_zero_width_after_char": r"""
+        struct B {char first;unsigned int :0;_Bool a:1;char tail;};
+        int main(void) {
+            struct B x={'A',1,'B'};
+            return x.first!='A' || x.a!=1 || x.tail!='B'
+                || sizeof(x)!=6;
+        }
+    """,
+    "union_bool_and_long": r"""
+        union B {_Bool :0;_Bool a:1;long wide;};
+        union B x={1};
+        int main(void) {
+            x.a=3;
+            return x.a!=1 || sizeof(x)!=8;
+        }
+    """,
+    "global_deep_bool_designators": r"""
+        struct B {_Bool a:1,b:1;unsigned int c:3;};
+        struct W {struct B nested[2];};
+        struct W x={.nested[1].b=12,.nested[0].a=1};
+        int main(void) {
+            return x.nested[1].b!=1 || x.nested[0].a!=1
+                || x.nested[0].b!=0 || x.nested[1].c!=0;
+        }
+    """,
+    "automatic_bool_compound_literal": r"""
+        struct B {_Bool a:1,b:1;};
+        int main(void) {
+            struct B *x=&(struct B){.a=256,.b=0};
+            return x->a!=1 || x->b!=0 || sizeof(*x)!=1;
+        }
+    """,
     "global_unnamed_positional": r"""
         struct Bits {unsigned int a:3;unsigned int :2;unsigned int b:5;int tail;};
         struct Bits x={5,17,9};
