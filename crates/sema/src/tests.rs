@@ -1095,8 +1095,10 @@ fn c99_unnamed_bitfields_skip_initializer_slots_and_zero_width_aligns_next_field
         "struct Wrap{int tag;struct Bits bits[2];};",
         "struct Wrap w={.bits[1].b=13,.bits[0].a=5,.tag=8};"
     )).unwrap();
-    check("struct B{unsigned int a:3;unsigned int :0;unsigned int b:5;};"
-        .to_owned().as_str()).unwrap();
+    check(concat!(
+        "struct B{unsigned int a:3;unsigned int :0;unsigned int b:5;};",
+        "int f(void){return ((struct B){.a=3,.b=7}).b;}"
+    )).unwrap();
 
     // Width constraints still reject invalid named/unnamed declarations.
     reject("struct Bad {unsigned int :33; int x;};",
