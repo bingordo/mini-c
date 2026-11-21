@@ -2976,3 +2976,17 @@ fn c99_volatile_function_type_and_const_assignments_fail_closed() {
         "modifiable");
     check("void f(void){int *volatile p=0; p=(int*)0;}").unwrap();
 }
+
+#[test]
+fn c99_conditional_pointer_preserves_union_of_cv_qualifiers() {
+    let items = check(concat!(
+        "const volatile int *f(const int *a, volatile int *b, int c) {",
+        " return c ? a : b; }"
+    )).unwrap();
+    let CheckedItem::Function(fun) = &items[0] else { panic!("function"); };
+    let CheckedStmt::Block(stmts) = &fun.body else { panic!("body"); };
+    let CheckedStmt::Return(Some(expr)) = &stmts[0] else { panic!("return"); };
+    let CType::Pointer(pointee) = &expr.ty else { panic!("pointer"); };
+    assert!(pointee.is_const() && pointee.is_volatile());
+    assert!(matches!(expr.kind, CheckedExprKind::Conditional(..)));
+}
