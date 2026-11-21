@@ -197,6 +197,88 @@ pub enum CheckedItem {
     Function(CheckedFunction),
 }
 
+
+// This walker is intentionally structural: checked lvalue-to-rvalue conversion
+// strips top-level qualifiers from its result, so native capability checking
+// must inspect every input operand and every declaration, not only final types.
+impl CheckedExpr {
+    fn contains_volatile_type(&self) -> bool {
+        if self.ty.contains_volatile() { return true; }
+        use CheckedExprKind as K;
+        match &self.kind {
+            K::Initializer(values) => values.iter().any(Self::contains_volatile_type),
+            K::SparseInitializer(values) => values.iter().any(|(_, e)| e.contains_volatile_type()),
+            K::DeepInitializer(values) => values.iter().any(|(_, e)| e.contains_volatile_type()),
+            K::CompoundLiteral(inner) | K::StaticCompoundLiteral { initializer: inner, .. } |
+            K::Unary(_, inner) | K::BuiltinCtz(inner) | K::Convert(inner) |
+            K::Load(inner) | K::ArrayDecay(inner) | K::Member(inner, _) |
+            K::BitFieldMember(inner, ..) =>
+                inner.contains_volatile_type(),
+            K::Binary(_, a, b) | K::Comma(a, b) | K::Assign(a, b) =>
+                a.contains_volatile_type() || b.contains_volatile_type(),
+            K::Conditional(a, b, c) =>
+                a.contains_volatile_type() || b.contains_volatile_type() || c.contains_volatile_type(),
+            K::CompoundAssign(_, a, b, computation_ty) =>
+                computation_ty.contains_volatile() ||
+                a.contains_volatile_type() || b.contains_volatile_type(),
+            K::Update { target, computation_ty, .. } =>
+                computation_ty.contains_volatile() || target.contains_volatile_type(),
+            K::Call(callee, args) => callee.contains_volatile_type()
+                || args.iter().any(Self::contains_volatile_type),
+            K::Literal(_) | K::FloatLiteral(_) | K::EnumConstant(_) |
+            K::StringLiteral(_) | K::Name(_) => false,
+        }
+    }
+}
+
+impl CheckedDecl {
+    fn contains_volatile_type(&self) -> bool {
+        self.ty.contains_volatile() || self.initializer.as_ref()
+            .is_some_and(CheckedExpr::contains_volatile_type)
+    }
+}
+impl CheckedStmt {
+    fn contains_volatile_type(&self) -> bool {
+        match self {
+            Self::Block(stmts) => stmts.iter().any(Self::contains_volatile_type),
+            Self::Decl(decl) => decl.contains_volatile_type(),
+            Self::Typedef { ty, .. } => ty.contains_volatile(),
+            Self::Expr(expr) | Self::Return(expr) =>
+                expr.as_ref().is_some_and(CheckedExpr::contains_volatile_type),
+            Self::ExtendedAsm { outputs, inputs, .. } =>
+                outputs.iter().chain(inputs).any(|op| op.expr.contains_volatile_type()),
+            Self::If { cond, then, otherwise } =>
+                cond.contains_volatile_type() || then.contains_volatile_type() ||
+                otherwise.as_ref().is_some_and(|stmt| stmt.contains_volatile_type()),
+            Self::While { cond, body } | Self::Switch { control: cond, body } |
+            Self::DoWhile { cond, body } =>
+                cond.contains_volatile_type() || body.contains_volatile_type(),
+            Self::Case { body, .. } | Self::Default(body) | Self::Label { body, .. } =>
+                body.contains_volatile_type(),
+            Self::For(f) => f.init.as_ref().is_some_and(|stmt| stmt.contains_volatile_type())
+                || f.cond.as_ref().is_some_and(CheckedExpr::contains_volatile_type)
+                || f.step.as_ref().is_some_and(CheckedExpr::contains_volatile_type)
+                || f.body.contains_volatile_type(),
+            Self::Tag | Self::BasicAsm { .. } | Self::Break | Self::Continue |
+            Self::Goto { .. } => false,
+        }
+    }
+}
+impl CheckedItem {
+    /// Native backends must fail closed until TypeId volatile effects exist.
+    /// Includes volatile pointer targets, local objects and nested expressions.
+    pub fn contains_volatile_type(&self) -> bool {
+        match self {
+            Self::Declaration(decl) => decl.contains_volatile_type(),
+            Self::Typedef { ty, .. } => ty.contains_volatile(),
+            Self::Function(f) => f.signature.contains_volatile()
+                || f.params.iter().any(CheckedDecl::contains_volatile_type)
+                || f.body.contains_volatile_type(),
+            Self::Tag => false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SymbolKind { Object, Function, Typedef, Enumerator }
 
