@@ -108,6 +108,35 @@ impl CheckedExpr {
     fn value(ty: CType, kind: CheckedExprKind) -> Self {
         Self { ty, category: Category::Value, kind }
     }
+    /// C99 6.3.1.1: promotions of bit-fields depend on their *value width*,
+    /// not just on the declared integer base type. Narrow unsigned int/long
+    /// fields may promote to signed int. Keep the original member type/layout.
+    fn integer_promotion_type(&self, target: Target) -> CType {
+        let bit_width = match &self.kind {
+            CheckedExprKind::BitFieldMember(_, _, _, width) => Some(*width),
+            CheckedExprKind::Load(inner) => match &inner.kind {
+                CheckedExprKind::BitFieldMember(_, _, _, width) => Some(*width),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let (Some(width), CType::Integer { unsigned, .. }) =
+            (bit_width, self.ty.unqualified())
+        {
+            let width = u16::from(width);
+            if width <= target.int_bits {
+                // Signed width <= int_bits, or unsigned width < int_bits,
+                // fits in signed int. A full-width unsigned field instead
+                // promotes to unsigned int, even if declared unsigned long.
+                return CType::Integer {
+                    rank: IntRank::Int,
+                    unsigned: *unsigned && width == target.int_bits,
+                };
+            }
+        }
+        target.promote(&self.ty)
+    }
+
     fn rvalue(self) -> Self {
         // A function designator converts to a pointer to that function in
         // value contexts, except for the operand of the address-of operator.
@@ -1698,7 +1727,7 @@ impl Checker {
                     return Err(type_error(control_span,
                         "switch controlling expression requires an integer type"));
                 }
-                let promoted = self.target.promote(&control.ty);
+                let promoted = control.integer_promotion_type(self.target);
                 let control = self.convert(control, &promoted);
                 self.switches.push(SwitchContext {
                     control_type: promoted,
@@ -1983,7 +2012,7 @@ impl Checker {
         if !integer.ty.is_integer() {
             return Err(Diagnostic::coded(span, DiagnosticCode::SemanticInvalidOperatorOperands, "pointer arithmetic requires an integer offset"));
         }
-        let integer_ty = self.target.promote(&integer.ty);
+        let integer_ty = integer.integer_promotion_type(self.target);
         let integer = self.convert(integer, &integer_ty);
         Ok(CheckedExpr::value(pointer.ty.clone(), CheckedExprKind::Binary(
             op, Box::new(pointer), Box::new(integer),
@@ -2561,7 +2590,7 @@ impl Checker {
                                 DiagnosticCode::SemanticInvalidOperatorOperands, reason));
                         }
                         let ty = if floating { typed.ty.unqualified().clone() }
-                            else { self.target.promote(&typed.ty) };
+                            else { typed.integer_promotion_type(self.target) };
                         Ok(CheckedExpr::value(ty.clone(), CheckedExprKind::Unary(*op, Box::new(self.convert(typed, &ty)))))
                     }
                 }
@@ -2645,8 +2674,8 @@ impl Checker {
                     // Unlike arithmetic/bitwise binary operators, shifts apply
                     // integer promotion independently to each operand and
                     // retain the promoted LEFT operand's type.
-                    let left_ty = self.target.promote(&left.ty);
-                    let right_ty = self.target.promote(&right.ty);
+                    let left_ty = left.integer_promotion_type(self.target);
+                    let right_ty = right.integer_promotion_type(self.target);
                     return Ok(CheckedExpr::value(left_ty.clone(), CheckedExprKind::Binary(
                         *op, Box::new(self.convert(left, &left_ty)),
                         Box::new(self.convert(right, &right_ty)),
@@ -2657,9 +2686,13 @@ impl Checker {
                         "bitwise operator requires integer operands"));
                 }
                 let common = if matches!(op, BinOp::Mod) || bitwise {
-                    self.target.common_integer(&left.ty, &right.ty)
+                    self.target.common_integer(
+                        &left.integer_promotion_type(self.target),
+                        &right.integer_promotion_type(self.target))
                 } else {
-                    self.target.common_arithmetic(&left.ty, &right.ty)
+                    self.target.common_arithmetic(
+                        &left.integer_promotion_type(self.target),
+                        &right.integer_promotion_type(self.target))
                 }.ok_or_else(|| {
                     let has_float = matches!(left.ty.unqualified(), CType::Floating(_))
                         || matches!(right.ty.unqualified(), CType::Floating(_));
@@ -2679,7 +2712,9 @@ impl Checker {
                 let yes = self.check_expr(yes, span)?.rvalue();
                 let no = self.check_expr(no, span)?.rvalue();
                 let ty = if let Some(arithmetic) =
-                    self.target.common_arithmetic(&yes.ty, &no.ty)
+                    self.target.common_arithmetic(
+                        &yes.integer_promotion_type(self.target),
+                        &no.integer_promotion_type(self.target))
                 {
                     arithmetic
                 } else if yes.ty == CType::Void && no.ty == CType::Void {
@@ -2848,13 +2883,17 @@ impl Checker {
                     }
                     CType::Pointer(Box::new(complete))
                 } else if arithmetic && !matches!(op, BinOp::Mod) {
-                    self.target.common_arithmetic(&lhs.ty, &rhs_checked.ty)
+                    self.target.common_arithmetic(
+                        &lhs.integer_promotion_type(self.target),
+                        &rhs_checked.integer_promotion_type(self.target))
                         .ok_or_else(|| type_error(span, "incompatible compound assignment operands"))?
                 } else if matches!(op, BinOp::Mod | BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor) {
-                    self.target.common_integer(&lhs.ty, &rhs_checked.ty)
+                    self.target.common_integer(
+                        &lhs.integer_promotion_type(self.target),
+                        &rhs_checked.integer_promotion_type(self.target))
                         .ok_or_else(|| type_error(span, "incompatible integer compound assignment operands"))?
                 } else if matches!(op, BinOp::Shl | BinOp::Shr) {
-                    self.target.promote(&lhs.ty)
+                    lhs.integer_promotion_type(self.target)
                 } else {
                     return Err(type_error(span, "unsupported compound assignment operator"));
                 };
@@ -2864,7 +2903,7 @@ impl Checker {
                 let rhs_ty = if pointer_arithmetic ||
                     matches!(op, BinOp::Shl | BinOp::Shr)
                 {
-                    self.target.promote(&rhs_checked.ty)
+                    rhs_checked.integer_promotion_type(self.target)
                 } else {
                     computation_ty.clone()
                 };
@@ -2892,7 +2931,7 @@ impl Checker {
                     }
                     CType::Pointer(Box::new(complete))
                 } else {
-                    self.target.promote(&checked.ty)
+                    checked.integer_promotion_type(self.target)
                 };
                 let ty = checked.ty.clone();
                 Ok(CheckedExpr::value(ty, CheckedExprKind::Update {
@@ -2995,7 +3034,7 @@ impl Checker {
                     let promoted = if matches!(typed.ty, CType::Floating(mini_c_syntax::ast::FloatRank::Float)) {
                         CType::Floating(mini_c_syntax::ast::FloatRank::Double)
                     } else {
-                        self.target.promote(&typed.ty)
+                        typed.integer_promotion_type(self.target)
                     };
                     checked_args.push(if promoted == typed.ty {
                         typed
