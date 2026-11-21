@@ -632,6 +632,51 @@
       "kind": "valid",
       "test_ref": "docs/C99_Frontend_Plan.md:F1",
       "source": "int f(void){return sizeof __func__ >= @N@;}"
+    },
+    {
+      "id": "explicit-uintptr-to-pointer",
+      "feature": "F2",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_f2_explicit_integer_to_pointer_preserves_checked_conversion",
+      "source": "typedef unsigned long uintptr_t; int *f(uintptr_t bits){return (int *)bits;} int g(int *p){return f((uintptr_t)p)==p?@N@:0;}"
+    },
+    {
+      "id": "explicit-pointer-to-const-from-uintptr",
+      "feature": "F2",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_f2_explicit_integer_to_pointer_preserves_checked_conversion",
+      "source": "typedef unsigned long uintptr_t; const int *f(uintptr_t bits){return (const int *)bits;} int g(int *p){return f((uintptr_t)p)==p?@N@:0;}"
+    },
+    {
+      "id": "implicit-nonzero-int-to-pointer",
+      "feature": "F2",
+      "expect": "reject",
+      "mini": "supported",
+      "kind": "constraint",
+      "test_ref": "crates/sema/src/tests.rs:c99_f2_explicit_pointer_cast_does_not_enable_implicit_integer_conversions",
+      "source": "int *f(void){return @N@;}"
+    },
+    {
+      "id": "implicit-int-var-to-pointer",
+      "feature": "F2",
+      "expect": "reject",
+      "mini": "supported",
+      "kind": "constraint",
+      "test_ref": "crates/sema/src/tests.rs:c99_f2_explicit_pointer_cast_does_not_enable_implicit_integer_conversions",
+      "source": "int *f(unsigned long bits){return bits;}"
+    },
+    {
+      "id": "explicit-floating-to-pointer",
+      "feature": "F2",
+      "expect": "reject",
+      "mini": "supported",
+      "kind": "constraint",
+      "test_ref": "crates/sema/src/tests.rs:c99_f2_explicit_pointer_cast_does_not_enable_implicit_integer_conversions",
+      "source": "int *f(double bits){return (int *)bits;}"
     }
   ]
 }
