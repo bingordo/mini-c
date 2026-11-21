@@ -2891,7 +2891,7 @@ fn asm3_p02b3_checked_memory_input_preserves_single_lvalue_operand() {
         assert_eq!(inputs[0].constraint,"m");
         assert_eq!(inputs[0].expr.category,Category::LValue,
             "never turn a source m address into an rvalue scalar");
-        assert!(matches!(inputs[0].expr.ty.size_bytes(CTarget::default()),Some(n) if n==width));
+        assert!(matches!(inputs[0].expr.ty.size_bytes(Target::default()),Some(n) if n==width));
         assert_eq!(template,if width==4 {"movl %1,%0"} else {"movq %1,%0"});
     }
 }
