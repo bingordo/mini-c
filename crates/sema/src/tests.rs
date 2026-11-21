@@ -1116,6 +1116,93 @@ fn c99_unnamed_bitfields_skip_initializer_slots_and_zero_width_aligns_next_field
 }
 
 #[test]
+fn c99_bool_bitfields_have_byte_units_and_mixed_int_layout() {
+    // _Bool uses one-byte storage units; distinct named bit-fields can share
+    // the byte and cannot cause the backend to access a whole int word.
+    let checked = check(concat!(
+        "struct Flags {_Bool a:1,b:1;char tail;};",
+        "struct Flags flags={1,0,'X'};"
+    )).expect("_Bool bit fields");
+    let CheckedItem::Declaration(flags) = checked.last().expect("declaration") else {
+        panic!("Flags declaration")
+    };
+    let CType::Struct { members, size, align, .. } = &flags.ty else { panic!("struct") };
+    assert_eq!((*size, *align), (2, 1));
+    assert_eq!(members.iter().map(|m| m.offset).collect::<Vec<_>>(), [0, 0, 1]);
+    assert_eq!(members[0].bit_field.map(|b| (b.shift, b.width)), Some((0,1)));
+    assert_eq!(members[1].bit_field.map(|b| (b.shift, b.width)), Some((1,1)));
+    assert_eq!(members[0].ty, CType::Integer { rank: IntRank::Bool, unsigned: true });
+
+    // Bit position stays globally ordered; _Bool's load/store unit is the
+    // containing byte even after an int field in the same 32-bit word.
+    let checked = check(concat!(
+        "struct Mixed {_Bool a:1;unsigned int b:3;_Bool c:1;char tail;};",
+        "struct Mixed mixed={1,5,1,'Z'};"
+    )).unwrap();
+    let CheckedItem::Declaration(mixed) = checked.last().expect("declaration") else {
+        panic!("Mixed declaration")
+    };
+    let CType::Struct { members, size, align, .. } = &mixed.ty else {panic!("struct")};
+    assert_eq!((*size, *align), (4, 4));
+    assert_eq!(members.iter().map(|m| m.offset).collect::<Vec<_>>(), [0, 0, 0, 1]);
+    assert_eq!(members[0].bit_field.map(|b| (b.shift, b.width)), Some((0,1)));
+    assert_eq!(members[1].bit_field.map(|b| (b.shift, b.width)), Some((1,3)));
+    assert_eq!(members[2].bit_field.map(|b| (b.shift, b.width)), Some((4,1)));
+
+    let checked = check(concat!(
+        "struct Later {unsigned int a:9;_Bool b:1;unsigned int c:5;char tail;};",
+        "struct Later later={511,1,29,'Z'};"
+    )).unwrap();
+    let CheckedItem::Declaration(later) = checked.last().expect("declaration") else {
+        panic!("Later declaration")
+    };
+    let CType::Struct { members, size, align, .. } = &later.ty else {panic!("struct")};
+    assert_eq!((*size, *align), (4, 4));
+    assert_eq!(members.iter().map(|m| m.offset).collect::<Vec<_>>(), [0, 1, 0, 2]);
+    assert_eq!(members[1].bit_field.map(|b| (b.shift, b.width)), Some((1,1)));
+    assert_eq!(members[2].bit_field.map(|b| (b.shift, b.width)), Some((10,5)));
+
+    let checked = check(concat!(
+        "struct Narrow {char a;_Bool :0;_Bool b:1;char tail;};",
+        "struct Narrow narrow={'A',1,'B'};"
+    )).unwrap();
+    let CheckedItem::Declaration(narrow) = checked.last().expect("declaration") else {
+        panic!("Narrow declaration")
+    };
+    let CType::Struct { members, size, align, .. } = &narrow.ty else {panic!("struct")};
+    assert_eq!((*size, *align), (3, 1));
+    assert_eq!(members.iter().map(|m| m.offset).collect::<Vec<_>>(), [0, 1, 2]);
+
+    let checked = check(concat!(
+        "union U {_Bool :0;_Bool a:1;long whole;};",
+        "union U u={1};"
+    )).unwrap();
+    let CheckedItem::Declaration(u) = checked.last().expect("declaration") else {
+        panic!("U declaration")
+    };
+    let CType::Union { members, size, align, .. } = &u.ty else {panic!("union")};
+    assert_eq!((*size, *align), (8, 8));
+    assert_eq!(members.len(), 2);
+    assert_eq!(members[0].bit_field.map(|b| (b.shift, b.width)), Some((0,1)));
+
+    check(concat!(
+        "struct B{_Bool a:1,b:1;unsigned int c:3;};",
+        "struct W{struct B nested[2];};",
+        "struct W w={.nested[1].b=12,.nested[0].a=1};"
+    )).unwrap();
+    check("struct B{_Bool a:1,b:1;};int f(void){return ((struct B){.a=9,.b=0}).a;}")
+        .unwrap();
+    reject("struct B{_Bool a:0;};", "named _Bool bit-field width must be 1");
+    reject("struct B{_Bool a:2;};", "named _Bool bit-field width must be 1");
+    reject("struct B{_Bool :2;int a;};", "unnamed _Bool bit-field width must be 0 or 1");
+    reject("struct B{unsigned char a:1;};", "bit-field requires signed or unsigned int");
+    reject("struct B{_Bool a:1;};int f(void){struct B b;return &b.a!=0;}",
+        "cannot take the address of a bit-field");
+    reject("struct B{_Bool a:1;};int f(void){struct B b;return sizeof b.a;}",
+        "sizeof cannot be applied to a bit-field");
+}
+
+#[test]
 fn c99_bitfield_positional_sparse_and_nested_object_initializers_are_checked() {
     let checked = check(concat!(
         "struct S {unsigned int a:3,b:5;signed int c:7;int tail;};",
