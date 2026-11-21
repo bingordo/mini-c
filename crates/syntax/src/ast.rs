@@ -57,9 +57,11 @@ pub enum TagKind { Struct, Union, Enum }
 pub struct Qualifiers {
     pub is_const: bool,
     pub is_restrict: bool,
+    /// C11 atomic qualification changes access and alignment semantics.
+    pub is_atomic: bool,
 }
 impl Qualifiers {
-    pub fn any(self) -> bool { self.is_const || self.is_restrict }
+    pub fn any(self) -> bool { self.is_const || self.is_restrict || self.is_atomic }
 }
 
 /// IEEE floating formats in hosted C declarations. The native compiler
@@ -84,6 +86,9 @@ pub enum Type {
     Alias(Ident),
     /// Qualifiers bind to this type, not to the nearest pointer's pointee.
     Qualified(Box<Type>, Qualifiers),
+    /// C11 `_Atomic(type-name)` is not interchangeable with ordinary storage.
+    /// Preserve the spelling for checked lowering; never erase its semantics.
+    Atomic(Box<Type>),
     Signed(Box<Type>),
     Unsigned(Box<Type>),
     Pointer(Box<Type>),

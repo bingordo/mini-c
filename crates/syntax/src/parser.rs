@@ -1506,6 +1506,27 @@ impl<'a> Parser<'a> {
             first.span, "type qualifier requires a type specifier"
         ))?;
         let ty = match token.text.as_ref() {
+            "_Atomic" => {
+                // C11 _Atomic(type-name) is a type specifier, not a qualifier.
+                // Retain it in the AST so semantic analysis cannot mistake
+                // these accesses for ordinary memory operations.
+                self.take()?;
+                self.expect("(")?;
+                let (base, _) = self.parse_type()?.ok_or_else(|| {
+                    Diagnostic::coded(self.eof_span(),
+                        DiagnosticCode::SyntaxInvalidDeclaration,
+                        "expected type name in _Atomic(...)")
+                })?;
+                let (name, inner, nested, _) =
+                    self.parse_declarator_shape(true)?.finish(base);
+                if !name.is_empty() || nested.is_some() {
+                    return Err(Diagnostic::coded(token.span,
+                        DiagnosticCode::SyntaxInvalidDeclaration,
+                        "_Atomic(...) requires a type name"));
+                }
+                self.expect(")")?;
+                Type::Atomic(Box::new(inner))
+            }
             "enum" => {
                 self.take()?;
                 let tag = self.peek()?.filter(|t| matches!(t.kind,
@@ -1519,6 +1540,7 @@ impl<'a> Parser<'a> {
                     let trailing = self.parse_qualifiers()?;
                     qualifiers.is_const |= trailing.is_const;
                     qualifiers.is_restrict |= trailing.is_restrict;
+                    qualifiers.is_atomic |= trailing.is_atomic;
                     if qualifiers.any() { ty = Type::Qualified(Box::new(ty), qualifiers); }
                     return Ok(Some((ty, first.span.lo)));
                 }
@@ -1560,6 +1582,7 @@ impl<'a> Parser<'a> {
                     let trailing = self.parse_qualifiers()?;
                     qualifiers.is_const |= trailing.is_const;
                     qualifiers.is_restrict |= trailing.is_restrict;
+                    qualifiers.is_atomic |= trailing.is_atomic;
                     if qualifiers.any() { ty = Type::Qualified(Box::new(ty), qualifiers); }
                     return Ok(Some((ty, first.span.lo)));
                 }
@@ -1656,6 +1679,7 @@ impl<'a> Parser<'a> {
                         "unsigned" if sign.is_none() => sign = Some(true),
                         "signed" if sign.is_none() => sign = Some(false),
                         "const" => qualifiers.is_const = true,
+                        "_Atomic" => qualifiers.is_atomic = true,
                         "restrict" | "__restrict" | "__restrict__" =>
                             qualifiers.is_restrict = true,
                         "char" | "short" | "int" | "long" | "unsigned" | "signed" => {
@@ -1688,6 +1712,7 @@ impl<'a> Parser<'a> {
         let trailing = self.parse_qualifiers()?;
         qualifiers.is_const |= trailing.is_const;
         qualifiers.is_restrict |= trailing.is_restrict;
+        qualifiers.is_atomic |= trailing.is_atomic;
         let ty = if qualifiers.any() {
             Type::Qualified(Box::new(ty), qualifiers)
         } else { ty };
@@ -1703,14 +1728,24 @@ impl<'a> Parser<'a> {
                 "const" => result.is_const = true,
                 "restrict" | "__restrict" | "__restrict__" => result.is_restrict = true,
                 "_Atomic" => {
-                    // Do not strip this qualifier: atomic load/store/RMW
-                    // semantics and alignment are not represented in the
-                    // checked Mini-C type system or native backend yet.
-                    return Err(Diagnostic::coded(
-                        token.span,
-                        DiagnosticCode::SyntaxInvalidDeclaration,
-                        "C11 _Atomic type is unsupported (requires atomic-aware type checking and code generation)",
-                    ));
+                    // Parenthesized _Atomic(type-name) is a type specifier,
+                    // not the type qualifier. Preserve both forms.
+                    self.peek()?;
+                    if self.second_lookahead.is_none() {
+                        self.second_lookahead = Some(
+                            self.scanner.next_parser_token(Some(&self.scopes))?
+                        );
+                    }
+                    if self.second_lookahead.as_ref().and_then(Option::as_ref)
+                        .is_some_and(|next| next.text.as_ref() == "(") {
+                        break;
+                    }
+                    if result.is_atomic {
+                        return Err(Diagnostic::coded(
+                            token.span, DiagnosticCode::SyntaxInvalidDeclaration,
+                            "duplicate C11 _Atomic qualifier"));
+                    }
+                    result.is_atomic = true;
                 },
                 _ => break,
             }
@@ -2204,21 +2239,18 @@ mod tests {
         // The existing GCC bootstrap remains the supported path.
         for source in [
             "_Atomic int counter;",
-            "_Atomic(int) counter;",
             "int _Atomic counter;",
             "typedef _Atomic int Counter;",
             "struct S { _Atomic int state; };",
             "int f(void) { _Atomic int value; return 0; }",
             "int f(_Atomic int *value);",
         ] {
-            let diagnostic = Parser::new(source).next_item().expect_err(source);
-            assert_eq!(diagnostic.code, DiagnosticCode::SyntaxInvalidDeclaration,
-                "{source}: {diagnostic:?}");
-            assert!(diagnostic.message.contains("C11 _Atomic type is unsupported"),
-                "{source}: {diagnostic:?}");
-            let expected_offset = source.find("_Atomic").unwrap();
-            assert_eq!(diagnostic.span.lo, expected_offset, "{source}");
+            // These types parse but may never lower as ordinary memory.
+            assert!(Parser::new(source).next_item().is_ok(), "{source}");
         }
+        let duplicate = Parser::new("_Atomic _Atomic int x;")
+            .next_item().expect_err("duplicate qualifier");
+        assert!(duplicate.message.contains("duplicate C11 _Atomic qualifier"));
         // Non-atomic input and the ordinary const type qualifier must
         // retain their existing parser behavior.
         assert!(Parser::new("int plain;").next_item().is_ok());

@@ -1846,6 +1846,8 @@ impl Lower<'_> {
                 let v = self.expression(b, inner)?;
                 Self::convert(b, v, &inner.ty, &expr.ty)
             }
+            CheckedExprKind::BuiltinAtomic(_) => Err(
+                "GNU atomic builtin requires native TypeId atomic legalization; Cranelift cannot emit an ordinary memory access or external call".into()),
             CheckedExprKind::BuiltinCtz(inner) => {
                 // GCC defines __builtin_ctz(0) as undefined behavior. The
                 // source must guard zero; CLIF ctz is permitted to produce

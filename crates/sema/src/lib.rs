@@ -3,6 +3,7 @@
 //! never retained in the checker. No filesystem, global state or output side effects.
 pub mod types;
 pub mod const_eval;
+pub mod builtins;
 
 use std::collections::{HashMap, HashSet};
 use std::cell::{Cell, RefCell};
@@ -65,6 +66,11 @@ pub enum CheckedExprKind {
     /// GCC __builtin_ctz(unsigned int): the argument is evaluated exactly once.
     /// As in GCC, a zero operand has undefined behavior; callers must guard it.
     BuiltinCtz(Box<CheckedExpr>),
+    /// Typed GNU atomic builtin. The operands are evaluated once, and the
+    /// memory order/weak flag are checked source constants, not runtime
+    /// arguments. Native TypeId lowering must be explicit; Cranelift rejects
+    /// this until correct machine atomics exist.
+    BuiltinAtomic(Box<CheckedAtomicBuiltin>),
     Convert(Box<CheckedExpr>),
     Load(Box<CheckedExpr>),
     /// Array lvalue conversion yields a pointer to the first element,
@@ -75,6 +81,20 @@ pub enum CheckedExprKind {
     /// A non-addressable C bit-field member, stored in one 32-bit unit.
     /// It retains integer lvalue semantics for assignment and ++/--.
     BitFieldMember(Box<CheckedExpr>, u64, u8, u8),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CheckedAtomicBuiltin {
+    pub builtin: builtins::BuiltinId,
+    /// Only runtime value operands in original evaluation order. The order
+    /// and weak arguments are constants and are not evaluated at runtime.
+    pub operands: Vec<CheckedExpr>,
+    pub bytes: u8,
+    pub alignment: u8,
+    /// GNU C11 memory-order constants 0..=5.
+    pub success_order: u8,
+    pub failure_order: Option<u8>,
+    pub weak: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -403,7 +423,16 @@ impl Checker {
 
     fn resolve(&mut self, ty: &Type, span: Span) -> Result<CType, Diagnostic> {
         Ok(match ty {
+            Type::Atomic(_) => {
+                // Atomic loads/stores and alignment are not ordinary C accesses.
+                return Err(type_error(span,
+                    "C11 _Atomic type is unsupported until atomic-aware checked types and TypeId lowering are implemented"));
+            }
             Type::Qualified(inner, qualifiers) => {
+                if qualifiers.is_atomic {
+                    return Err(type_error(span,
+                        "C11 _Atomic type is unsupported until atomic-aware checked types and TypeId lowering are implemented"));
+                }
                 let base = self.resolve(inner, span)?;
                 if qualifiers.is_restrict && !matches!(base.unqualified(), CType::Pointer(_)) {
                     return Err(type_error(span, "restrict requires a pointer object type"));
@@ -1748,6 +1777,9 @@ impl Checker {
                 rank: IntRank::Char, unsigned: !self.target.char_is_signed,
             },
             Type::Qualified(inner, qualifiers) => {
+                if qualifiers.is_atomic {
+                    return Err(type_error(span, "C11 _Atomic type is unsupported in casts"));
+                }
                 if qualifiers.is_restrict {
                     return Err(type_error(span, "restrict requires a pointer object type"));
                 }
@@ -2004,6 +2036,9 @@ impl Checker {
             Type::Pointer(inner) => CType::Pointer(Box::new(
                 self.resolve_sizeof_type(inner, span)?)),
             Type::Qualified(inner, qualifiers) => {
+                if qualifiers.is_atomic {
+                    return Err(type_error(span, "C11 _Atomic type is unsupported in sizeof"));
+                }
                 let inner = self.resolve_sizeof_type(inner, span)?;
                 if qualifiers.is_restrict && !matches!(inner.unqualified(), CType::Pointer(_)) {
                     return Err(type_error(span, "restrict requires pointer type"));
@@ -2039,6 +2074,125 @@ impl Checker {
             _ => return Err(type_error(span,
                 "unsupported type-name in sizeof, cast or compound literal")),
         })
+    }
+
+    /// A single checked source entry point for all GNU atomic builtin spellings.
+    /// This produces a typed operation plan but never a generic C Call. Target
+    /// code generation remains gated until true atomic lowering is available.
+    fn check_atomic_builtin(
+        &self, spec: &builtins::BuiltinSpec, args: &[Expr], span: Span,
+    ) -> Result<CheckedExpr, Diagnostic> {
+        use builtins::BuiltinId as A;
+        let success = self.atomic_builtin_constant_arg(
+            &args[spec.memory_order_argument.expect("atomic builtin has order")],
+            span, "memory order")?;
+        let failure = spec.failure_order_argument.map(|index|
+            self.atomic_builtin_constant_arg(&args[index], span, "failure memory order")
+        ).transpose()?;
+        if !builtins::valid_atomic_orders(spec.id, success, failure) {
+            return Err(type_error(span, format!(
+                "{} has an invalid C11 success/failure memory-order combination", spec.name)));
+        }
+        let weak = spec.weak_argument.map(|index|
+            self.atomic_builtin_constant_arg(&args[index], span, "weak compare-exchange flag")
+        ).transpose()?;
+        if weak.is_some_and(|flag| flag > 1) {
+            return Err(type_error(span, "atomic compare-exchange weak flag must be 0 or 1"));
+        }
+        let weak = weak.unwrap_or(0) != 0;
+        let mut operands = Vec::new();
+        let (result_ty, bytes, alignment) =
+            if matches!(spec.id, A::AtomicThreadFence | A::AtomicSignalFence) {
+                (CType::Void, 0, 0)
+            } else {
+                let address = self.check_expr(&args[0],
+                    args[0].location().unwrap_or(span))?.rvalue();
+                let CType::Pointer(pointee) = &address.ty else {
+                    return Err(type_error(span, format!(
+                        "{} requires a pointer to an integer object", spec.name)));
+                };
+                let CType::Integer { rank, .. } = pointee.unqualified() else {
+                    return Err(type_error(span, format!(
+                        "{} requires an integer object (pointer and aggregate atomics are pending)",
+                        spec.name)));
+                };
+                let width = self.target.bits(*rank);
+                let bytes = u8::try_from(width / 8)
+                    .map_err(|_| type_error(span, "unsupported atomic integer width"))?;
+                let alignment = pointee.align_bytes(self.target)
+                    .and_then(|align| u8::try_from(align).ok())
+                    .ok_or_else(|| type_error(span, "unsupported atomic integer alignment"))?;
+                if !matches!(width, 8 | 16 | 32 | 64) ||
+                    alignment < bytes || !alignment.is_power_of_two()
+                {
+                    return Err(type_error(span, "atomic object requires a naturally aligned 8/16/32/64-bit integer"));
+                }
+                if spec.id != A::AtomicLoadN && pointee.is_const() {
+                    return Err(type_error(span, format!(
+                        "{} requires a writable integer object", spec.name)));
+                }
+                let value_ty = pointee.unqualified().clone();
+                operands.push(address);
+                let result_ty = match spec.id {
+                    A::AtomicLoadN => value_ty,
+                    A::AtomicStoreN | A::AtomicExchangeN |
+                    A::AtomicFetchAdd | A::AtomicFetchSub |
+                    A::AtomicFetchAnd | A::AtomicFetchOr | A::AtomicFetchXor => {
+                        let argument = &args[1];
+                        let checked = self.check_expr(argument,
+                            argument.location().unwrap_or(span))?;
+                        operands.push(self.convert_for_assignment(
+                            checked, &value_ty, argument, argument.location().unwrap_or(span))?);
+                        if spec.id == A::AtomicStoreN { CType::Void } else { value_ty }
+                    }
+                    A::AtomicCompareExchangeN => {
+                        // GNU CAS passes expected by reference. The conditional
+                        // failure writeback is observable even when Bool unused.
+                        let expected = self.check_expr(&args[1],
+                            args[1].location().unwrap_or(span))?.rvalue();
+                        let CType::Pointer(expected_pointee) = &expected.ty else {
+                            return Err(type_error(span,
+                                "atomic compare-exchange expected argument must be a pointer"));
+                        };
+                        if expected_pointee.is_const() ||
+                            !expected_pointee.unqualified().same_type(&value_ty)
+                        {
+                            return Err(type_error(span,
+                                "atomic compare-exchange expected pointer requires matching writable integer type"));
+                        }
+                        operands.push(expected);
+                        let argument = &args[2];
+                        let checked = self.check_expr(argument,
+                            argument.location().unwrap_or(span))?;
+                        operands.push(self.convert_for_assignment(
+                            checked, &value_ty, argument, argument.location().unwrap_or(span))?);
+                        CType::Integer { rank: IntRank::Bool, unsigned: true }
+                    }
+                    _ => unreachable!("fences handled above; CTZ is separately checked"),
+                };
+                (result_ty, bytes, alignment)
+            };
+        Ok(CheckedExpr::value(result_ty,
+            CheckedExprKind::BuiltinAtomic(Box::new(CheckedAtomicBuiltin {
+                builtin: spec.id, operands, bytes, alignment,
+                success_order: success, failure_order: failure, weak,
+            }))))
+    }
+
+    fn atomic_builtin_constant_arg(
+        &self, expr: &Expr, span: Span, label: &str,
+    ) -> Result<u8, Diagnostic> {
+        let actual_span = expr.location().unwrap_or(span);
+        let checked = self.check_expr(expr, actual_span)?.rvalue();
+        if !checked.ty.is_integer() {
+            return Err(type_error(actual_span, format!(
+                "atomic {label} requires an integer constant expression")));
+        }
+        let value = const_eval::evaluate(&checked, self.target)
+            .map_err(|_| type_error(actual_span,
+                format!("atomic {label} requires an integer constant expression")))?;
+        u8::try_from(value).map_err(|_| type_error(actual_span,
+            format!("atomic {label} is outside the supported constant range")))
     }
 
     fn check_expr(&self, expr: &Expr, span: Span) -> Result<CheckedExpr, Diagnostic> {
@@ -2617,32 +2771,49 @@ impl Checker {
                 }))
             }
             Expr::Call(callee, args) => {
-                // Recognize only the source-pinned GCC integer builtin required
-                // by FreeBSD ffs. Do not invent prototypes for other builtins,
-                // or steal a visible user declaration of the same name.
+                // One typed builtin registry owns spelling, arity and target
+                // lowering admission. Never turn an unimplemented GNU atomic
+                // into a plain external call, regardless of a visible symbol.
                 if let Expr::Name(name) = callee.without_location() {
-                    if name == "__builtin_ctz" && self.lookup(name).is_none() {
-                        if args.len() != 1 {
-                            return Err(Diagnostic::coded(span,
-                                DiagnosticCode::SemanticWrongArgumentCount,
-                                "__builtin_ctz expects exactly one argument"));
+                    if let Some(spec) = builtins::lookup(name) {
+                        if spec.lowering == builtins::LoweringClass::AtomicIrRequired
+                            || self.lookup(name).is_none()
+                        {
+                            if args.len() != spec.argument_count {
+                                return Err(Diagnostic::coded(span,
+                                    DiagnosticCode::SemanticWrongArgumentCount,
+                                    if spec.argument_count == 1 {
+                                        format!("{name} expects exactly one argument")
+                                    } else {
+                                        format!("{name} expects exactly {} arguments", spec.argument_count)
+                                    }));
+                            }
+                            match spec.id {
+                                builtins::BuiltinId::Ctz32 => {
+                                    let argument = &args[0];
+                                    let argument_span = argument.location().unwrap_or(span);
+                                    let typed = self.check_expr(argument, argument_span)?.rvalue();
+                                    if !typed.ty.is_integer() {
+                                        return Err(Diagnostic::coded(argument_span,
+                                            DiagnosticCode::SemanticInvalidOperatorOperands,
+                                            "__builtin_ctz requires an integer argument"));
+                                    }
+                                    // The backend already implements this
+                                    // single-evaluation unsigned-int builtin.
+                                    let uint = CType::Integer {
+                                        rank: IntRank::Int, unsigned: true,
+                                    };
+                                    let argument = self.convert(typed, &uint);
+                                    return Ok(CheckedExpr::value(CType::int(),
+                                        CheckedExprKind::BuiltinCtz(Box::new(argument))));
+                                }
+                                _ => return self.check_atomic_builtin(spec, args, span),
+                            }
                         }
-                        let argument = &args[0];
-                        let argument_span = argument.location().unwrap_or(span);
-                        let typed = self.check_expr(argument, argument_span)?.rvalue();
-                        if !typed.ty.is_integer() {
-                            return Err(Diagnostic::coded(argument_span,
-                                DiagnosticCode::SemanticInvalidOperatorOperands,
-                                "__builtin_ctz requires an integer argument"));
-                        }
-                        // GCC's signature is int __builtin_ctz(unsigned int).
-                        // Conversion, including signed-negative inputs, happens
-                        // before counting zero bits. The zero case is GCC UB;
-                        // do not silently define a special return value here.
-                        let uint = CType::Integer { rank: IntRank::Int, unsigned: true };
-                        let argument = self.convert(typed, &uint);
-                        return Ok(CheckedExpr::value(CType::int(),
-                            CheckedExprKind::BuiltinCtz(Box::new(argument))));
+                    } else if builtins::reserved_name(name) {
+                        return Err(Diagnostic::coded(span,
+                            DiagnosticCode::SemanticInvalidOperatorOperands,
+                            format!("unsupported compiler builtin {name}; no implicit external call")));
                     }
                 }
                 let callee_span = callee.location().unwrap_or(span);

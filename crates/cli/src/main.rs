@@ -247,7 +247,8 @@ mod tests {
         assert!(failure.contains("C11 _Atomic type is unsupported"), "{failure}");
         assert!(failure.contains("atomic.c:2:"), "{failure}");
         let failure = check_recovering(root.to_str().unwrap(), Some(&config), 4).unwrap_err();
-        assert!(failure.contains("error[S0105]"), "{failure}");
+        // Syntax is now retained; the checked semantic type is still rejected.
+        assert!(failure.contains("error[T0001]"), "{failure}");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
