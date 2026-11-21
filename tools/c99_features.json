@@ -553,6 +553,42 @@
       "source": "struct S{unsigned int a:3,b:5;};int f(void){return ((struct S){.a=@N@%8,.b=11}).a;}"
     },
     {
+      "id": "bitfield-unnamed-padding",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_unnamed_bitfields_skip_initializer_slots_and_zero_width_aligns_next_field",
+      "source": "struct S{unsigned int a:3;unsigned int :2;unsigned int b:5;};int f(void){struct S s={@N@%8,7};return s.a+s.b;}"
+    },
+    {
+      "id": "bitfield-zero-width-boundary",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_unnamed_bitfields_skip_initializer_slots_and_zero_width_aligns_next_field",
+      "source": "struct S{char first;unsigned int :0;char second;};int f(void){struct S s={@N@%100,7};return sizeof(s)+s.second;}"
+    },
+    {
+      "id": "bitfield-union-unnamed",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_unnamed_bitfields_skip_initializer_slots_and_zero_width_aligns_next_field",
+      "source": "union U{unsigned int :0;unsigned int a:3;long whole;};union U u={@N@%8};int f(void){return u.a;}"
+    },
+    {
+      "id": "bitfield-unnamed-overflow",
+      "feature": "F3",
+      "expect": "reject",
+      "mini": "supported",
+      "kind": "constraint",
+      "test_ref": "crates/sema/src/tests.rs:c99_unnamed_bitfields_skip_initializer_slots_and_zero_width_aligns_next_field",
+      "source": "struct S{unsigned int :33;int x;};int f(void){return @N@;}"
+    },
+    {
       "id": "complex-type",
       "feature": "F5",
       "expect": "accept",
