@@ -151,10 +151,55 @@
       "id": "volatile-type",
       "feature": "F1",
       "expect": "accept",
-      "mini": "gap",
+      "mini": "supported",
       "kind": "valid",
-      "test_ref": "docs/C99_Frontend_Plan.md:F1",
+      "test_ref": "crates/sema/src/tests.rs:c99_volatile_qualification_is_distinct_and_preserved",
       "source": "int f(void){volatile int x=@N@;return x;}"
+    },
+    {
+      "id": "volatile-pointer-read",
+      "feature": "F1",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_volatile_typedef_arrays_members_and_pointer_qualifiers",
+      "source": "int f(volatile int *p){return *p + @N@;}"
+    },
+    {
+      "id": "volatile-pointer-object",
+      "feature": "F1",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_volatile_qualification_is_distinct_and_preserved",
+      "source": "int f(int *p){int *volatile q=p;return q == p ? @N@ : 0;}"
+    },
+    {
+      "id": "volatile-const-object",
+      "feature": "F1",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_volatile_qualification_is_distinct_and_preserved",
+      "source": "int f(void){const volatile int x=@N@;return x;}"
+    },
+    {
+      "id": "volatile-member-read",
+      "feature": "F1",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_volatile_typedef_arrays_members_and_pointer_qualifiers",
+      "source": "struct S{int x;};int f(volatile struct S *p){return p->x + @N@;}"
+    },
+    {
+      "id": "volatile-pointee-drop",
+      "feature": "F1",
+      "expect": "reject",
+      "mini": "supported",
+      "kind": "constraint",
+      "test_ref": "crates/sema/src/tests.rs:c99_volatile_typedef_arrays_members_and_pointer_qualifiers",
+      "source": "int f(volatile int *p){int *q=p;return *q + @N@;}"
     },
     {
       "id": "designated-init",
