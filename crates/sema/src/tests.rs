@@ -2990,3 +2990,81 @@ fn c99_conditional_pointer_preserves_union_of_cv_qualifiers() {
     assert!(pointee.is_const() && pointee.is_volatile());
     assert!(matches!(expr.kind, CheckedExprKind::Conditional(..)));
 }
+
+#[test]
+fn c99_f2_cast_to_void_is_evaluated_and_discards_any_object_value() {
+    let items = check(concat!(
+        "struct Pair { int x, y; }; ",
+        "int count; ",
+        "void notify(void); ",
+        "int f(int *p) { ",
+        " (void)(++count); (void)notify(); (void)*p; ",
+        " struct Pair pair = {1,2}; (void)pair; ",
+        " (void)count; (void)(count+1); return count; }"
+    )).unwrap();
+    let CheckedItem::Function(fun) = &items[3] else { panic!("function"); };
+    let CheckedStmt::Block(stmts) = &fun.body else { panic!("body"); };
+    // The explicit non-void casts retain a checked Convert node containing
+    // their operand, rather than silently dropping side effects during check.
+    for i in [0usize, 2, 4, 5, 6] {
+        let CheckedStmt::Expr(Some(expr)) = &stmts[i] else { panic!("expr {i}"); };
+        assert_eq!(expr.ty, CType::Void, "{i}");
+        assert!(matches!(expr.kind, CheckedExprKind::Convert(_)), "{i}");
+    }
+    let CheckedStmt::Expr(Some(expr)) = &stmts[1] else { panic!("void call"); };
+    assert_eq!(expr.ty, CType::Void);
+    // Casting a void-valued call to void is still an evaluated call.
+    assert!(matches!(expr.kind, CheckedExprKind::Call(..)));
+    let CheckedStmt::Expr(Some(expr)) = &stmts[0] else { panic!("increment"); };
+    let CheckedExprKind::Convert(inner) = &expr.kind else { panic!("convert"); };
+    assert!(matches!(inner.kind, CheckedExprKind::Update { .. }));
+}
+
+#[test]
+fn c99_f2_void_cast_in_comma_and_statement_context() {
+    let items = check(concat!(
+        "int f(int x) { return ((void)(x += 1), x); } ",
+        "void g(void) { (void)0; } "
+    )).unwrap();
+    let CheckedItem::Function(fun) = &items[0] else { panic!("function"); };
+    let CheckedStmt::Block(stmts) = &fun.body else { panic!("body"); };
+    let CheckedStmt::Return(Some(expr)) = &stmts[0] else { panic!("return"); };
+    assert_eq!(expr.ty, CType::int());
+    let CheckedExprKind::Comma(left, _) = &expr.kind else { panic!("comma"); };
+    assert_eq!(left.ty, CType::Void);
+    assert!(matches!(left.kind, CheckedExprKind::Convert(_)));
+    reject("int f(int x) { return (void)x; }", "incompatible assignment");
+    reject("int f(void) { return (void)undeclared; }", "undeclared");
+}
+
+#[test]
+fn c99_f2_real_floating_casts_retain_checked_conversion_and_type() {
+    use mini_c_syntax::ast::FloatRank;
+    let examples = [
+        ("float f(int x) { return (float)x; }",
+            CType::Floating(FloatRank::Float)),
+        ("int f(float x) { return (int)x; }", CType::int()),
+        ("double f(float x) { return (double)x; }",
+            CType::Floating(FloatRank::Double)),
+        ("float f(double x) { return (float)x; }",
+            CType::Floating(FloatRank::Float)),
+        ("long double f(int x) { return (long double)x; }",
+            CType::Floating(FloatRank::LongDouble)),
+        ("int f(float x) { return (_Bool)x; }",
+            CType::int()),
+        ("float f(float x) { return (const float)x; }",
+            CType::Floating(FloatRank::Float)),
+    ];
+    for (source, expected) in examples {
+        let items = check(source).unwrap_or_else(|why| panic!("{source}: {why:?}"));
+        let CheckedItem::Function(fun) = &items[0] else { panic!("function"); };
+        let CheckedStmt::Block(stmts) = &fun.body else { panic!("body"); };
+        let CheckedStmt::Return(Some(value)) = &stmts[0] else { panic!("return"); };
+        assert_eq!(value.ty, expected, "{source}");
+        // Explicit casts must produce typed Convert except when no
+        // representation change is needed or the return itself converts.
+        assert!(matches!(value.kind, CheckedExprKind::Convert(..)) || 
+            matches!(value.kind, CheckedExprKind::Load(..)), "{source}: {:?}", value.kind);
+    }
+    reject("int f(void) { return (float)(int*)0; }", "unsupported cast type-name");
+}
