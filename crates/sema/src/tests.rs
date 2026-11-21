@@ -105,8 +105,8 @@ fn c99_designated_initializer_single_level_types_order_and_bounds() {
     reject("struct S {int x;}; struct S s={.missing=1};",
         "unknown initializer member");
     reject("int a[3]={[4]=8};", "exceeds bound");
-    reject("int a[4]={[2]=8,[2]=9};", "duplicate initializer target");
-    reject("struct S {int x;}; struct S s={.x=1,.x=2};", "duplicate initializer target");
+    check("int a[4]={[2]=8,[2]=9};").unwrap();
+    check("struct S {int x;}; struct S s={.x=1,.x=2};").unwrap();
     reject("int n; int a[9]={[n]=3};", "integer constant expression");
     reject("int a[9]={[1.5]=3};", "integer constant expression");
     reject("int a[9]={.field=3};", "field designator requires");
@@ -141,18 +141,82 @@ fn c99_nested_designators_resolve_paths_preserve_siblings_and_reject_overlap() {
     check("struct S {int a[2];int b;}; struct S x={.a[1]=7,.b=9};").unwrap();
     check("struct S {int a;int b;}; struct S x[2]={[1].a=3,[1].b=7};").unwrap();
     reject("int a[2][2]={[1][2]=4};", "exceeds bound");
-    reject("int a[2][2]={[1][1]=4,[1][1]=5};",
-        "overlapping initializer targets require override handling");
+    check("int a[2][2]={[1][1]=4,[1][1]=5};").unwrap();
     reject("int a[2][2]={[1]={3,4},[1][0]=5};",
         "overlapping initializer targets require override handling");
     reject("struct S {int a;int b;}; struct S x={.a=1,.b.field=3};",
         "field designator requires struct or union initializer");
     reject("struct S {int a;int b;}; struct S x[2]={[0].missing=3};",
         "unknown initializer member");
-    reject("union U {int a[2]; long b;}; union U x={.a[0]=3,.b=4};",
-        "overlapping initializer targets require override handling");
+    check("union U {int a[2]; long b;}; union U x={.a[0]=3,.b=4};").unwrap();
     reject("struct S {int a[3];int b;}; struct S x={.a[0]=3,4};",
         "positional continuation after nested designator is not yet supported");
+}
+
+#[test]
+fn c99_overriding_designators_drop_old_values_without_clobbering_siblings() {
+    let checked = check(concat!(
+        "struct B{unsigned int a:3,b:5;};",
+        "struct B first={.a=1,.b=3,.a=4};",
+        "struct B second={1,3,.a=5};",
+        "struct B third={.b=2,.b=29,.a=7};"
+    )).expect("overwritten bit-fields should retain final value");
+    for (index, expected) in [(1, vec![1,0]), (2, vec![1,0]), (3, vec![1,0])] {
+        let CheckedItem::Declaration(decl) = &checked[index] else {panic!("decl")};
+        let Some(CheckedExpr {kind: CheckedExprKind::SparseInitializer(entries),..}) =
+            &decl.initializer else {panic!("sparse")};
+        assert_eq!(entries.iter().map(|(i,_)|*i).collect::<Vec<_>>(), expected);
+    }
+
+    let checked = check(concat!(
+        "struct B{unsigned int a:3,b:5;};",
+        "struct Box{struct B bits[2];int tail;};",
+        "struct Box box={.bits[0].a=1,.bits[1].b=11,",
+        ".bits[0].a=3,.bits[0].b=19,.tail=7};"
+    )).unwrap();
+    let CheckedItem::Declaration(decl) = &checked[2] else {panic!("box")};
+    let Some(CheckedExpr {kind: CheckedExprKind::DeepInitializer(entries),..}) =
+        &decl.initializer else {panic!("deep")};
+    assert_eq!(entries.iter().map(|(path,_)|path.as_slice()).collect::<Vec<_>>(),
+        [&[0,1,1][..], &[0,0,0][..], &[0,0,1][..], &[1][..]]);
+
+    let checked = check(concat!(
+        "union U{struct B{unsigned int a:3,b:5;} bits;unsigned long raw;};",
+        "union U u={.bits.a=3,.bits.b=7,.raw=17};"
+    )).unwrap();
+    let CheckedItem::Declaration(decl) = &checked[1] else {panic!("union")};
+    let Some(CheckedExpr {kind: CheckedExprKind::DeepInitializer(entries),..}) =
+        &decl.initializer else {panic!("deep union")};
+    assert_eq!(entries.iter().map(|(path,_)|path.as_slice()).collect::<Vec<_>>(),
+        [&[1][..]]);
+
+    let checked = check(concat!(
+        "union U{unsigned int a:3;unsigned int b:5;};",
+        "union U u={.a=1,.b=3,.a=5};"
+    )).unwrap();
+    let CheckedItem::Declaration(decl) = &checked[1] else {panic!("union")};
+    let Some(CheckedExpr {kind: CheckedExprKind::SparseInitializer(entries),..}) =
+        &decl.initializer else {panic!("sparse union")};
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].0, 0);
+
+    let checked = check(concat!(
+        "int side(void){return 1;}",
+        "struct B{unsigned a:3;};",
+        "int f(void){struct B b={.a=side(),.a=3};return b.a;}"
+    )).unwrap();
+    let CheckedItem::Function(fun) = &checked[2] else {panic!("function")};
+    let CheckedStmt::Block(body) = &fun.body else {panic!("body")};
+    let CheckedStmt::Decl(decl) = &body[0] else {panic!("local")};
+    let Some(CheckedExpr {kind: CheckedExprKind::SparseInitializer(entries),..}) =
+        &decl.initializer else {panic!("sparse")};
+    assert_eq!(entries.len(), 1, "overridden side effects must not be lowered");
+
+    check("int a[4]={[2]=5,[0]=1,[2]=9};").unwrap();
+    check("struct B{unsigned a:3,b:5;};int f(void){struct B b=(struct B){.a=1,.a=3,.b=8};return b.a;}")
+        .unwrap();
+    reject("struct B{unsigned a:3,b:5;};struct W{struct B bits;};struct W w={.bits={1,2},.bits.b=3};",
+        "overlapping initializer targets require override handling");
 }
 
 #[test]
@@ -191,8 +255,7 @@ fn c99_compound_literals_have_object_types_lvalues_and_inferred_array_bounds() {
 
     reject("int f(void){ return (void){1}; }", "complete object type");
     reject("int f(void){ return (int[2]){1,2,3}[0]; }", "too many array initializers");
-    reject("int f(void){ return (int[]){[2]=4,[2]=5}[0]; }",
-        "duplicate initializer target");
+    check("int f(void){ return (int[]){[2]=4,[2]=5}[0]; }").unwrap();
     check("int *global=(int[]){1,2};").unwrap();
 }
 
@@ -334,7 +397,7 @@ fn c99_file_scope_compound_literals_have_unique_static_objects_and_checked_initi
     check("int f(void){int *p=(int[]){1,2};return p[0];}").unwrap();
 
     reject("int *bad=(int[2]){1,2,3};", "too many array initializers");
-    reject("int *bad=(int[]){[1]=2,[1]=3};", "duplicate initializer target");
+    check("int *final=(int[]){[1]=2,[1]=3};").unwrap();
     reject("int *bad=(void[]){1};", "complete object type");
     reject("int *bad=&(int){1+unknown};", "undeclared identifier");
 }
@@ -1461,8 +1524,7 @@ fn c99_bitfield_positional_sparse_and_nested_object_initializers_are_checked() {
 
     reject("struct B{unsigned int a:3;};struct B b={.a=unknown};",
         "undeclared");
-    reject("struct B{unsigned int a:3;};struct B b={.a=1,.a=2};",
-        "duplicate initializer");
+    check("struct B{unsigned int a:3;};struct B b={.a=1,.a=2};").unwrap();
     reject("struct B{unsigned int a:3;};struct B b={1,2};",
         "too many struct initializers");
     reject("struct B{unsigned int a:3;};struct B b={.missing=2};",

@@ -1046,9 +1046,10 @@ impl Checker {
         Ok((slots, current.clone()))
     }
 
-    /// Overlapping whole subobjects and distinct members of the *same union*
-    /// must not be accepted until override semantics are modeled. Independent
-    /// paths to members of a struct/array are safe to emit in source order.
+    /// Two paths overlap if they designate the same object, one contains
+    /// the other, or they select different arms of the same union. Distinct
+    /// struct/array members are independent, even if their bit-fields occupy
+    /// the same underlying storage unit.
     fn initializer_paths_overlap(ty: &CType, a: &[usize], b: &[usize]) -> bool {
         let mut current = ty;
         for (left, right) in a.iter().zip(b) {
@@ -1067,6 +1068,31 @@ impl Checker {
         }
         // Exact duplicate or parent/child overwrite.
         true
+    }
+
+    /// Last-initializer-wins is safe without additional lowering for exact
+    /// duplicate leaf paths and different active members of a union: the
+    /// earlier *entire* checked initializer can be discarded. Partial
+    /// parent/child overrides must instead preserve untouched subobjects,
+    /// and remain fail-closed until flattened into leaf writes.
+    fn initializer_override_is_whole(ty: &CType, a: &[usize], b: &[usize]) -> bool {
+        if a == b { return true; }
+        let mut current = ty;
+        for (left, right) in a.iter().zip(b) {
+            if left != right {
+                return matches!(current.unqualified(), CType::Union { .. });
+            }
+            current = match current.unqualified() {
+                CType::Struct { members, .. } | CType::Union { members, .. } =>
+                    match members.get(*left) {
+                        Some(member) => &member.ty,
+                        None => return false,
+                    },
+                CType::Array(element, _) => element.as_ref(),
+                _ => return false,
+            };
+        }
+        false
     }
 
     /// Use flat source-order paths for nested designations so two writes like
@@ -1115,12 +1141,18 @@ impl Checker {
                 };
             }
             if checked_paths.iter().any(|(prior, _)|
-                Self::initializer_paths_overlap(ty, prior, &path))
+                Self::initializer_paths_overlap(ty, prior, &path)
+                && !Self::initializer_override_is_whole(ty, prior, &path))
             {
                 return Err(type_error(located,
                     "overlapping initializer targets require override handling"));
             }
             let checked = self.check_object_initializer(initializer, current, span, is_static)?;
+            // GCC/Clang x86-64: exact duplicate paths and replaced union arms
+            // use only the last value. Dropping the overwritten checked IR
+            // also prevents its initializer side effects from executing.
+            checked_paths.retain(|(prior, _)|
+                !Self::initializer_paths_overlap(ty, prior, &path));
             cursor = path[0].checked_add(1)
                 .ok_or_else(|| type_error(located, "initializer cursor overflow"))?;
             last_nested = path.len() > 1;
@@ -1148,12 +1180,13 @@ impl Checker {
             // Every entry has a source-order position. Designators can change
             // the current object; the next undesignated entry follows that
             // element, not the previous positional index.
-            let mut entries = Vec::with_capacity(values.len());
-            let mut seen = HashSet::new();
+            let mut entries: Vec<(usize, CheckedExpr)> =
+                Vec::with_capacity(values.len());
             let mut cursor = 0usize;
             let mut has_designators = false;
             let array = matches!(ty.unqualified(), CType::Array(..));
             for value in values {
+                let designated = matches!(value.without_location(), Expr::Designated { .. });
                 let (slot, input) = match value.without_location() {
                     Expr::Designated { path, value: inner } => {
                         has_designators = true;
@@ -1205,16 +1238,25 @@ impl Checker {
                         return self.check_object_initializer(value, ty, span, is_static);
                     }
                 };
-                if !seen.insert(slot) {
-                    return Err(type_error(span,
-                        "duplicate initializer target requires override handling"));
-                }
-                if !array && matches!(ty.unqualified(), CType::Union { .. }) && !entries.is_empty() {
+                let is_union = matches!(ty.unqualified(), CType::Union { .. });
+                if !array && is_union && !entries.is_empty() && !designated {
+                    // Undesignated union initialization still selects only
+                    // its first member. A later explicit .member, however,
+                    // can replace the earlier selected arm as a whole.
                     return Err(type_error(span, if has_designators {
-                        "multiple union member initializers require override handling"
+                        "union positional continuation requires a designator"
                     } else { "union initializer selects only its first member" }));
                 }
                 let checked = self.check_object_initializer(input, element, span, is_static)?;
+                if is_union {
+                    // Every new explicit union selection completely replaces
+                    // the previously active member, including any side effects.
+                    entries.clear();
+                } else {
+                    // Duplicate struct/array/bit-field leaf: retain only the
+                    // last initializer, preserving final source order.
+                    entries.retain(|(old, _)| *old != slot);
+                }
                 entries.push((slot, checked));
                 cursor = slot.checked_add(1)
                     .ok_or_else(|| type_error(span, "initializer cursor overflow"))?;

@@ -35,6 +35,13 @@ The priority is **a working self-contained C99 preprocessor for practical progra
 
 Csmith original-program native execution remains scheduled under [#116](https://github.com/bingordo/mini-c/issues/116). **F5 remains deferred**; do not delay a usable C compiler or initial C++ support for exhaustive C99 conformance.
 
+## F3.4f designated initializer last-wins overrides
+
+- The C99 initializer checker now models **exact duplicate** struct/array/bit-field designators and **whole-union-member replacements** (including nested union paths). An earlier initializer entirely displaced by a later one is removed from checked IR. Unrelated sibling fields in shared bit-field units retain their independent values, and existing static ELF/automatic-stack initializer emitters need no special overwrite paths.
+- GCC and Clang on the target x86-64 configuration omit side effects of an initializer expression whose entire subobject is overridden. Mini-C deliberately follows that behavior by discarding the earlier checked expression. In portable C, the occurrence and ordering of side effects among initialization expressions require care; these tests verify the selected native toolchain's behavior rather than relying on side-effect ordering between independent initializers.
+- **Partial parent/child overlaps remain fail-closed**, such as `{.bits={1,2}, .bits.b=3}`; these need recursive leaf flattening to preserve the untouched `.bits.a`. Likewise, positional continuation after multi-component designators remains a separate F3 gap. Avoid accepting these until the semantic checker and both initializer storage paths agree.
+- The dedicated GCC-vs-Cranelift native suite includes global/static and automatic bit-field overrides, arrays, nested designators, same-unit siblings, union arm switching, compound literals and discarded side effects. Tracked under #169 and #158.
+
 ## F3.4e bit-field integer promotions and expression semantics
 
 - **Promotion is based on bit-field *value width*, not the declared allocation unit.** On the x86-64 LP64 target, named unsigned bit-fields narrower than `int` promote to signed `int`, even when declared `unsigned int` or `unsigned long`; a 32-bit unsigned field promotes to `unsigned int`. Signed fields of width at most `int` promote to signed `int`; wider `long` fields retain their base type for checked native operations. Ordinary non-bit-field integer promotions are unchanged.
