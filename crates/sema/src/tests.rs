@@ -3107,3 +3107,50 @@ fn c99_f2_explicit_pointer_cast_does_not_enable_implicit_integer_conversions() {
     reject("int *f(unsigned long bits) { return (const int *)bits; }",
         "incompatible assignment");
 }
+
+#[test]
+fn c99_f2_void_star_zero_is_null_pointer_constant_for_function_pointers() {
+    let items = check(concat!(
+        "int increment(int x) { return x + 1; }",
+        "int (*global)(int) = (void*)0;",
+        "int test(int flag, int (*fn)(int)) {",
+        "  int (*a)(int) = flag ? fn : (void*)(2-2);",
+        "  int (*b)(int) = flag ? (void*)0 : fn;",
+        "  return global==(void*)0 && a==(void*)0 && b==(void*)0",
+        "      && fn!=(void*)0 && (void*)0!=fn; }"
+    )).unwrap();
+    // Both branches must retain the function-pointer type, rather than
+    // yielding void* or losing the function's parameter signature.
+    let CheckedItem::Function(fun) = &items[2] else { panic!("function"); };
+    let CheckedStmt::Block(stmts) = &fun.body else { panic!("body"); };
+    for index in [0usize, 1] {
+        let CheckedStmt::Decl(decl) = &stmts[index] else { panic!("declaration"); };
+        let CType::Pointer(inner) = &decl.ty else { panic!("pointer"); };
+        assert!(matches!(inner.as_ref(), CType::Function { .. }));
+        let initializer = decl.initializer.as_ref().expect("initializer");
+        assert!(matches!(initializer.kind, CheckedExprKind::Conditional(..)));
+        assert!(initializer.ty.same_type(&decl.ty));
+    }
+    check("int f(void){ int *p=0; return p == (void*)0; }").unwrap();
+    check("int f(void){ int (*p)(int)=(void*)0; return p==0; }").unwrap();
+    check("int f(void){ int (*p)(int)=(void*)(1-1); return p==0; }").unwrap();
+}
+
+#[test]
+fn c99_f2_null_cast_is_not_ordinary_void_pointer_compatibility() {
+    // A void* VARIABLE and a cast of a nonzero value are not null pointer
+    // constants. C99 does not allow arbitrary object/function pointer mixing.
+    reject("int f(void){ void *v=(void*)0; int (*p)(int)=v; return p==0; }",
+        "incompatible assignment");
+    reject("int f(void){ int (*p)(int)=(void*)3; return p==0; }",
+        "incompatible assignment");
+    reject("int f(int (*p)(int), void *v){ return p==v; }",
+        "operator requires compatible");
+    reject("int f(int (*p)(int)){ return p==(void*)3; }",
+        "operator requires compatible");
+    reject("int f(void){ int *p=0; int (*fp)(int)=p; return fp==0; }",
+        "incompatible assignment");
+    // An integer variable whose runtime value may be zero is NOT an ICE.
+    reject("int f(int x){ int (*p)(int)=(void*)x; return p==0; }",
+        "incompatible assignment");
+}
