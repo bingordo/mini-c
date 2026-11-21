@@ -32,6 +32,26 @@ fn parenthesized_atomic_types_remain_distinct_from_ordinary_types() {
 }
 
 #[test]
+fn atomic_and_volatile_qualifiers_remain_independent() {
+    let inner = Type::Atomic(Box::new(Type::Int));
+    for (spelling, is_const, is_volatile) in [
+        ("_Atomic(int) x;", false, false),
+        ("const _Atomic(int) x;", true, false),
+        ("volatile _Atomic(int) x;", false, true),
+        ("const volatile _Atomic(int) x;", true, true),
+    ] {
+        let expected = if is_const || is_volatile {
+            Type::Qualified(Box::new(inner.clone()), Qualifiers {
+                is_const, is_volatile, is_restrict: false, is_atomic: false,
+            })
+        } else {
+            inner.clone()
+        };
+        assert_eq!(parsed_type(spelling), expected, "{spelling}");
+    }
+}
+
+#[test]
 fn parenthesized_atomic_type_is_valid_syntax_but_bad_forms_reject() {
     let mut parser = Parser::new("typedef _Atomic(int) Counter; Counter x;");
     assert!(matches!(parser.next_item().unwrap(), Some(ExternalItem::Typedef(_))));
