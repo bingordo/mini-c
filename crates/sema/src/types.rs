@@ -117,6 +117,7 @@ impl CType {
     /// Nested pointer targets must be exactly compatible (not T** -> const T**).
     pub fn compatible_pointee_assignment(dest: &Self, source: &Self) -> bool {
         if source.is_const() && !dest.is_const() { return false; }
+        if source.is_volatile() && !dest.is_volatile() { return false; }
         let (dest, source) = (dest.unqualified(), source.unqualified());
         dest.same_type(source)
             || (matches!(dest, Self::Void) && source.is_object())
