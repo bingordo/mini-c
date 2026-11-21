@@ -35,6 +35,12 @@ The priority is **a working self-contained C99 preprocessor for practical progra
 
 Csmith original-program native execution remains scheduled under [#116](https://github.com/bingordo/mini-c/issues/116). **F5 remains deferred**; do not delay a usable C compiler or initial C++ support for exhaustive C99 conformance.
 
+## F3.4b practical unnamed and zero-width int bit-fields
+
+- The checked C99 frontend now retains the allocation effects of unnamed 32-bit signed/unsigned int bit-fields without admitting them as addressable/named members or initializer positions. Zero-width unnamed fields advance to the next 32-bit allocation unit. Struct aggregate alignment comes only from *named* members; unions ignore unnamed fields for their size/alignment and positional initialization.
+- Dedicated sema tests and GCC/Clang x86-64 LP64 reference probes cover sizes, offsets, member selection and invalid widths. The Cranelift reference backend exercises static/automatic, nested, designated, union and compound-literal initializers against unchanged GCC source. This is F3.4b issue #169 scope, **not** complete C99 bit-field conformance.
+- Remaining #169: _Bool and implementation-defined other base integer types, broader representation and ABI comparisons including bit-field padding, byte-level outputs, all initializer override semantics and target-neutral shared bit insertion. Production TypeId native coverage remains a separately measured capability; Cranelift differential success is not evidence that the TypeId adapter implements each form.
+
 ## F4 practical aggregate member compatibility — completed tags
 
 - [x] **Comma-separated struct/union members** (`int quot, rem;`, mixed `int *p, values[3];`) were **already implemented and tested** before issue #161; do not duplicate the parser work.
