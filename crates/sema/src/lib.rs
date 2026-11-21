@@ -1394,6 +1394,34 @@ impl Checker {
                         constraint:output.constraint.clone(),expr,
                     });
                 }
+                // ASM3 P02B3: exactly one addressable memory input can be
+                // used by a checked MOV to a fresh GP output. This checks
+                // source roles and template before lower_source_typeid sees
+                // them. The input is kept as an lvalue, never rvalue-loaded.
+                let gp_memory_read=inputs.len()==1 && inputs[0].constraint=="m";
+                if gp_memory_read {
+                    if checked_outputs.len()!=1 || checked_outputs[0].constraint!="=r" {
+                        return Err(type_error(*span,
+                            "ASM3 memory input requires one =r output"));
+                    }
+                    let output_bytes=checked_outputs[0].expr.ty.size_bytes(self.target)
+                        .ok_or_else(||type_error(*span,
+                            "ASM3 output width unknown"))?;
+                    let reviewed=match output_bytes {
+                        4=>"movl %1,%0",
+                        8=>"movq %1,%0",
+                        _=>return Err(type_error(*span,
+                            "ASM3 memory input requires 32/64-bit output")),
+                    };
+                    if template!=reviewed {
+                        return Err(type_error(*span,
+                            "ASM3 memory input requires reviewed movl/movq template"));
+                    }
+                    if clobbers.iter().any(|name|name!="memory") {
+                        return Err(type_error(*span,
+                            "ASM3 memory input supports only the compiler memory clobber"));
+                    }
+                }
                 // +r reads and writes operand %0 with no separate input. Numeric
                 // 0 ties an input to the sole =r output. An =&r early-
                 // clobber output instead needs one independent r input:
@@ -1415,8 +1443,11 @@ impl Checker {
                 }
                 let mut checked_inputs=Vec::new();
                 for input in inputs {
-                    if !matches!(input.constraint.as_str(),"r"|"0") {
-                        return Err(type_error(input.span,"extended asm input requires r or matching 0"));
+                    if !matches!(input.constraint.as_str(),"r"|"0"|"m") {
+                        return Err(type_error(input.span,"extended asm input requires r, matching 0 or reviewed m"));
+                    }
+                    if input.constraint=="m" && !gp_memory_read {
+                        return Err(type_error(input.span,"ASM3 memory input requires one reviewed mov"));
                     }
                     if input.constraint=="0" && (checked_outputs.len()!=1
                         || checked_outputs[0].constraint!="=r") {
@@ -1427,6 +1458,13 @@ impl Checker {
                         || !matches!(expr.ty.size_bytes(self.target),Some(4|8))
                     {
                         return Err(type_error(input.span,"extended asm input must be i32/i64 scalar"));
+                    }
+                    if gp_memory_read && (expr.category!=Category::LValue
+                        || expr.ty.size_bytes(self.target)
+                            !=checked_outputs[0].expr.ty.size_bytes(self.target))
+                    {
+                        return Err(type_error(input.span,
+                            "ASM3 memory input must be an addressable same-width i32/i64 C lvalue"));
                     }
                     if input.constraint=="0" &&
                         expr.ty.size_bytes(self.target)!=checked_outputs[0].expr.ty.size_bytes(self.target)
@@ -1440,7 +1478,8 @@ impl Checker {
                             "two independent ASM2 GP input widths must match the output"));
                     }
                     checked_inputs.push(CheckedAsmOperand{
-                        constraint:input.constraint.clone(),expr:expr.rvalue(),
+                        constraint:input.constraint.clone(),
+                        expr:if gp_memory_read {expr} else {expr.rvalue()},
                     });
                 }
                 // P14: GCC clobber *names* are not the x86 operand register
