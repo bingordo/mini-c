@@ -3126,6 +3126,130 @@ fn c99_f2_explicit_pointer_cast_does_not_enable_implicit_integer_conversions() {
         "incompatible assignment");
 }
 
+#[test]
+fn c99_f2_void_star_zero_is_null_pointer_constant_for_function_pointers() {
+    let items = check(concat!(
+        "int increment(int x) { return x + 1; }",
+        "int (*global)(int) = (void*)0;",
+        "int test(int flag, int (*fn)(int)) {",
+        "  int (*a)(int) = flag ? fn : (void*)(2-2);",
+        "  int (*b)(int) = flag ? (void*)0 : fn;",
+        "  return global==(void*)0 && a==(void*)0 && b==(void*)0",
+        "      && fn!=(void*)0 && (void*)0!=fn; }"
+    )).unwrap();
+    // Both branches must retain the function-pointer type, rather than
+    // yielding void* or losing the function's parameter signature.
+    let CheckedItem::Function(fun) = &items[2] else { panic!("function"); };
+    let CheckedStmt::Block(stmts) = &fun.body else { panic!("body"); };
+    for index in [0usize, 1] {
+        let CheckedStmt::Decl(decl) = &stmts[index] else { panic!("declaration"); };
+        let CType::Pointer(inner) = &decl.ty else { panic!("pointer"); };
+        assert!(matches!(inner.as_ref(), CType::Function { .. }));
+        let initializer = decl.initializer.as_ref().expect("initializer");
+        assert!(matches!(initializer.kind, CheckedExprKind::Conditional(..)));
+        assert!(initializer.ty.same_type(&decl.ty));
+    }
+    check("int f(void){ int *p=0; return p == (void*)0; }").unwrap();
+    check("int f(void){ int (*p)(int)=(void*)0; return p==0; }").unwrap();
+    check("int f(void){ int (*p)(int)=(void*)(1-1); return p==0; }").unwrap();
+}
+
+#[test]
+fn c99_f2_null_cast_is_not_ordinary_void_pointer_compatibility() {
+    // A void* VARIABLE and a cast of a nonzero value are not null pointer
+    // constants. C99 does not allow arbitrary object/function pointer mixing.
+    reject("int f(void){ void *v=(void*)0; int (*p)(int)=v; return p==0; }",
+        "incompatible assignment");
+    reject("int f(void){ int (*p)(int)=(void*)3; return p==0; }",
+        "incompatible assignment");
+    reject("int f(int (*p)(int), void *v){ return p==v; }",
+        "operator requires compatible");
+    reject("int f(int (*p)(int)){ return p==(void*)3; }",
+        "operator requires compatible");
+    reject("int f(void){ int *p=0; int (*fp)(int)=p; return fp==0; }",
+        "incompatible assignment");
+    // An integer variable whose runtime value may be zero is NOT an ICE.
+    reject("int f(int x){ int (*p)(int)=(void*)x; return p==0; }",
+        "incompatible assignment");
+}
+
+#[test]
+fn c99_f4_function_returning_function_pointer_checked_signature_and_call() {
+    let items = check(concat!(
+        "int inc(int x) { return x + 1; }",
+        "int (*select(int flag, int (*callback)(int)))(int) {",
+        " return flag ? callback : (void*)0; }",
+        "int apply(int flag) {",
+        " int (*p)(int)=select(flag, inc);",
+        " return p ? p(8) : -1; }"
+    )).unwrap();
+    let CheckedItem::Function(f) = &items[1] else { panic!("select definition"); };
+    assert_eq!(f.name, "select");
+    assert_eq!(f.params.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
+        vec!["flag", "callback"]);
+    let CType::Function { result, params } = &f.signature else {
+        panic!("select must be a function");
+    };
+    assert_eq!(params.len(), 2);
+    assert_eq!(params[0], CType::int());
+    let CType::Pointer(callback) = &params[1] else { panic!("callback argument"); };
+    let CType::Pointer(returned) = result.as_ref() else { panic!("returned pointer"); };
+    assert!(callback.same_type(returned));
+    let CType::Function { result: callback_result, params: callback_params } =
+        returned.as_ref() else { panic!("returned function signature"); };
+    assert_eq!(callback_result.as_ref(), &CType::int());
+    assert_eq!(callback_params, &vec![CType::int()]);
+    let CheckedStmt::Block(stmts) = &f.body else { panic!("block"); };
+    let CheckedStmt::Return(Some(value)) = &stmts[0] else { panic!("return"); };
+    assert!(value.ty.same_type(result.as_ref()));
+    assert!(matches!(value.kind, CheckedExprKind::Conditional(..)));
+    assert!(matches!(items[2], CheckedItem::Function(_)));
+}
+
+#[test]
+fn c99_f4_callback_return_declarations_and_typedef_compatibility() {
+    check(concat!(
+        "int (*select(int, int (*)(int)))(int);",
+        "int (*select(int flag, int (*cb)(int)))(int) { return cb; }",
+        "int x(int v) { return v + 1; }",
+        "int invoke(void) { return select(1, x)(7); }"
+    )).unwrap();
+    check(concat!(
+        "typedef int (*Unary)(int);",
+        "Unary identity(int flag, Unary cb) { return cb; }",
+        "int plus(int x){return x+1;}",
+        "int invoke(void){return identity(1,plus)(4);}"
+    )).unwrap();
+    check(concat!(
+        "int (*select(int, int (*)(const int)))(const int);",
+        "int (*select(int flag, int (*cb)(int)))(int) { return cb; }"
+    )).unwrap();
+    check(concat!(
+        "int (*forward(int flag, int (*cb)(int,...)))(int,...) { return cb; }",
+        "int f(void){return forward(1, (void*)0)==0;}"
+    )).unwrap();
+}
+
+#[test]
+fn c99_f4_reject_invalid_nested_function_pointer_definitions() {
+    reject("int (*bad(int))(int) { return 0; }",
+        "function definition requires parameter names");
+    reject("int (*bad(int (*cb)(int), int))(int) { return cb; }",
+        "function definition requires parameter names");
+    reject(concat!(
+        "int (*select(int, int (*)(int)))(long);",
+        "int (*select(int flag, int (*cb)(int)))(int) { return cb; }"
+    ), "conflicting declaration");
+    reject(concat!(
+        "int (*select(int, int (*)(int *)))(int);",
+        "int (*select(int flag, int (*cb)(const int *)))(int) { return cb; }"
+    ), "conflicting declaration");
+    reject(concat!(
+        "int (*select(int, int (*)(int)))(int);",
+        "int (*select(int flag, int (*cb)(int)))(int) { return (void*)3; }"
+    ), "incompatible assignment");
+}
+
 /// Parse the generated C through the actual frontend and inspect its checked
 /// operation, rather than asserting against hand-written syntax snapshots.
 fn checked_atomic_in_generated_c(source: &str) -> CheckedAtomicBuiltin {
