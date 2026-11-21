@@ -3068,3 +3068,44 @@ fn c99_f2_real_floating_casts_retain_checked_conversion_and_type() {
     }
     reject("int f(void) { return (float)(int*)0; }", "unsupported cast type-name");
 }
+
+#[test]
+fn c99_f2_explicit_integer_to_pointer_preserves_checked_conversion() {
+    let items = check(concat!(
+        "typedef unsigned long uintptr_t;",
+        "int *from_bits(uintptr_t bits) { return (int *)bits; }",
+        "const int *qualified(uintptr_t bits) { return (const int *)(uintptr_t)bits; }"
+    )).unwrap();
+    let CheckedItem::Function(fun) = &items[1] else { panic!("expected function"); };
+    let CheckedStmt::Block(stmts) = &fun.body else { panic!("expected body"); };
+    let CheckedStmt::Return(Some(value)) = &stmts[0] else { panic!("expected return"); };
+    let CType::Pointer(pointee) = &value.ty else { panic!("result must be pointer"); };
+    assert_eq!(pointee.as_ref(), &CType::int());
+    let CheckedExprKind::Convert(inner) = &value.kind else {
+        panic!("integer-to-pointer cast must survive in checked IR");
+    };
+    assert!(inner.ty.is_integer());
+    let CheckedItem::Function(fun) = &items[2] else { panic!("expected qualified function"); };
+    let CheckedStmt::Block(stmts) = &fun.body else { panic!("expected body"); };
+    let CheckedStmt::Return(Some(value)) = &stmts[0] else { panic!("expected return"); };
+    let CType::Pointer(pointee) = &value.ty else { panic!("qualified pointer"); };
+    assert!(pointee.is_const());
+    check("int *f(unsigned long bits) { return (int *)bits; }").unwrap();
+    check("int *f(void) { return (int *)1234UL; }").unwrap();
+    check("int *f(void) { return 0; }").unwrap();
+}
+
+#[test]
+fn c99_f2_explicit_pointer_cast_does_not_enable_implicit_integer_conversions() {
+    // Nonzero implicit integer -> pointer remains a constraint violation.
+    reject("int *f(unsigned long bits) { return bits; }", "incompatible assignment");
+    reject("int *f(void) { return 1234; }", "incompatible assignment");
+    reject("int *f(double d) { return (int *)d; }",
+        "pointer cast requires an integer or pointer operand");
+    reject("int *f(unsigned long bits) { return (int *)((void)bits); }",
+        "pointer cast requires an integer or pointer operand");
+    // A cast can add pointee const, but an implicit return still cannot
+    // discard it after the cast.
+    reject("int *f(unsigned long bits) { return (const int *)bits; }",
+        "incompatible assignment");
+}
