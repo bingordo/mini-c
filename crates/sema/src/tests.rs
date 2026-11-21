@@ -2869,3 +2869,49 @@ fn asm2_p13b_rejects_invalid_two_input_roles_and_widths() {
     // Incorrect mixed-width sources must not reach machine allocation.
     assert!(check(wrong_width).is_err());
 }
+
+
+#[test]
+fn asm3_p02b3_checked_memory_input_preserves_single_lvalue_operand() {
+    for (source,width) in [
+        (r#"int f(const int *p) { int y=0; __asm__ volatile("movl %1,%0" : "=r"(y) : "m"(*p) : "memory"); return y; }"#,4),
+        (r#"long f(const long *p) { long y=0; __asm__ volatile("movq %1,%0" : "=r"(y) : "m"(p[1])); return y; }"#,8),
+        (r#"int f(int x) { int y=0; __asm__ volatile("movl %1,%0" : "=r"(y) : "m"(x)); return y; }"#,4),
+        (r#"long f(long *p) { long y=0; __asm__ volatile("movq %1,%0" : "=r"(y) : "m"(*p)); return y; }"#,8),
+    ] {
+        let checked=check(source).expect("one checked GNU m source lvalue");
+        let CheckedItem::Function(f)=&checked[0] else {panic!("function expected")};
+        let CheckedStmt::Block(items)=&f.body else{panic!("checked block expected")};
+        let stmt=items.iter().find(|s|matches!(s,CheckedStmt::ExtendedAsm{..}))
+            .expect("extended asm statement");
+        let CheckedStmt::ExtendedAsm{outputs,inputs,template,..}=stmt else{unreachable!()};
+        assert_eq!(outputs.len(),1);
+        assert_eq!(inputs.len(),1);
+        assert_eq!(outputs[0].constraint,"=r");
+        assert_eq!(inputs[0].constraint,"m");
+        assert_eq!(inputs[0].expr.category,Category::LValue,
+            "never turn a source m address into an rvalue scalar");
+        assert!(matches!(inputs[0].expr.ty.size_bytes(CTarget::default()),Some(n) if n==width));
+        assert_eq!(template,if width==4 {"movl %1,%0"} else {"movq %1,%0"});
+    }
+}
+#[test]
+fn asm3_p02b3_rejects_unreviewed_memory_shapes_and_alias_roles() {
+    for source in [
+        r#"int f(int *p){int y=0;asm("movl %1,%0":"=&r"(y):"m"(*p));return y;}"#,
+        r#"int f(int *p){int y=0;asm("movl %1,%0":"=m"(y):"r"(*p));return y;}"#,
+        r#"int f(int *p){asm("addl $1,%0":"+m"(*p)::"cc");return *p;}"#,
+        r#"int f(int *p){int y=0;asm("movl %1,%0":"=r"(y):"m"(p));return y;}"#,
+        r#"int f(int *p){int y=0;asm("movl %1,%0":"=r"(y):"m"(*p),"r"(*p));return y;}"#,
+        r#"int f(int *p){int y=0;asm("addl %1,%0":"=r"(y):"m"(*p):"cc");return y;}"#,
+        r#"int f(int *p){int y=0;asm("movq %1,%0":"=r"(y):"m"(*p));return y;}"#,
+        r#"long f(int *p){long y=0;asm("movq %1,%0":"=r"(y):"m"(*p));return y;}"#,
+        r#"int f(int *p){int y=0;asm("movl %1,%0":"=r"(y):"m"(*p):"rax");return y;}"#,
+        r#"int f(int *p){int y=0;asm("movl %1,%0":"=r"(y):"m"(*p):"cc");return y;}"#,
+        r#"int f(int *p){int y=0;asm("movl %1,%0":"=r"(y):"m"(*p):"memory","memory");return y;}"#,
+        r#"int f(int x){int y=0;asm("movl %1,%0":"=r"(y):"m"(x+1));return y;}"#,
+    ] {
+        assert!(check(source).is_err(),
+            "unverified memory binding/constraint was accepted: {source}");
+    }
+}
