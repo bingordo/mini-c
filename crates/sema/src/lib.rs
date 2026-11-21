@@ -1870,6 +1870,22 @@ impl Checker {
         CheckedExpr::value(ty.clone(), CheckedExprKind::Convert(Box::new(expr)))
     }
 
+    /// C99 6.3.2.3p3: an integer constant expression evaluating to zero,
+    /// or that expression cast to exactly void*, is a null pointer constant.
+    /// An ordinary void* expression or (void*)nonzero is NOT a null pointer
+    /// constant; notably, neither may implicitly initialize a function ptr.
+    fn is_null_pointer_constant(expr: &CheckedExpr, target: Target) -> bool {
+        if expr.ty.is_integer() {
+            return const_eval::evaluate(expr, target) == Ok(0);
+        }
+        match (&expr.ty, &expr.kind) {
+            (CType::Pointer(pointee), CheckedExprKind::Convert(inner))
+                if pointee.unqualified() == &CType::Void && inner.ty.is_integer() =>
+                const_eval::evaluate(inner, target) == Ok(0),
+            _ => false,
+        }
+    }
+
     fn convert_for_assignment(&self, expr: CheckedExpr, ty: &CType, _original: &Expr, span: Span) -> Result<CheckedExpr, Diagnostic> {
         // The source array undergoes the standard array-to-pointer conversion
         // before checking scalar assignment compatibility.
@@ -1899,8 +1915,10 @@ impl Checker {
             (CType::Floating(_), CType::Integer { .. }) |
             (CType::Integer { .. }, CType::Floating(_)) => true,
             (CType::Pointer(lhs), CType::Pointer(rhs)) =>
-                CType::compatible_pointee_assignment(lhs, rhs),
-            (CType::Pointer(_), CType::Integer { .. }) => const_eval::evaluate(&expr, self.target) == Ok(0),
+                Self::is_null_pointer_constant(&expr, self.target)
+                    || CType::compatible_pointee_assignment(lhs, rhs),
+            (CType::Pointer(_), CType::Integer { .. }) =>
+                Self::is_null_pointer_constant(&expr, self.target),
             _ => false,
         };
         if !compatible {
@@ -2403,8 +2421,10 @@ impl Checker {
                             || (equality && ((*a.unqualified() == CType::Void && b.unqualified().is_object())
                                 || (*b.unqualified() == CType::Void && a.unqualified().is_object()))))
                     || (equality
-                        && ((matches!(left.ty, CType::Pointer(_)) && const_eval::evaluate(&right, self.target) == Ok(0))
-                            || (matches!(right.ty, CType::Pointer(_)) && const_eval::evaluate(&left, self.target) == Ok(0))))) {
+                        && ((matches!(left.ty, CType::Pointer(_))
+                             && Self::is_null_pointer_constant(&right, self.target))
+                            || (matches!(right.ty, CType::Pointer(_))
+                                && Self::is_null_pointer_constant(&left, self.target))))) {
                     return Ok(CheckedExpr::value(CType::int(), CheckedExprKind::Binary(*op, Box::new(left), Box::new(right))));
                 }
                 // C99 pointer subtraction yields ptrdiff_t, not a pointer.
@@ -2504,6 +2524,14 @@ impl Checker {
                     && yes.ty.same_type(&no.ty)
                 {
                     yes.ty.clone()
+                } else if Self::is_null_pointer_constant(&yes, self.target)
+                    && matches!(no.ty, CType::Pointer(_))
+                {
+                    no.ty.clone()
+                } else if Self::is_null_pointer_constant(&no, self.target)
+                    && matches!(yes.ty, CType::Pointer(_))
+                {
+                    yes.ty.clone()
                 } else if let (CType::Pointer(a), CType::Pointer(b)) =
                     (&yes.ty, &no.ty)
                 {
@@ -2529,16 +2557,6 @@ impl Checker {
                         unified.with_volatile()
                     } else { unified };
                     CType::Pointer(Box::new(unified))
-                } else if matches!(&yes.ty, CType::Pointer(_))
-                    && no.ty.is_integer()
-                    && const_eval::evaluate(&no, self.target) == Ok(0)
-                {
-                    yes.ty.clone()
-                } else if matches!(&no.ty, CType::Pointer(_))
-                    && yes.ty.is_integer()
-                    && const_eval::evaluate(&yes, self.target) == Ok(0)
-                {
-                    no.ty.clone()
                 } else {
                     return Err(Diagnostic::coded(span,
                         DiagnosticCode::SemanticInvalidOperatorOperands,
