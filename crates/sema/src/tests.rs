@@ -1346,6 +1346,26 @@ fn c99_bitfield_integer_promotions_follow_value_width_not_base_rank() {
     assert_eq!(lp64.promote(&unsigned_int), unsigned_int);
     assert_eq!(lp64.promote(&unsigned_long), unsigned_long);
 
+    // An explicit same-type cast discards the bit-field's width
+    // provenance, unlike an implicit load from the same declared type.
+    let casted = check(concat!(
+        "struct Narrow {unsigned long a:3;};",
+        "unsigned long cast(void){struct Narrow s={3};return -(unsigned long)s.a;}"
+    )).unwrap();
+    let CheckedItem::Function(cast_fn) = &casted[1] else {panic!("cast function")};
+    let CheckedStmt::Block(cast_body) = &cast_fn.body else {panic!("cast body")};
+    let CheckedStmt::Return(Some(cast_result)) = &cast_body[1] else {
+        panic!("cast return");
+    };
+    assert_eq!(cast_result.ty, unsigned_long);
+    let CheckedExprKind::Unary(UnOp::Neg, cast_operand) = &cast_result.kind else {
+        panic!("expected unsigned long unary negation");
+    };
+    assert_eq!(cast_operand.ty, unsigned_long);
+    assert!(matches!(cast_operand.kind, CheckedExprKind::Convert(_)),
+        "same-type explicit cast must remain visible to promotion logic");
+    assert_eq!(cast_operand.integer_promotion_type(lp64), unsigned_long);
+
     // The checker must materialize conversions in the typed IR for unary
     // and binary expressions, not just infer the correct output type.
     let checked = check(concat!(
