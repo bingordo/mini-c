@@ -677,6 +677,159 @@
       "kind": "constraint",
       "test_ref": "crates/sema/src/tests.rs:c99_f2_explicit_pointer_cast_does_not_enable_implicit_integer_conversions",
       "source": "int *f(double bits){return (int *)bits;}"
+    },
+    {
+      "id": "null-void-fptr-initializer",
+      "feature": "F2",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_f2_void_star_zero_is_null_pointer_constant_for_function_pointers",
+      "source": "int (*fp)(int)=(void*)0; int f(void){return fp==(void*)0 ? @N@ : 0;}"
+    },
+    {
+      "id": "null-void-fptr-conditional",
+      "feature": "F2",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_f2_void_star_zero_is_null_pointer_constant_for_function_pointers",
+      "source": "int f(int x, int (*p)(int)){int (*q)(int)=x?p:(void*)(@N@-@N@);return q==(void*)0;}"
+    },
+    {
+      "id": "null-void-fptr-conditional-reversed",
+      "feature": "F2",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_f2_void_star_zero_is_null_pointer_constant_for_function_pointers",
+      "source": "int f(int x, int (*p)(int)){int (*q)(int)=x?(void*)0:p;return q==(void*)0;}"
+    },
+    {
+      "id": "null-void-fptr-equivalence",
+      "feature": "F2",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_f2_void_star_zero_is_null_pointer_constant_for_function_pointers",
+      "source": "int f(int (*p)(int)){return p!=(void*)0 && (void*)0!=p ? @N@ : 0;}"
+    },
+    {
+      "id": "non-null-void-fptr-assignment",
+      "feature": "F2",
+      "expect": "reject",
+      "mini": "supported",
+      "kind": "constraint",
+      "test_ref": "crates/sema/src/tests.rs:c99_f2_null_cast_is_not_ordinary_void_pointer_compatibility",
+      "source": "int f(void){int (*p)(int)=(void*)@N@;return p==0;}"
+    },
+    {
+      "id": "non-null-void-fptr-equality",
+      "feature": "F2",
+      "expect": "reject",
+      "mini": "supported",
+      "kind": "constraint",
+      "test_ref": "crates/sema/src/tests.rs:c99_f2_null_cast_is_not_ordinary_void_pointer_compatibility",
+      "source": "int f(int (*p)(int)){return p==(void*)@N@;}"
+    },
+    {
+      "id": "void-variable-fptr-assignment",
+      "feature": "F2",
+      "expect": "reject",
+      "mini": "supported",
+      "kind": "constraint",
+      "test_ref": "crates/sema/src/tests.rs:c99_f2_null_cast_is_not_ordinary_void_pointer_compatibility",
+      "source": "int f(void){void *q=(void*)0;int (*p)(int)=q;return p==0;}"
+    },
+    {
+      "id": "void-variable-fptr-equality",
+      "feature": "F2",
+      "expect": "reject",
+      "mini": "supported",
+      "kind": "constraint",
+      "test_ref": "crates/sema/src/tests.rs:c99_f2_null_cast_is_not_ordinary_void_pointer_compatibility",
+      "source": "int f(int (*p)(int), void *q){return p==q;}"
+    },
+    {
+      "id": "f4-returned-callback-definition",
+      "feature": "F4",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_f4_function_returning_function_pointer_checked_signature_and_call",
+      "source": "int (*choose(int flag, int (*cb)(int)))(int){return flag ? cb : (void*)0;}"
+    },
+    {
+      "id": "f4-returned-callback-prototype",
+      "feature": "F4",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_f4_callback_return_declarations_and_typedef_compatibility",
+      "source": "int (*choose(int, int (*)(int)))(int);int (*choose(int flag,int (*cb)(int)))(int){return cb;}"
+    },
+    {
+      "id": "f4-returned-callback-typedef",
+      "feature": "F4",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_f4_callback_return_declarations_and_typedef_compatibility",
+      "source": "typedef int (*Callback)(int); Callback choose(int flag, Callback cb){return cb;}"
+    },
+    {
+      "id": "f4-returned-variadic-callback",
+      "feature": "F4",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_f4_callback_return_declarations_and_typedef_compatibility",
+      "source": "int (*choose(int flag, int (*cb)(int,...)))(int,...){return cb;}"
+    },
+    {
+      "id": "f4-returned-callback-parameter-qualification",
+      "feature": "F4",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_f4_callback_return_declarations_and_typedef_compatibility",
+      "source": "int (*choose(int,int (*)(const int)))(const int);int (*choose(int flag,int (*cb)(int)))(int){return cb;}"
+    },
+    {
+      "id": "f4-unnamed-defining-parameter",
+      "feature": "F4",
+      "expect": "reject",
+      "mini": "supported",
+      "kind": "constraint",
+      "test_ref": "crates/syntax/tests/nested_function_definitions.rs:missing_real_definition_parameter_names_still_fail",
+      "source": "int (*choose(int))(int){return (void*)0;}"
+    },
+    {
+      "id": "f4-second-unnamed-defining-parameter",
+      "feature": "F4",
+      "expect": "reject",
+      "mini": "supported",
+      "kind": "constraint",
+      "test_ref": "crates/syntax/tests/nested_function_definitions.rs:missing_real_definition_parameter_names_still_fail",
+      "source": "int (*choose(int flag,int (*cb)(int),int))(int){return cb;}"
+    },
+    {
+      "id": "f4-conflicting-returned-callback-type",
+      "feature": "F4",
+      "expect": "reject",
+      "mini": "supported",
+      "kind": "constraint",
+      "test_ref": "crates/sema/src/tests.rs:c99_f4_reject_invalid_nested_function_pointer_definitions",
+      "source": "int (*choose(int,int (*)(int)))(long);int (*choose(int flag,int (*cb)(int)))(int){return cb;}"
+    },
+    {
+      "id": "f4-conflicting-callback-argument-type",
+      "feature": "F4",
+      "expect": "reject",
+      "mini": "supported",
+      "kind": "constraint",
+      "test_ref": "crates/sema/src/tests.rs:c99_f4_reject_invalid_nested_function_pointer_definitions",
+      "source": "int (*choose(int,int (*)(int *)))(int);int (*choose(int flag,int (*cb)(const int *)))(int){return cb;}"
     }
   ]
 }
