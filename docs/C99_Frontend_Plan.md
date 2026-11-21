@@ -35,6 +35,13 @@ The priority is **a working self-contained C99 preprocessor for practical progra
 
 Csmith original-program native execution remains scheduled under [#116](https://github.com/bingordo/mini-c/issues/116). **F5 remains deferred**; do not delay a usable C compiler or initial C++ support for exhaustive C99 conformance.
 
+## F3.4d integer bit-field base types and native allocation units
+
+- On the supported x86-64 LP64 ABI, the C99 checker now admits the GCC/Clang implementation-defined `signed/unsigned char` (8-bit), `short` (16-bit) and `long` (64-bit) bit-field bases, in addition to `int` (32-bit) and `_Bool` (8-bit allocation with width 1). Checked width bounds are the base type's declared width; unnamed zero-width allocation barriers use that type's unit, and named fields impose the base type's alignment.
+- The typed member metadata remains the original C scalar type plus checked shift/width. Cranelift's static ELF initializer packs one 8/16/32/64-bit storage unit at a time. Native lvalue reads, stores, updates and compound assignment use the matching Cranelift `I8/I16/I32/I64` unit with correct width truncation and sign extension, avoiding wide unaligned accesses into nearby objects.
+- Existing [#215](https://github.com/bingordo/mini-c/pull/215) ABI oracle now generates additional signed/unsigned and mixed-base source cases, including full-width 64-bit high-bit values, and checks raw initialized/updated objects against GCC plus GCC/Clang layout agreement. Strict C99 feature matrix includes positive and invalid width cases for the extension.
+- This is *implementation-defined x86-64 GCC/Clang behavior*, not a requirement that portable C99 implementations allow every integer base type. Plain `char` signedness stays target-dependent. `long long` bit-fields, volatile/atomic member semantics, full bit-field integer promotions and production TypeId native lowering remain separate or deferred under #169.
+
 ## F3.4c one-byte _Bool bit-fields
 
 - Checked C99 `_Bool` named bit-fields now admit the single legal width 1; unnamed zero-width and one-bit fields use byte allocation units. Existing `int` and `unsigned int` fields continue to use 32-bit allocation units. The aggregate bit cursor is shared across mixed unit types, and offsets/shifts are recorded relative to the declared field's unit.
