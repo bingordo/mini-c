@@ -262,7 +262,7 @@ pub fn align_up(value: u64, alignment: u64) -> Option<u64> {
 }
 
 /// Resolve ordered structure members using the selected target's alignment.
-/// Only named C99 int/unsigned int bit-fields are supported in this slice.
+/// Named and unnamed 32-bit int/unsigned int fields follow x86-64 SysV layout.
 pub fn layout_struct(
     tag: Option<String>, fields: Vec<(String, CType)>, target: Target,
 ) -> Result<CType, &'static str> {
@@ -280,19 +280,37 @@ pub fn layout_struct_with_bits(
     let mut members = Vec::with_capacity(fields.len());
     let mut seen = std::collections::HashSet::new();
     for (name, ty, bit_width) in fields {
-        if !seen.insert(name.clone()) { return Err("duplicate structure member"); }
+        let unnamed = name.is_empty();
+        if unnamed && bit_width.is_none() {
+            return Err("unnamed aggregate member requires a bit-field width");
+        }
+        if !unnamed && !seen.insert(name.clone()) {
+            return Err("duplicate structure member");
+        }
         let field_size = ty.size_bytes(target).ok_or("structure member has incomplete type")?;
         let field_align = ty.align_bytes(target).ok_or("structure member has incomplete type")?;
         if field_size == 0 || !ty.is_object() {
             return Err("structure member must have a complete object type");
         }
-        align = align.max(field_align);
         if let Some(width) = bit_width {
             if !matches!(ty.unqualified(), CType::Integer { rank: IntRank::Int, .. })
-                || width == 0 || width > 32
+                || width > 32 || (width == 0 && !unnamed)
             {
                 return Err("unsupported bit-field type or width");
             }
+            // An unnamed zero-width field aligns only the *next* member to
+            // the next 32-bit allocation unit. It does not increase the
+            // alignment of this struct (GCC/Clang x86-64 ABI).
+            if width == 0 {
+                let position = align_up(bit_cursor.unwrap_or(size * 8), 32)
+                    .ok_or("bit-field position overflow")?;
+                size = size.max(position / 8);
+                bit_cursor = None;
+                continue;
+            }
+            // Only named int fields impose int alignment. Unnamed nonzero
+            // fields consume bits without initializer or designator slots.
+            if !unnamed { align = align.max(field_align); }
             // x86-64 SysV/GCC packs low bits first, and can use remaining
             // bits of an aligned 32-bit unit after preceding byte fields.
             // Never allow a field to cross its declared 32-bit unit.
@@ -309,21 +327,25 @@ pub fn layout_struct_with_bits(
             size = size.max(end.checked_add(7)
                 .ok_or("bit-field position overflow")? / 8);
             bit_cursor = Some(end);
-            members.push(StructMember {
-                name, ty, offset,
-                bit_field: Some(BitField {
-                    shift: u8::try_from(position % 32).map_err(|_| "bit shift overflow")?,
-                    width,
-                }),
-            });
+            if !unnamed {
+                members.push(StructMember {
+                    name, ty, offset,
+                    bit_field: Some(BitField {
+                        shift: u8::try_from(position % 32).map_err(|_| "bit shift overflow")?,
+                        width,
+                    }),
+                });
+            }
         } else {
             bit_cursor = None;
+            align = align.max(field_align);
             let offset = align_up(size, field_align)
                 .ok_or("structure member layout overflow")?;
             size = offset.checked_add(field_size).ok_or("structure size overflow")?;
             members.push(StructMember { name, ty, offset, bit_field: None });
         }
     }
+    if members.is_empty() { return Err("empty structures are unsupported"); }
     size = align_up(size, align).ok_or("structure size overflow")?;
     Ok(CType::Struct { identity: 0, tag, members, size, align })
 }
@@ -346,7 +368,13 @@ pub fn layout_union_with_bits(
     let mut members = Vec::with_capacity(fields.len());
     let mut seen = std::collections::HashSet::new();
     for (name, ty, bit_width) in fields {
-        if !seen.insert(name.clone()) { return Err("duplicate union member"); }
+        let unnamed = name.is_empty();
+        if unnamed && bit_width.is_none() {
+            return Err("unnamed aggregate member requires a bit-field width");
+        }
+        if !unnamed && !seen.insert(name.clone()) {
+            return Err("duplicate union member");
+        }
         let field_size = ty.size_bytes(target).ok_or("union member has incomplete type")?;
         let field_align = ty.align_bytes(target).ok_or("union member has incomplete type")?;
         if field_size == 0 || !ty.is_object() {
@@ -354,10 +382,13 @@ pub fn layout_union_with_bits(
         }
         if let Some(width) = bit_width {
             if !matches!(ty.unqualified(), CType::Integer { rank: IntRank::Int, .. })
-                || width == 0 || width > 32 {
+                || width > 32 || (width == 0 && !unnamed) {
                 return Err("unsupported bit-field type or width");
             }
         }
+        // Unnamed bit-fields carry neither size/alignment nor an initializer
+        // slot in a union, even when their declared type is unsigned int.
+        if unnamed { continue; }
         align = align.max(field_align);
         size = size.max(field_size);
         members.push(StructMember {
@@ -365,6 +396,7 @@ pub fn layout_union_with_bits(
             bit_field: bit_width.map(|width| BitField { shift: 0, width }),
         });
     }
+    if members.is_empty() { return Err("empty unions are unsupported"); }
     size = align_up(size, align).ok_or("union size overflow")?;
     Ok(CType::Union { identity: 0, tag, members, size, align })
 }
