@@ -3549,7 +3549,7 @@ mod tests {
         ] {
             let elf = compile_source(source)
                 .unwrap_or_else(|why| panic!("{source}: {why}"));
-            assert_eq!(&elf[..4], b"\\x7fELF", "{source}");
+            assert_eq!(&elf[..4], b"\x7fELF", "{source}");
         }
         // Executable volatile accesses must still fail closed, even when
         // their values are discarded by a legitimate C99 void cast.
