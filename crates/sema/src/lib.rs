@@ -108,18 +108,27 @@ impl CheckedExpr {
     fn value(ty: CType, kind: CheckedExprKind) -> Self {
         Self { ty, category: Category::Value, kind }
     }
+    /// Carry the value-width property through C expressions which still
+    /// denote the bit-field's value (including assignment and ++/--), but
+    /// not through explicit casts which create an ordinary integer value.
+    fn bit_field_width(&self) -> Option<u8> {
+        match &self.kind {
+            CheckedExprKind::BitFieldMember(_, _, _, width) => Some(*width),
+            CheckedExprKind::Load(inner)
+            | CheckedExprKind::Assign(inner, _)
+            | CheckedExprKind::Comma(_, inner)
+            | CheckedExprKind::Update { target: inner, .. }
+            | CheckedExprKind::CompoundAssign(_, inner, _, _) =>
+                inner.bit_field_width(),
+            _ => None,
+        }
+    }
+
     /// C99 6.3.1.1: promotions of bit-fields depend on their *value width*,
     /// not just on the declared integer base type. Narrow unsigned int/long
     /// fields may promote to signed int. Keep the original member type/layout.
     fn integer_promotion_type(&self, target: Target) -> CType {
-        let bit_width = match &self.kind {
-            CheckedExprKind::BitFieldMember(_, _, _, width) => Some(*width),
-            CheckedExprKind::Load(inner) => match &inner.kind {
-                CheckedExprKind::BitFieldMember(_, _, _, width) => Some(*width),
-                _ => None,
-            },
-            _ => None,
-        };
+        let bit_width = self.bit_field_width();
         if let (Some(width), CType::Integer { unsigned, .. }) =
             (bit_width, self.ty.unqualified())
         {
