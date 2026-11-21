@@ -2580,10 +2580,15 @@ impl Checker {
                     // bit-pattern conversion (or integer truncation).
                     CType::Integer { .. } if matches!(value.ty.unqualified(), CType::Pointer(_)) => {},
                     CType::Pointer(_) if matches!(value.ty.unqualified(), CType::Pointer(_)) => {},
-                    CType::Pointer(_) if value.ty.is_integer()
-                        && const_eval::evaluate(&value, self.target) == Ok(0) => {},
+                    // C99 6.3.2.3p5: explicit integer-to-pointer conversions
+                    // are permitted, with implementation-defined result.
+                    // Keep the checked Convert; the LP64 backend maps integer
+                    // address bits into its pointer representation. Do NOT
+                    // weaken implicit pointer assignment or promise that an
+                    // arbitrary integer is a valid dereferenceable address.
+                    CType::Pointer(_) if value.ty.is_integer() => {},
                     CType::Pointer(_) => return Err(type_error(span,
-                        "pointer cast requires a pointer or null integer constant")),
+                        "pointer cast requires an integer or pointer operand")),
                     CType::Integer { .. } => return Err(type_error(span,
                         "integer cast requires integer operand")),
                     _ => return Err(type_error(span, "unsupported cast type-name")),
