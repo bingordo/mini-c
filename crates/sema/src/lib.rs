@@ -1819,17 +1819,17 @@ impl Checker {
                         .ok_or_else(||type_error(*span,
                             "ASM3 +m memory RMW output width unknown"))?;
                     let reviewed=match output_bytes {
-                        4=>"addl %1,%0",
-                        8=>"addq %1,%0",
+                        4=>["addl %1,%0","subl %1,%0"],
+                        8=>["addq %1,%0","subq %1,%0"],
                         _=>return Err(type_error(*span,
-                            "ASM3 +m ADD requires 32/64-bit scalar lvalue")),
+                            "ASM3 +m ADD/SUB requires 32/64-bit scalar lvalue")),
                     };
-                    if template!=reviewed
+                    if !reviewed.contains(&template.as_str())
                         || !clobbers.iter().any(|name|name=="cc")
                         || clobbers.iter().any(|name|name!="cc" && name!="memory")
                     {
                         return Err(type_error(*span,
-                            "ASM3 +m requires reviewed ADD and mandatory cc, optional memory clobber"));
+                            "ASM3 +m requires reviewed ADD/SUB and mandatory cc, optional memory clobber"));
                     }
                 }
                 // +r reads and writes operand %0 with no separate input. Numeric
