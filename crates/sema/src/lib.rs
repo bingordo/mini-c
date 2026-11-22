@@ -32,8 +32,8 @@ pub enum CheckedExprKind {
     Initializer(Vec<CheckedExpr>),
     /// Source-order explicit member/array-element initializers. Missing
     /// entries are zero-filled by codegen, without materializing huge holes.
-    /// Duplicate target selection is currently rejected rather than
-    /// silently applying implementation-defined override side effects.
+    /// A later initializer of the same target displaces its earlier value,
+    /// including the earlier expression's effects under the target ABI.
     SparseInitializer(Vec<(usize, CheckedExpr)>),
     /// F3 nested field/array designators. Each complete path contains
     /// checked subobject indices from the outer aggregate to the initialized
