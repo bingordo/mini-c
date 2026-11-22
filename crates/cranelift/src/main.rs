@@ -82,7 +82,7 @@ fn main() -> ExitCode {
             eprintln!(
                 "usage: mini-c-cranelift --emit-obj OUTPUT.o \
                  [--cpp=internal|--cpp=cc|--cpp=none|--cpp=clang|--cpp=<path>] \
-                 [-I dir] [-DNAME=value] [-UNAME] [--cpp-arg=<arg>] \\\n                 [-Wall|-Wextra|-Werror|-Wno-*] INPUT.c"
+                 [-I dir] [-DNAME=value] [-UNAME] [--cpp-arg=<arg>] [-Wall|-Wextra|-Werror|-Wno-*] INPUT.c"
             );
             return ExitCode::FAILURE;
         }
