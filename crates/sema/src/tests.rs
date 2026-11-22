@@ -148,8 +148,81 @@ fn c99_nested_designators_resolve_paths_preserve_siblings_and_reject_overlap() {
     reject("struct S {int a;int b;}; struct S x[2]={[0].missing=3};",
         "unknown initializer member");
     check("union U {int a[2]; long b;}; union U x={.a[0]=3,.b=4};").unwrap();
-    reject("struct S {int a[3];int b;}; struct S x={.a[0]=3,4};",
-        "positional continuation after nested designator is not yet supported");
+    check("struct S {int a[3];int b;}; struct S x={.a[0]=3,4};").unwrap();
+}
+
+#[test]
+fn c99_nested_designator_positional_continuation_walks_subobject_paths() {
+    let checked = check(concat!(
+        "struct N {int first;int second;};",
+        "struct S {int a[3];struct N pair;int tail;};",
+        "struct S middle={.a[0]=3,4,5,6};",
+        "struct S end={.a[2]=3,4,5,6};",
+        "struct S nested={.pair.first=9,10,11};",
+        "struct S restart={.a[0]=3,4,.a[0]=7,5};"
+    )).unwrap();
+    let paths = |index: usize| {
+        let CheckedItem::Declaration(d) = &checked[index] else {
+            panic!("expected declaration {index}");
+        };
+        let Some(CheckedExpr {kind: CheckedExprKind::DeepInitializer(entries), ..}) =
+            &d.initializer else {panic!("expected deep initializer {index}")};
+        entries.iter().map(|(path, _)| path.clone()).collect::<Vec<_>>()
+    };
+    assert_eq!(paths(2), vec![vec![0,0],vec![0,1],vec![0,2],vec![1]]);
+    // The last array element climbs to the enclosing struct's next member,
+    // and the following scalar initializes the next member of that struct.
+    assert_eq!(paths(3), vec![vec![0,2],vec![1],vec![2]]);
+    assert_eq!(paths(4), vec![vec![1,0],vec![1,1],vec![2]]);
+    assert_eq!(paths(5), vec![vec![0,0],vec![0,1]]);
+
+    let checked = check("int matrix[2][3]={[0][2]=3,4,5,6};").unwrap();
+    let CheckedItem::Declaration(d) = &checked[0] else {panic!("matrix")};
+    let Some(CheckedExpr {kind: CheckedExprKind::DeepInitializer(entries), ..}) =
+        &d.initializer else {panic!("deep matrix")};
+    assert_eq!(entries.iter().map(|(p,_)|p.clone()).collect::<Vec<_>>(),
+        vec![vec![0,2],vec![1,0],vec![1,1],vec![1,2]]);
+
+    let checked = check(concat!(
+        "struct Bits {unsigned a:3,b:5,c:7;};",
+        "struct W {struct Bits bits;int tail;};",
+        "struct W g={.bits.a=3,5,6,7};"
+    )).unwrap();
+    let CheckedItem::Declaration(d) = &checked[2] else {panic!("bits")};
+    let Some(CheckedExpr {kind: CheckedExprKind::DeepInitializer(entries), ..}) =
+        &d.initializer else {panic!("deep bits")};
+    assert_eq!(entries.iter().map(|(p,_)|p.clone()).collect::<Vec<_>>(),
+        vec![vec![0,0],vec![0,1],vec![0,2],vec![1]]);
+
+    let checked = check(concat!(
+        "struct N {int a;int b;};",
+        "struct W {union U {struct N n;long raw;} u;int tail;};",
+        "struct W g={.u.n.a=3,4,5};"
+    )).unwrap();
+    let CheckedItem::Declaration(d) = &checked[2] else {panic!("union")};
+    let Some(CheckedExpr {kind: CheckedExprKind::DeepInitializer(entries), ..}) =
+        &d.initializer else {panic!("deep union")};
+    assert_eq!(entries.iter().map(|(p,_)|p.clone()).collect::<Vec<_>>(),
+        vec![vec![0,0,0],vec![0,0,1],vec![1]]);
+
+    // A union never selects its next arm positionally, but an array inside
+    // the selected arm may receive more than one initializer.
+    check("union U {int a[2];long b;};union U x={.a[0]=3,4};").unwrap();
+    reject("union U {int a[2];long b;};union U x={.a[1]=3,4};",
+        "too many positional initializers after nested designator");
+    reject("int matrix[2][3]={[1][2]=7,8};",
+        "too many positional initializers after nested designator");
+
+    // After exhausting one sequence, a new explicit designation resets the
+    // current object and may be followed by more positional values.
+    check("int matrix[2][2]={[1][1]=9,[0][0]=3,4,5};").unwrap();
+
+    // An explicit braced parent initializes that whole subobject; its
+    // successor is the next enclosing member, not the first child.
+    check(concat!(
+        "struct N{int a,b;};struct W{struct N n;int tail;};",
+        "struct W w={.n={3,4},5};"
+    )).unwrap();
 }
 
 #[test]
