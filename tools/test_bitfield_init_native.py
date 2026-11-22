@@ -9,6 +9,124 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 CASES = {
+    "continue_global_array_middle": r"""
+        struct S {int a[3];int tail;};
+        struct S g={.a[0]=3,4,5,6};
+        int main(void) {
+            return g.a[0]!=3 || g.a[1]!=4 || g.a[2]!=5 || g.tail!=6;
+        }
+    """,
+    "continue_global_array_end_climbs": r"""
+        struct S {int a[3];int tail;};
+        struct S g={.a[2]=3,4};
+        int main(void) {
+            return g.a[0]!=0 || g.a[1]!=0 || g.a[2]!=3 || g.tail!=4;
+        }
+    """,
+    "continue_global_nested_struct": r"""
+        struct N {int x;int y;};
+        struct W {struct N n;int tail;};
+        struct W g={.n.x=3,4,5};
+        int main(void) {return g.n.x!=3 || g.n.y!=4 || g.tail!=5;}
+    """,
+    "continue_global_nested_array_matrix": r"""
+        int g[2][3]={[0][2]=3,4,5,6};
+        int main(void) {
+            return g[0][0]!=0 || g[0][1]!=0 || g[0][2]!=3
+                || g[1][0]!=4 || g[1][1]!=5 || g[1][2]!=6;
+        }
+    """,
+    "continue_global_bitfield_same_unit": r"""
+        struct B {unsigned a:3,b:5,c:7;};
+        struct W {struct B bits;int tail;};
+        struct W g={.bits.a=3,5,6,7};
+        int main(void) {
+            return g.bits.a!=3 || g.bits.b!=5 || g.bits.c!=6
+                || g.tail!=7;
+        }
+    """,
+    "continue_global_bitfield_mixed_units": r"""
+        struct B {_Bool a:1;unsigned short b:11;unsigned long c:37;};
+        struct W {struct B bits;int tail;};
+        struct W g={.bits.a=1,511,1234567UL,99};
+        int main(void) {
+            return g.bits.a!=1 || g.bits.b!=511
+                || g.bits.c!=1234567UL || g.tail!=99;
+        }
+    """,
+    "continue_global_bitfields_array": r"""
+        struct B {unsigned a:3,b:5;};
+        struct W {struct B bits[2];int tail;};
+        struct W g={.bits[1].a=3,17,9};
+        int main(void) {
+            return g.bits[0].a!=0 || g.bits[0].b!=0
+                || g.bits[1].a!=3 || g.bits[1].b!=17
+                || g.tail!=9;
+        }
+    """,
+    "continue_local_union_array": r"""
+        union U {int a[2];long raw;};
+        int main(void) {
+            union U u={.a[0]=3,4};
+            return u.a[0]!=3 || u.a[1]!=4;
+        }
+    """,
+    "continue_local_union_to_outer_sibling": r"""
+        struct N {int a;int b;};
+        struct W {union U {struct N n;long raw;} u;int tail;};
+        int main(void) {
+            struct W w={.u.n.a=3,4,5};
+            return w.u.n.a!=3 || w.u.n.b!=4 || w.tail!=5;
+        }
+    """,
+    "continue_local_restart_designator": r"""
+        int main(void) {
+            int matrix[2][2]={[1][1]=9,[0][0]=3,4,5};
+            return matrix[0][0]!=3 || matrix[0][1]!=4
+                || matrix[1][0]!=5 || matrix[1][1]!=9;
+        }
+    """,
+    "continue_local_overlapping_paths": r"""
+        struct S {int a[3];int tail;};
+        int main(void) {
+            struct S v={.a[0]=3,4,.a[0]=7,5};
+            return v.a[0]!=7 || v.a[1]!=5
+                || v.a[2]!=0 || v.tail!=0;
+        }
+    """,
+    "continue_local_side_effect_count": r"""
+        int calls;
+        int effect(void){calls++;return 3;}
+        struct B {unsigned a:3,b:5;};
+        struct W {struct B bits;int tail;};
+        int main(void) {
+            struct W x={.bits.a=effect(),effect(),9};
+            return calls!=2 || x.bits.a!=3 || x.bits.b!=3 || x.tail!=9;
+        }
+    """,
+    "continue_compound_literal_bitfields": r"""
+        struct B {unsigned a:3,b:5;};
+        struct W {struct B bits;int tail;};
+        int main(void) {
+            struct W *p=&(struct W){.bits.a=3,17,9};
+            return p->bits.a!=3 || p->bits.b!=17 || p->tail!=9;
+        }
+    """,
+    "continue_global_braced_parent_boundary": r"""
+        struct N {int a;int b;};
+        struct W {struct N n;int tail;};
+        struct W g={.n={3,4},5};
+        int main(void){return g.n.a!=3 || g.n.b!=4 || g.tail!=5;}
+    """,
+    "continue_global_union_inside_array": r"""
+        struct N {int a;int b;};
+        struct W {union U {struct N n;long raw;} items[2];int tail;};
+        struct W g={.items[0].n.a=3,4, .items[1].n.a=5,6,7};
+        int main(void) {
+            return g.items[0].n.a!=3 || g.items[0].n.b!=4
+                || g.items[1].n.a!=5 || g.items[1].n.b!=6 || g.tail!=7;
+        }
+    """,
     "override_global_bitfield_exact": r"""
         struct B {unsigned a:3,b:5;};
         struct B x={.a=1,.b=17,.a=6};
