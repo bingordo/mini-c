@@ -1828,7 +1828,7 @@ impl Checker {
                             "ASM3 +m GP RMW requires 32/64-bit scalar lvalue")),
                     };
                     let reviewed=["add","sub","and","or","xor"].iter()
-                        .any(|mnemonic|template==format!("{mnemonic}{suffix} %1,%0"));
+                        .any(|mnemonic|template==&format!("{mnemonic}{suffix} %1,%0"));
                     if !reviewed
                         || !clobbers.iter().any(|name|name=="cc")
                         || clobbers.iter().any(|name|name!="cc" && name!="memory")
