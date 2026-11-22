@@ -177,6 +177,20 @@ fn c99_nested_designator_positional_continuation_walks_subobject_paths() {
     assert_eq!(paths(5), vec![vec![0,0],vec![0,1],vec![1]]);
     assert_eq!(paths(6), vec![vec![0,0],vec![0,1]]);
 
+    // Continuation can implicitly enter a newly selected aggregate. Without
+    // braces, a scalar belongs to its first leaf rather than the aggregate
+    // as a whole (C99 brace elision).
+    let checked = check(concat!(
+        "struct N {int first;int second;};",
+        "struct S {int a[2];struct N pair;int tail;};",
+        "struct S s={.a[1]=3,4,5,6};"
+    )).unwrap();
+    let CheckedItem::Declaration(d) = &checked[2] else {panic!("brace elision")};
+    let Some(CheckedExpr {kind: CheckedExprKind::DeepInitializer(entries), ..}) =
+        &d.initializer else {panic!("deep elided")};
+    assert_eq!(entries.iter().map(|(p,_)|p.clone()).collect::<Vec<_>>(),
+        vec![vec![0,1],vec![1,0],vec![1,1],vec![2]]);
+
     let checked = check("int matrix[2][3]={[0][2]=3,4,5,6};").unwrap();
     let CheckedItem::Declaration(d) = &checked[0] else {panic!("matrix")};
     let Some(CheckedExpr {kind: CheckedExprKind::DeepInitializer(entries), ..}) =
