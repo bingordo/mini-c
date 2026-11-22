@@ -1185,7 +1185,8 @@ impl Checker {
         let mut next_path: Option<Vec<usize>> = Some(vec![0]);
         for value in values {
             let located = value.location().unwrap_or(span);
-            let (path, initializer) = match value.without_location() {
+            let positional = !matches!(value.without_location(), Expr::Designated { .. });
+            let (mut path, initializer) = match value.without_location() {
                 Expr::Designated { path, value } => {
                     let (slots, _) = self.initializer_path(ty, path, located)?;
                     (slots, value.as_ref())
@@ -1216,7 +1217,29 @@ impl Checker {
                         "initializer designator requires aggregate subobject")),
                 };
             }
-            let checked = self.check_object_initializer(initializer, current, span, is_static)?;
+            // C99 brace elision: a bare scalar following an exhausted
+            // nested array/struct may begin the next aggregate's first
+            // scalar subobject. Try normal aggregate assignment first, so
+            // a compatible whole-struct expression or a braced initializer
+            // stays at the parent path. Only positional expressions may
+            // descend; explicit designators already select their object.
+            let mut checked = self.check_object_initializer(
+                initializer, current, span, is_static);
+            while positional && checked.is_err() {
+                let first = match current.unqualified() {
+                    CType::Struct { members, .. } | CType::Union { members, .. } =>
+                        members.first().map(|member| &member.ty),
+                    CType::Array(element, Some(bound)) if *bound > 0 =>
+                        Some(element.as_ref()),
+                    _ => None,
+                };
+                let Some(first) = first else { break };
+                path.push(0);
+                current = first;
+                checked = self.check_object_initializer(
+                    initializer, current, span, is_static);
+            }
+            let checked = checked?;
             // GCC and Clang differ if a non-braced *struct copy* is
             // followed by a nested child initializer: GCC can discard
             // that whole earlier copy, while Clang retains its siblings.
