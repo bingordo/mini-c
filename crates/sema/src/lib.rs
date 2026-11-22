@@ -4,6 +4,7 @@
 pub mod types;
 pub mod const_eval;
 pub mod builtins;
+mod asm_gp_rmw;
 
 use std::collections::{HashMap, HashSet};
 use std::cell::{Cell, RefCell};
@@ -1801,10 +1802,10 @@ impl Checker {
                             "ASM3 memory output requires reviewed MOV and optional memory clobber"));
                     }
                 }
-                // ASM3 P02D3: "+m" is one memory read/modify/write ADD,
+                // ASM3 P02G: "+m" is one opaque noncarry GP memory RMW,
                 // not output-only "=m" MOV and not a load/store pair.
                 // Only checked writable i32/i64 C lvalues, exactly one
-                // independent matching "r" GP addend, exact %1,%0 ADDL/ADDQ,
+                // independent matching "r" input and exact generated %1,%0,
                 // and explicit "cc" clobber are source-admitted.
                 // "memory" is optional, since native TypeId is an opaque
                 // unknown-alias ReadWrite compiler barrier even without it.
@@ -1821,18 +1822,15 @@ impl Checker {
                     // One semantic class, not a handwritten template
                     // branch per operation: a noncarry GP binary instruction
                     // writes exactly one +m object and defines flags.
-                    let suffix=match output_bytes {
-                        4=>"l",
-                        8=>"q",
-                        _=>return Err(type_error(*span,
-                            "ASM3 +m GP RMW requires 32/64-bit scalar lvalue")),
-                    };
-                    let reviewed=["add","sub","and","or","xor"].iter()
-                        .any(|mnemonic|template==&format!("{mnemonic}{suffix} %1,%0"));
-                    if !reviewed
-                        || !clobbers.iter().any(|name|name=="cc")
-                        || clobbers.iter().any(|name|name!="cc" && name!="memory")
-                    {
+                    // Source role, width, exact template, required cc and
+                    // optional memory clobber now come from the *generated*
+                    // pinned semantic-class contract shared with compiler IR.
+                    // C lvalue ownership and independent input type remain
+                    // checked here by the frontend, not the backend.
+                    if !asm_gp_rmw::reviewed_noncarry_gp_memory_rmw_source(
+                        template,output_bytes,&checked_outputs[0].constraint,
+                        &inputs[0].constraint,clobbers,
+                    ) {
                         return Err(type_error(*span,
                             "ASM3 +m requires reviewed noncarry GP RMW and mandatory cc, optional memory clobber"));
                     }
