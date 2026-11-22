@@ -94,7 +94,7 @@ impl Diagnostic {
 
 
 /// Severity of a frontend diagnostic. Errors remain the default for the
-/// existing \`Diagnostic\` API; warnings are opt-in through \`ReportedDiagnostic\`.
+/// existing `Diagnostic` API; warnings are opt-in through `ReportedDiagnostic`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiagnosticSeverity {
     Error,
