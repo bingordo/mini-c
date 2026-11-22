@@ -91,3 +91,153 @@ impl Diagnostic {
         Self { span, message: message.into(), code }
     }
 }
+
+
+/// Severity of a frontend diagnostic. Errors remain the default for the
+/// existing \`Diagnostic\` API; warnings are opt-in through \`ReportedDiagnostic\`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiagnosticSeverity {
+    Error,
+    Warning,
+    Note,
+}
+
+/// A diagnostic with presentation metadata, without changing the legacy
+/// parser/semantic error type or requiring downstream users to update literals.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReportedDiagnostic {
+    pub diagnostic: Diagnostic,
+    pub severity: DiagnosticSeverity,
+    /// GCC-style warning group, without the "-W" prefix.
+    pub warning_group: Option<&'static str>,
+}
+
+impl ReportedDiagnostic {
+    pub fn error(diagnostic: Diagnostic) -> Self {
+        Self { diagnostic, severity: DiagnosticSeverity::Error, warning_group: None }
+    }
+
+    pub fn warning(diagnostic: Diagnostic, group: &'static str) -> Self {
+        Self {
+            diagnostic,
+            severity: DiagnosticSeverity::Warning,
+            warning_group: Some(group),
+        }
+    }
+}
+
+/// Small, intentionally explicit warning policy. Frontends should only emit
+/// warnings they actually implement; recognizing a -W group is not a claim
+/// that a corresponding analysis already exists.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WarningPolicy {
+    pub wall: bool,
+    pub wextra: bool,
+    pub warnings_as_errors: bool,
+    /// Ordered per-group overrides. The last matching flag wins.
+    pub overrides: Vec<(String, bool)>,
+}
+
+impl WarningPolicy {
+    /// Handles the common GCC driver spellings. Unknown flags are rejected,
+    /// rather than silently claiming that a warning is implemented.
+    pub fn apply_flag(&mut self, flag: &str) -> Result<(), String> {
+        match flag {
+            "-Wall" => self.wall = true,
+            "-Wno-all" => self.wall = false,
+            "-Wextra" => self.wextra = true,
+            "-Wno-extra" => self.wextra = false,
+            "-Werror" => self.warnings_as_errors = true,
+            "-Wno-error" => self.warnings_as_errors = false,
+            _ => {
+                if let Some(name) = flag.strip_prefix("-Wno-") {
+                    if !Self::known_group(name) {
+                        return Err(format!("unsupported warning option: {flag}"));
+                    }
+                    self.overrides.push((name.to_owned(), false));
+                } else if let Some(name) = flag.strip_prefix("-W") {
+                    if !Self::known_group(name) {
+                        return Err(format!("unsupported warning option: {flag}"));
+                    }
+                    self.overrides.push((name.to_owned(), true));
+                } else {
+                    return Err(format!("not a warning option: {flag}"));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn known_group(group: &str) -> bool {
+        matches!(group, "unused-variable" | "unused-parameter" | "shadow"
+            | "conversion" | "sign-conversion" | "return-type"
+            | "switch" | "switch-enum" | "uninitialized")
+    }
+
+    /// Default enablement is conservative until Mini-C has a tested
+    /// implementation of each analysis.
+    pub fn enabled(&self, group: &str) -> bool {
+        let default = match group {
+            "unused-variable" | "return-type" | "switch" => self.wall,
+            "unused-parameter" | "shadow" => self.wextra,
+            _ => false,
+        };
+        self.overrides.iter().rev().find(|(name, _)| name == group)
+            .map_or(default, |(_, enabled)| *enabled)
+    }
+
+    pub fn resolve(&self, report: &ReportedDiagnostic) -> Option<DiagnosticSeverity> {
+        match report.severity {
+            DiagnosticSeverity::Warning => {
+                let group = report.warning_group?;
+                if !self.enabled(group) { return None; }
+                Some(if self.warnings_as_errors {
+                    DiagnosticSeverity::Error
+                } else {
+                    DiagnosticSeverity::Warning
+                })
+            }
+            other => Some(other),
+        }
+    }
+}
+
+#[cfg(test)]
+mod warning_policy_tests {
+    use super::*;
+
+    #[test]
+    fn warning_groups_are_off_by_default_and_promotable() {
+        let mut options = WarningPolicy::default();
+        let sample = ReportedDiagnostic::warning(
+            Diagnostic::semantic(Span { lo: 0, hi: 0 }, "unused variable"),
+            "unused-variable",
+        );
+        assert_eq!(options.resolve(&sample), None);
+        options.apply_flag("-Wall").unwrap();
+        assert_eq!(options.resolve(&sample), Some(DiagnosticSeverity::Warning));
+        options.apply_flag("-Werror").unwrap();
+        assert_eq!(options.resolve(&sample), Some(DiagnosticSeverity::Error));
+        options.apply_flag("-Wno-unused-variable").unwrap();
+        assert_eq!(options.resolve(&sample), None);
+        options.apply_flag("-Wunused-variable").unwrap();
+        assert_eq!(options.resolve(&sample), Some(DiagnosticSeverity::Error));
+    }
+
+    #[test]
+    fn unknown_group_is_not_accepted_as_implemented() {
+        let mut options = WarningPolicy::default();
+        assert!(options.apply_flag("-Wformat").is_err());
+        assert!(options.apply_flag("-Wno-format").is_err());
+        assert!(options.apply_flag("-Wextra").is_ok());
+        assert!(!options.enabled("conversion"));
+    }
+
+    #[test]
+    fn errors_cannot_be_suppressed_by_warning_options() {
+        let report = ReportedDiagnostic::error(
+            Diagnostic::semantic(Span { lo: 0, hi: 0 }, "bad type"),
+        );
+        assert_eq!(WarningPolicy::default().resolve(&report), Some(DiagnosticSeverity::Error));
+    }
+}
