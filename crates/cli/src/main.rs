@@ -1,6 +1,7 @@
 use mini_c_preprocess::{self as preprocess, source_map::SourceMap};
 use mini_c_sema::{Checker, Target};
 use mini_c_syntax::parser::Parser;
+use mini_c_syntax::diag::WarningPolicy;
 use mini_c_syntax::source::SourceFile;
 use mini_c_syntax::stream::ItemSource;
 use std::env;
@@ -94,7 +95,7 @@ fn usage() {
         "usage: mini-c check [--cpp=internal|--cpp=internal-stream|--cpp=cc|--cpp=none|--cpp=clang|--cpp=<path>] \
          [-I<dir>|-I <dir>] [-D<name>[=<value>]|-D <name>[=<value>]] \
          [-U<name>|-U <name>] [--cpp-arg=<arg>] \
-         [--max-errors=<positive integer>] [--] <file.c> [file.c ...]"
+         [--max-errors=<positive integer>] [-Wall|-Wextra|-Werror|-Wno-*] [--] <file.c> [file.c ...]"
     );
 }
 
@@ -104,6 +105,7 @@ fn usage() {
 struct Options {
     cpp: Option<preprocess::Config>,
     max_errors: Option<usize>,
+    warnings: WarningPolicy,
     paths: Vec<String>,
 }
 
@@ -115,6 +117,7 @@ fn parse_options(args: impl IntoIterator<Item = String>) -> Result<Options, Stri
     let mut cpp = preprocess::driver_options::CppOptions::default();
     let mut paths = Vec::new();
     let mut max_errors = None;
+    let mut warnings = WarningPolicy::default();
     let mut end_options = false;
     while let Some(arg) = args.next() {
         if end_options {
@@ -128,6 +131,8 @@ fn parse_options(args: impl IntoIterator<Item = String>) -> Result<Options, Stri
                 Ok(n) if n > 0 => max_errors = Some(n),
                 _ => return Err("--max-errors requires a positive integer".into()),
             }
+        } else if arg.starts_with("-W") {
+            warnings.apply_flag(&arg)?;
         } else if cpp.consume(&arg, &mut args)? {
             // Recognized preprocessor option, with any split argument consumed.
         } else if arg.starts_with('-') {
@@ -138,7 +143,7 @@ fn parse_options(args: impl IntoIterator<Item = String>) -> Result<Options, Stri
     }
     if paths.is_empty() { return Err("no input files provided".into()); }
     let cpp = cpp.finish()?;
-    Ok(Options { cpp, max_errors, paths })
+    Ok(Options { cpp, max_errors, warnings, paths })
 }
 
 fn main() -> ExitCode {
@@ -150,6 +155,9 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // The warning policy is accepted at the driver boundary. Semantic warning
+    // producers will consume it in a separate, explicitly tested change.
+    let _warnings = &options.warnings;
     let mut failed = false;
     for path in options.paths {
         let result = match options.max_errors {
@@ -281,6 +289,23 @@ mod tests {
         let after_end = parse_options(["check", "--cpp=none", "--", "-file.c"]
             .into_iter().map(str::to_owned)).unwrap();
         assert_eq!(after_end.paths, ["-file.c"]);
+    }
+
+    #[test]
+    fn warning_options_are_parsed_without_leaking_to_cpp() {
+        let opts = parse_options([
+            "check", "-Wall", "-Wextra", "-Werror",
+            "-Wno-unused-variable", "--cpp=none", "sample.c",
+        ].into_iter().map(str::to_owned)).unwrap();
+        assert!(opts.warnings.wall);
+        assert!(opts.warnings.wextra);
+        assert!(opts.warnings.warnings_as_errors);
+        assert!(!opts.warnings.enabled("unused-variable"));
+        assert!(opts.warnings.enabled("unused-parameter"));
+        assert!(opts.cpp.is_none());
+        assert!(parse_options([
+            "check", "-Wformat", "sample.c",
+        ].into_iter().map(str::to_owned)).is_err());
     }
 
     #[test]
