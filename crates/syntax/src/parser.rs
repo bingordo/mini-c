@@ -84,6 +84,10 @@ pub struct Parser<'a> {
     scopes: Scopes,
     brace_depth: usize,
     pending_file_binding: Option<(String, Option<Binding>)>,
+    // Incremental external comma declarators. Keep only their common base
+    // and storage class; each next_item parses/delivers one declaration,
+    // without retaining a translation-unit AST or all initializers.
+    pending_file_group: Option<(Type, usize, StorageClass, bool, bool)>,
 }
 
 impl<'a> Parser<'a> {
@@ -123,6 +127,7 @@ impl<'a> Parser<'a> {
             scopes: Scopes::new(),
             brace_depth: 0,
             pending_file_binding: None,
+            pending_file_group: None,
         }
     }
 
@@ -1243,7 +1248,7 @@ impl<'a> Parser<'a> {
             self.take()?;
             return Ok(Stmt::Tag(base));
         }
-        let (name, ty, _, name_span) = self.parse_declarator_shape(false)?.finish(base);
+        let (name, ty, _, name_span) = self.parse_declarator_shape(false)?.finish(base.clone());
         self.scopes.declare(&name, Binding::Ordinary);
         let init = if self.peek()?.is_some_and(|t| t.text.as_ref() == "=") {
             self.take()?;
@@ -1853,6 +1858,67 @@ impl ItemSource for Parser<'_> {
 
     fn next_item(&mut self) -> Result<Option<ExternalItem>, Self::Error> {
         self.pending_file_binding = None;
+        // A file-scope comma list has a common base/storage but individual
+        // declarators, bindings and optional initializers. Consume one on
+        // demand so the parser stays incremental even for long lists.
+        if let Some((base, start, storage, is_typedef, static_inline)) =
+            self.pending_file_group.take()
+        {
+            let (name, mut ty, _, name_span) =
+                self.parse_declarator_shape(false)?.finish(base.clone());
+            let asm_label = self.parse_asm_linkage_label()?;
+            if static_inline &&
+                !matches!(&ty, Type::Function { .. } | Type::VariadicFunction { .. })
+            {
+                return Err(Diagnostic::coded(name_span.unwrap_or(Span { lo: start, hi: start }),
+                    DiagnosticCode::SyntaxInvalidDeclaration,
+                    "static inline requires a function declarator"));
+            }
+            while self.peek()?.is_some_and(|t|
+                matches!(t.text.as_ref(), "__attribute__" | "__attribute"))
+            {
+                let signature = match &ty {
+                    Type::Function { params, .. } => Some((params.len(), false)),
+                    Type::VariadicFunction { params, .. } => Some((params.len(), true)),
+                    _ => None,
+                };
+                self.parse_gnu_declarator_attributes(signature, Some(&mut ty))?;
+            }
+            if asm_label.is_some() &&
+                (!matches!(ty, Type::Function { .. } | Type::VariadicFunction { .. }) || is_typedef)
+            {
+                return Err(Diagnostic::coded(name_span.unwrap_or(Span { lo: start, hi: start }),
+                    DiagnosticCode::SyntaxInvalidDeclaration,
+                    "GNU asm linker label requires a non-typedef function declaration"));
+            }
+            // The name enters file scope before parsing its own initializer.
+            self.pending_file_binding = Some((name.clone(), self.scopes.lookup(&name)));
+            self.scopes.declare(&name,
+                if is_typedef { Binding::Typedef } else { Binding::Ordinary });
+            let init_op = self.peek()?.filter(|t| t.text.as_ref() == "=").map(|t| t.span);
+            let init = if init_op.is_some() {
+                self.take()?;
+                Some(self.parse_initializer()?)
+            } else { None };
+            if is_typedef {
+                if let Some(span) = init_op {
+                    return Err(Diagnostic::coded(span, DiagnosticCode::SyntaxInvalidDeclaration,
+                        "typedef cannot have an initializer"));
+                }
+            }
+            let end = if self.peek()?.is_some_and(|t| t.text.as_ref() == ",") {
+                let comma = self.take()?.expect("peeked comma");
+                self.pending_file_group = Some((base, start, storage, is_typedef, static_inline));
+                comma.span.hi
+            } else {
+                self.expect(";")?.span.hi
+            };
+            let decl = Decl { storage, name, name_span, ty, asm_label, init,
+                span: Span { lo: start, hi: end } };
+            return Ok(Some(if is_typedef {
+                ExternalItem::Typedef(decl)
+            } else { ExternalItem::Declaration(decl) }));
+        }
         // GNU __extension__ only suppresses pedantic diagnostics for the
         // following declaration; it changes neither type nor ABI. Admit
         // precisely this file-scope prefix, without dropping the declaration
@@ -1978,7 +2044,13 @@ impl ItemSource for Parser<'_> {
                     "typedef cannot have an initializer"));
             }
         }
-        let end = self.expect(";")?.span.hi;
+        let end = if self.peek()?.is_some_and(|t| t.text.as_ref() == ",") {
+            let comma = self.take()?.expect("peeked comma");
+            self.pending_file_group = Some((base, start, storage, is_typedef, static_inline));
+            comma.span.hi
+        } else {
+            self.expect(";")?.span.hi
+        };
         let decl = Decl { storage, name, name_span, ty, asm_label, init, span: Span { lo: start, hi: end } };
         Ok(Some(if is_typedef { ExternalItem::Typedef(decl) } else { ExternalItem::Declaration(decl) }))
     }
