@@ -796,6 +796,24 @@
       "source": "int a[2][3]={[1][2]=9,[0][0]=@N@,3,4};int f(void){return a[1][0];}"
     },
     {
+      "id": "f3-nested-continuation-brace-elided-struct",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_nested_designator_positional_continuation_walks_subobject_paths",
+      "source": "struct N{int a;int b;};struct S{int a[2];struct N n;int tail;};int f(void){struct S s={.a[1]=@N@,3,4,5};return s.n.a;}"
+    },
+    {
+      "id": "f3-nested-continuation-brace-elided-union-array",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_nested_designator_positional_continuation_walks_subobject_paths",
+      "source": "struct N{int a;int b;};struct W{union U{struct N n;long raw;}items[2];int tail;};int f(void){struct W w={.items[0].n.b=@N@,3,4,5};return w.items[1].n.a;}"
+    },
+    {
       "id": "complex-type",
       "feature": "F5",
       "expect": "accept",
