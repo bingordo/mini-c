@@ -9,6 +9,25 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 CASES = {
+    "continue_global_elided_nested_struct": r"""
+        struct N {int first;int second;};
+        struct S {int a[2];struct N pair;int tail;};
+        struct S g={.a[1]=3,4,5,6};
+        int main(void) {
+            return g.a[0]!=0 || g.a[1]!=3 || g.pair.first!=4
+                || g.pair.second!=5 || g.tail!=6;
+        }
+    """,
+    "continue_local_elided_union_array": r"""
+        struct N {int a;int b;};
+        struct W {union U {struct N n;long raw;} items[2];int tail;};
+        int main(void) {
+            struct W w={.items[0].n.b=4,5,6,7};
+            return w.items[0].n.a!=0 || w.items[0].n.b!=4
+                || w.items[1].n.a!=5 || w.items[1].n.b!=6
+                || w.tail!=7;
+        }
+    """,
     "continue_global_array_middle": r"""
         struct S {int a[3];int tail;};
         struct S g={.a[0]=3,4,5,6};
