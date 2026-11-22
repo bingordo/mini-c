@@ -1030,10 +1030,14 @@ impl Compiler {
     /// the entire translation unit or update prior checked items.
     pub fn complete_file_object_types(&mut self, checker: &Checker) -> Result<()> {
         for (name, data) in &mut self.data {
-            // Anonymous C99 compound literals have no source-level name in
-            // the checker's global symbol table, and their object type was
-            // already completed and validated at the initializer site.
-            if name.starts_with(".Lmini_c_compound_") { continue; }
+            // Private objects for anonymous static compound literals and
+            // implicit function-scope __func__ arrays have no source-level
+            // global symbol. Their types and initializers were already
+            // checked at construction. Do not treat these as undeclared
+            // user globals or weaken source-name completeness checks.
+            if name.starts_with(".Lmini_c_compound_")
+                || name.starts_with(".Lmini_c_funcname_")
+            { continue; }
             let resolved = checker.completed_global_type(name)
                 .ok_or_else(|| format!("missing semantic declaration for global '{name}'"))?;
             data.ty = data.ty.composite(&resolved)
