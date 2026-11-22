@@ -790,22 +790,24 @@ impl<'a> Parser<'a> {
                     }
                     self.expect(")")?;
                 }
-                "alloc_size" => {
-                    // GNU alloc_size(i[,j]) is a size-analysis hint on a
-                    // function returning allocated memory. It does not alter
-                    // parameter passing or return-value ABI; ignore only a
-                    // syntactically valid form naming existing fixed params.
+                "alloc_size" | "alloc_align" => {
+                    // GNU alloc_size(i[,j]) and alloc_align(i) describe
+                    // allocation sizes and alignment for diagnostics and
+                    // optional optimization. Their omission is conservative
+                    // and never changes calling convention or object layout.
+                    // Check only documented parameter-index forms.
                     let Some((fixed, _)) = function_params else {
                         return Err(Diagnostic::coded(token.span,
                             DiagnosticCode::SyntaxInvalidDeclaration,
-                            "alloc_size attribute requires a function prototype"));
+                            "allocation attribute requires a function prototype"));
                     };
                     self.expect("(")?;
                     let mut positions = Vec::new();
+                    let max_positions = if name == "alloc_align" { 1 } else { 2 };
                     loop {
                         let index = self.take()?.ok_or_else(|| Diagnostic::coded(
                             self.eof_span(), DiagnosticCode::SyntaxInvalidDeclaration,
-                            "expected alloc_size parameter index"))?;
+                            "expected allocation attribute parameter index"))?;
                         let n = if index.kind == TokenKind::Number &&
                             index.text.bytes().all(|b| b.is_ascii_digit())
                         {
@@ -814,10 +816,10 @@ impl<'a> Parser<'a> {
                         if !n.is_some_and(|n| n > 0 && n <= fixed && !positions.contains(&n)) {
                             return Err(Diagnostic::coded(index.span,
                                 DiagnosticCode::SyntaxInvalidDeclaration,
-                                "alloc_size index must name a distinct fixed parameter"));
+                                "allocation attribute index must name a distinct fixed parameter"));
                         }
                         positions.push(n.unwrap());
-                        if positions.len() == 2 ||
+                        if positions.len() == max_positions ||
                             !self.peek()?.is_some_and(|t| t.text.as_ref() == ",") {
                             break;
                         }
@@ -3057,6 +3059,23 @@ mod tests {
             "void *allocate(unsigned long n) __attribute__((alloc_size(1, 1)));",
             "void *allocate(unsigned long n) __attribute__((alloc_size(x)));",
             "void *allocate(unsigned long n) __attribute__((alloc_size(1,)));",
+        ] {
+            assert!(Parser::new(source).next_item().is_err(), "{source}");
+        }
+    }
+
+    #[test]
+    fn glibc_alloc_align_validates_one_existing_fixed_argument() {
+        let source = "void *aligned_alloc(unsigned long align, unsigned long bytes) __attribute__((__alloc_align__(1)));";
+        let Some(ExternalItem::Declaration(decl)) =
+            Parser::new(source).next_item().unwrap() else {panic!("function expected")};
+        assert_eq!(decl.name, "aligned_alloc");
+        for source in [
+            "void *f(unsigned long n) __attribute__((alloc_align(0)));",
+            "void *f(unsigned long n) __attribute__((alloc_align(2)));",
+            "void *f(unsigned long n) __attribute__((alloc_align(x)));",
+            "void *f(unsigned long n) __attribute__((alloc_align(1, 1)));",
+            "void *f(unsigned long n) __attribute__((alloc_align(1,)));",
         ] {
             assert!(Parser::new(source).next_item().is_err(), "{source}");
         }
