@@ -1813,23 +1813,28 @@ impl Checker {
                 if gp_memory_rmw {
                     if inputs.len()!=1 || inputs[0].constraint!="r" {
                         return Err(type_error(*span,
-                            "ASM3 +m ADD requires exactly one independent r input"));
+                            "ASM3 +m GP RMW requires exactly one independent r input"));
                     }
                     let output_bytes=checked_outputs[0].expr.ty.size_bytes(self.target)
                         .ok_or_else(||type_error(*span,
                             "ASM3 +m memory RMW output width unknown"))?;
-                    let reviewed=match output_bytes {
-                        4=>["addl %1,%0","subl %1,%0"],
-                        8=>["addq %1,%0","subq %1,%0"],
+                    // One semantic class, not a handwritten template
+                    // branch per operation: a noncarry GP binary instruction
+                    // writes exactly one +m object and defines flags.
+                    let suffix=match output_bytes {
+                        4=>"l",
+                        8=>"q",
                         _=>return Err(type_error(*span,
-                            "ASM3 +m ADD/SUB requires 32/64-bit scalar lvalue")),
+                            "ASM3 +m GP RMW requires 32/64-bit scalar lvalue")),
                     };
-                    if !reviewed.contains(&template.as_str())
+                    let reviewed=["add","sub","and","or","xor"].iter()
+                        .any(|mnemonic|template==format!("{mnemonic}{suffix} %1,%0"));
+                    if !reviewed
                         || !clobbers.iter().any(|name|name=="cc")
                         || clobbers.iter().any(|name|name!="cc" && name!="memory")
                     {
                         return Err(type_error(*span,
-                            "ASM3 +m requires reviewed ADD/SUB and mandatory cc, optional memory clobber"));
+                            "ASM3 +m requires reviewed noncarry GP RMW and mandatory cc, optional memory clobber"));
                     }
                 }
                 // +r reads and writes operand %0 with no separate input. Numeric
