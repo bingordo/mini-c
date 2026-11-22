@@ -652,7 +652,7 @@ impl<'a> Parser<'a> {
     /// Only annotations that are safe to *not* exploit for optimization or
     /// diagnostics are accepted. Layout, ABI, control-flow and unknown
     /// attributes fail closed; they must not disappear silently.
-    fn parse_gnu_declarator_attributes(&mut self, function_params: Option<(usize, bool)>)
+    fn parse_gnu_declarator_attributes(&mut self, function_params: Option<(usize, bool)>, mut decl_type: Option<&mut Type>)
         -> Result<(), Diagnostic>
     {
         let function = function_params.is_some();
@@ -853,6 +853,39 @@ impl<'a> Parser<'a> {
                     }
                     self.expect(")")?;
                 }
+                "mode" => {
+                    // GCC's __mode__(__word__) on a signed/unsigned int
+                    // declaration chooses the target's signed/unsigned word
+                    // integer type. On supported LP64/ILP32 ABIs C long has
+                    // pointer width. Preserve the resulting type in the AST:
+                    // silently ignoring this would make glibc register_t
+                    // only 32-bit on x86_64. Other modes remain unsupported.
+                    self.expect("(")?;
+                    let mode = self.take()?.ok_or_else(|| Diagnostic::coded(
+                        self.eof_span(), DiagnosticCode::SyntaxInvalidDeclaration,
+                        "expected GNU integer mode"))?;
+                    if gnu_attribute_spelling(mode.text.as_ref()) != "word" {
+                        return Err(Diagnostic::coded(mode.span,
+                            DiagnosticCode::SyntaxInvalidDeclaration,
+                            "unsupported GNU integer mode (possible ABI or semantic effect)"));
+                    }
+                    self.expect(")")?;
+                    let Some(declared) = decl_type.as_deref_mut() else {
+                        return Err(Diagnostic::coded(token.span,
+                            DiagnosticCode::SyntaxInvalidDeclaration,
+                            "GNU word mode requires a complete integer declarator"));
+                    };
+                    match declared {
+                        Type::Int => *declared = Type::Long,
+                        Type::Signed(inner) if matches!(inner.as_ref(), Type::Int) =>
+                            *declared = Type::Signed(Box::new(Type::Long)),
+                        Type::Unsigned(inner) if matches!(inner.as_ref(), Type::Int) =>
+                            *declared = Type::Unsigned(Box::new(Type::Long)),
+                        _ => return Err(Diagnostic::coded(token.span,
+                            DiagnosticCode::SyntaxInvalidDeclaration,
+                            "GNU word mode requires a signed or unsigned int base type")),
+                    }
+                }
                 // Keep returns_twice, packed/aligned/vector_size, mode/section
                 // and calling-convention annotations fail-closed: unlike
                 // noreturn, these may change observable semantics or ABI.
@@ -863,7 +896,7 @@ impl<'a> Parser<'a> {
                     format!("unsupported GNU attribute '{}' (possible ABI or semantic effect)",
                         token.text.as_ref()))),
             }
-            if !function {
+            if !function && name != "mode" {
                 return Err(Diagnostic::coded(token.span,
                     DiagnosticCode::SyntaxInvalidDeclaration,
                     "GNU function attribute requires a function declarator"));
@@ -938,7 +971,7 @@ impl<'a> Parser<'a> {
                     match &direct {
                         Declarator::Function(_, params, variadic) => Some((params.len(), *variadic)),
                         _ => None,
-                    }
+                    }, None
                 )?;
             } else {
                 break;
@@ -1826,7 +1859,7 @@ impl ItemSource for Parser<'_> {
             self.take()?;
             return Ok(Some(ExternalItem::Tag(base)));
         }
-        let (name, ty, definition_params, name_span) = self.parse_declarator_shape(false)?.finish(base);
+        let (name, mut ty, definition_params, name_span) = self.parse_declarator_shape(false)?.finish(base);
         let asm_label = self.parse_asm_linkage_label()?;
         // GNU permits advisory function attributes following the asm label.
         while self.peek()?.is_some_and(|t|
@@ -1837,7 +1870,7 @@ impl ItemSource for Parser<'_> {
                 Type::VariadicFunction { params, .. } => Some((params.len(), true)),
                 _ => None,
             };
-            self.parse_gnu_declarator_attributes(signature)?;
+            self.parse_gnu_declarator_attributes(signature, Some(&mut ty))?;
         }
         if asm_label.is_some() &&
             (!matches!(ty, Type::Function { .. } | Type::VariadicFunction { .. }) || is_typedef)
@@ -2890,4 +2923,31 @@ mod tests {
             assert!(Parser::new(source).next_item().is_err(),"{source}");
         }
     }
+    #[test]
+    fn gnu_word_mode_preserves_glibc_register_t_abi_width() {
+        let source = "typedef int register_t __attribute__ ((__mode__ (__word__)));";
+        let Some(ExternalItem::Typedef(decl)) =
+            Parser::new(source).next_item().unwrap() else {panic!("typedef expected");};
+        assert_eq!(decl.name, "register_t");
+        assert_eq!(decl.ty, Type::Long);
+        let source = "typedef unsigned int uword_t __attribute__((mode(word)));";
+        let Some(ExternalItem::Typedef(decl)) =
+            Parser::new(source).next_item().unwrap() else {panic!("typedef expected");};
+        assert_eq!(decl.ty, Type::Unsigned(Box::new(Type::Long)));
+    }
+
+    #[test]
+    fn gnu_word_mode_rejects_unrelated_layout_and_abi_modes() {
+        for src in [
+            "typedef int short_t __attribute__((__mode__(__QI__)));",
+            "typedef int other_t __attribute__((mode(__DI__)));",
+            "typedef long long scalar_t __attribute__((mode(word)));",
+            "typedef int *ptr_t __attribute__((mode(word)));",
+            "int f(void) __attribute__((mode(word)));",
+            "typedef int malformed_t __attribute__((mode));",
+        ] {
+            assert!(Parser::new(src).next_item().is_err(), "{src}");
+        }
+    }
+
 }
