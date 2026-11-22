@@ -1839,6 +1839,13 @@ impl ItemSource for Parser<'_> {
             return Err(Diagnostic::coded(storage_span, DiagnosticCode::SyntaxInvalidDeclaration,
                 "register storage class is not allowed at file scope"));
         }
+        // Hosted glibc uses "static __inline" for private helper bodies.
+        // Inline is advisory for static linkage; *do not* drop plain or
+        // extern inline where C99/GNU external definition rules differ.
+        let static_inline = storage == StorageClass::Static
+            && self.peek()?.is_some_and(|t|
+                matches!(t.text.as_ref(), "inline" | "__inline" | "__inline__"));
+        if static_inline { self.take()?; }
         let Some((base, start)) = self.parse_type()? else {
             // EOF only succeeds when no declaration specifiers were consumed.
             if is_typedef || storage != StorageClass::Default {
@@ -1862,6 +1869,11 @@ impl ItemSource for Parser<'_> {
         }
         let (name, mut ty, definition_params, name_span) = self.parse_declarator_shape(false)?.finish(base);
         let asm_label = self.parse_asm_linkage_label()?;
+        if static_inline && !matches!(&ty, Type::Function { .. } | Type::VariadicFunction { .. }) {
+            return Err(Diagnostic::coded(name_span.unwrap_or(storage_span),
+                DiagnosticCode::SyntaxInvalidDeclaration,
+                "static inline requires a function declarator"));
+        }
         // GNU permits advisory function attributes following the asm label.
         while self.peek()?.is_some_and(|t|
             matches!(t.text.as_ref(), "__attribute__" | "__attribute"))
@@ -2946,6 +2958,24 @@ mod tests {
             "typedef int *ptr_t __attribute__((mode(word)));",
             "int f(void) __attribute__((mode(word)));",
             "typedef int malformed_t __attribute__((mode));",
+        ] {
+            assert!(Parser::new(src).next_item().is_err(), "{src}");
+        }
+    }
+
+    #[test]
+    fn glibc_static_inline_helpers_keep_internal_linkage() {
+        for keyword in ["inline", "__inline", "__inline__"] {
+            let src = format!("static {keyword} int helper(int x) {{ return x + 1; }}");
+            let Some(ExternalItem::Function(func)) =
+                Parser::new(&src).next_item().unwrap() else {panic!("static inline function expected");};
+            assert_eq!(func.name, "helper");
+            assert_eq!(func.storage, StorageClass::Static);
+        }
+        for src in [
+            "static inline int global;",
+            "inline int external(void) { return 1; }",
+            "extern __inline int external(void) { return 1; }",
         ] {
             assert!(Parser::new(src).next_item().is_err(), "{src}");
         }
