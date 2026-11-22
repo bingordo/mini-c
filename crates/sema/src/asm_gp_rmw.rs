@@ -5,7 +5,7 @@
 
 /// Exact source admission for the independently reviewed noncarry +m class.
 pub(super) fn reviewed_noncarry_gp_memory_rmw_source(
-    template:&str,bytes:usize,output:&str,input:&str,clobbers:&[String],
+    template:&str,bytes:u64,output:&str,input:&str,clobbers:&[String],
 ) -> bool {
     if output!="+m" || input!="r" {return false;}
     if !matches!((template,bytes),
