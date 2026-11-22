@@ -964,8 +964,9 @@ impl<'a> Parser<'a> {
                 let (params, variadic) = self.parse_parameter_list()?;
                 self.expect(")")?;
                 direct = Declarator::Function(Box::new(direct), params, variadic);
-            } else if self.peek()?.is_some_and(|token|
-                token.text.as_ref() == "__attribute__" || token.text.as_ref() == "__attribute")
+            } else if matches!(&direct, Declarator::Function(_, _, _))
+                && self.peek()?.is_some_and(|token|
+                    token.text.as_ref() == "__attribute__" || token.text.as_ref() == "__attribute")
             {
                 self.parse_gnu_declarator_attributes(
                     match &direct {
