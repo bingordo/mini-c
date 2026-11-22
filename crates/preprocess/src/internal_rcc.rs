@@ -401,6 +401,36 @@ mod tests {
         assert_eq!(split.cli_defines, vec![("ANSWER".into(), Some("42".into()))]);
     }
 
+
+    #[test]
+    fn separated_flags_work_in_batch_and_streaming_cpp() {
+        let dir = std::env::temp_dir().join(format!(
+            "mini-c-cpp-split-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos(),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.join("source.c");
+        std::fs::write(dir.join("constants.h"), "#define BASE 9\n").unwrap();
+        std::fs::write(&root, "#include \"constants.h\"\nint answer = BASE + OFFSET;\n").unwrap();
+        let args = vec![
+            OsString::from("-E"), OsString::from("-nostdinc"),
+            OsString::from("-I"), dir.clone().into_os_string(),
+            OsString::from("-D"), OsString::from("OFFSET=33"),
+        ];
+        let batch = file(&root, &args).expect("split flags in batch preprocessor");
+        let stream = stream::start(&root, &args)
+            .expect("split flags in streaming preprocessor")
+            .map(|token| token.expect("stream token").spelling.to_string())
+            .collect::<Vec<_>>().join(" ");
+        std::fs::remove_dir_all(dir).unwrap();
+        for output in [batch.as_str(), stream.as_str()] {
+            assert!(output.contains("answer"), "{output}");
+            assert!(output.contains("9"), "{output}");
+            assert!(output.contains("33"), "{output}");
+        }
+    }
+
     #[test]
     fn separated_gcc_cpp_options_reject_missing_and_flag_operands() {
         for args in [
