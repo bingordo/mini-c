@@ -410,7 +410,7 @@ mod tests {
             vec!["-isystem", "-nostdinc"],
             vec!["--sysroot", "-E"],
         ] {
-            let options = args.iter().map(OsString::from).collect::<Vec<_>>();
+            let options = args.into_iter().map(OsString::from).collect::<Vec<_>>();
             let error = options_from_args(&options).unwrap_err();
             assert!(error.contains("requires"), "{args:?}: {error}");
         }
