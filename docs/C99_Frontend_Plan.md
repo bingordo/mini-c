@@ -35,6 +35,14 @@ The priority is **a working self-contained C99 preprocessor for practical progra
 
 Csmith original-program native execution remains scheduled under [#116](https://github.com/bingordo/mini-c/issues/116). **F5 remains deferred**; do not delay a usable C compiler or initial C++ support for exhaustive C99 conformance.
 
+## F3.4h positional continuation after nested designators
+
+- C99 6.7.8's **current subobject** is tracked as a full checked path. After `{.a[0]=3, 4}`, the next positional scalar initializes `a[1]`, not the enclosing aggregate's next top-level member. When a nested array or struct ends, the cursor climbs outward to the next field/element. In `struct S {int a[3];int tail;}; struct S x={.a[2]=3,4};`, the `4` initializes `tail`. Later explicit designators restart the cursor at their selected path.
+- The same `initializer_next_subobject` helper traverses arrays, ordinary structs and selected union members. Unions never advance positionally to a different arm; an explicit `.member` designation is required to switch arms. Fully exhausted paths reject additional positional expressions rather than discarding them or mis-initializing another field.
+- Continues reusing source-ordered `DeepInitializer` checked paths and the existing common static-ELF and automatic-stack emitters; no backend-specific initializer cursor or bit-field special case. Works with mixed-size bit-fields, nested arrays, union-contained structs, duplicate last-wins designators, automatic compound literals and independent initializer side effects.
+- The GCC/Clang x86-64 agreement is checked with examples covering mid-array, end-of-array, multi-dimensional arrays, nested structs, selected unions, bit-fields and braced parents. Native differential tests and the strict C99 feature matrix are permanent acceptance gates.
+- **Separate remaining F3 gaps:** generalized brace elision (an unbraced scalar initializer that must implicitly descend into a newly selected aggregate) and GNU/Clang-divergent earlier non-braced aggregate-copy followed by a partial child override. These are not inferred from this path-cursor implementation. #158 and #169 stay open for full C99 conformance and volatile/native TypeId integration.
+
 ## F3.4g partial parent/child initializer overrides
 
 - **Braced aggregate initializer overrides now lower to explicit checked leaf paths.** The checker recursively flattens positional, sparse-designated, and deeply designated subobject initializers into the existing source-order `DeepInitializer` path representation. It retains sibling bit-fields even when they share a physical storage unit. Both the static ELF byte packer and automatic stack initializer already consume this same leaf IR; no backend-only bit-field special cases were introduced.
