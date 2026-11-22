@@ -4,6 +4,7 @@
 use mini_c_cranelift::{compile_source_diagnostic, CompileError};
 use mini_c_preprocess::source_map::SourceMap;
 use mini_c_syntax::source::SourceFile;
+use mini_c_syntax::diag::WarningPolicy;
 use mini_c_preprocess::{self as preprocess, driver_options::CppOptions};
 use std::{env, fs, path::Path, process::ExitCode};
 
@@ -11,11 +12,13 @@ struct Options {
     output: String,
     source: String,
     cpp: Option<preprocess::Config>,
+    warnings: WarningPolicy,
 }
 
 fn parse_options(args: impl IntoIterator<Item = String>) -> Result<Options, String> {
     let mut args = args.into_iter();
     let mut cpp = CppOptions::default();
+    let mut warnings = WarningPolicy::default();
     let mut output = None;
     let mut inputs = Vec::new();
     let mut end_options = false;
@@ -29,6 +32,8 @@ fn parse_options(args: impl IntoIterator<Item = String>) -> Result<Options, Stri
             if name.is_empty() || output.replace(name).is_some() {
                 return Err("--emit-obj requires exactly one output filename".into());
             }
+        } else if arg.starts_with("-W") {
+            warnings.apply_flag(&arg)?;
         } else if cpp.consume(&arg, &mut args)? {
             // Shared -I, -D, -U and --cpp options with the semantic checker.
         } else if arg.starts_with('-') {
@@ -45,6 +50,7 @@ fn parse_options(args: impl IntoIterator<Item = String>) -> Result<Options, Stri
         output,
         source: inputs.remove(0),
         cpp: cpp.finish()?,
+        warnings,
     })
 }
 
@@ -76,11 +82,14 @@ fn main() -> ExitCode {
             eprintln!(
                 "usage: mini-c-cranelift --emit-obj OUTPUT.o \
                  [--cpp=internal|--cpp=cc|--cpp=none|--cpp=clang|--cpp=<path>] \
-                 [-I dir] [-DNAME=value] [-UNAME] [--cpp-arg=<arg>] INPUT.c"
+                 [-I dir] [-DNAME=value] [-UNAME] [--cpp-arg=<arg>] \\\n                 [-Wall|-Wextra|-Werror|-Wno-*] INPUT.c"
             );
             return ExitCode::FAILURE;
         }
     };
+    // Warning producers are not enabled in this phase; preserve the policy
+    // for future semantic-warning passes rather than claiming they ran.
+    let _warnings = &opts.warnings;
     let source = match &opts.cpp {
         Some(config) => preprocess::file(Path::new(&opts.source), config)
             .map_err(|e| e.to_string()),
@@ -192,6 +201,20 @@ mod tests {
         ].into_iter().map(str::to_owned)).unwrap();
         assert!(raw.cpp.is_none());
         assert_eq!(raw.source, "-source.c");
+    }
+
+    #[test]
+    fn native_warning_options_share_frontend_policy() {
+        let opts = parse_options([
+            "--emit-obj", "out.o", "-Wall", "-Werror",
+            "-Wno-unused-variable", "main.c",
+        ].into_iter().map(str::to_owned)).unwrap();
+        assert!(opts.warnings.wall);
+        assert!(opts.warnings.warnings_as_errors);
+        assert!(!opts.warnings.enabled("unused-variable"));
+        assert!(parse_options([
+            "--emit-obj", "out.o", "-Wformat", "main.c",
+        ].into_iter().map(str::to_owned)).is_err());
     }
 
     #[test]
