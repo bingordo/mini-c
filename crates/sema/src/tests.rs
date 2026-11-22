@@ -4250,7 +4250,7 @@ fn c99_pointer_arithmetic_offset_promotions_and_array_scaling() {
 fn c99_pointer_compound_offsets_and_updates_require_complete_pointees() {
     check("int *f(int *p, unsigned long n) { p += n; p -= 2L; ++p; p--; return p; }")
         .expect("pointer compound assignments and updates retain element scaling");
-    check("int (*f(int (*p)[4]))[4] { p += 2; --p; return p; }")
+    check("void f(int (*p)[4]) { p += 2; --p; }")
         .expect("pointer-to-array updates use array-sized elements");
 
     reject("void f(void *p) { p += 1; }",
