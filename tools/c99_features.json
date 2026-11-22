@@ -250,10 +250,10 @@
       "id": "designated-nested-positional",
       "feature": "F3",
       "expect": "accept",
-      "mini": "gap",
+      "mini": "supported",
       "kind": "valid",
-      "test_ref": "docs/C99_Frontend_Plan.md:F3.2",
-      "source": "int a[2][20]={[1][@N@]=3,5};"
+      "test_ref": "crates/sema/src/tests.rs:c99_nested_designator_positional_continuation_walks_subobject_paths",
+      "source": "int a[2][20]={[0][@N@%20]=3,5};"
     },
     {
       "id": "designated-unknown-member",
@@ -758,6 +758,60 @@
       "kind": "valid",
       "test_ref": "crates/sema/src/tests.rs:c99_partial_parent_child_initializers_preserve_explicit_leaves_and_reset_siblings",
       "source": "struct B{unsigned a:3,b:5;};union U{struct B bits;long raw;};int f(void){union U x={.bits={@N@%8,17},.bits.b=19};return x.bits.a+x.bits.b;}"
+    },
+    {
+      "id": "f3-nested-continuation-climb-struct",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_nested_designator_positional_continuation_walks_subobject_paths",
+      "source": "struct S{int a[3];int tail;};int f(void){struct S s={.a[2]=@N@,7};return s.tail;}"
+    },
+    {
+      "id": "f3-nested-continuation-bitfield",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_nested_designator_positional_continuation_walks_subobject_paths",
+      "source": "struct B{unsigned a:3,b:5;};struct W{struct B bits;int tail;};int f(void){struct W w={.bits.a=@N@%8,5,7};return w.bits.b+w.tail;}"
+    },
+    {
+      "id": "f3-nested-continuation-union-member",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_nested_designator_positional_continuation_walks_subobject_paths",
+      "source": "struct N{int a;int b;};struct W{union U{struct N n;long raw;}u;int tail;};int f(void){struct W w={.u.n.a=@N@,4,5};return w.tail;}"
+    },
+    {
+      "id": "f3-nested-continuation-restart",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_nested_designator_positional_continuation_walks_subobject_paths",
+      "source": "int a[2][3]={[1][2]=9,[0][0]=@N@,3,4};int f(void){return a[1][0];}"
+    },
+    {
+      "id": "f3-nested-continuation-brace-elided-struct",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_nested_designator_positional_continuation_walks_subobject_paths",
+      "source": "struct N{int a;int b;};struct S{int a[2];struct N n;int tail;};int f(void){struct S s={.a[1]=@N@,3,4,5};return s.n.a;}"
+    },
+    {
+      "id": "f3-nested-continuation-brace-elided-union-array",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_nested_designator_positional_continuation_walks_subobject_paths",
+      "source": "struct N{int a;int b;};struct W{union U{struct N n;long raw;}items[2];int tail;};int f(void){struct W w={.items[0].n.b=@N@,3,4,5};return w.items[1].n.a;}"
     },
     {
       "id": "complex-type",
