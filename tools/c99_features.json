@@ -724,6 +724,42 @@
       "source": "struct S{unsigned long a:3;};int f(void){struct S s={@N@%8};s.a/=-1;return s.a;}"
     },
     {
+      "id": "f3-partial-override-struct",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_partial_parent_child_initializers_preserve_explicit_leaves_and_reset_siblings",
+      "source": "struct B{unsigned a:3,b:5;};struct Box{struct B bits;};int f(void){struct Box x={.bits={@N@%8,17},.bits.b=23};return x.bits.a+x.bits.b;}"
+    },
+    {
+      "id": "f3-partial-override-parent-reset",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_partial_parent_child_initializers_preserve_explicit_leaves_and_reset_siblings",
+      "source": "struct B{unsigned a:3,b:5;};struct Box{struct B bits;};int f(void){struct Box x={.bits.b=23,.bits={.a=@N@%8}};return x.bits.a+x.bits.b;}"
+    },
+    {
+      "id": "f3-partial-override-nested-array",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_partial_parent_child_initializers_preserve_explicit_leaves_and_reset_siblings",
+      "source": "struct B{unsigned a:3,b:5;};struct Box{struct B bits[2];};int f(void){struct Box x={.bits[1]={2,19},.bits[1].b=@N@%31};return x.bits[1].a+x.bits[1].b;}"
+    },
+    {
+      "id": "f3-partial-override-nested-union",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_partial_parent_child_initializers_preserve_explicit_leaves_and_reset_siblings",
+      "source": "struct B{unsigned a:3,b:5;};union U{struct B bits;long raw;};int f(void){union U x={.bits={@N@%8,17},.bits.b=19};return x.bits.a+x.bits.b;}"
+    },
+    {
       "id": "complex-type",
       "feature": "F5",
       "expect": "accept",

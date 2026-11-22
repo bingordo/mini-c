@@ -35,6 +35,14 @@ The priority is **a working self-contained C99 preprocessor for practical progra
 
 Csmith original-program native execution remains scheduled under [#116](https://github.com/bingordo/mini-c/issues/116). **F5 remains deferred**; do not delay a usable C compiler or initial C++ support for exhaustive C99 conformance.
 
+## F3.4g partial parent/child initializer overrides
+
+- **Braced aggregate initializer overrides now lower to explicit checked leaf paths.** The checker recursively flattens positional, sparse-designated, and deeply designated subobject initializers into the existing source-order `DeepInitializer` path representation. It retains sibling bit-fields even when they share a physical storage unit. Both the static ELF byte packer and automatic stack initializer already consume this same leaf IR; no backend-only bit-field special cases were introduced.
+- A later child designator overwrites only the matching leaf: `{.bits={1,2}, .bits.b=3}` retains `bits.a==1`. A later *whole parent* initializer discards all its earlier children, including ones the new braces omit: `{.bits.b=2, .bits={.a=4}}` leaves `bits.b==0`. Entire union arm selection still replaces the earlier active arm. Overwritten leaf expressions are absent from the final checked IR, consistent with the prior GCC-compatible side-effect policy.
+- The GCC-native suite covers static, automatic, mixed-base bit-field widths, nested arrays/unions, parent resets, overwritten expression side effects, character array string literals, and compound literals. Frontend tests inspect the exact normalized paths, not just acceptance.
+- **Still deliberately rejected:** a non-braced aggregate copy (e.g. `.bits=other`) followed by a child designator. GCC and Clang disagree about whether unrelated children from the earlier copy remain initialized. An earlier child followed by a later whole aggregate expression is supported because the later expression fully replaces the selected parent. Positional continuation *after* a nested designator remains a separate F3 work item.
+- No general statement about portable C initializer expression evaluation order is implied. #158 and #169 remain open for remaining C99/ABI conformance work.
+
 ## F3.4f designated initializer last-wins overrides
 
 - The C99 initializer checker now models **exact duplicate** struct/array/bit-field designators and **whole-union-member replacements** (including nested union paths). An earlier initializer entirely displaced by a later one is removed from checked IR. Unrelated sibling fields in shared bit-field units retain their independent values, and existing static ELF/automatic-stack initializer emitters need no special overwrite paths.

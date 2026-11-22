@@ -1070,11 +1070,10 @@ impl Checker {
         true
     }
 
-    /// Last-initializer-wins is safe without additional lowering for exact
-    /// duplicate leaf paths and different active members of a union: the
-    /// earlier *entire* checked initializer can be discarded. Partial
-    /// parent/child overrides must instead preserve untouched subobjects,
-    /// and remain fail-closed until flattened into leaf writes.
+    /// An exact duplicate or selection of another union arm replaces the
+    /// entire earlier initializer. Other parent/child overlaps are handled
+    /// by descending into explicitly initialized leaves, so unrelated
+    /// subobjects survive later designated writes.
     fn initializer_override_is_whole(ty: &CType, a: &[usize], b: &[usize]) -> bool {
         if a == b { return true; }
         let mut current = ty;
@@ -1093,6 +1092,46 @@ impl Checker {
             };
         }
         false
+    }
+
+    /// Expand a *braced* checked aggregate initializer into explicit
+    /// leaf writes, with source-order subobject paths. Omitted members are
+    /// intentionally absent: the enclosing object is zero-filled once by
+    /// either static ELF or stack lowering, and a later parent replacement
+    /// must discard all earlier children, including omitted ones.
+    ///
+    /// Non-braced aggregate values (such as a struct copied from a variable)
+    /// remain whole-subobject writes; a later child designator can update
+    /// part of that stored value without losing its other members.
+    fn initializer_explicit_leaves(
+        prefix: Vec<usize>, checked: CheckedExpr,
+        out: &mut Vec<(Vec<usize>, CheckedExpr)>,
+    ) {
+        let CheckedExpr { ty, category, kind } = checked;
+        match kind {
+            CheckedExprKind::Initializer(values) => {
+                for (index, value) in values.into_iter().enumerate() {
+                    let mut path = prefix.clone();
+                    path.push(index);
+                    Self::initializer_explicit_leaves(path, value, out);
+                }
+            }
+            CheckedExprKind::SparseInitializer(entries) => {
+                for (index, value) in entries {
+                    let mut path = prefix.clone();
+                    path.push(index);
+                    Self::initializer_explicit_leaves(path, value, out);
+                }
+            }
+            CheckedExprKind::DeepInitializer(entries) => {
+                for (suffix, value) in entries {
+                    let mut path = prefix.clone();
+                    path.extend(suffix);
+                    Self::initializer_explicit_leaves(path, value, out);
+                }
+            }
+            other => out.push((prefix, CheckedExpr { ty, category, kind: other })),
+        }
     }
 
     /// Use flat source-order paths for nested designations so two writes like
@@ -1140,23 +1179,43 @@ impl Checker {
                         "initializer designator requires aggregate subobject")),
                 };
             }
-            if checked_paths.iter().any(|(prior, _)|
-                Self::initializer_paths_overlap(ty, prior, &path)
-                && !Self::initializer_override_is_whole(ty, prior, &path))
+            let checked = self.check_object_initializer(initializer, current, span, is_static)?;
+            // GCC and Clang differ if a non-braced *struct copy* is
+            // followed by a nested child initializer: GCC can discard
+            // that whole earlier copy, while Clang retains its siblings.
+            // Braced parents are normalized to explicit leaves below;
+            // non-braced aggregate copies remain fail-closed in this case.
+            if checked_paths.iter().any(|(prior, previous)|
+                path.starts_with(prior) && path.len() > prior.len()
+                && matches!(previous.ty.unqualified(),
+                    CType::Struct { .. } | CType::Union { .. } | CType::Array(..))
+                && !matches!(previous.kind, CheckedExprKind::StringLiteral(_)))
             {
                 return Err(type_error(located,
-                    "overlapping initializer targets require override handling"));
+                    "partial override of non-braced aggregate initializer is unsupported"));
             }
-            let checked = self.check_object_initializer(initializer, current, span, is_static)?;
-            // GCC/Clang x86-64: exact duplicate paths and replaced union arms
-            // use only the last value. Dropping the overwritten checked IR
-            // also prevents its initializer side effects from executing.
+            // A later initializer of an entire parent replaces all earlier
+            // children, including those omitted by its braces. Selecting a
+            // different union arm also replaces all prior writes to that
+            // union. Earlier whole-object values are kept when a later
+            // designator modifies only one child of the same object.
             checked_paths.retain(|(prior, _)|
-                !Self::initializer_paths_overlap(ty, prior, &path));
+                !Self::initializer_paths_overlap(ty, prior, &path)
+                || !(prior.starts_with(&path)
+                    || Self::initializer_override_is_whole(ty, prior, &path)));
+            let mut leaves = Vec::new();
+            Self::initializer_explicit_leaves(path.clone(), checked, &mut leaves);
+            for (leaf_path, leaf) in leaves {
+                // A later leaf overrides exactly that earlier leaf (or a
+                // different active union member), never its siblings. The
+                // displaced expression and its side effects leave checked IR.
+                checked_paths.retain(|(prior, _)|
+                    !Self::initializer_override_is_whole(ty, prior, &leaf_path));
+                checked_paths.push((leaf_path, leaf));
+            }
             cursor = path[0].checked_add(1)
                 .ok_or_else(|| type_error(located, "initializer cursor overflow"))?;
             last_nested = path.len() > 1;
-            checked_paths.push((path, checked));
         }
         Ok(CheckedExpr::value(ty.clone(),
             CheckedExprKind::DeepInitializer(checked_paths)))

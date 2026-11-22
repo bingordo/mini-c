@@ -92,6 +92,126 @@ CASES = {
             return x->a!=4 || x->b!=17;
         }
     """,
+    "parent_child_global_bitfields": r"""
+        struct B {unsigned a:3,b:5;};
+        struct Box {struct B bits;int tail;};
+        struct Box g={.bits={5,17},.bits.b=23,.tail=9};
+        int main(void) {
+            return g.bits.a!=5 || g.bits.b!=23 || g.tail!=9;
+        }
+    """,
+    "parent_child_global_reverse_zero": r"""
+        struct B {unsigned a:3,b:5;};
+        struct Box {struct B bits;int tail;};
+        struct Box g={.bits.b=23,.bits={.a=4}};
+        int main(void) {
+            return g.bits.a!=4 || g.bits.b!=0 || g.tail!=0;
+        }
+    """,
+    "parent_child_global_parent_reset": r"""
+        struct B {unsigned a:3,b:5;};
+        struct Box {struct B bits;int tail;};
+        struct Box g={.bits={3,17},.bits={.a=6}};
+        int main(void) {
+            return g.bits.a!=6 || g.bits.b!=0 || g.tail!=0;
+        }
+    """,
+    "parent_child_global_mixed_unit_array": r"""
+        struct B {_Bool a:1;unsigned short b:11;unsigned long c:37;};
+        struct Box {struct B bits[2];int tail;};
+        struct Box g={.bits[0]={1,511,1234567UL},
+                      .bits[0].b=1001,.bits[1].c=9999999UL,.tail=7};
+        int main(void) {
+            return g.bits[0].a!=1 || g.bits[0].b!=1001
+                || g.bits[0].c!=1234567UL || g.bits[1].a!=0
+                || g.bits[1].b!=0 || g.bits[1].c!=9999999UL
+                || g.tail!=7;
+        }
+    """,
+    "parent_child_global_nested_union": r"""
+        struct B {unsigned a:3,b:5;};
+        struct Box {union U {struct B bits;long raw;} u;int tail;};
+        struct Box g={.u.bits={3,17},.u.bits.b=19,.tail=9};
+        int main(void) {
+            return g.u.bits.a!=3 || g.u.bits.b!=19 || g.tail!=9;
+        }
+    """,
+    "parent_child_global_nested_union_replacement": r"""
+        struct B {unsigned a:3,b:5;};
+        struct Box {union U {struct B bits;long raw;} u;int tail;};
+        struct Box g={.u.bits={3,17},.u.raw=99,.tail=9};
+        int main(void) {
+            return g.u.raw!=99 || g.tail!=9;
+        }
+    """,
+    "parent_child_local_bitfield_side_effects": r"""
+        int ca;int cb;
+        int effect_a(void){ca++;return 3;}
+        int effect_b(void){cb++;return 17;}
+        struct B {unsigned a:3,b:5;};
+        struct Box {struct B bits;int tail;};
+        int main(void) {
+            struct Box x={.bits={effect_a(),effect_b()},
+                          .bits.b=23,.tail=9};
+            return ca!=1 || cb!=0 || x.bits.a!=3
+                || x.bits.b!=23 || x.tail!=9;
+        }
+    """,
+    "parent_child_local_reverse_omits_effect": r"""
+        int calls;
+        int effect(void){calls++;return 3;}
+        struct B {unsigned a:3,b:5;};
+        struct Box {struct B bits;};
+        int main(void) {
+            struct Box x={.bits.b=effect(),.bits={.a=4}};
+            return calls!=0 || x.bits.a!=4 || x.bits.b!=0;
+        }
+    """,
+    "parent_child_local_array_override": r"""
+        int main(void) {
+            int a[2][2]={[1]={3,4},[1][0]=5};
+            return a[0][0]!=0 || a[0][1]!=0 || a[1][0]!=5 || a[1][1]!=4;
+        }
+    """,
+    "parent_child_local_copy_after_child": r"""
+        struct B {unsigned a:3,b:5;};
+        struct Box {struct B bits;};
+        int main(void) {
+            struct B source={4,13};
+            struct Box x={.bits.b=5,.bits=source};
+            return x.bits.a!=4 || x.bits.b!=13;
+        }
+    """,
+    "parent_child_global_string_array_override": r"""
+        struct Word {char text[5];unsigned a:3;};
+        struct Word g={.text="ABC",.text[1]='Z',.a=5};
+        int main(void) {
+            return g.text[0]!='A' || g.text[1]!='Z'
+                || g.text[2]!='C' || g.text[3]!=0
+                || g.text[4]!=0 || g.a!=5;
+        }
+    """,
+    "parent_child_local_compound_literal": r"""
+        struct B {unsigned a:3,b:5;};
+        struct Box {struct B bits;int tail;};
+        int main(void) {
+            struct Box *x=&(struct Box){
+                .bits={5,17},.bits.b=23,.tail=9
+            };
+            return x->bits.a!=5 || x->bits.b!=23 || x->tail!=9;
+        }
+    """,
+    "parent_child_global_nested_array_reset": r"""
+        struct B {unsigned a:3,b:5;};
+        struct Box {struct B bits[2];int tail;};
+        struct Box g={.bits[0].b=17,.bits[0]={.a=5},
+                      .bits[1]={3,11},.bits[1].a=6,.tail=9};
+        int main(void) {
+            return g.bits[0].a!=5 || g.bits[0].b!=0
+                || g.bits[1].a!=6 || g.bits[1].b!=11
+                || g.tail!=9;
+        }
+    """,
     "global_bool_one_byte_and_normalization": r"""
         struct B {_Bool a:1,b:1;};
         struct B x={256,0};
