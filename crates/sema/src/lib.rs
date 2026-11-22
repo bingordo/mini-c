@@ -1217,15 +1217,18 @@ impl Checker {
                         "initializer designator requires aggregate subobject")),
                 };
             }
-            // C99 brace elision: a bare scalar following an exhausted
-            // nested array/struct may begin the next aggregate's first
-            // scalar subobject. Try normal aggregate assignment first, so
-            // a compatible whole-struct expression or a braced initializer
-            // stays at the parent path. Only positional expressions may
-            // descend; explicit designators already select their object.
+            // C99 6.7.8 brace elision: a non-braced scalar initializer for
+            // a selected aggregate initializes its first nested subobject.
+            // Try normal aggregate assignment first: compatible struct
+            // copies, string-initialized character arrays and braced
+            // initializers must keep the selected parent as their target.
+            // Both positional and one-component designated aggregate
+            // initializers may elide braces (e.g. {.a=3,4} for int a[2]).
             let mut checked = self.check_object_initializer(
                 initializer, current, span, is_static);
-            while positional && checked.is_err() {
+            while checked.is_err()
+                && !matches!(initializer.without_location(), Expr::Initializer(_))
+            {
                 let first = match current.unqualified() {
                     CType::Struct { members, .. } | CType::Union { members, .. } =>
                         members.first().map(|member| &member.ty),
@@ -1364,7 +1367,26 @@ impl Checker {
                         "union positional continuation requires a designator"
                     } else { "union initializer selects only its first member" }));
                 }
-                let checked = self.check_object_initializer(input, element, span, is_static)?;
+                let checked = match self.check_object_initializer(
+                    input, element, span, is_static
+                ) {
+                    Ok(checked) => checked,
+                    // The flat representation cannot carry positional
+                    // subobject paths. On the first non-braced aggregate
+                    // initializer that fails to initialize the aggregate
+                    // as a whole, restart the entire brace group through
+                    // the same path-aware checker used for nested
+                    // designators. This preserves the source-order cursor,
+                    // overrides and zero-fill behavior in one place.
+                    Err(_) if matches!(element.unqualified(),
+                        CType::Struct { .. } | CType::Union { .. } | CType::Array(..))
+                        && !matches!(input.without_location(), Expr::Initializer(_)) =>
+                    {
+                        return self.check_deep_initializer(
+                            values, ty, span, is_static);
+                    }
+                    Err(error) => return Err(error),
+                };
                 if is_union {
                     // Every new explicit union selection completely replaces
                     // the previously active member, including any side effects.
