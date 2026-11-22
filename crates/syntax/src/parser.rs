@@ -790,6 +790,41 @@ impl<'a> Parser<'a> {
                     }
                     self.expect(")")?;
                 }
+                "alloc_size" => {
+                    // GNU alloc_size(i[,j]) is a size-analysis hint on a
+                    // function returning allocated memory. It does not alter
+                    // parameter passing or return-value ABI; ignore only a
+                    // syntactically valid form naming existing fixed params.
+                    let Some((fixed, _)) = function_params else {
+                        return Err(Diagnostic::coded(token.span,
+                            DiagnosticCode::SyntaxInvalidDeclaration,
+                            "alloc_size attribute requires a function prototype"));
+                    };
+                    self.expect("(")?;
+                    let mut positions = Vec::new();
+                    loop {
+                        let index = self.take()?.ok_or_else(|| Diagnostic::coded(
+                            self.eof_span(), DiagnosticCode::SyntaxInvalidDeclaration,
+                            "expected alloc_size parameter index"))?;
+                        let n = if index.kind == TokenKind::Number &&
+                            index.text.bytes().all(|b| b.is_ascii_digit())
+                        {
+                            index.text.parse::<usize>().ok()
+                        } else { None };
+                        if !n.is_some_and(|n| n > 0 && n <= fixed && !positions.contains(&n)) {
+                            return Err(Diagnostic::coded(index.span,
+                                DiagnosticCode::SyntaxInvalidDeclaration,
+                                "alloc_size index must name a distinct fixed parameter"));
+                        }
+                        positions.push(n.unwrap());
+                        if positions.len() == 2 ||
+                            !self.peek()?.is_some_and(|t| t.text.as_ref() == ",") {
+                            break;
+                        }
+                        self.take()?;
+                    }
+                    self.expect(")")?;
+                }
                 "nonnull" => {
                     if self.peek()?.is_some_and(|t| t.text.as_ref() == "(") {
                         self.take()?;
@@ -3002,6 +3037,28 @@ mod tests {
             "typedef union { __extension__ } bad_t;",
         ] {
             assert!(Parser::new(malformed).next_item().is_err(), "{malformed}");
+        }
+    }
+
+    #[test]
+    fn glibc_alloc_size_is_checked_without_abi_rewrite() {
+        for source in [
+            "void *allocate(unsigned long n) __attribute__((alloc_size(1)));",
+            "void *allocate(unsigned long m, unsigned long n) __attribute__((__alloc_size__(1, 2)));",
+        ] {
+            let Some(ExternalItem::Declaration(decl)) =
+                Parser::new(source).next_item().unwrap() else {panic!("function declaration expected")};
+            assert!(matches!(decl.ty, Type::Function { .. }));
+        }
+        for source in [
+            "int x __attribute__((alloc_size(1)));",
+            "void *allocate(unsigned long n) __attribute__((alloc_size(0)));",
+            "void *allocate(unsigned long n) __attribute__((alloc_size(2)));",
+            "void *allocate(unsigned long n) __attribute__((alloc_size(1, 1)));",
+            "void *allocate(unsigned long n) __attribute__((alloc_size(x)));",
+            "void *allocate(unsigned long n) __attribute__((alloc_size(1,)));",
+        ] {
+            assert!(Parser::new(source).next_item().is_err(), "{source}");
         }
     }
 
