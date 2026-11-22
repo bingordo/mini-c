@@ -3153,4 +3153,98 @@ mod tests {
         }
     }
 
+    #[test]
+    fn file_scope_declarator_lists_stream_in_source_order() {
+        let src = "float value, fixed, floated; int *p, a[3]; int x=1, y=2;";
+        let mut parser = Parser::new(src);
+        let mut names = Vec::new();
+        let mut entries = Vec::new();
+        while let Some(item) = parser.next_item().unwrap() {
+            let ExternalItem::Declaration(decl) = item else {panic!("declaration expected");};
+            names.push(decl.name.clone());
+            entries.push(decl);
+        }
+        assert_eq!(names, ["value", "fixed", "floated", "p", "a", "x", "y"]);
+        assert!(matches!(&entries[3].ty, Type::Pointer(_)));
+        assert!(matches!(&entries[4].ty, Type::Array(_, _)));
+        assert!(entries[5].init.is_some() && entries[6].init.is_some());
+        assert!(entries[0].init.is_none());
+    }
+
+    #[test]
+    fn file_scope_comma_typedefs_are_immediately_visible() {
+        let src = "typedef int first_t, second_t; first_t x; second_t y;";
+        let mut parser = Parser::new(src);
+        let mut names = Vec::new();
+        while let Some(item) = parser.next_item().unwrap() {
+            match item {
+                ExternalItem::Typedef(decl) => names.push(("typedef", decl.name)),
+                ExternalItem::Declaration(decl) => names.push(("declaration", decl.name)),
+                _ => panic!("unexpected item"),
+            }
+        }
+        assert_eq!(names, [("typedef", "first_t".into()),
+            ("typedef", "second_t".into()),
+            ("declaration", "x".into()), ("declaration", "y".into())]);
+    }
+
+    #[test]
+    fn file_scope_comma_storage_and_function_declarators() {
+        let mut parser = Parser::new(
+            "static int left, right; extern int a, b; int f(void), g(void);"
+        );
+        let mut entries = Vec::new();
+        while let Some(item) = parser.next_item().unwrap() {
+            let ExternalItem::Declaration(decl) = item else {panic!("declaration expected")};
+            entries.push(decl);
+        }
+        assert_eq!(entries.len(), 6);
+        assert_eq!(entries[0].storage, StorageClass::Static);
+        assert_eq!(entries[1].storage, StorageClass::Static);
+        assert_eq!(entries[2].storage, StorageClass::Extern);
+        assert_eq!(entries[3].storage, StorageClass::Extern);
+        assert!(matches!(&entries[4].ty, Type::Function { .. }));
+        assert!(matches!(&entries[5].ty, Type::Function { .. }));
+    }
+
+    #[test]
+    fn file_scope_malformed_comma_declarators_fail_closed() {
+        for source in [
+            "float a,;",
+            "int a,,b;",
+            "typedef int A, B = 3;",
+            "int a = 1, b = ;",
+            "int a, 42;",
+        ] {
+            let mut parser = Parser::new(source);
+            let mut failed = false;
+            for _ in 0..8 {
+                match parser.next_item() {
+                    Err(_) => { failed = true; break; },
+                    Ok(None) => break,
+                    Ok(Some(_)) => {},
+                }
+            }
+            assert!(failed, "invalid comma group unexpectedly accepted: {source}");
+        }
+    }
+
+    #[test]
+    fn comma_file_items_do_not_consume_following_function_body() {
+        let source = "int a, b, c; int foo(void) { return b; } int d;";
+        let mut parser = Parser::new(source);
+        for expected in ["a", "b", "c"] {
+            let Some(ExternalItem::Declaration(decl)) = parser.next_item().unwrap()
+            else {panic!("expected declaration");};
+            assert_eq!(decl.name, expected);
+        }
+        let Some(ExternalItem::Function(function)) = parser.next_item().unwrap()
+        else {panic!("function expected");};
+        assert_eq!(function.name, "foo");
+        let Some(ExternalItem::Declaration(decl)) = parser.next_item().unwrap()
+        else {panic!("final declaration expected");};
+        assert_eq!(decl.name, "d");
+        assert!(parser.next_item().unwrap().is_none());
+    }
+
 }
