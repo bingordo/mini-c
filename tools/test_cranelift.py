@@ -14,6 +14,56 @@ import subprocess
 import sys
 
 PROGRAMS = {
+    # C99 6.4.2.2: __func__ behaves as a per-function
+    # static const char[] object, not an unnamed pooled string.
+    "c99_func_size_main": """int main(void) {
+        return sizeof __func__ != 5;
+    }""",
+    "c99_func_size_helper": """int helper(void) {
+        return sizeof __func__ != 7;
+    } int main(void) { return helper(); }""",
+    "c99_func_contents": """int alpha(void) {
+        return __func__[0]!='a' || __func__[1]!='l'
+            || __func__[2]!='p' || __func__[3]!='h'
+            || __func__[4]!='a' || __func__[5]!=0;
+    } int main(void) { return alpha(); }""",
+    "c99_func_const_decay": """const char *label(void) {
+        return __func__;
+    } int main(void) {
+        const char *p=label();
+        return p[0]!='l' || p[1]!='a' || p[4]!='l'
+            || p[5]!=0;
+    }""",
+    "c99_func_pointer_to_array": """int check(void) {
+        const char (*p)[6]=&__func__;
+        return (*p)[0]!='c' || (*p)[4]!='k' || (*p)[5]!=0;
+    } int main(void) { return check(); }""",
+    "c99_func_same_object_repeated_calls": """const char *mark(void) {
+        return __func__;
+    } int main(void) {
+        const char *a=mark();
+        const char *b=mark();
+        return a!=b || a[0]!='m' || a[4]!=0;
+    }""",
+    "c99_func_distinct_functions": """const char *first(void) {
+        return __func__;
+    } const char *second(void) {
+        return __func__;
+    } int main(void) {
+        const char *a=first();
+        const char *b=second();
+        return a==b || a[0]!='f' || b[0]!='s';
+    }""",
+    "c99_func_nested_scope": """int inside(void) {
+        const char *outer=__func__;
+        {const char *inner=__func__;
+         if (outer!=inner) return 1;}
+        return outer[0]!='i' || sizeof __func__!=7;
+    } int main(void) { return inside(); }""",
+    "c99_func_address_of_element": """int okay(void) {
+        const char *p=&__func__[0];
+        return p!=__func__ || p[0]!='o' || p[4]!=0;
+    } int main(void) { return okay(); }""",
     # C99 6.3.2.3: (void*)integer-constant-zero is a null pointer constant
     # even when the other pointer is to a FUNCTION. Do not extend this
     # implicit compatibility to arbitrary void* object pointers.
