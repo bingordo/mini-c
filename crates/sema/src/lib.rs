@@ -1185,7 +1185,6 @@ impl Checker {
         let mut next_path: Option<Vec<usize>> = Some(vec![0]);
         for value in values {
             let located = value.location().unwrap_or(span);
-            let positional = !matches!(value.without_location(), Expr::Designated { .. });
             let (mut path, initializer) = match value.without_location() {
                 Expr::Designated { path, value } => {
                     let (slots, _) = self.initializer_path(ty, path, located)?;
