@@ -1149,7 +1149,7 @@ impl Checker {
                 CType::Struct { members, .. } | CType::Union { members, .. } =>
                     &members.get(index)?.ty,
                 CType::Array(element, Some(bound))
-                    if u64::try_from(index).ok()? < *bound => element,
+                    if u64::try_from(index).ok()? < *bound => element.as_ref(),
                 _ => return None,
             };
         }
