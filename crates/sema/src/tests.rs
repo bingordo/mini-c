@@ -4309,3 +4309,49 @@ fn asm3_p02e3_checked_plus_m_sub_rejects_unsupported_shapes() {
         r#"int f(int*p,int v){asm("subl %1,%0":"+m"(*p):"r"(v),"r"(v):"cc");return *p;}"#,
     ] { assert!(check(source).is_err(),"unsupported GNU +m SUB source admitted: {source}"); }
 }
+
+
+#[test]
+fn c99_pointer_arithmetic_offset_promotions_and_array_scaling() {
+    // Check the frontend's typed pointer operations, not target-dependent
+    // machine-address arithmetic. Native byte scaling belongs to lowering.
+    check("int *f(int *p, _Bool b) { return p + b; }")
+        .expect("_Bool offset promotes to int");
+    check("int *f(int *p, unsigned long n) { return n + p; }")
+        .expect("integer + pointer is commutative for addition");
+    check("int *f(int *p, long n) { return p - n; }")
+        .expect("signed long subtraction offset");
+    check("long f(int *p) { return (p + 3) - (p - 2); }")
+        .expect("pointer difference after opposite signed offsets");
+    check("long f(const int *p, volatile int *q) { return p - q; }")
+        .expect("top-level pointed-to qualifiers do not prevent subtraction");
+    check("long f(int (*p)[3], int (*q)[3]) { return p - q; }")
+        .expect("pointer-to-array difference counts whole array elements");
+
+    reject("int *f(void *p) { return p + 1; }",
+        "pointer arithmetic requires a complete object type");
+    reject("long f(void *p, void *q) { return p - q; }",
+        "pointer subtraction requires a complete object type");
+    reject("long f(int *p, short *q) { return p - q; }",
+        "pointer subtraction requires compatible pointed-to types");
+    reject("int *f(int *p, int *q) { return p + q; }",
+        "compatible integer operands");
+}
+
+
+#[test]
+fn c99_pointer_compound_offsets_and_updates_require_complete_pointees() {
+    check("int *f(int *p, unsigned long n) { p += n; p -= 2L; ++p; p--; return p; }")
+        .expect("pointer compound assignments and updates retain element scaling");
+    check("void f(int (*p)[4]) { p += 2; --p; }")
+        .expect("pointer-to-array updates use array-sized elements");
+
+    reject("void f(void *p) { p += 1; }",
+        "pointer arithmetic requires a complete object type");
+    reject("void f(void *p) { ++p; }",
+        "increment/decrement requires pointer to complete object type");
+    reject("void f(int *p, int *q) { p += q; }",
+        "compound assignment requires integer operands");
+    reject("void f(int *p) { p *= 2; }",
+        "compound assignment requires a modifiable arithmetic lvalue or pointer");
+}
