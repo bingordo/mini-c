@@ -142,8 +142,7 @@ fn c99_nested_designators_resolve_paths_preserve_siblings_and_reject_overlap() {
     check("struct S {int a;int b;}; struct S x[2]={[1].a=3,[1].b=7};").unwrap();
     reject("int a[2][2]={[1][2]=4};", "exceeds bound");
     check("int a[2][2]={[1][1]=4,[1][1]=5};").unwrap();
-    reject("int a[2][2]={[1]={3,4},[1][0]=5};",
-        "overlapping initializer targets require override handling");
+    check("int a[2][2]={[1]={3,4},[1][0]=5};").unwrap();
     reject("struct S {int a;int b;}; struct S x={.a=1,.b.field=3};",
         "field designator requires struct or union initializer");
     reject("struct S {int a;int b;}; struct S x[2]={[0].missing=3};",
@@ -215,8 +214,101 @@ fn c99_overriding_designators_drop_old_values_without_clobbering_siblings() {
     check("int a[4]={[2]=5,[0]=1,[2]=9};").unwrap();
     check("struct B{unsigned a:3,b:5;};int f(void){struct B b=(struct B){.a=1,.a=3,.b=8};return b.a;}")
         .unwrap();
-    reject("struct B{unsigned a:3,b:5;};struct W{struct B bits;};struct W w={.bits={1,2},.bits.b=3};",
-        "overlapping initializer targets require override handling");
+    check("struct B{unsigned a:3,b:5;};struct W{struct B bits;};struct W w={.bits={1,2},.bits.b=3};")
+        .unwrap();
+}
+
+#[test]
+fn c99_partial_parent_child_initializers_preserve_explicit_leaves_and_reset_siblings() {
+    let checked = check(concat!(
+        "struct Bits {unsigned a:3,b:5;};",
+        "struct Box {struct Bits bits; int tail;};",
+        "struct Box forward={.bits={5,17},.bits.b=23,.tail=9};",
+        "struct Box reverse={.bits.b=23,.bits={.a=4}};",
+        "struct Box replacement={.bits={3,17},.bits={.a=6}};"
+    )).unwrap();
+    let paths = |index: usize| {
+        let CheckedItem::Declaration(d) = &checked[index] else {panic!("global")};
+        let Some(CheckedExpr { kind: CheckedExprKind::DeepInitializer(entries), .. }) =
+            &d.initializer else {panic!("deep initializer")};
+        entries.iter().map(|(path, _)| path.clone()).collect::<Vec<_>>()
+    };
+    assert_eq!(paths(2), vec![vec![0,0],vec![0,1],vec![1]]);
+    // A whole parent override removes earlier siblings not explicitly
+    // present in the new braced parent; zero-initialization supplies them.
+    assert_eq!(paths(3), vec![vec![0,0]]);
+    assert_eq!(paths(4), vec![vec![0,0]]);
+
+    let checked = check(concat!(
+        "struct Bits {unsigned a:3,b:5;};",
+        "struct Wrap {struct Bits bits[2]; int tail;};",
+        "struct Wrap w={.bits[0]={3,17},.bits[0].b=21,",
+        ".bits[1].a=6,.tail=7};"
+    )).unwrap();
+    let CheckedItem::Declaration(w) = &checked[2] else {panic!("w")};
+    let Some(CheckedExpr {kind: CheckedExprKind::DeepInitializer(entries),..}) =
+        &w.initializer else {panic!("deep wrap")};
+    assert_eq!(entries.iter().map(|(path,_)|path.clone()).collect::<Vec<_>>(),
+        vec![vec![0,0,0],vec![0,0,1],vec![0,1,0],vec![1]]);
+
+    let checked = check(concat!(
+        "struct Bits {unsigned a:3,b:5;};",
+        "union U {struct Bits bits;long raw;};",
+        "union U active={.bits={4,17},.bits.b=19};",
+        "union U replaced={.bits={4,17},.raw=99};"
+    )).unwrap();
+    let CheckedItem::Declaration(active) = &checked[2] else {panic!("active")};
+    let Some(CheckedExpr {kind: CheckedExprKind::DeepInitializer(entries),..}) =
+        &active.initializer else {panic!("deep active")};
+    assert_eq!(entries.iter().map(|(p,_)|p.clone()).collect::<Vec<_>>(),
+        vec![vec![0,0],vec![0,1]]);
+    let CheckedItem::Declaration(replaced) = &checked[3] else {panic!("replaced")};
+    let Some(CheckedExpr {kind: CheckedExprKind::DeepInitializer(entries),..}) =
+        &replaced.initializer else {panic!("deep replaced")};
+    assert_eq!(entries.iter().map(|(p,_)|p.clone()).collect::<Vec<_>>(),
+        vec![vec![1]]);
+
+    // If an overridden braced child called a function, it is eliminated
+    // from the final checked leaf list, while its sibling's effect stays.
+    let checked = check(concat!(
+        "int effect(void){return 1;}",
+        "struct Bits {unsigned a:3,b:5;};",
+        "struct Box {struct Bits bits;};",
+        "int f(void){struct Box x={.bits={effect(),effect()},.bits.b=17};",
+        "return x.bits.a+x.bits.b;}"
+    )).unwrap();
+    let CheckedItem::Function(f) = &checked[3] else {panic!("function")};
+    let CheckedStmt::Block(stmts) = &f.body else {panic!("block")};
+    let CheckedStmt::Decl(local) = &stmts[0] else {panic!("local")};
+    let Some(CheckedExpr {kind: CheckedExprKind::DeepInitializer(entries),..}) =
+        &local.initializer else {panic!("deep local")};
+    assert_eq!(entries.iter().map(|(p,_)|p.clone()).collect::<Vec<_>>(),
+        vec![vec![0,0],vec![0,1]]);
+    assert!(matches!(&entries[0].1.kind, CheckedExprKind::Call(..)),
+        "unoverridden sibling call stays");
+    assert!(!matches!(&entries[1].1.kind, CheckedExprKind::Call(..)),
+        "overridden member call must be erased");
+
+    // A later whole aggregate expression replaces previously assigned
+    // children; the converse differs between GCC and Clang, and therefore
+    // remains fail-closed until its implementation-defined semantics are
+    // selected explicitly.
+    check(concat!(
+        "struct Bits {unsigned a:3,b:5;};",
+        "struct Box {struct Bits bits;};",
+        "int f(void){struct Bits v={4,13};",
+        "struct Box x={.bits.b=2,.bits=v};return x.bits.a;}"
+    )).unwrap();
+    reject(concat!(
+        "struct Bits {unsigned a:3,b:5;};",
+        "struct Box {struct Bits bits;};",
+        "int f(void){struct Bits v={4,13};",
+        "struct Box x={.bits=v,.bits.b=2};return x.bits.a;}"
+    ), "partial override of non-braced aggregate initializer is unsupported");
+    check(concat!(
+        "struct Word {char s[5];unsigned a:3;};",
+        "struct Word w={.s=\"ABC\",.s[1]='Z',.a=5};"
+    )).unwrap();
 }
 
 #[test]
