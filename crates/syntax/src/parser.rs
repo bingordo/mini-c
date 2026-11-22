@@ -1636,6 +1636,12 @@ impl<'a> Parser<'a> {
                 self.take()?;
                 let mut members = Vec::new();
                 while !self.peek()?.is_some_and(|t| t.text.as_ref() == "}") {
+                    // glibc uses __extension__ on 64-bit union members to
+                    // suppress pedantic diagnostics. It does not alter member
+                    // type, alignment, offsets or ABI and is not a qualifier.
+                    if self.peek()?.is_some_and(|t| t.text.as_ref() == "__extension__") {
+                        self.take()?;
+                    }
                     let (base, start) = self.parse_type()?.ok_or_else(||
                         Diagnostic::new(self.eof_span(), "unterminated struct definition"))?;
                     // A C struct/union member declaration has a *shared* base
@@ -2978,6 +2984,24 @@ mod tests {
             "extern __inline int external(void) { return 1; }",
         ] {
             assert!(Parser::new(src).next_item().is_err(), "{src}");
+        }
+    }
+
+    #[test]
+    fn glibc_union_extension_member_retains_64_bit_layout_type() {
+        let src = "typedef union { __extension__ unsigned long long int a; unsigned int b; } counter_t;";
+        let Some(ExternalItem::Typedef(decl)) = Parser::new(src).next_item().unwrap()
+        else { panic!("typedef expected"); };
+        let Type::Union { members, .. } = decl.ty else {panic!("union expected")};
+        assert_eq!(members.len(), 2);
+        assert_eq!(members[0].name, "a");
+        assert_eq!(members[0].ty, Type::Unsigned(Box::new(Type::LongLong)));
+        assert_eq!(members[1].ty, Type::Unsigned(Box::new(Type::Int)));
+        for malformed in [
+            "typedef union { __extension__ ; } bad_t;",
+            "typedef union { __extension__ } bad_t;",
+        ] {
+            assert!(Parser::new(malformed).next_item().is_err(), "{malformed}");
         }
     }
 
