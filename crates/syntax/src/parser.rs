@@ -652,7 +652,7 @@ impl<'a> Parser<'a> {
     /// Only annotations that are safe to *not* exploit for optimization or
     /// diagnostics are accepted. Layout, ABI, control-flow and unknown
     /// attributes fail closed; they must not disappear silently.
-    fn parse_gnu_declarator_attributes(&mut self, function_params: Option<(usize, bool)>)
+    fn parse_gnu_declarator_attributes(&mut self, function_params: Option<(usize, bool)>, mut decl_type: Option<&mut Type>)
         -> Result<(), Diagnostic>
     {
         let function = function_params.is_some();
@@ -790,6 +790,43 @@ impl<'a> Parser<'a> {
                     }
                     self.expect(")")?;
                 }
+                "alloc_size" | "alloc_align" => {
+                    // GNU alloc_size(i[,j]) and alloc_align(i) describe
+                    // allocation sizes and alignment for diagnostics and
+                    // optional optimization. Their omission is conservative
+                    // and never changes calling convention or object layout.
+                    // Check only documented parameter-index forms.
+                    let Some((fixed, _)) = function_params else {
+                        return Err(Diagnostic::coded(token.span,
+                            DiagnosticCode::SyntaxInvalidDeclaration,
+                            "allocation attribute requires a function prototype"));
+                    };
+                    self.expect("(")?;
+                    let mut positions = Vec::new();
+                    let max_positions = if name == "alloc_align" { 1 } else { 2 };
+                    loop {
+                        let index = self.take()?.ok_or_else(|| Diagnostic::coded(
+                            self.eof_span(), DiagnosticCode::SyntaxInvalidDeclaration,
+                            "expected allocation attribute parameter index"))?;
+                        let n = if index.kind == TokenKind::Number &&
+                            index.text.bytes().all(|b| b.is_ascii_digit())
+                        {
+                            index.text.parse::<usize>().ok()
+                        } else { None };
+                        if !n.is_some_and(|n| n > 0 && n <= fixed && !positions.contains(&n)) {
+                            return Err(Diagnostic::coded(index.span,
+                                DiagnosticCode::SyntaxInvalidDeclaration,
+                                "allocation attribute index must name a distinct fixed parameter"));
+                        }
+                        positions.push(n.unwrap());
+                        if positions.len() == max_positions ||
+                            !self.peek()?.is_some_and(|t| t.text.as_ref() == ",") {
+                            break;
+                        }
+                        self.take()?;
+                    }
+                    self.expect(")")?;
+                }
                 "nonnull" => {
                     if self.peek()?.is_some_and(|t| t.text.as_ref() == "(") {
                         self.take()?;
@@ -853,6 +890,39 @@ impl<'a> Parser<'a> {
                     }
                     self.expect(")")?;
                 }
+                "mode" => {
+                    // GCC's __mode__(__word__) on a signed/unsigned int
+                    // declaration chooses the target's signed/unsigned word
+                    // integer type. On supported LP64/ILP32 ABIs C long has
+                    // pointer width. Preserve the resulting type in the AST:
+                    // silently ignoring this would make glibc register_t
+                    // only 32-bit on x86_64. Other modes remain unsupported.
+                    self.expect("(")?;
+                    let mode = self.take()?.ok_or_else(|| Diagnostic::coded(
+                        self.eof_span(), DiagnosticCode::SyntaxInvalidDeclaration,
+                        "expected GNU integer mode"))?;
+                    if gnu_attribute_spelling(mode.text.as_ref()) != "word" {
+                        return Err(Diagnostic::coded(mode.span,
+                            DiagnosticCode::SyntaxInvalidDeclaration,
+                            "unsupported GNU integer mode (possible ABI or semantic effect)"));
+                    }
+                    self.expect(")")?;
+                    let Some(declared) = decl_type.as_deref_mut() else {
+                        return Err(Diagnostic::coded(token.span,
+                            DiagnosticCode::SyntaxInvalidDeclaration,
+                            "GNU word mode requires a complete integer declarator"));
+                    };
+                    match declared {
+                        Type::Int => *declared = Type::Long,
+                        Type::Signed(inner) if matches!(inner.as_ref(), Type::Int) =>
+                            *declared = Type::Signed(Box::new(Type::Long)),
+                        Type::Unsigned(inner) if matches!(inner.as_ref(), Type::Int) =>
+                            *declared = Type::Unsigned(Box::new(Type::Long)),
+                        _ => return Err(Diagnostic::coded(token.span,
+                            DiagnosticCode::SyntaxInvalidDeclaration,
+                            "GNU word mode requires a signed or unsigned int base type")),
+                    }
+                }
                 // Keep returns_twice, packed/aligned/vector_size, mode/section
                 // and calling-convention annotations fail-closed: unlike
                 // noreturn, these may change observable semantics or ABI.
@@ -863,7 +933,7 @@ impl<'a> Parser<'a> {
                     format!("unsupported GNU attribute '{}' (possible ABI or semantic effect)",
                         token.text.as_ref()))),
             }
-            if !function {
+            if !function && name != "mode" {
                 return Err(Diagnostic::coded(token.span,
                     DiagnosticCode::SyntaxInvalidDeclaration,
                     "GNU function attribute requires a function declarator"));
@@ -931,14 +1001,15 @@ impl<'a> Parser<'a> {
                 let (params, variadic) = self.parse_parameter_list()?;
                 self.expect(")")?;
                 direct = Declarator::Function(Box::new(direct), params, variadic);
-            } else if self.peek()?.is_some_and(|token|
-                token.text.as_ref() == "__attribute__" || token.text.as_ref() == "__attribute")
+            } else if matches!(&direct, Declarator::Function(_, _, _))
+                && self.peek()?.is_some_and(|token|
+                    token.text.as_ref() == "__attribute__" || token.text.as_ref() == "__attribute")
             {
                 self.parse_gnu_declarator_attributes(
                     match &direct {
                         Declarator::Function(_, params, variadic) => Some((params.len(), *variadic)),
                         _ => None,
-                    }
+                    }, None
                 )?;
             } else {
                 break;
@@ -1602,6 +1673,12 @@ impl<'a> Parser<'a> {
                 self.take()?;
                 let mut members = Vec::new();
                 while !self.peek()?.is_some_and(|t| t.text.as_ref() == "}") {
+                    // glibc uses __extension__ on 64-bit union members to
+                    // suppress pedantic diagnostics. It does not alter member
+                    // type, alignment, offsets or ABI and is not a qualifier.
+                    if self.peek()?.is_some_and(|t| t.text.as_ref() == "__extension__") {
+                        self.take()?;
+                    }
                     let (base, start) = self.parse_type()?.ok_or_else(||
                         Diagnostic::new(self.eof_span(), "unterminated struct definition"))?;
                     // A C struct/union member declaration has a *shared* base
@@ -1805,6 +1882,13 @@ impl ItemSource for Parser<'_> {
             return Err(Diagnostic::coded(storage_span, DiagnosticCode::SyntaxInvalidDeclaration,
                 "register storage class is not allowed at file scope"));
         }
+        // Hosted glibc uses "static __inline" for private helper bodies.
+        // Inline is advisory for static linkage; *do not* drop plain or
+        // extern inline where C99/GNU external definition rules differ.
+        let static_inline = storage == StorageClass::Static
+            && self.peek()?.is_some_and(|t|
+                matches!(t.text.as_ref(), "inline" | "__inline" | "__inline__"));
+        if static_inline { self.take()?; }
         let Some((base, start)) = self.parse_type()? else {
             // EOF only succeeds when no declaration specifiers were consumed.
             if is_typedef || storage != StorageClass::Default {
@@ -1826,8 +1910,13 @@ impl ItemSource for Parser<'_> {
             self.take()?;
             return Ok(Some(ExternalItem::Tag(base)));
         }
-        let (name, ty, definition_params, name_span) = self.parse_declarator_shape(false)?.finish(base);
+        let (name, mut ty, definition_params, name_span) = self.parse_declarator_shape(false)?.finish(base);
         let asm_label = self.parse_asm_linkage_label()?;
+        if static_inline && !matches!(&ty, Type::Function { .. } | Type::VariadicFunction { .. }) {
+            return Err(Diagnostic::coded(name_span.unwrap_or(storage_span),
+                DiagnosticCode::SyntaxInvalidDeclaration,
+                "static inline requires a function declarator"));
+        }
         // GNU permits advisory function attributes following the asm label.
         while self.peek()?.is_some_and(|t|
             matches!(t.text.as_ref(), "__attribute__" | "__attribute"))
@@ -1837,7 +1926,7 @@ impl ItemSource for Parser<'_> {
                 Type::VariadicFunction { params, .. } => Some((params.len(), true)),
                 _ => None,
             };
-            self.parse_gnu_declarator_attributes(signature)?;
+            self.parse_gnu_declarator_attributes(signature, Some(&mut ty))?;
         }
         if asm_label.is_some() &&
             (!matches!(ty, Type::Function { .. } | Type::VariadicFunction { .. }) || is_typedef)
@@ -2890,4 +2979,106 @@ mod tests {
             assert!(Parser::new(source).next_item().is_err(),"{source}");
         }
     }
+    #[test]
+    fn gnu_word_mode_preserves_glibc_register_t_abi_width() {
+        let source = "typedef int register_t __attribute__ ((__mode__ (__word__)));";
+        let Some(ExternalItem::Typedef(decl)) =
+            Parser::new(source).next_item().unwrap() else {panic!("typedef expected");};
+        assert_eq!(decl.name, "register_t");
+        assert_eq!(decl.ty, Type::Long);
+        let source = "typedef unsigned int uword_t __attribute__((mode(word)));";
+        let Some(ExternalItem::Typedef(decl)) =
+            Parser::new(source).next_item().unwrap() else {panic!("typedef expected");};
+        assert_eq!(decl.ty, Type::Unsigned(Box::new(Type::Long)));
+    }
+
+    #[test]
+    fn gnu_word_mode_rejects_unrelated_layout_and_abi_modes() {
+        for src in [
+            "typedef int short_t __attribute__((__mode__(__QI__)));",
+            "typedef int other_t __attribute__((mode(__DI__)));",
+            "typedef long long scalar_t __attribute__((mode(word)));",
+            "typedef int *ptr_t __attribute__((mode(word)));",
+            "int f(void) __attribute__((mode(word)));",
+            "typedef int malformed_t __attribute__((mode));",
+        ] {
+            assert!(Parser::new(src).next_item().is_err(), "{src}");
+        }
+    }
+
+    #[test]
+    fn glibc_static_inline_helpers_keep_internal_linkage() {
+        for keyword in ["inline", "__inline", "__inline__"] {
+            let src = format!("static {keyword} int helper(int x) {{ return x + 1; }}");
+            let Some(ExternalItem::Function(func)) =
+                Parser::new(&src).next_item().unwrap() else {panic!("static inline function expected");};
+            assert_eq!(func.name, "helper");
+            assert_eq!(func.storage, StorageClass::Static);
+        }
+        for src in [
+            "static inline int global;",
+            "inline int external(void) { return 1; }",
+            "extern __inline int external(void) { return 1; }",
+        ] {
+            assert!(Parser::new(src).next_item().is_err(), "{src}");
+        }
+    }
+
+    #[test]
+    fn glibc_union_extension_member_retains_64_bit_layout_type() {
+        let src = "typedef union { __extension__ unsigned long long int a; unsigned int b; } counter_t;";
+        let Some(ExternalItem::Typedef(decl)) = Parser::new(src).next_item().unwrap()
+        else { panic!("typedef expected"); };
+        let Type::Union { members, .. } = decl.ty else {panic!("union expected")};
+        assert_eq!(members.len(), 2);
+        assert_eq!(members[0].name, "a");
+        assert_eq!(members[0].ty, Type::Unsigned(Box::new(Type::LongLong)));
+        assert_eq!(members[1].ty, Type::Unsigned(Box::new(Type::Int)));
+        for malformed in [
+            "typedef union { __extension__ ; } bad_t;",
+            "typedef union { __extension__ } bad_t;",
+        ] {
+            assert!(Parser::new(malformed).next_item().is_err(), "{malformed}");
+        }
+    }
+
+    #[test]
+    fn glibc_alloc_size_is_checked_without_abi_rewrite() {
+        for source in [
+            "void *allocate(unsigned long n) __attribute__((alloc_size(1)));",
+            "void *allocate(unsigned long m, unsigned long n) __attribute__((__alloc_size__(1, 2)));",
+        ] {
+            let Some(ExternalItem::Declaration(decl)) =
+                Parser::new(source).next_item().unwrap() else {panic!("function declaration expected")};
+            assert!(matches!(decl.ty, Type::Function { .. }));
+        }
+        for source in [
+            "int x __attribute__((alloc_size(1)));",
+            "void *allocate(unsigned long n) __attribute__((alloc_size(0)));",
+            "void *allocate(unsigned long n) __attribute__((alloc_size(2)));",
+            "void *allocate(unsigned long n) __attribute__((alloc_size(1, 1)));",
+            "void *allocate(unsigned long n) __attribute__((alloc_size(x)));",
+            "void *allocate(unsigned long n) __attribute__((alloc_size(1,)));",
+        ] {
+            assert!(Parser::new(source).next_item().is_err(), "{source}");
+        }
+    }
+
+    #[test]
+    fn glibc_alloc_align_validates_one_existing_fixed_argument() {
+        let source = "void *aligned_alloc(unsigned long align, unsigned long bytes) __attribute__((__alloc_align__(1)));";
+        let Some(ExternalItem::Declaration(decl)) =
+            Parser::new(source).next_item().unwrap() else {panic!("function expected")};
+        assert_eq!(decl.name, "aligned_alloc");
+        for source in [
+            "void *f(unsigned long n) __attribute__((alloc_align(0)));",
+            "void *f(unsigned long n) __attribute__((alloc_align(2)));",
+            "void *f(unsigned long n) __attribute__((alloc_align(x)));",
+            "void *f(unsigned long n) __attribute__((alloc_align(1, 1)));",
+            "void *f(unsigned long n) __attribute__((alloc_align(1,)));",
+        ] {
+            assert!(Parser::new(source).next_item().is_err(), "{source}");
+        }
+    }
+
 }
