@@ -84,6 +84,10 @@ pub struct Parser<'a> {
     scopes: Scopes,
     brace_depth: usize,
     pending_file_binding: Option<(String, Option<Binding>)>,
+    // Incremental external comma declarators. Keep only their common base
+    // and storage class; each next_item parses/delivers one declaration,
+    // without retaining a translation-unit AST or all initializers.
+    pending_file_group: Option<(Type, usize, StorageClass, bool, bool)>,
 }
 
 impl<'a> Parser<'a> {
@@ -123,6 +127,7 @@ impl<'a> Parser<'a> {
             scopes: Scopes::new(),
             brace_depth: 0,
             pending_file_binding: None,
+            pending_file_group: None,
         }
     }
 
@@ -1243,7 +1248,7 @@ impl<'a> Parser<'a> {
             self.take()?;
             return Ok(Stmt::Tag(base));
         }
-        let (name, ty, _, name_span) = self.parse_declarator_shape(false)?.finish(base);
+        let (name, ty, _, name_span) = self.parse_declarator_shape(false)?.finish(base.clone());
         self.scopes.declare(&name, Binding::Ordinary);
         let init = if self.peek()?.is_some_and(|t| t.text.as_ref() == "=") {
             self.take()?;
@@ -1853,6 +1858,67 @@ impl ItemSource for Parser<'_> {
 
     fn next_item(&mut self) -> Result<Option<ExternalItem>, Self::Error> {
         self.pending_file_binding = None;
+        // A file-scope comma list has a common base/storage but individual
+        // declarators, bindings and optional initializers. Consume one on
+        // demand so the parser stays incremental even for long lists.
+        if let Some((base, start, storage, is_typedef, static_inline)) =
+            self.pending_file_group.take()
+        {
+            let (name, mut ty, _, name_span) =
+                self.parse_declarator_shape(false)?.finish(base.clone());
+            let asm_label = self.parse_asm_linkage_label()?;
+            if static_inline &&
+                !matches!(&ty, Type::Function { .. } | Type::VariadicFunction { .. })
+            {
+                return Err(Diagnostic::coded(name_span.unwrap_or(Span { lo: start, hi: start }),
+                    DiagnosticCode::SyntaxInvalidDeclaration,
+                    "static inline requires a function declarator"));
+            }
+            while self.peek()?.is_some_and(|t|
+                matches!(t.text.as_ref(), "__attribute__" | "__attribute"))
+            {
+                let signature = match &ty {
+                    Type::Function { params, .. } => Some((params.len(), false)),
+                    Type::VariadicFunction { params, .. } => Some((params.len(), true)),
+                    _ => None,
+                };
+                self.parse_gnu_declarator_attributes(signature, Some(&mut ty))?;
+            }
+            if asm_label.is_some() &&
+                (!matches!(ty, Type::Function { .. } | Type::VariadicFunction { .. }) || is_typedef)
+            {
+                return Err(Diagnostic::coded(name_span.unwrap_or(Span { lo: start, hi: start }),
+                    DiagnosticCode::SyntaxInvalidDeclaration,
+                    "GNU asm linker label requires a non-typedef function declaration"));
+            }
+            // The name enters file scope before parsing its own initializer.
+            self.pending_file_binding = Some((name.clone(), self.scopes.lookup(&name)));
+            self.scopes.declare(&name,
+                if is_typedef { Binding::Typedef } else { Binding::Ordinary });
+            let init_op = self.peek()?.filter(|t| t.text.as_ref() == "=").map(|t| t.span);
+            let init = if init_op.is_some() {
+                self.take()?;
+                Some(self.parse_initializer()?)
+            } else { None };
+            if is_typedef {
+                if let Some(span) = init_op {
+                    return Err(Diagnostic::coded(span, DiagnosticCode::SyntaxInvalidDeclaration,
+                        "typedef cannot have an initializer"));
+                }
+            }
+            let end = if self.peek()?.is_some_and(|t| t.text.as_ref() == ",") {
+                let comma = self.take()?.expect("peeked comma");
+                self.pending_file_group = Some((base, start, storage, is_typedef, static_inline));
+                comma.span.hi
+            } else {
+                self.expect(";")?.span.hi
+            };
+            let decl = Decl { storage, name, name_span, ty, asm_label, init,
+                span: Span { lo: start, hi: end } };
+            return Ok(Some(if is_typedef {
+                ExternalItem::Typedef(decl)
+            } else { ExternalItem::Declaration(decl) }));
+        }
         // GNU __extension__ only suppresses pedantic diagnostics for the
         // following declaration; it changes neither type nor ABI. Admit
         // precisely this file-scope prefix, without dropping the declaration
@@ -1910,7 +1976,7 @@ impl ItemSource for Parser<'_> {
             self.take()?;
             return Ok(Some(ExternalItem::Tag(base)));
         }
-        let (name, mut ty, definition_params, name_span) = self.parse_declarator_shape(false)?.finish(base);
+        let (name, mut ty, definition_params, name_span) = self.parse_declarator_shape(false)?.finish(base.clone());
         let asm_label = self.parse_asm_linkage_label()?;
         if static_inline && !matches!(&ty, Type::Function { .. } | Type::VariadicFunction { .. }) {
             return Err(Diagnostic::coded(name_span.unwrap_or(storage_span),
@@ -1978,7 +2044,13 @@ impl ItemSource for Parser<'_> {
                     "typedef cannot have an initializer"));
             }
         }
-        let end = self.expect(";")?.span.hi;
+        let end = if self.peek()?.is_some_and(|t| t.text.as_ref() == ",") {
+            let comma = self.take()?.expect("peeked comma");
+            self.pending_file_group = Some((base, start, storage, is_typedef, static_inline));
+            comma.span.hi
+        } else {
+            self.expect(";")?.span.hi
+        };
         let decl = Decl { storage, name, name_span, ty, asm_label, init, span: Span { lo: start, hi: end } };
         Ok(Some(if is_typedef { ExternalItem::Typedef(decl) } else { ExternalItem::Declaration(decl) }))
     }
@@ -3079,6 +3151,100 @@ mod tests {
         ] {
             assert!(Parser::new(source).next_item().is_err(), "{source}");
         }
+    }
+
+    #[test]
+    fn file_scope_declarator_lists_stream_in_source_order() {
+        let src = "float value, fixed, floated; int *p, a[3]; int x=1, y=2;";
+        let mut parser = Parser::new(src);
+        let mut names = Vec::new();
+        let mut entries = Vec::new();
+        while let Some(item) = parser.next_item().unwrap() {
+            let ExternalItem::Declaration(decl) = item else {panic!("declaration expected");};
+            names.push(decl.name.clone());
+            entries.push(decl);
+        }
+        assert_eq!(names, ["value", "fixed", "floated", "p", "a", "x", "y"]);
+        assert!(matches!(&entries[3].ty, Type::Pointer(_)));
+        assert!(matches!(&entries[4].ty, Type::Array(_, _)));
+        assert!(entries[5].init.is_some() && entries[6].init.is_some());
+        assert!(entries[0].init.is_none());
+    }
+
+    #[test]
+    fn file_scope_comma_typedefs_are_immediately_visible() {
+        let src = "typedef int first_t, second_t; first_t x; second_t y;";
+        let mut parser = Parser::new(src);
+        let mut names = Vec::new();
+        while let Some(item) = parser.next_item().unwrap() {
+            match item {
+                ExternalItem::Typedef(decl) => names.push(("typedef", decl.name)),
+                ExternalItem::Declaration(decl) => names.push(("declaration", decl.name)),
+                _ => panic!("unexpected item"),
+            }
+        }
+        assert_eq!(names, [("typedef", "first_t".into()),
+            ("typedef", "second_t".into()),
+            ("declaration", "x".into()), ("declaration", "y".into())]);
+    }
+
+    #[test]
+    fn file_scope_comma_storage_and_function_declarators() {
+        let mut parser = Parser::new(
+            "static int left, right; extern int a, b; int f(void), g(void);"
+        );
+        let mut entries = Vec::new();
+        while let Some(item) = parser.next_item().unwrap() {
+            let ExternalItem::Declaration(decl) = item else {panic!("declaration expected")};
+            entries.push(decl);
+        }
+        assert_eq!(entries.len(), 6);
+        assert_eq!(entries[0].storage, StorageClass::Static);
+        assert_eq!(entries[1].storage, StorageClass::Static);
+        assert_eq!(entries[2].storage, StorageClass::Extern);
+        assert_eq!(entries[3].storage, StorageClass::Extern);
+        assert!(matches!(&entries[4].ty, Type::Function { .. }));
+        assert!(matches!(&entries[5].ty, Type::Function { .. }));
+    }
+
+    #[test]
+    fn file_scope_malformed_comma_declarators_fail_closed() {
+        for source in [
+            "float a,;",
+            "int a,,b;",
+            "typedef int A, B = 3;",
+            "int a = 1, b = ;",
+            "int a, 42;",
+        ] {
+            let mut parser = Parser::new(source);
+            let mut failed = false;
+            for _ in 0..8 {
+                match parser.next_item() {
+                    Err(_) => { failed = true; break; },
+                    Ok(None) => break,
+                    Ok(Some(_)) => {},
+                }
+            }
+            assert!(failed, "invalid comma group unexpectedly accepted: {source}");
+        }
+    }
+
+    #[test]
+    fn comma_file_items_do_not_consume_following_function_body() {
+        let source = "int a, b, c; int foo(void) { return b; } int d;";
+        let mut parser = Parser::new(source);
+        for expected in ["a", "b", "c"] {
+            let Some(ExternalItem::Declaration(decl)) = parser.next_item().unwrap()
+            else {panic!("expected declaration");};
+            assert_eq!(decl.name, expected);
+        }
+        let Some(ExternalItem::Function(function)) = parser.next_item().unwrap()
+        else {panic!("function expected");};
+        assert_eq!(function.name, "foo");
+        let Some(ExternalItem::Declaration(decl)) = parser.next_item().unwrap()
+        else {panic!("final declaration expected");};
+        assert_eq!(decl.name, "d");
+        assert!(parser.next_item().unwrap().is_none());
     }
 
 }
