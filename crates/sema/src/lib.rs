@@ -1134,16 +1134,55 @@ impl Checker {
         }
     }
 
+    /// C99 6.7.8: after a designated (or positional) initializer, the
+    /// next undesignated expression initializes the following subobject.
+    /// Walk outwards from the current path to find its next struct member
+    /// or array element. In a union, an initializer cannot move to a
+    /// different member positionally; only an explicit designator may
+    /// select another union arm.
+    fn initializer_next_subobject(ty: &CType, path: &[usize]) -> Option<Vec<usize>> {
+        let mut parents = Vec::with_capacity(path.len());
+        let mut current = ty;
+        for &index in path {
+            parents.push(current);
+            current = match current.unqualified() {
+                CType::Struct { members, .. } | CType::Union { members, .. } =>
+                    &members.get(index)?.ty,
+                CType::Array(element, Some(bound))
+                    if u64::try_from(index).ok()? < *bound => element,
+                _ => return None,
+            };
+        }
+        for depth in (0..path.len()).rev() {
+            let next = path[depth].checked_add(1)?;
+            let valid = match parents[depth].unqualified() {
+                CType::Struct { members, .. } => next < members.len(),
+                CType::Array(_, Some(bound)) =>
+                    u64::try_from(next).is_ok_and(|index| index < *bound),
+                // C has one active union member, not a positional list.
+                CType::Union { .. } => false,
+                _ => false,
+            };
+            if valid {
+                let mut successor = path[..depth].to_vec();
+                successor.push(next);
+                return Some(successor);
+            }
+        }
+        None
+    }
+
     /// Use flat source-order paths for nested designations so two writes like
     /// `[1].a=3,[1].b=4` do not each reset the other's struct storage.
-    /// C99 positional continuation *after* a multi-component designation
-    /// needs a subobject cursor and stays fail-closed in this bounded slice.
+    /// The current-object cursor tracks the next nested subobject across
+    /// aggregate boundaries, not merely the next top-level member.
     fn check_deep_initializer(
         &self, values: &[Expr], ty: &CType, span: Span, is_static: bool,
     ) -> Result<CheckedExpr, Diagnostic> {
         let mut checked_paths: Vec<(Vec<usize>, CheckedExpr)> = Vec::new();
-        let mut cursor = 0usize;
-        let mut last_nested = false;
+        // None means the initializer exhausted the enclosing object.
+        // A later explicit designator may still select any valid path.
+        let mut next_path: Option<Vec<usize>> = Some(vec![0]);
         for value in values {
             let located = value.location().unwrap_or(span);
             let (path, initializer) = match value.without_location() {
@@ -1152,11 +1191,9 @@ impl Checker {
                     (slots, value.as_ref())
                 }
                 _ => {
-                    if last_nested {
-                        return Err(type_error(located,
-                            "positional continuation after nested designator is not yet supported"));
-                    }
-                    (vec![cursor], value)
+                    let path = next_path.clone().ok_or_else(|| type_error(
+                        located, "too many positional initializers after nested designator"))?;
+                    (path, value)
                 }
             };
             if path.is_empty() {
@@ -1213,9 +1250,7 @@ impl Checker {
                     !Self::initializer_override_is_whole(ty, prior, &leaf_path));
                 checked_paths.push((leaf_path, leaf));
             }
-            cursor = path[0].checked_add(1)
-                .ok_or_else(|| type_error(located, "initializer cursor overflow"))?;
-            last_nested = path.len() > 1;
+            next_path = Self::initializer_next_subobject(ty, &path);
         }
         Ok(CheckedExpr::value(ty.clone(),
             CheckedExprKind::DeepInitializer(checked_paths)))
