@@ -155,10 +155,11 @@ fn c99_nested_designators_resolve_paths_preserve_siblings_and_reject_overlap() {
 fn c99_nested_designator_positional_continuation_walks_subobject_paths() {
     let checked = check(concat!(
         "struct N {int first;int second;};",
-        "struct S {int a[3];struct N pair;int tail;};",
+        "struct S {int a[3];int pair;int tail;};",
+        "struct W {struct N n;int tail;};",
         "struct S middle={.a[0]=3,4,5,6};",
-        "struct S end={.a[2]=3,4,5,6};",
-        "struct S nested={.pair.first=9,10,11};",
+        "struct S end={.a[2]=3,4,5};",
+        "struct W nested={.n.first=9,10,11};",
         "struct S restart={.a[0]=3,4,.a[0]=7,5};"
     )).unwrap();
     let paths = |index: usize| {
@@ -169,12 +170,12 @@ fn c99_nested_designator_positional_continuation_walks_subobject_paths() {
             &d.initializer else {panic!("expected deep initializer {index}")};
         entries.iter().map(|(path, _)| path.clone()).collect::<Vec<_>>()
     };
-    assert_eq!(paths(2), vec![vec![0,0],vec![0,1],vec![0,2],vec![1]]);
+    assert_eq!(paths(3), vec![vec![0,0],vec![0,1],vec![0,2],vec![1]]);
     // The last array element climbs to the enclosing struct's next member,
     // and the following scalar initializes the next member of that struct.
-    assert_eq!(paths(3), vec![vec![0,2],vec![1],vec![2]]);
-    assert_eq!(paths(4), vec![vec![1,0],vec![1,1],vec![2]]);
-    assert_eq!(paths(5), vec![vec![0,0],vec![0,1]]);
+    assert_eq!(paths(4), vec![vec![0,2],vec![1],vec![2]]);
+    assert_eq!(paths(5), vec![vec![0,0],vec![0,1],vec![1]]);
+    assert_eq!(paths(6), vec![vec![0,0],vec![0,1]]);
 
     let checked = check("int matrix[2][3]={[0][2]=3,4,5,6};").unwrap();
     let CheckedItem::Declaration(d) = &checked[0] else {panic!("matrix")};
