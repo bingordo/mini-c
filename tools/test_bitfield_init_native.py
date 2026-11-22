@@ -145,7 +145,7 @@ CASES = {
         }
     """,
     "parent_child_local_bitfield_side_effects": r"""
-        int ca,cb;
+        int ca;int cb;
         int effect_a(void){ca++;return 3;}
         int effect_b(void){cb++;return 17;}
         struct B {unsigned a:3,b:5;};
