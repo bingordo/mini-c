@@ -271,7 +271,7 @@ fn c99_partial_parent_child_initializers_preserve_explicit_leaves_and_reset_sibl
     // If an overridden braced child called a function, it is eliminated
     // from the final checked leaf list, while its sibling's effect stays.
     let checked = check(concat!(
-        "int effect(void){return 1;}",
+        "unsigned effect(void){return 1;}",
         "struct Bits {unsigned a:3,b:5;};",
         "struct Box {struct Bits bits;};",
         "int f(void){struct Box x={.bits={effect(),effect()},.bits.b=17};",
