@@ -237,7 +237,14 @@ fn c99_partial_parent_child_initializers_preserve_explicit_leaves_and_reset_sibl
     // A whole parent override removes earlier siblings not explicitly
     // present in the new braced parent; zero-initialization supplies them.
     assert_eq!(paths(3), vec![vec![0,0]]);
-    assert_eq!(paths(4), vec![vec![0,0]]);
+    // This source uses only one-component top-level designators, so it
+    // correctly remains a SparseInitializer with one selected parent.
+    let CheckedItem::Declaration(replacement) = &checked[4] else {panic!("replacement")};
+    let Some(CheckedExpr { kind: CheckedExprKind::SparseInitializer(entries), .. }) =
+        &replacement.initializer else {panic!("sparse replacement")};
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].0, 0);
+    assert!(matches!(&entries[0].1.kind, CheckedExprKind::SparseInitializer(_)));
 
     let checked = check(concat!(
         "struct Bits {unsigned a:3,b:5;};",
