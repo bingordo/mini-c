@@ -14,6 +14,13 @@ use mini_c_syntax::stream::{ExternalItem, ItemSource};
 pub use types::{CType, IntRank, Target};
 use types::type_error;
 
+/// Backend-private, per-function ELF object for C99's implicit
+/// `static const char __func__[] = "function-name"`. Source identifiers
+/// cannot contain '.', so this name never collides with a C declaration.
+pub fn implicit_function_name_symbol(name: &str) -> String {
+    format!(".Lmini_c_funcname_{name}")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Linkage { None, Internal, External }
 
@@ -1561,6 +1568,23 @@ impl Checker {
         self.tags.borrow_mut().push(HashMap::new());
         self.function_labels = function_labels;
         self.result_ty = Some(result);
+        // C99 6.4.2.2: each function implicitly declares a static const
+        // char array `__func__` immediately inside its outermost block.
+        // Install it in the same scope as parameters, so nested blocks see
+        // the array and sizeof does not decay it. A private name identifies
+        // the separately stored object in native backends.
+        let name_bytes = func.name.as_bytes();
+        let name_size = u64::try_from(name_bytes.len())
+            .ok().and_then(|n| n.checked_add(1))
+            .ok_or_else(|| type_error(func.span, "__func__ name exceeds supported size"))?;
+        let name_type = CType::Array(Box::new(
+            CType::Integer {rank: IntRank::Char, unsigned: !self.target.char_is_signed }
+                .with_const()), Some(name_size));
+        self.locals.last_mut().expect("function scope").insert("__func__".into(), Symbol {
+            ty: name_type, kind: SymbolKind::Object, linkage: Linkage::None,
+            defined: true, asm_label: Some(implicit_function_name_symbol(&func.name)),
+            enum_value: None, is_register: false,
+        });
         for (parsed_param, param) in func.params.iter().zip(&params) {
             if let Err(err) = self.define_local(&param.name, param.ty.clone(),
                 SymbolKind::Object, Linkage::None,
@@ -2654,7 +2678,16 @@ impl Checker {
                     SymbolKind::Function => Category::Function,
                     SymbolKind::Object => Category::LValue,
                 };
-                Ok(CheckedExpr { ty: symbol.ty.clone(), category, kind: CheckedExprKind::Name(name.clone()) })
+                // The implicit object is internally named so that a
+                // frontend user cannot collide with it and every use
+                // within this function refers to the same static array.
+                // An ordinary shadowing declaration (if accepted by an
+                // implementation) has no private backing name.
+                let resolved_name = if name == "__func__" {
+                    symbol.asm_label.as_deref().unwrap_or(name)
+                } else { name };
+                Ok(CheckedExpr { ty: symbol.ty.clone(), category,
+                    kind: CheckedExprKind::Name(resolved_name.to_owned()) })
             }
             Expr::Member(base, name, arrow) => {
                 let base = self.check_expr(base, span)?;

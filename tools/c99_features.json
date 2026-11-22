@@ -241,9 +241,9 @@
       "id": "designated-nested-overlap",
       "feature": "F3",
       "expect": "accept",
-      "mini": "gap",
+      "mini": "supported",
       "kind": "valid",
-      "test_ref": "docs/C99_Frontend_Plan.md:F3.2",
+      "test_ref": "crates/sema/src/tests.rs:c99_nested_designators_resolve_paths_preserve_siblings_and_reject_overlap",
       "source": "int a[2][20]={[1][@N@]=3,[1][@N@]=5};"
     },
     {
@@ -385,9 +385,9 @@
       "id": "func-identifier",
       "feature": "F1",
       "expect": "accept",
-      "mini": "gap",
+      "mini": "supported",
       "kind": "valid",
-      "test_ref": "docs/C99_Frontend_Plan.md:F1",
+      "test_ref": "crates/sema/src/tests.rs:c99_func_is_a_const_static_array_with_one_function_scoped_identity",
       "source": "int f(void){return sizeof __func__ >= @N@;}"
     },
     {
@@ -868,6 +868,42 @@
       "source": "struct N{int a;int b;};union U{struct N n;long raw;};int f(void){union U u={@N@,4};return u.n.b;}"
     },
     {
+      "id": "f1-func-const-decay",
+      "feature": "F1",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_func_is_a_const_static_array_with_one_function_scoped_identity",
+      "source": "const char *label(void){return __func__;}int f(void){return label()[0]=='l' && @N@>=0;}"
+    },
+    {
+      "id": "f1-func-array-size",
+      "feature": "F1",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_func_is_a_const_static_array_with_one_function_scoped_identity",
+      "source": "int label(void){return sizeof __func__==6 && __func__[0]=='l' && @N@>=0;}"
+    },
+    {
+      "id": "f1-func-const-reject-write",
+      "feature": "F1",
+      "expect": "reject",
+      "mini": "supported",
+      "kind": "constraint",
+      "test_ref": "crates/sema/src/tests.rs:c99_func_is_a_const_static_array_with_one_function_scoped_identity",
+      "source": "int f(void){__func__[0]=@N@;return 0;}"
+    },
+    {
+      "id": "f1-func-redeclare-reject",
+      "feature": "F1",
+      "expect": "reject",
+      "mini": "supported",
+      "kind": "constraint",
+      "test_ref": "crates/sema/src/tests.rs:c99_func_is_a_const_static_array_with_one_function_scoped_identity",
+      "source": "int f(void){int __func__=@N@;return 0;}"
+    },
+    {
       "id": "complex-type",
       "feature": "F5",
       "expect": "accept",
@@ -943,10 +979,10 @@
       "id": "func-array",
       "feature": "F1",
       "expect": "accept",
-      "mini": "gap",
+      "mini": "supported",
       "kind": "valid",
-      "test_ref": "docs/C99_Frontend_Plan.md:F1",
-      "source": "int f(void){return sizeof __func__ >= @N@;}"
+      "test_ref": "crates/sema/src/tests.rs:c99_func_is_a_const_static_array_with_one_function_scoped_identity",
+      "source": "int ident(void){const char (*p)[6]=&__func__;return (*p)[0]=='i' && sizeof __func__ >= @N@;}"
     },
     {
       "id": "explicit-uintptr-to-pointer",

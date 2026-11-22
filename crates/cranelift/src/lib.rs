@@ -12,8 +12,9 @@ use cranelift_object::{ObjectBuilder, ObjectModule};
 use object::{RelocationEncoding, RelocationFlags, RelocationKind, SymbolScope};
 use object::write::{Relocation, StandardSection};
 use mini_c_sema::{
-    CType, CheckedDecl, CheckedExpr, CheckedExprKind, CheckedFunction,
-    CheckedItem, CheckedStmt, Checker, IntRank, Linkage, Target,
+    implicit_function_name_symbol, Category, CType, CheckedDecl, CheckedExpr,
+    CheckedExprKind, CheckedFunction, CheckedItem, CheckedStmt, Checker,
+    IntRank, Linkage, Target,
 };
 use mini_c_syntax::{ast::{BinOp, FloatRank, UnOp, StorageClass}, parser::Parser, stream::ItemSource};
 use std::collections::{HashMap, HashSet};
@@ -901,6 +902,30 @@ impl Compiler {
     }
 
     fn define(&mut self, function: CheckedFunction) -> Result<()> {
+        // C99 __func__ is a separately addressable, function-scope
+        // static const char array, not an interned string literal. Reserve
+        // exactly one private data object per function before lowering
+        // its body, so all __func__ references have stable identity.
+        let mut function_bytes = function.name.as_bytes().to_vec();
+        function_bytes.push(0);
+        let bytes_len = u64::try_from(function_bytes.len())
+            .map_err(|_| "C99 __func__ string is too large")?;
+        let name_type = CType::Array(Box::new(
+            CType::Integer { rank: IntRank::Char,
+                unsigned: !Target::default().char_is_signed }.with_const()),
+            Some(bytes_len));
+        self.declare_object(CheckedDecl {
+            storage: StorageClass::Static,
+            name: implicit_function_name_symbol(&function.name),
+            ty: name_type.clone(),
+            linkage: Linkage::Internal,
+            asm_label: None,
+            initializer: Some(CheckedExpr {
+                ty: name_type, category: Category::LValue,
+                kind: CheckedExprKind::StringLiteral(function_bytes),
+            }),
+            span: Default::default(),
+        })?;
         let (label_names, referenced_labels) = Self::native_goto_plan(&function.body)?;
         self.flush_pending_imports()?;
         let id = self.declare(&function.name, &function.signature, function.linkage, true, None)?;
@@ -1005,10 +1030,14 @@ impl Compiler {
     /// the entire translation unit or update prior checked items.
     pub fn complete_file_object_types(&mut self, checker: &Checker) -> Result<()> {
         for (name, data) in &mut self.data {
-            // Anonymous C99 compound literals have no source-level name in
-            // the checker's global symbol table, and their object type was
-            // already completed and validated at the initializer site.
-            if name.starts_with(".Lmini_c_compound_") { continue; }
+            // Private objects for anonymous static compound literals and
+            // implicit function-scope __func__ arrays have no source-level
+            // global symbol. Their types and initializers were already
+            // checked at construction. Do not treat these as undeclared
+            // user globals or weaken source-name completeness checks.
+            if name.starts_with(".Lmini_c_compound_")
+                || name.starts_with(".Lmini_c_funcname_")
+            { continue; }
             let resolved = checker.completed_global_type(name)
                 .ok_or_else(|| format!("missing semantic declaration for global '{name}'"))?;
             data.ty = data.ty.composite(&resolved)
