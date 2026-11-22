@@ -1180,6 +1180,20 @@ impl Checker {
                 };
             }
             let checked = self.check_object_initializer(initializer, current, span, is_static)?;
+            // GCC and Clang differ if a non-braced *struct copy* is
+            // followed by a nested child initializer: GCC can discard
+            // that whole earlier copy, while Clang retains its siblings.
+            // Braced parents are normalized to explicit leaves below;
+            // non-braced aggregate copies remain fail-closed in this case.
+            if checked_paths.iter().any(|(prior, previous)|
+                path.starts_with(prior) && path.len() > prior.len()
+                && matches!(previous.ty.unqualified(),
+                    CType::Struct { .. } | CType::Union { .. } | CType::Array(..))
+                && !matches!(previous.kind, CheckedExprKind::StringLiteral(_)))
+            {
+                return Err(type_error(located,
+                    "partial override of non-braced aggregate initializer is unsupported"));
+            }
             // A later initializer of an entire parent replaces all earlier
             // children, including those omitted by its braces. Selecting a
             // different union arm also replaces all prior writes to that
