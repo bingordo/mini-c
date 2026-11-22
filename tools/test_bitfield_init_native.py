@@ -146,6 +146,133 @@ CASES = {
                 || g.items[1].n.a!=5 || g.items[1].n.b!=6 || g.tail!=7;
         }
     """,
+    "flat_elided_global_matrix": r"""
+        int a[2][3]={1,2,3,4,5,6};
+        int main(void) {
+            return a[0][0]!=1 || a[0][1]!=2 || a[0][2]!=3
+                || a[1][0]!=4 || a[1][1]!=5 || a[1][2]!=6;
+        }
+    """,
+    "flat_elided_local_matrix": r"""
+        int main(void) {
+            int a[2][2]={1,2,3,4};
+            return a[0][0]!=1 || a[0][1]!=2 || a[1][0]!=3 || a[1][1]!=4;
+        }
+    """,
+    "flat_elided_global_nested_struct": r"""
+        struct N {int a;int b;};
+        struct W {struct N n;int tail;};
+        struct W w={3,4,5};
+        int main(void) {return w.n.a!=3 || w.n.b!=4 || w.tail!=5;}
+    """,
+    "flat_elided_local_nested_struct": r"""
+        struct N {int a;int b;};
+        struct W {struct N n;int tail;};
+        int main(void) {
+            struct W w={3,4,5};
+            return w.n.a!=3 || w.n.b!=4 || w.tail!=5;
+        }
+    """,
+    "flat_elided_global_bitfields": r"""
+        struct B {unsigned a:3,b:5,c:7;};
+        struct W {struct B bits;int tail;};
+        struct W w={3,17,59,9};
+        int main(void) {
+            return w.bits.a!=3 || w.bits.b!=17 || w.bits.c!=59 || w.tail!=9;
+        }
+    """,
+    "flat_elided_local_bitfields": r"""
+        struct B {unsigned a:3,b:5;};
+        struct W {struct B bits;int tail;};
+        int main(void) {
+            struct W w={3,17,9};
+            return w.bits.a!=3 || w.bits.b!=17 || w.tail!=9;
+        }
+    """,
+    "flat_elided_global_mixed_units": r"""
+        struct B {_Bool a:1;unsigned short b:11;unsigned long c:37;};
+        struct W {struct B bits;int tail;};
+        struct W w={1,511,1234567UL,99};
+        int main(void) {
+            return w.bits.a!=1 || w.bits.b!=511
+                || w.bits.c!=1234567UL || w.tail!=99;
+        }
+    """,
+    "flat_elided_global_union_struct": r"""
+        struct N {int a;int b;};
+        union U {struct N n;long raw;};
+        union U u={3,4};
+        int main(void) {return u.n.a!=3 || u.n.b!=4;}
+    """,
+    "flat_elided_local_union_in_struct": r"""
+        struct N {int a;int b;};
+        struct W {union U {struct N n;long raw;} u;int tail;};
+        int main(void) {
+            struct W w={3,4,5};
+            return w.u.n.a!=3 || w.u.n.b!=4 || w.tail!=5;
+        }
+    """,
+    "flat_elided_designated_array": r"""
+        int a[2][2]={[0]=1,2,3,4};
+        int main(void) {
+            return a[0][0]!=1 || a[0][1]!=2 || a[1][0]!=3 || a[1][1]!=4;
+        }
+    """,
+    "flat_elided_designated_struct": r"""
+        struct N {int a;int b;};
+        struct W {struct N n;int tail;};
+        struct W w={.n=3,4,5};
+        int main(void) {return w.n.a!=3 || w.n.b!=4 || w.tail!=5;}
+    """,
+    "flat_elided_mixed_explicit_braces": r"""
+        int a[2][2]={1,2,{3,4}};
+        int main(void) {
+            return a[0][0]!=1 || a[0][1]!=2 || a[1][0]!=3 || a[1][1]!=4;
+        }
+    """,
+    "flat_elided_array_of_struct": r"""
+        struct N {int a;int b;};
+        struct N a[2]={3,4,5,6};
+        int main(void) {
+            return a[0].a!=3 || a[0].b!=4 || a[1].a!=5 || a[1].b!=6;
+        }
+    """,
+    "flat_elided_local_compound_literal": r"""
+        struct B {unsigned a:3,b:5;};
+        struct W {struct B bits;int tail;};
+        int main(void) {
+            struct W *p=&(struct W){3,17,9};
+            return p->bits.a!=3 || p->bits.b!=17 || p->tail!=9;
+        }
+    """,
+    "flat_elided_local_side_effects": r"""
+        int calls;
+        int effect(void) {calls++;return calls;}
+        struct N {int a;int b;};
+        struct W {struct N n;int tail;};
+        int main(void) {
+            struct W w={effect(),effect(),effect()};
+            return calls!=3 || w.n.a!=1 || w.n.b!=2 || w.tail!=3;
+        }
+    """,
+    "flat_whole_struct_copy_preserved": r"""
+        struct N {int a;int b;};
+        struct W {struct N n;int tail;};
+        int main(void) {
+            struct N source={3,4};
+            struct W w={source,9};
+            return w.n.a!=3 || w.n.b!=4 || w.tail!=9;
+        }
+    """,
+    "flat_string_array_not_scalar_elided": r"""
+        struct S {char bytes[5];int tail;};
+        struct S s={"abc",7};
+        int main(void) {
+            return s.bytes[0]!='a' || s.bytes[1]!='b'
+                || s.bytes[2]!='c' || s.bytes[3]!=0 || s.bytes[4]!=0
+                || s.tail!=7;
+        }
+    """,
     "override_global_bitfield_exact": r"""
         struct B {unsigned a:3,b:5;};
         struct B x={.a=1,.b=17,.a=6};

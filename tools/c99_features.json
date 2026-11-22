@@ -814,6 +814,60 @@
       "source": "struct N{int a;int b;};struct W{union U{struct N n;long raw;}items[2];int tail;};int f(void){struct W w={.items[0].n.b=@N@,3,4,5};return w.items[1].n.a;}"
     },
     {
+      "id": "f3-flat-brace-elided-matrix",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_brace_elision_uses_common_checked_leaf_paths",
+      "source": "int a[2][3]={@N@,2,3,4,5,6};int f(void){return a[1][2];}"
+    },
+    {
+      "id": "f3-flat-brace-elided-struct",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_brace_elision_uses_common_checked_leaf_paths",
+      "source": "struct N{int a;int b;};struct W{struct N n;int tail;};int f(void){struct W w={@N@,4,5};return w.tail;}"
+    },
+    {
+      "id": "f3-flat-brace-elided-bitfield",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_brace_elision_uses_common_checked_leaf_paths",
+      "source": "struct B{unsigned a:3,b:5;};struct W{struct B bits;int tail;};int f(void){struct W w={@N@%8,17,9};return w.bits.b;}"
+    },
+    {
+      "id": "f3-flat-designated-array-brace-elision",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_brace_elision_uses_common_checked_leaf_paths",
+      "source": "int a[2][2]={[0]=@N@,2,3,4};int f(void){return a[1][1];}"
+    },
+    {
+      "id": "f3-flat-designated-struct-brace-elision",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_brace_elision_uses_common_checked_leaf_paths",
+      "source": "struct N{int a;int b;};struct W{struct N n;int tail;};int f(void){struct W w={.n=@N@,4,5};return w.n.b;}"
+    },
+    {
+      "id": "f3-flat-union-brace-elision",
+      "feature": "F3",
+      "expect": "accept",
+      "mini": "supported",
+      "kind": "valid",
+      "test_ref": "crates/sema/src/tests.rs:c99_brace_elision_uses_common_checked_leaf_paths",
+      "source": "struct N{int a;int b;};union U{struct N n;long raw;};int f(void){union U u={@N@,4};return u.n.b;}"
+    },
+    {
       "id": "complex-type",
       "feature": "F5",
       "expect": "accept",

@@ -152,6 +152,77 @@ fn c99_nested_designators_resolve_paths_preserve_siblings_and_reject_overlap() {
 }
 
 #[test]
+fn c99_brace_elision_uses_common_checked_leaf_paths() {
+    let checked = check(concat!(
+        "int matrix[2][3]={1,2,3,4,5,6};",
+        "struct N{int a;int b;};",
+        "struct W{struct N n;int tail;};",
+        "struct W w={7,8,9};",
+        "union U{struct N n;long raw;};",
+        "union U u={11,12};",
+        "struct B{unsigned a:3,b:5;};",
+        "struct H{struct B bits;int tail;};",
+        "struct H h={3,17,9};",
+        "struct W designated={.n=13,14,15};",
+        "int chosen[2][2]={[0]=1,2,3,4};",
+        "int mixed[2][2]={1,2,{3,4}};"
+    )).expect("braces may be elided within positional and designated aggregate subobjects");
+    let paths = |name: &str| {
+        let decl = checked.iter().find_map(|item| match item {
+            CheckedItem::Declaration(d) if d.name == name => Some(d),
+            _ => None,
+        }).expect("named global");
+        let Some(CheckedExpr {kind: CheckedExprKind::DeepInitializer(entries), ..}) =
+            &decl.initializer else {panic!("expected common leaf IR for {name}")};
+        entries.iter().map(|(path, _)| path.clone()).collect::<Vec<_>>()
+    };
+    assert_eq!(paths("matrix"),
+        vec![vec![0,0],vec![0,1],vec![0,2],vec![1,0],vec![1,1],vec![1,2]]);
+    assert_eq!(paths("w"), vec![vec![0,0],vec![0,1],vec![1]]);
+    assert_eq!(paths("u"), vec![vec![0,0],vec![0,1]]);
+    assert_eq!(paths("h"), vec![vec![0,0],vec![0,1],vec![1]]);
+    assert_eq!(paths("designated"), vec![vec![0,0],vec![0,1],vec![1]]);
+    assert_eq!(paths("chosen"), vec![vec![0,0],vec![0,1],vec![1,0],vec![1,1]]);
+    assert_eq!(paths("mixed"), vec![vec![0,0],vec![0,1],vec![1,0],vec![1,1]]);
+
+    // A fully braced aggregate remains on the historical positional IR,
+    // avoiding an unnecessary change of representation for existing users.
+    let checked = check("int matrix[2][2]={{1,2},{3,4}};").unwrap();
+    let CheckedItem::Declaration(d) = &checked[0] else {panic!("matrix")};
+    assert!(matches!(&d.initializer,
+        Some(CheckedExpr {kind: CheckedExprKind::Initializer(_), ..})));
+
+    // A compatible whole-struct expression and a character-array string
+    // literal must NOT be broken into scalar leaves by brace elision.
+    check(concat!(
+        "struct N{int a;int b;};",
+        "struct W{struct N n;int tail;};",
+        "int f(void){struct N src={3,4};",
+        "struct W copy={src,9};return copy.n.b+copy.tail;}"
+    )).unwrap();
+    check(concat!(
+        "struct S{char bytes[5];int tail;};",
+        "struct S g={\"abc\",7};"
+    )).unwrap();
+
+    // The same deep path lowering supports automatic objects and compound
+    // literals without a dedicated backend code path.
+    check(concat!(
+        "struct B{unsigned a:3,b:5;};",
+        "struct H{struct B bits;int tail;};",
+        "int f(void){struct H h={3,17,9};",
+        "struct H *p=&(struct H){4,23,7};",
+        "return h.bits.a+p->bits.b;}"
+    )).unwrap();
+
+    reject("int a[2][2]={1,2,3,4,5};",
+        "too many positional initializers after nested designator");
+    reject("int a[2][2]={[1]=1,2,3,4,5};",
+        "too many positional initializers after nested designator");
+    reject("int a[2][2]={1,missing,3,4};", "undeclared");
+}
+
+#[test]
 fn c99_nested_designator_positional_continuation_walks_subobject_paths() {
     let checked = check(concat!(
         "struct N {int first;int second;};",
