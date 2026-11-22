@@ -4244,3 +4244,21 @@ fn c99_pointer_arithmetic_offset_promotions_and_array_scaling() {
     reject("int *f(int *p, int *q) { return p + q; }",
         "compatible integer operands");
 }
+
+
+#[test]
+fn c99_pointer_compound_offsets_and_updates_require_complete_pointees() {
+    check("int *f(int *p, unsigned long n) { p += n; p -= 2L; ++p; p--; return p; }")
+        .expect("pointer compound assignments and updates retain element scaling");
+    check("int (*f(int (*p)[4]))[4] { p += 2; --p; return p; }")
+        .expect("pointer-to-array updates use array-sized elements");
+
+    reject("void f(void *p) { p += 1; }",
+        "pointer arithmetic requires a complete object type");
+    reject("void f(void *p) { ++p; }",
+        "increment/decrement requires pointer to complete object type");
+    reject("void f(int *p, int *q) { p += q; }",
+        "compound assignment requires integer operands");
+    reject("void f(int *p) { p *= 2; }",
+        "compound assignment requires a modifiable arithmetic lvalue or pointer");
+}
