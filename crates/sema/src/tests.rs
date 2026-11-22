@@ -270,10 +270,10 @@ fn c99_partial_parent_child_initializers_preserve_explicit_leaves_and_reset_sibl
     assert_eq!(entries.iter().map(|(p,_)|p.clone()).collect::<Vec<_>>(),
         vec![vec![0,0],vec![0,1]]);
     let CheckedItem::Declaration(replaced) = &checked[3] else {panic!("replaced")};
-    let Some(CheckedExpr {kind: CheckedExprKind::DeepInitializer(entries),..}) =
-        &replaced.initializer else {panic!("deep replaced")};
-    assert_eq!(entries.iter().map(|(p,_)|p.clone()).collect::<Vec<_>>(),
-        vec![vec![1]]);
+    let Some(CheckedExpr {kind: CheckedExprKind::SparseInitializer(entries),..}) =
+        &replaced.initializer else {panic!("sparse union replacement")};
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].0, 1);
 
     // If an overridden braced child called a function, it is eliminated
     // from the final checked leaf list, while its sibling's effect stays.
