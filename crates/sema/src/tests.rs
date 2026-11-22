@@ -19,6 +19,43 @@ fn reject(src: &str, message: &str) {
 
 
 #[test]
+fn c99_func_is_a_const_static_array_with_one_function_scoped_identity() {
+    let items = check(concat!(
+        "int worker(void){return sizeof __func__;}",
+        "int f(void){return __func__[0]=='f' && __func__[1]==0;}",
+        "const char *label(void){return __func__;}",
+        "const char (*whole(void))[6]{return &__func__;}"
+    )).expect("the C99 predefined function name is an addressable const char array");
+    let CheckedItem::Function(worker) = &items[0] else {panic!("worker")};
+    let CheckedStmt::Block(statements) = &worker.body else {panic!("worker block")};
+    let CheckedStmt::Return(Some(size)) = &statements[0] else {panic!("worker return")};
+    assert_eq!(const_eval::evaluate(size, Target::default()), Ok(7),
+        "sizeof __func__ includes the terminating NUL, not pointer size");
+    let CheckedItem::Function(label) = &items[2] else {panic!("label")};
+    let CheckedStmt::Block(statements) = &label.body else {panic!("label block")};
+    let CheckedStmt::Return(Some(pointer)) = &statements[0] else {panic!("label return")};
+    let CheckedExprKind::ArrayDecay(inner) = &pointer.kind else {
+        panic!("__func__ array must decay to const char * in value context");
+    };
+    assert_eq!(inner.ty,
+        CType::Array(Box::new(
+            CType::Integer { rank: IntRank::Char, unsigned: !Target::default().char_is_signed }
+                .with_const()), Some(6)));
+    assert_eq!(inner.category, Category::LValue);
+    assert!(matches!(&inner.kind, CheckedExprKind::Name(name)
+        if name == &implicit_function_name_symbol("label")));
+
+    check("int f(void){return sizeof __func__==2 && __func__[0]=='f';}").unwrap();
+    check("int f(void){const char *p=__func__;return p[0]=='f';}").unwrap();
+    check("int f(void){const char *p=0;{p=__func__;}return p[0]=='f';}").unwrap();
+    check("int f(void){return &__func__[0]==__func__; }").unwrap();
+    reject("int f(void){__func__[0]='x';return 0;}", "modifiable");
+    reject("int f(void){int __func__;return 0;}", "duplicate declaration");
+    reject("int f(int __func__){return 0;}", "duplicate declaration");
+    reject("int n=sizeof __func__;", "undeclared identifier");
+}
+
+#[test]
 fn c11_atomic_type_specifier_remains_fail_closed_before_codegen() {
     for source in [
         "_Atomic(int) counter;",
