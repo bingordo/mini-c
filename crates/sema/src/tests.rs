@@ -3719,7 +3719,7 @@ fn asm3_p02b3_checked_memory_input_preserves_single_lvalue_operand() {
 fn asm3_p02b3_rejects_unreviewed_memory_shapes_and_alias_roles() {
     for source in [
         r#"int f(int *p){int y=0;asm("movl %1,%0":"=&r"(y):"m"(*p));return y;}"#,
-        r#"int f(int *p){int y=0;asm("movl %1,%0":"=m"(y):"r"(*p));return y;}"#,
+        r#"int f(int *p){int y=0;asm("addl %1,%0":"=m"(y):"r"(*p));return y;}"#,
         r#"int f(int *p){asm("addl $1,%0":"+m"(*p)::"cc");return *p;}"#,
         r#"int f(int *p){int y=0;asm("movl %1,%0":"=r"(y):"m"(p));return y;}"#,
         r#"int f(int *p){int y=0;asm("movl %1,%0":"=r"(y):"m"(*p),"r"(*p));return y;}"#,
@@ -4172,4 +4172,47 @@ fn generated_atomic_cas_order_matrix_both_modes_and_negative_types() {
     let CheckedStmt::Block(statements)=&function.body else {panic!("block")};
     let CheckedStmt::Expr(Some(expression))=&statements[0] else {panic!("expr")};
     assert!(matches!(expression.kind,CheckedExprKind::BuiltinAtomic(_)));
+}
+
+#[test]
+fn asm3_p02c3_checked_output_memory_retains_real_writable_lvalue() {
+    for (source,width) in [
+        (r#"int f(int *p,int v) { __asm__ volatile("movl %1,%0" : "=m"(*p) : "r"(v) : "memory"); return *p; }"#,4),
+        (r#"long f(long *p,long v) { __asm__ volatile("movq %1,%0" : "=m"(p[1]) : "r"(v)); return p[1]; }"#,8),
+        (r#"int f(int v) { int x=0; __asm__ volatile("movl %1,%0" : "=m"(x) : "r"(v)); return x; }"#,4),
+    ] {
+        let checked=check(source).expect("reviewed source GNU =m memory output");
+        let CheckedItem::Function(f)=&checked[0] else {panic!("function expected")};
+        let CheckedStmt::Block(items)=&f.body else {panic!("checked compound")};
+        let asm=items.iter().find(|s|matches!(s,CheckedStmt::ExtendedAsm{..}))
+            .expect("checked memory asm statement");
+        let CheckedStmt::ExtendedAsm {outputs,inputs,template,..}=asm else {unreachable!()};
+        assert_eq!((outputs.len(),inputs.len()),(1,1));
+        assert_eq!(outputs[0].constraint,"=m");
+        assert_eq!(inputs[0].constraint,"r");
+        assert_eq!(outputs[0].expr.category,Category::LValue);
+        assert_eq!(outputs[0].expr.ty.size_bytes(Target::default()),Some(width));
+        assert_eq!(inputs[0].expr.ty.size_bytes(Target::default()),Some(width));
+        assert_eq!(template,if width==4 {"movl %1,%0"} else {"movq %1,%0"});
+    }
+}
+#[test]
+fn asm3_p02c3_memory_output_rejects_unsupported_source_forms() {
+    for source in [
+        r#"int f(int *p,int v){asm("movl %1,%0":"=m"(*p):"r"(v):"cc");return *p;}"#,
+        r#"int f(int *p,int v){asm("movl %1,%0":"=m"(*p):"r"(v):"rax");return *p;}"#,
+        r#"int f(int *p,int v){asm("addl %1,%0":"=m"(*p):"r"(v):"memory");return *p;}"#,
+        r#"int f(int *p){asm("movl $7,%0":"=m"(*p));return *p;}"#,
+        r#"int f(int *p,int v){asm("movl %1,%0":"+m"(*p):"r"(v));return *p;}"#,
+        r#"int f(const int *p,int v){asm("movl %1,%0":"=m"(*p):"r"(v));return *p;}"#,
+        r#"int f(int *p,int v){asm("movq %1,%0":"=m"(*p):"r"(v));return *p;}"#,
+        r#"int f(long *p,int v){asm("movq %1,%0":"=m"(*p):"r"(v));return *p;}"#,
+        r#"int f(int *p,long v){asm("movl %1,%0":"=m"(*p):"r"(v));return *p;}"#,
+        r#"int f(int *p,int v){asm("movl %1,%0":"=m"(p):"r"(v));return *p;}"#,
+        r#"int f(int *p,int v){asm("movl %1,%0":"=m"(*p):"r"(v),"r"(v));return *p;}"#,
+        r#"int f(int *p,int v){asm("movl %1,%0":"=m"(*p):"m"(v));return *p;}"#,
+        r#"int f(int *p,int v){asm("movl %1,%0":"=m"(*p):"r"(v):"memory","memory");return *p;}"#,
+    ] {
+        assert!(check(source).is_err(),"unreviewed source =m accepted: {source}");
+    }
 }
