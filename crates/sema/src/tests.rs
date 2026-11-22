@@ -4362,7 +4362,7 @@ fn asm3_p02f_noncarry_gp_rmw_class_checked_source_matrix() {
     for (ty,suffix) in [("int","l"),("long","q")] {
         for mnemonic in ["add","sub","and","or","xor"] {
             let source=format!(
-                "{ty} f({ty} *p,{ty} v) {{ __asm__ volatile(\\\"{mnemonic}{suffix} %1,%0\\\" : \\\"+m\\\"(p[2]) : \\\"r\\\"(v) : \\\"cc\\\",\\\"memory\\\"); return p[2]; }}"
+                "{ty} f({ty} *p,{ty} v) {{ __asm__ volatile(\"{mnemonic}{suffix} %1,%0\" : \"+m\"(p[2]) : \"r\"(v) : \"cc\",\"memory\"); return p[2]; }}"
             );
             assert!(check(&source).is_ok(),
                 "checked noncarry GP +m class rejected {mnemonic}{suffix}");
@@ -4373,13 +4373,13 @@ fn asm3_p02f_noncarry_gp_rmw_class_checked_source_matrix() {
 fn asm3_p02f_noncarry_gp_rmw_rejects_carry_implicit_and_unreviewed_forms() {
     for mnemonic in ["adcl","sbbl","incl","decl","xchgl","mull","notl","lock xorl","xorw"] {
         let source=format!(
-            "int f(int *p,int v) {{ asm(\\\"{mnemonic} %1,%0\\\" : \\\"+m\\\"(*p) : \\\"r\\\"(v) : \\\"cc\\\");return *p; }}"
+            "int f(int *p,int v) {{ asm(\"{mnemonic} %1,%0\" : \"+m\"(*p) : \"r\"(v) : \"cc\");return *p; }}"
         );
         assert!(check(&source).is_err(),"unreviewed template {mnemonic} admitted");
     }
     for mnemonic in ["andl","orl","xorl"] {
         let source=format!(
-            "int f(int *p,int v) {{ asm(\\\"{mnemonic} %1,%0\\\" : \\\"+m\\\"(*p) : \\\"r\\\"(v) : \\\"memory\\\");return *p; }}"
+            "int f(int *p,int v) {{ asm(\"{mnemonic} %1,%0\" : \"+m\"(*p) : \"r\"(v) : \"memory\");return *p; }}"
         );
         assert!(check(&source).is_err(),"missing cc clobber for {mnemonic}");
     }
