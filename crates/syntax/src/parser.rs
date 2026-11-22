@@ -1976,7 +1976,7 @@ impl ItemSource for Parser<'_> {
             self.take()?;
             return Ok(Some(ExternalItem::Tag(base)));
         }
-        let (name, mut ty, definition_params, name_span) = self.parse_declarator_shape(false)?.finish(base);
+        let (name, mut ty, definition_params, name_span) = self.parse_declarator_shape(false)?.finish(base.clone());
         let asm_label = self.parse_asm_linkage_label()?;
         if static_inline && !matches!(&ty, Type::Function { .. } | Type::VariadicFunction { .. }) {
             return Err(Diagnostic::coded(name_span.unwrap_or(storage_span),
