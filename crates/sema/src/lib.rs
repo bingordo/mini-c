@@ -847,8 +847,10 @@ impl Checker {
         self.locals.last_mut().expect("local scope").insert(name.to_owned(), Symbol {
             ty, kind, linkage, defined: true, asm_label: None, enum_value: None, is_register,
         });
-        if kind == SymbolKind::Object && linkage == Linkage::None {
-            self.register_warning_binding(name, span, false);
+        if kind == SymbolKind::Object {
+            // Extern aliases hide an outer automatic binding but are not
+            // themselves candidates for unused-local diagnostics.
+            self.register_warning_binding(name, span, false, linkage != Linkage::None);
         }
         Ok(())
     }
@@ -1644,7 +1646,7 @@ impl Checker {
         for param in &func.params {
             if !param.name.is_empty() {
                 self.register_warning_binding(&param.name,
-                    param.name_span.unwrap_or(param.span), true);
+                    param.name_span.unwrap_or(param.span), true, false);
             }
         }
         // Function parameters and its outermost compound statement share one scope.
