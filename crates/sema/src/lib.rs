@@ -5,6 +5,7 @@ pub mod types;
 pub mod const_eval;
 pub mod builtins;
 mod asm_gp_rmw;
+mod asm_gp_mov;
 
 use std::collections::{HashMap, HashSet};
 use std::cell::{Cell, RefCell};
