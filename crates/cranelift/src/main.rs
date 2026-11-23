@@ -46,8 +46,9 @@ fn parse_options(args: impl IntoIterator<Item = String>) -> Result<Options, Stri
         return Err("expected exactly one input C source file".into());
     }
     let output = output.ok_or("missing --emit-obj OUTPUT.o")?;
-    if warnings.enabled("shadow") {
-        return Err("-Wshadow requires semantic warning emission, which is not yet supported by mini-c-cranelift".into());
+    if warnings.enabled("shadow") || warnings.enabled("unused-variable")
+        || warnings.enabled("unused-parameter") {
+        return Err("semantic warning emission is not yet supported by mini-c-cranelift".into());
     }
     Ok(Options {
         output,
