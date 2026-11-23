@@ -178,5 +178,35 @@ fn native_warning_checks_preserve_preprocessed_origins() {
     let source = "# 20 \"source.h\"\nint f(void) { int dead = 1; return 0; }\n";
     let mut policy = WarningPolicy::default();
     policy.apply_flag("-Wunused-variable").unwrap();
-    assert!(!emit_semantic_warnings("main.c", source, true, &policy).unwrap());
+    let (messages, failed) =
+        format_semantic_warnings("main.c", source, true, &policy).unwrap();
+    assert!(!failed);
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    assert!(messages[0].starts_with("source.h:20: warning:"), "{messages:?}");
+    assert!(messages[0].contains("[-Wunused-variable]"), "{messages:?}");
+}
+
+#[test]
+fn native_warning_locations_keep_raw_columns_and_werror_severity() {
+    let source = "int f(void) { int dead = 1; return 0; }";
+    let mut policy = WarningPolicy::default();
+    policy.apply_flag("-Wunused-variable").unwrap();
+    let (warnings, failed) =
+        format_semantic_warnings("raw.c", source, false, &policy).unwrap();
+    assert!(!failed);
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].starts_with("raw.c:1:"), "{warnings:?}");
+    assert!(warnings[0].contains(": warning:"), "{warnings:?}");
+    policy.apply_flag("-Werror").unwrap();
+    let (errors, failed) =
+        format_semantic_warnings("raw.c", source, false, &policy).unwrap();
+    assert!(failed);
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(errors[0].contains(": error:"), "{errors:?}");
+    assert!(errors[0].contains("[-Wunused-variable]"), "{errors:?}");
+    policy.apply_flag("-Wno-unused-variable").unwrap();
+    let (suppressed, failed) =
+        format_semantic_warnings("raw.c", source, false, &policy).unwrap();
+    assert!(!failed);
+    assert!(suppressed.is_empty(), "{suppressed:?}");
 }
