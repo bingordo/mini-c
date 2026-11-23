@@ -4,7 +4,9 @@
 pub mod types;
 pub mod const_eval;
 pub mod builtins;
+#[allow(dead_code)] // generated target ISA tables remain test oracles, not source admission
 mod asm_gp_rmw;
+#[allow(dead_code)] // source checker does not decode assembler mnemonics
 mod asm_gp_mov;
 #[cfg(test)]
 mod asm_gp_mov_tests;
@@ -1752,85 +1754,35 @@ impl Checker {
                         constraint:output.constraint.clone(),expr,
                     });
                 }
-                // ASM3 P02B3: exactly one addressable memory input can be
-                // used by a checked MOV to a fresh GP output. This checks
-                // source roles and template before lower_source_typeid sees
-                // them. The input is kept as an lvalue, never rvalue-loaded.
+                // GNU extended asm is opaque to the C checker: the template
+                // is NOT an instruction list or a semantic description.
+                // Validate only C-side operand constraints and lvalues here.
+                // Target-specific encoding/physical RA remains the compiler
+                // backend's responsibility, with fail-closed diagnostics there.
+                // In particular, "cc" is a *declaration*, not a condition
+                // requiring the checker to recognize an arithmetic mnemonic.
                 let gp_memory_read=inputs.len()==1 && inputs[0].constraint=="m";
-                if gp_memory_read {
-                    if checked_outputs.len()!=1 || checked_outputs[0].constraint!="=r" {
-                        return Err(type_error(*span,
-                            "ASM3 memory input requires one =r output"));
-                    }
-                    let output_bytes=checked_outputs[0].expr.ty.size_bytes(self.target)
-                        .ok_or_else(||type_error(*span,
-                            "ASM3 output width unknown"))?;
-                    // One reviewed memory-MOV class owns both direction and
-                    // width. This checker retains source lvalue/type ownership.
-                    if !asm_gp_mov::reviewed_gp_memory_mov_source(
-                        template,output_bytes,&checked_outputs[0].constraint,
-                        &inputs[0].constraint,clobbers,
-                    ) {
-                        return Err(type_error(*span,
-                            "ASM3 memory input requires reviewed movl/movq and optional memory clobber"));
-                    }
+                if gp_memory_read &&
+                    (checked_outputs.len()!=1 || checked_outputs[0].constraint!="=r")
+                {
+                    return Err(type_error(*span,
+                        "ASM3 memory input requires one =r output"));
                 }
-                // ASM3 P02C3: output-only memory MOV is different from a
-                // register output and from an input "m" read. Accept only
-                // one addressable, writable i32/i64 C lvalue output and
-                // one independent equal-width "r" scalar input.
                 let gp_memory_write=checked_outputs.len()==1
                     && checked_outputs[0].constraint=="=m";
-                if gp_memory_write {
-                    if inputs.len()!=1 || inputs[0].constraint!="r" {
-                        return Err(type_error(*span,
-                            "ASM3 =m memory output requires exactly one r input"));
-                    }
-                    let output_bytes=checked_outputs[0].expr.ty.size_bytes(self.target)
-                        .ok_or_else(||type_error(*span,
-                            "ASM3 memory output width unknown"))?;
-                    // One reviewed memory-MOV class owns both direction and
-                    // width. This checker retains source lvalue/type ownership.
-                    if !asm_gp_mov::reviewed_gp_memory_mov_source(
-                        template,output_bytes,&checked_outputs[0].constraint,
-                        &inputs[0].constraint,clobbers,
-                    ) {
-                        return Err(type_error(*span,
-                            "ASM3 memory output requires reviewed movl/movq and optional memory clobber"));
-                    }
+                if gp_memory_write &&
+                    (inputs.len()!=1 || inputs[0].constraint!="r")
+                {
+                    return Err(type_error(*span,
+                        "ASM3 =m memory output requires exactly one r input"));
                 }
-                // ASM3 P02G: "+m" is one opaque noncarry GP memory RMW,
-                // not output-only "=m" MOV and not a load/store pair.
-                // Only checked writable i32/i64 C lvalues, exactly one
-                // independent matching "r" input and exact generated %1,%0,
-                // and explicit "cc" clobber are source-admitted.
-                // "memory" is optional, since native TypeId is an opaque
-                // unknown-alias ReadWrite compiler barrier even without it.
                 let gp_memory_rmw=checked_outputs.len()==1
                     && checked_outputs[0].constraint=="+m";
-                if gp_memory_rmw {
-                    if inputs.len()!=1 || inputs[0].constraint!="r" {
-                        return Err(type_error(*span,
-                            "ASM3 +m GP RMW requires exactly one independent r input"));
-                    }
-                    let output_bytes=checked_outputs[0].expr.ty.size_bytes(self.target)
-                        .ok_or_else(||type_error(*span,
-                            "ASM3 +m memory RMW output width unknown"))?;
-                    // One semantic class, not a handwritten template
-                    // branch per operation: a noncarry GP binary instruction
-                    // writes exactly one +m object and defines flags.
-                    // Source role, width, exact template, required cc and
-                    // optional memory clobber now come from the *generated*
-                    // pinned semantic-class contract shared with compiler IR.
-                    // C lvalue ownership and independent input type remain
-                    // checked here by the frontend, not the backend.
-                    if !asm_gp_rmw::reviewed_noncarry_gp_memory_rmw_source(
-                        template,output_bytes,&checked_outputs[0].constraint,
-                        &inputs[0].constraint,clobbers,
-                    ) {
-                        return Err(type_error(*span,
-                            "ASM3 +m requires reviewed noncarry GP RMW and mandatory cc, optional memory clobber"));
-                    }
+                if gp_memory_rmw &&
+                    (inputs.len()!=1 || inputs[0].constraint!="r")
+                {
+                    return Err(type_error(*span,
+                        "ASM3 +m memory output requires exactly one r input"));
                 }
                 // +r reads and writes operand %0 with no separate input. Numeric
                 // 0 ties an input to the sole =r output. An =&r early-
