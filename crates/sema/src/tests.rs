@@ -3496,15 +3496,20 @@ fn asm2_p5_checked_gp_operand_contract_survives_semantics() {
 }
 #[test]
 fn asm2_p5_rejects_invalid_gp_constraints_and_outputs() {
-    for source in [
+    for (index, source) in [
         r#"int f(int x){ asm("nop" : "=m"(x) : "r"(x)); return x; }"#,
         r#"int f(void){ const int x=3; asm("nop" : "=r"(x) :); return x; }"#,
         r#"int f(int x){ asm("nop" : "=r"(x+1) : "r"(x)); return x; }"#,
         r#"int f(int x){ asm("nop" : "=r"(x) : "m"(x)); return x; }"#,
         r#"int f(int x){ asm("nop" : "=r"(x) : "1"(x)); return x; }"#,
         r#"int f(int x){ asm("nop" : "=r"(x) : "r"(x) : "rbx"); return x; }"#,
-    ] {
-        assert!(check(source).is_err(),"accepted unsupported GP constraint: {source}");
+    ].into_iter().enumerate() {
+        // The "=m"/"m" constraint is legal C even when the target cannot
+        // emit the particular assembly text. ISA rejection belongs to the
+        // compiler backend, not this operand/type checker.
+        let source_error = [false, true, true, false, true, true][index];
+        assert_eq!(check(source).is_err(), source_error,
+            "incorrect GNU source operand admission in case {index}: {source}");
     }
 }
 
