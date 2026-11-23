@@ -46,6 +46,9 @@ fn parse_options(args: impl IntoIterator<Item = String>) -> Result<Options, Stri
         return Err("expected exactly one input C source file".into());
     }
     let output = output.ok_or("missing --emit-obj OUTPUT.o")?;
+    if warnings.enabled("shadow") {
+        return Err("-Wshadow requires semantic warning emission, which is not yet supported by mini-c-cranelift".into());
+    }
     Ok(Options {
         output,
         source: inputs.remove(0),
@@ -87,8 +90,8 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    // Warning producers are not enabled in this phase; preserve the policy
-    // for future semantic-warning passes rather than claiming they ran.
+    // The Cranelift driver has no semantic warning emitter. Its parser rejects
+    // enabled groups until object compilation can preserve the diagnostics.
     let _warnings = &opts.warnings;
     let source = match &opts.cpp {
         Some(config) => preprocess::file(Path::new(&opts.source), config)
