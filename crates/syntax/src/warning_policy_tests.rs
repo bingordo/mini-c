@@ -12,6 +12,8 @@ use super::*;
         options.apply_flag("-Wall").unwrap();
         options.apply_flag("-Wextra").unwrap();
         assert_eq!(options.resolve(&sample), None);
+        assert!(options.enabled("unused-variable"));
+        assert!(options.enabled("unused-parameter"));
         options.apply_flag("-Wshadow").unwrap();
         assert_eq!(options.resolve(&sample), Some(DiagnosticSeverity::Warning));
         options.apply_flag("-Werror").unwrap();
@@ -26,10 +28,11 @@ use super::*;
     fn unknown_group_is_not_accepted_as_implemented() {
         let mut options = WarningPolicy::default();
         assert!(options.apply_flag("-Wformat").is_err());
-        assert!(options.apply_flag("-Wunused-variable").is_err());
+        assert!(options.apply_flag("-Wunused-variable").is_ok());
         assert!(options.apply_flag("-Wno-format").is_err());
         assert!(options.apply_flag("-Wextra").is_ok());
         assert!(!options.enabled("conversion"));
+        assert!(options.apply_flag("-Wno-unused-parameter").is_ok());
     }
 
     #[test]
