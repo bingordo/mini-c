@@ -1,7 +1,7 @@
 use mini_c_preprocess::{self as preprocess, source_map::SourceMap};
 use mini_c_sema::{Checker, Target};
 use mini_c_syntax::parser::Parser;
-use mini_c_syntax::diag::WarningPolicy;
+use mini_c_syntax::diag::{DiagnosticSeverity, WarningPolicy};
 use mini_c_syntax::source::SourceFile;
 use mini_c_syntax::stream::ItemSource;
 use std::env;
@@ -13,8 +13,17 @@ use std::process::ExitCode;
 mod stream_check;
 
 fn check(path: &str, cpp: Option<&preprocess::Config>) -> Result<(), String> {
+    check_with_policy(path, cpp, &WarningPolicy::default())
+}
+
+fn check_with_policy(
+    path: &str, cpp: Option<&preprocess::Config>, warnings: &WarningPolicy
+) -> Result<(), String> {
     if let Some(config) = cpp {
         if config.executable == std::ffi::OsStr::new("internal-stream") {
+            if warnings.wall || warnings.wextra || warnings.overrides.iter().any(|(_, enabled)| *enabled) {
+                return Err("warnings are not yet supported with --cpp=internal-stream".into());
+            }
             #[cfg(feature = "internal-cpp")]
             return stream_check::check(path, config, None);
             #[cfg(not(feature = "internal-cpp"))]
@@ -30,14 +39,41 @@ fn check(path: &str, cpp: Option<&preprocess::Config>) -> Result<(), String> {
     let map = cpp.map(|_| SourceMap::from_preprocessed(&source, path));
     let mut parser = Parser::new_with_spans(&source);
     let mut checker = Checker::new(Target::default()).expect("valid default target");
+    checker.set_warning_policy(warnings.clone());
+    let mut warning_failed = false;
     loop {
         // The checker only retains symbol/type state, not completed function ASTs.
         let checked = parser.next_item().and_then(|item| {
             item.map(|item| checker.check_item(item)).transpose()
         });
         match checked {
-            Ok(Some(_)) => {},
-            Ok(None) => return Ok(()),
+            Ok(Some(_)) => {
+                for warning in checker.take_warnings() {
+                    if let Some(severity) = warnings.resolve(&warning) {
+                        let location = if let Some(ref map) = map {
+                            let origin = map.origin(warning.diagnostic.span.lo);
+                            format!("{}:{}", origin.file, origin.line)
+                        } else {
+                            let (line, col) = file.location(warning.diagnostic.span.lo);
+                            format!("{path}:{line}:{col}")
+                        };
+                        let level = match severity {
+                            DiagnosticSeverity::Error => {
+                                warning_failed = true;
+                                "error"
+                            }
+                            DiagnosticSeverity::Warning => "warning",
+                            DiagnosticSeverity::Note => "note",
+                        };
+                        eprintln!("{location}: {level}: {} [-W{}]",
+                            warning.diagnostic.message,
+                            warning.warning_group.unwrap_or("unknown"));
+                    }
+                }
+            },
+            Ok(None) => return if warning_failed {
+                Err(format!("{path}: warnings treated as errors"))
+            } else { Ok(()) },
             Err(error) => {
                 let location = if let Some(ref map) = map {
                     let origin = map.origin(error.span.lo);
@@ -155,14 +191,19 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    // The warning policy is accepted at the driver boundary. Semantic warning
-    // producers will consume it in a separate, explicitly tested change.
-    let _warnings = &options.warnings;
     let mut failed = false;
     for path in options.paths {
         let result = match options.max_errors {
-            Some(limit) => check_recovering(&path, options.cpp.as_ref(), limit),
-            None => check(&path, options.cpp.as_ref()),
+            Some(limit) => {
+                if options.warnings.wall || options.warnings.wextra
+                    || options.warnings.overrides.iter().any(|(_, enabled)| *enabled)
+                {
+                    Err("warning analyses are not supported with --max-errors yet".into())
+                } else {
+                    check_recovering(&path, options.cpp.as_ref(), limit)
+                }
+            },
+            None => check_with_policy(&path, options.cpp.as_ref(), &options.warnings),
         };
         if let Err(error) = result {
             eprintln!("{error}");
