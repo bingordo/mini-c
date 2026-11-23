@@ -1279,7 +1279,7 @@ impl<'a> Parser<'a> {
     /// Extended-asm operands and asm goto are not silently accepted.
     /// Parse a positional or [named] GNU operand without decoding its asm body.
     fn parse_asm_operand(&mut self) -> Result<AsmOperand, Diagnostic> {
-        let name=if self.peek()?.is_some_and(|t| t.text.as_ref()=="[") {
+        let operand_name=if self.peek()?.is_some_and(|t| t.text.as_ref()=="[") {
             self.expect("[")?;
             let token=self.take()?.ok_or_else(||Diagnostic::new(
                 self.eof_span(),"expected GNU asm operand name"))?;
@@ -1305,7 +1305,7 @@ impl<'a> Parser<'a> {
         self.expect("(")?;
         let expr=self.parse_assign()?;
         let end=self.expect(")")?;
-        Ok(AsmOperand {name,constraint:name,expr,span:Span{
+        Ok(AsmOperand {name:operand_name,constraint:name,expr,span:Span{
             lo:token.span.lo,hi:end.span.hi,
         }})
     }
