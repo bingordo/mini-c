@@ -532,10 +532,23 @@ impl<'a> Parser<'a> {
         }
         let mut expr = match self.take()? {
             Some(t) if t.kind == TokenKind::String => {
-                let bytes = crate::string_literal::decode_narrow_string(t.text.as_ref())
+                // C translation phase 6 concatenates adjacent string tokens
+                // into one array with exactly one final implicit NUL. Decode
+                // each token independently so escapes never cross boundaries.
+                let mut bytes = crate::string_literal::decode_narrow_string(t.text.as_ref())
                     .map_err(|reason| Diagnostic::coded(
                         t.span, DiagnosticCode::LexicalInvalidCharacter, reason))?;
-                self.located(Expr::StringLiteral(bytes), t.span)
+                let mut end = t.span.hi;
+                while matches!(self.peek()?, Some(next) if next.kind == TokenKind::String) {
+                    let next = self.take()?.expect("peeked string token");
+                    let fragment = crate::string_literal::decode_narrow_string(next.text.as_ref())
+                        .map_err(|reason| Diagnostic::coded(
+                            next.span, DiagnosticCode::LexicalInvalidCharacter, reason))?;
+                    bytes.pop(); // remove only the previous implicit terminator
+                    bytes.extend(fragment);
+                    end = next.span.hi;
+                }
+                self.located(Expr::StringLiteral(bytes), Span { lo: t.span.lo, hi: end })
             }
             Some(t) if t.kind == TokenKind::Character => {
                 let value = crate::char_literal::parse_ascii_character(t.text.as_ref())
