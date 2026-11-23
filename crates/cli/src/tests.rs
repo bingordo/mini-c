@@ -136,6 +136,29 @@
     }
 
     #[test]
+    fn targeted_werror_promotes_only_one_warning_class() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let path = std::env::temp_dir().join(format!("mini-c-werror-group-{}-{}.c",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::write(&path,
+            "int f(int unused) { int local = 1; return 0; }\n").unwrap();
+        let filename = path.to_str().unwrap();
+        let mut policy = WarningPolicy::default();
+        policy.apply_flag("-Wextra").unwrap();
+        policy.apply_flag("-Wall").unwrap();
+        policy.apply_flag("-Werror=unused-parameter").unwrap();
+        assert!(check_with_policy(filename, None, &policy).is_err());
+        policy.apply_flag("-Wno-error=unused-parameter").unwrap();
+        assert!(check_with_policy(filename, None, &policy).is_ok());
+        policy.apply_flag("-Werror=unused-variable").unwrap();
+        assert!(check_with_policy(filename, None, &policy).is_err());
+        policy.apply_flag("-Wno-unused-variable").unwrap();
+        assert!(check_with_policy(filename, None, &policy).is_ok());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn warning_options_are_parsed_without_leaking_to_cpp() {
         let opts = parse_options([
             "check", "-Wall", "-Wextra", "-Werror",
