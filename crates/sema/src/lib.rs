@@ -6,6 +6,8 @@ pub mod const_eval;
 pub mod builtins;
 mod asm_gp_rmw;
 mod asm_gp_mov;
+#[cfg(test)]
+mod asm_gp_mov_tests;
 
 use std::collections::{HashMap, HashSet};
 use std::cell::{Cell, RefCell};
