@@ -3,7 +3,7 @@
 //! nearest binding rather than an unrelated declaration with the same spelling.
 //! Tracking is opt-in and never changes the checked representation or codegen.
 
-use super::{Checker, Diagnostic, ReportedDiagnostic, Span, WarningPolicy};
+use super::{Checker, Diagnostic, ReportedDiagnostic, Span};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
