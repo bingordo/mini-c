@@ -8,6 +8,9 @@ pub mod builtins;
 mod asm_gp_rmw;
 #[allow(dead_code)] // source checker does not decode assembler mnemonics
 mod asm_gp_mov;
+mod asm_names;
+#[cfg(test)]
+mod asm_names_tests;
 #[cfg(test)]
 mod asm_gp_mov_tests;
 
@@ -1724,6 +1727,12 @@ impl Checker {
                 template: template.clone(), span: *span,
             },
             Stmt::ExtendedAsm { template, outputs, inputs, clobbers, span } => {
+                // Resolve names only; physical instruction meanings stay opaque
+                // to the source checker, TypeId, and register allocator.
+                let names=outputs.iter().chain(inputs.iter())
+                    .map(|operand|operand.name.as_deref()).collect::<Vec<_>>();
+                let template=asm_names::positional_template(template,&names)
+                    .map_err(|error|type_error(*span,error))?;
                 // Bounded GP slice: one output, up to two explicit independent inputs.
                 // Multiple inputs require =&r early-clobber and are validated
                 // again against the exact reviewed two-input template.
