@@ -340,7 +340,7 @@ mod tests {
             std::process::id(),
             SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
         std::fs::write(&path,
-            "int global; int f(int arg) { int global = arg; return global; }\\n").unwrap();
+            "int global; int f(int arg) { int global = arg; return global; }\n").unwrap();
         let mut policy = WarningPolicy::default();
         assert!(check_with_policy(path.to_str().unwrap(), None, &policy).is_ok());
         policy.apply_flag("-Wshadow").unwrap();
