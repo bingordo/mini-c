@@ -4,6 +4,7 @@
 pub mod types;
 pub mod const_eval;
 pub mod builtins;
+mod warnings;
 
 use std::collections::{HashMap, HashSet};
 use std::cell::{Cell, RefCell};
@@ -13,6 +14,7 @@ use mini_c_syntax::stream::{ExternalItem, ItemSource};
 
 pub use types::{CType, IntRank, Target};
 use types::type_error;
+use warnings::UsageBinding;
 
 /// Backend-private, per-function ELF object for C99's implicit
 /// `static const char __func__[] = "function-name"`. Source identifiers
@@ -404,13 +406,15 @@ pub struct Checker {
     recovery_limit: usize,
     warning_policy: WarningPolicy,
     emitted_warnings: Vec<ReportedDiagnostic>,
+    warning_scopes: RefCell<Vec<HashMap<String, UsageBinding>>>,
 }
 
 impl Checker {
     pub fn new(target: Target) -> Result<Self, Diagnostic> {
         Ok(Self { target: target.validate()?, next_tag_identity: Cell::new(1), next_static_compound_identity: Cell::new(1), tags: RefCell::new(vec![HashMap::new()]), tag_definitions: RefCell::new(HashMap::new()), globals: HashMap::new(), locals: Vec::new(), result_ty: None, loop_depth: 0, switches: Vec::new(), function_labels: HashMap::new(), rollback_log: None, statement_undo: Vec::new(),
             recovery_errors: None, recovery_limit: 0,
-            warning_policy: WarningPolicy::default(), emitted_warnings: Vec::new() })
+            warning_policy: WarningPolicy::default(), emitted_warnings: Vec::new(),
+            warning_scopes: RefCell::new(Vec::new()) })
     }
 
     /// Set policy before checking items. Warnings never change semantic acceptance.
@@ -843,6 +847,9 @@ impl Checker {
         self.locals.last_mut().expect("local scope").insert(name.to_owned(), Symbol {
             ty, kind, linkage, defined: true, asm_label: None, enum_value: None, is_register,
         });
+        if kind == SymbolKind::Object && linkage == Linkage::None {
+            self.register_warning_binding(name, span, false);
+        }
         Ok(())
     }
 
@@ -1600,6 +1607,7 @@ impl Checker {
         self.declare_global(&func.name, signature.clone(), SymbolKind::Function, true, func.storage,
             func.name_span.unwrap_or(func.span))?;
         self.locals.push(HashMap::new());
+        self.push_warning_scope();
         self.tags.borrow_mut().push(HashMap::new());
         self.function_labels = function_labels;
         self.result_ty = Some(result);
@@ -1626,9 +1634,17 @@ impl Checker {
                 parsed_param.storage == StorageClass::Register,
                 parsed_param.name_span.unwrap_or(param.span)) {
                 self.pop_tag_scope();
+                self.pop_warning_scope();
                 self.locals.pop();
                 self.result_ty = None;
                 return Err(err);
+            }
+        }
+        // Mark parameters distinctly for -Wunused-parameter after successful registration.
+        for param in &func.params {
+            if !param.name.is_empty() {
+                self.register_warning_binding(&param.name,
+                    param.name_span.unwrap_or(param.span), true);
             }
         }
         // Function parameters and its outermost compound statement share one scope.
@@ -1637,6 +1653,7 @@ impl Checker {
             other => self.check_stmt(other, func.span),
         };
         self.pop_tag_scope();
+        self.pop_warning_scope();
         self.locals.pop();
         self.result_ty = None;
         self.function_labels.clear();
@@ -1688,9 +1705,11 @@ impl Checker {
         Ok(match stmt {
             Stmt::Block(stmts) => {
                 self.locals.push(HashMap::new());
+                self.push_warning_scope();
                 self.tags.borrow_mut().push(HashMap::new());
                 let inner = self.check_statements(stmts, span);
                 self.pop_tag_scope();
+                self.pop_warning_scope();
                 self.locals.pop();
                 CheckedStmt::Block(inner?)
             }
@@ -1981,6 +2000,7 @@ impl Checker {
                 // The initializer's identifiers and tags remain visible in
                 // the condition, increment and body, but not after the loop.
                 self.locals.push(HashMap::new());
+                self.push_warning_scope();
                 self.tags.borrow_mut().push(HashMap::new());
                 let checked = (|| -> Result<CheckedStmt, Diagnostic> {
                     let init = init.as_deref()
@@ -2000,6 +2020,7 @@ impl Checker {
                     })))
                 })();
                 self.pop_tag_scope();
+                self.pop_warning_scope();
                 self.locals.pop();
                 checked?
             }
@@ -2748,6 +2769,7 @@ impl Checker {
                     SymbolKind::Function => Category::Function,
                     SymbolKind::Object => Category::LValue,
                 };
+                self.reference_warning_binding(name);
                 // The implicit object is internally named so that a
                 // frontend user cannot collide with it and every use
                 // within this function refers to the same static array.
