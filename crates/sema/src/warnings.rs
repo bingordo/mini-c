@@ -11,6 +11,7 @@ pub(super) struct UsageBinding {
     pub span: Span,
     pub referenced: bool,
     pub parameter: bool,
+    pub exempt: bool,
 }
 
 impl Checker {
@@ -28,10 +29,10 @@ impl Checker {
     }
 
     /// Register only addressable ordinary declarations, not typedefs or extern aliases.
-    pub(super) fn register_warning_binding(&self, name: &str, span: Span, parameter: bool) {
+    pub(super) fn register_warning_binding(&self, name: &str, span: Span, parameter: bool, exempt: bool) {
         if !self.track_unused_warnings() || name.is_empty() { return; }
         if let Some(scope) = self.warning_scopes.borrow_mut().last_mut() {
-            scope.insert(name.to_owned(), UsageBinding { span, referenced: false, parameter });
+            scope.insert(name.to_owned(), UsageBinding { span, referenced: false, parameter, exempt });
         }
     }
 
@@ -50,8 +51,12 @@ impl Checker {
     pub(super) fn pop_warning_scope(&mut self) {
         if !self.track_unused_warnings() { return; }
         let Some(scope) = self.warning_scopes.get_mut().pop() else { return; };
-        for (name, binding) in scope {
-            if binding.referenced { continue; }
+        let mut bindings: Vec<_> = scope.into_iter().collect();
+        bindings.sort_by(|(name_a, a), (name_b, b)| {
+            a.span.lo.cmp(&b.span.lo).then_with(|| name_a.cmp(name_b))
+        });
+        for (name, binding) in bindings {
+            if binding.referenced || binding.exempt { continue; }
             let group = if binding.parameter { "unused-parameter" } else { "unused-variable" };
             if !self.warning_policy.enabled(group) { continue; }
             let kind = if binding.parameter { "parameter" } else { "variable" };
