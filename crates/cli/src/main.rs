@@ -12,6 +12,7 @@ use std::process::ExitCode;
 #[cfg(feature = "internal-cpp")]
 mod stream_check;
 
+#[cfg(test)]
 fn check(path: &str, cpp: Option<&preprocess::Config>) -> Result<(), String> {
     check_with_policy(path, cpp, &WarningPolicy::default())
 }
@@ -330,6 +331,26 @@ mod tests {
         let after_end = parse_options(["check", "--cpp=none", "--", "-file.c"]
             .into_iter().map(str::to_owned)).unwrap();
         assert_eq!(after_end.paths, ["-file.c"]);
+    }
+
+    #[test]
+    fn shadow_warning_is_promoted_to_error_only_when_requested() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let path = std::env::temp_dir().join(format!("mini-c-shadow-{}-{}.c",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::write(&path,
+            "int global; int f(int arg) { int global = arg; return global; }\\n").unwrap();
+        let mut policy = WarningPolicy::default();
+        assert!(check_with_policy(path.to_str().unwrap(), None, &policy).is_ok());
+        policy.apply_flag("-Wshadow").unwrap();
+        assert!(check_with_policy(path.to_str().unwrap(), None, &policy).is_ok());
+        policy.apply_flag("-Werror").unwrap();
+        assert!(check_with_policy(path.to_str().unwrap(), None, &policy)
+            .unwrap_err().contains("warnings treated as errors"));
+        policy.apply_flag("-Wno-shadow").unwrap();
+        assert!(check_with_policy(path.to_str().unwrap(), None, &policy).is_ok());
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
