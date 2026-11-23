@@ -145,7 +145,8 @@
         assert!(opts.warnings.wextra);
         assert!(opts.warnings.warnings_as_errors);
         assert!(!opts.warnings.enabled("shadow"));
-        assert!(!opts.warnings.enabled("unused-parameter"));
+        assert!(opts.warnings.enabled("unused-variable"));
+        assert!(opts.warnings.enabled("unused-parameter"));
         assert!(opts.cpp.is_none());
         assert!(parse_options([
             "check", "-Wformat", "sample.c",
