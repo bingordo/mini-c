@@ -94,6 +94,9 @@
         assert!(opts.warnings.warnings_as_errors);
         assert!(!opts.warnings.enabled("shadow"));
         assert!(parse_options([
+            "--emit-obj", "out.o", "-Wshadow", "main.c",
+        ].into_iter().map(str::to_owned)).is_err());
+        assert!(parse_options([
             "--emit-obj", "out.o", "-Wformat", "main.c",
         ].into_iter().map(str::to_owned)).is_err());
     }
