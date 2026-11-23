@@ -1795,13 +1795,17 @@ impl Checker {
                 // and neither output's C lvalue may be implicitly scalarized.
                 // Additional independent register results require a multi-
                 // result machine contract, not speculative source admission.
+                let dual_gp_results=outputs.len()==2 && inputs.len()==1
+                    && inputs[0].constraint=="r"
+                    && outputs.iter().all(|out|out.constraint=="=&r");
                 let mixed_gp_memory=outputs.len()==2 && inputs.len()==1
                     && inputs[0].constraint=="r"
                     && outputs.iter().filter(|o|
                         matches!(o.constraint.as_str(),"=r"|"=&r")).count()==1
                     && outputs.iter().filter(|o|
                         matches!(o.constraint.as_str(),"=m"|"+m")).count()==1;
-                if (!mixed_gp_memory && outputs.len()>1) || inputs.len()>2 {
+                if (!mixed_gp_memory && !dual_gp_results && outputs.len()>1)
+                    || inputs.len()>2 {
                     return Err(type_error(*span,
                         "extended asm supports one output or a GP and memory output pair"));
                 }
@@ -1864,7 +1868,8 @@ impl Checker {
                 // clobber output instead needs one independent r input:
                 // the machine allocator must keep its result distinct from
                 // all input registers. Other constraints still fail closed.
-                if !checked_outputs.is_empty() && !mixed_gp_memory {
+                if !checked_outputs.is_empty() && !mixed_gp_memory
+                    && !dual_gp_results {
                     let out=&checked_outputs[0];
                     if out.constraint=="+r" && !inputs.is_empty() {
                         return Err(type_error(*span,"+r output cannot have a separate input in the bounded ASM2 form"));
@@ -1949,7 +1954,8 @@ impl Checker {
                 let mut clobbered_gp=0u16;
                 for (index,clobber) in clobbers.iter().enumerate() {
                     if let Some(reg)=gp_clobber(clobber) {
-                        if outputs.len()!=1 && !mixed_gp_memory {
+                        if outputs.len()!=1 && !mixed_gp_memory
+                            && !dual_gp_results {
                             return Err(type_error(*span,
                                 "explicit GP clobbers require a checked GP asm output contract"));
                         }
