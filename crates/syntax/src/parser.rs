@@ -3075,6 +3075,38 @@ mod tests {
         }
     }
     #[test]
+    fn asm3_named_operands_preserve_labels_and_source_template() {
+        let source=r#"int f(int x) {
+            int y=0;
+            __asm__ volatile("movl %[input], %[output]"
+                : [output] "=r"(y) : [input] "r"(x) : "cc");
+            return y;
+        }"#;
+        let Some(ExternalItem::Function(f))=Parser::new(source).next_item().unwrap()
+        else {panic!("function expected")};
+        let Stmt::Block(stmts)=f.body else {panic!("block expected")};
+        let Stmt::ExtendedAsm {template,outputs,inputs,..}=&stmts[1]
+        else {panic!("asm expected")};
+        assert_eq!(template,"movl %[input], %[output]");
+        assert_eq!(outputs[0].name.as_deref(),Some("output"));
+        assert_eq!(outputs[0].constraint,"=r");
+        assert_eq!(inputs[0].name.as_deref(),Some("input"));
+        assert_eq!(inputs[0].constraint,"r");
+    }
+
+    #[test]
+    fn asm3_malformed_operand_label_rejects_before_sema() {
+        for src in [
+            r#"int f(int x) { int y; asm("nop" : [x "=r"(y) : "r"(x)); }"#,
+            r#"int f(int x) { int y; asm("nop" : [] "=r"(y) : "r"(x)); }"#,
+            r#"int f(int x) { int y; asm("nop" : [42] "=r"(y) : "r"(x)); }"#,
+            r#"int f(int x) { int y; asm("nop" : [output] "=r"(y) : [x] "r"(x), [bad "r"(x)); }"#,
+        ] {
+            assert!(Parser::new(src).next_item().is_err(),"invalid source: {src}");
+        }
+    }
+
+    #[test]
     fn gnu_word_mode_preserves_glibc_register_t_abi_width() {
         let source = "typedef int register_t __attribute__ ((__mode__ (__word__)));";
         let Some(ExternalItem::Typedef(decl)) =
