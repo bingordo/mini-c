@@ -66,3 +66,23 @@ fn warning_groups_can_be_disabled_selectively() {
     assert!(warning_names(source, &["-Wall", "-Wextra", "-Wno-unused-variable",
         "-Wno-unused-parameter"]).is_empty());
 }
+
+#[test]
+fn multiple_unused_bindings_are_ordered_by_source_location() {
+    let warnings = warning_names(
+        "int f(void) { int first = 1; int second = 2; return 0; }",
+        &["-Wunused-variable"]);
+    assert_eq!(warnings, vec![
+        ("unused variable 'first'".into(), "unused-variable"),
+        ("unused variable 'second'".into(), "unused-variable"),
+    ]);
+}
+
+#[test]
+fn extern_alias_does_not_mark_shadowed_auto_as_used() {
+    let warnings = warning_names(
+        "int f(void) { int local = 1; { extern int local; return local; } }",
+        &["-Wunused-variable"]);
+    assert_eq!(warnings,
+        vec![("unused variable 'local'".into(), "unused-variable")]);
+}
