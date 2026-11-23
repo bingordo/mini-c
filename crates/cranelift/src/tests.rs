@@ -210,3 +210,47 @@ fn native_warning_locations_keep_raw_columns_and_werror_severity() {
     assert!(!failed);
     assert!(suppressed.is_empty(), "{suppressed:?}");
 }
+
+#[test]
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+fn warning_promotion_prevents_object_creation_but_normal_warning_emits_elf() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let dir = std::env::temp_dir().join(format!(
+        "mini-c-cranelift-warning-gate-{}-{nonce}", std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("source.c");
+    let output = dir.join("output.o");
+    std::fs::write(&source, "int main(void) { int unused = 1; return 0; }\n").unwrap();
+
+    let options = |warnings: &[&str]| {
+        let mut args = vec![
+            "--cpp=none".to_owned(),
+            "--emit-obj".to_owned(),
+            output.to_string_lossy().into_owned(),
+        ];
+        args.extend(warnings.iter().map(|flag| (*flag).to_owned()));
+        args.push(source.to_string_lossy().into_owned());
+        parse_options(args).unwrap()
+    };
+
+    assert_eq!(
+        compile_to_object(&options(&["-Wunused-variable", "-Werror"])),
+        ExitCode::FAILURE
+    );
+    assert!(!output.exists(), "-Werror must not create an object");
+    assert_eq!(
+        compile_to_object(&options(&["-Wunused-variable"])),
+        ExitCode::SUCCESS
+    );
+    assert!(std::fs::read(&output).unwrap().starts_with(b"\\x7fELF"));
+    std::fs::remove_file(&output).unwrap();
+    assert_eq!(
+        compile_to_object(&options(&["-Wunused-variable", "-Werror",
+                                     "-Wno-unused-variable"])),
+        ExitCode::SUCCESS
+    );
+    assert!(std::fs::read(&output).unwrap().starts_with(b"\\x7fELF"));
+    let _ = std::fs::remove_dir_all(dir);
+}
