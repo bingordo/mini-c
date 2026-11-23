@@ -5,6 +5,10 @@ pub mod types;
 pub mod const_eval;
 pub mod builtins;
 mod warnings;
+mod asm_gp_rmw;
+mod asm_gp_mov;
+#[cfg(test)]
+mod asm_gp_mov_tests;
 
 use std::collections::{HashMap, HashSet};
 use std::cell::{Cell, RefCell};
@@ -1782,13 +1786,13 @@ impl Checker {
                 }
                 let mut checked_outputs=Vec::new();
                 for output in outputs {
-                    if !matches!(output.constraint.as_str(),"=r"|"+r"|"=&r"|"=m") {
-                        return Err(type_error(output.span,"extended asm output requires reviewed GP or =m memory constraint"));
+                    if !matches!(output.constraint.as_str(),"=r"|"+r"|"=&r"|"=m"|"+m") {
+                        return Err(type_error(output.span,"extended asm output requires reviewed GP, =m or +m memory constraint"));
                     }
                     // Register results still require a checked local name;
-                    // "=m" instead binds a genuine checked addressable C
+                    // "=m"/"+m" instead bind a genuine checked addressable C
                     // lvalue, such as *p, p[i], or a writable local scalar.
-                    if output.constraint!="=m"
+                    if !matches!(output.constraint.as_str(),"=m"|"+m")
                         && !matches!(output.expr.without_location(),Expr::Name(_)) {
                         return Err(type_error(output.span,"extended asm output currently requires local variable"));
                     }
@@ -1817,19 +1821,14 @@ impl Checker {
                     let output_bytes=checked_outputs[0].expr.ty.size_bytes(self.target)
                         .ok_or_else(||type_error(*span,
                             "ASM3 output width unknown"))?;
-                    let reviewed=match output_bytes {
-                        4=>"movl %1,%0",
-                        8=>"movq %1,%0",
-                        _=>return Err(type_error(*span,
-                            "ASM3 memory input requires 32/64-bit output")),
-                    };
-                    if template!=reviewed {
+                    // One reviewed memory-MOV class owns both direction and
+                    // width. This checker retains source lvalue/type ownership.
+                    if !asm_gp_mov::reviewed_gp_memory_mov_source(
+                        template,output_bytes,&checked_outputs[0].constraint,
+                        &inputs[0].constraint,clobbers,
+                    ) {
                         return Err(type_error(*span,
-                            "ASM3 memory input requires reviewed movl/movq template"));
-                    }
-                    if clobbers.iter().any(|name|name!="memory") {
-                        return Err(type_error(*span,
-                            "ASM3 memory input supports only the compiler memory clobber"));
+                            "ASM3 memory input requires reviewed movl/movq and optional memory clobber"));
                     }
                 }
                 // ASM3 P02C3: output-only memory MOV is different from a
@@ -1846,15 +1845,47 @@ impl Checker {
                     let output_bytes=checked_outputs[0].expr.ty.size_bytes(self.target)
                         .ok_or_else(||type_error(*span,
                             "ASM3 memory output width unknown"))?;
-                    let reviewed=match output_bytes {
-                        4=>"movl %1,%0",
-                        8=>"movq %1,%0",
-                        _=>return Err(type_error(*span,
-                            "ASM3 memory output requires 32/64-bit scalar")),
-                    };
-                    if template!=reviewed || clobbers.iter().any(|name|name!="memory") {
+                    // One reviewed memory-MOV class owns both direction and
+                    // width. This checker retains source lvalue/type ownership.
+                    if !asm_gp_mov::reviewed_gp_memory_mov_source(
+                        template,output_bytes,&checked_outputs[0].constraint,
+                        &inputs[0].constraint,clobbers,
+                    ) {
                         return Err(type_error(*span,
-                            "ASM3 memory output requires reviewed MOV and optional memory clobber"));
+                            "ASM3 memory output requires reviewed movl/movq and optional memory clobber"));
+                    }
+                }
+                // ASM3 P02G: "+m" is one opaque noncarry GP memory RMW,
+                // not output-only "=m" MOV and not a load/store pair.
+                // Only checked writable i32/i64 C lvalues, exactly one
+                // independent matching "r" input and exact generated %1,%0,
+                // and explicit "cc" clobber are source-admitted.
+                // "memory" is optional, since native TypeId is an opaque
+                // unknown-alias ReadWrite compiler barrier even without it.
+                let gp_memory_rmw=checked_outputs.len()==1
+                    && checked_outputs[0].constraint=="+m";
+                if gp_memory_rmw {
+                    if inputs.len()!=1 || inputs[0].constraint!="r" {
+                        return Err(type_error(*span,
+                            "ASM3 +m GP RMW requires exactly one independent r input"));
+                    }
+                    let output_bytes=checked_outputs[0].expr.ty.size_bytes(self.target)
+                        .ok_or_else(||type_error(*span,
+                            "ASM3 +m memory RMW output width unknown"))?;
+                    // One semantic class, not a handwritten template
+                    // branch per operation: a noncarry GP binary instruction
+                    // writes exactly one +m object and defines flags.
+                    // Source role, width, exact template, required cc and
+                    // optional memory clobber now come from the *generated*
+                    // pinned semantic-class contract shared with compiler IR.
+                    // C lvalue ownership and independent input type remain
+                    // checked here by the frontend, not the backend.
+                    if !asm_gp_rmw::reviewed_noncarry_gp_memory_rmw_source(
+                        template,output_bytes,&checked_outputs[0].constraint,
+                        &inputs[0].constraint,clobbers,
+                    ) {
+                        return Err(type_error(*span,
+                            "ASM3 +m requires reviewed noncarry GP RMW and mandatory cc, optional memory clobber"));
                     }
                 }
                 // +r reads and writes operand %0 with no separate input. Numeric
@@ -1901,11 +1932,11 @@ impl Checker {
                         return Err(type_error(input.span,
                             "ASM3 memory input must be an addressable same-width i32/i64 C lvalue"));
                     }
-                    if gp_memory_write && expr.ty.size_bytes(self.target)
+                    if (gp_memory_write || gp_memory_rmw) && expr.ty.size_bytes(self.target)
                         !=checked_outputs[0].expr.ty.size_bytes(self.target)
                     {
                         return Err(type_error(input.span,
-                            "ASM3 memory output GP input must match its object width"));
+                            "ASM3 memory output/RMW GP input must match its object width"));
                     }
                     if input.constraint=="0" &&
                         expr.ty.size_bytes(self.target)!=checked_outputs[0].expr.ty.size_bytes(self.target)

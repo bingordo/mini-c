@@ -4216,3 +4216,171 @@ fn asm3_p02c3_memory_output_rejects_unsupported_source_forms() {
         assert!(check(source).is_err(),"unreviewed source =m accepted: {source}");
     }
 }
+
+
+#[test]
+fn asm3_p02d3_checked_plus_m_add_preserves_writable_lvalue_and_flags() {
+    for (source,width,mnemonic) in [
+        (r#"int f(int *p,int v){__asm__ volatile("addl %1,%0":"+m"(*p):"r"(v):"cc","memory");return *p;}"#,4,"addl %1,%0"),
+        (r#"long f(long *p,long v){asm volatile("addq %1,%0":"+m"(p[1]):"r"(v):"cc");return p[1];}"#,8,"addq %1,%0"),
+        (r#"int f(int v){int x=7;asm volatile("addl %1,%0":"+m"(x):"r"(v):"memory","cc");return x;}"#,4,"addl %1,%0"),
+    ] {
+        let checked=check(source).expect("reviewed GNU +m ADD source must typecheck");
+        let CheckedItem::Function(f)=&checked[0] else {panic!("function expected")};
+        let CheckedStmt::Block(items)=&f.body else {panic!("checked compound")};
+        let CheckedStmt::ExtendedAsm {outputs,inputs,clobbers,template,..}=
+            items.iter().find(|s|matches!(s,CheckedStmt::ExtendedAsm{..}))
+                .expect("checked RMW")
+        else {unreachable!()};
+        assert_eq!((outputs.len(),inputs.len()),(1,1));
+        assert_eq!(outputs[0].constraint,"+m");
+        assert_eq!(inputs[0].constraint,"r");
+        assert_eq!(outputs[0].expr.category,Category::LValue);
+        assert_eq!(outputs[0].expr.ty.size_bytes(Target::default()),Some(width));
+        assert_eq!(inputs[0].expr.ty.size_bytes(Target::default()),Some(width));
+        assert_eq!(template,mnemonic);
+        assert!(clobbers.contains(&"cc".to_string()));
+    }
+}
+
+#[test]
+fn asm3_p02d3_plus_m_add_rejects_unreviewed_source_mutants() {
+    for source in [
+        // Arithmetic flags must be explicitly clobbered.
+        r#"int f(int *p,int v){asm("addl %1,%0":"+m"(*p):"r"(v));return *p;}"#,
+        r#"int f(int *p,int v){asm("addl %1,%0":"+m"(*p):"r"(v):"memory");return *p;}"#,
+        // No output-only MOV, non-ADD RMW, raw LOCK or template variants.
+        r#"int f(int *p,int v){asm("movl %1,%0":"+m"(*p):"r"(v):"cc");return *p;}"#,
+        r#"int f(int *p,int v){asm("sbbl %1,%0":"+m"(*p):"r"(v):"cc");return *p;}"#,
+        r#"int f(int *p,int v){asm("lock addl %1,%0":"+m"(*p):"r"(v):"cc");return *p;}"#,
+        r#"int f(int *p,int v){asm("addl $1,%0":"+m"(*p):"r"(v):"cc");return *p;}"#,
+        r#"int f(int *p,int v){asm("addl %1,%0":"=m"(*p):"r"(v):"cc");return *p;}"#,
+        // Wrong lvalue type, scalar width, output count or operand role.
+        r#"int f(const int *p,int v){asm("addl %1,%0":"+m"(*p):"r"(v):"cc");return *p;}"#,
+        r#"int f(int *p,long v){asm("addl %1,%0":"+m"(*p):"r"(v):"cc");return *p;}"#,
+        r#"int f(long *p,int v){asm("addq %1,%0":"+m"(*p):"r"(v):"cc");return *p;}"#,
+        r#"int f(int *p,int v){asm("addq %1,%0":"+m"(*p):"r"(v):"cc");return *p;}"#,
+        r#"int f(int *p,int v){asm("addl %1,%0":"+m"(p):"r"(v):"cc");return *p;}"#,
+        r#"int f(int *p,int v){asm("addl %1,%0":"+m"(*p):"m"(v):"cc");return *p;}"#,
+        r#"int f(int *p,int v){asm("addl %1,%0":"+m"(*p):"r"(v),"r"(v):"cc");return *p;}"#,
+        r#"int f(int *p,int v){asm("addl %1,%0":"+m"(*p):"r"(v):"cc","rax");return *p;}"#,
+        r#"int f(int *p,int v){asm("addl %1,%0":"+m"(*p):"r"(v):"cc","cc");return *p;}"#,
+    ] {
+        assert!(check(source).is_err(),"unreviewed source GNU +m accepted: {source}");
+    }
+}
+
+#[test]
+fn asm3_p02e3_checked_plus_m_sub_32_64_preserves_lvalue_and_cc() {
+    for (source,width,expect) in [
+        (r#"int f(int *p,int v){asm volatile("subl %1,%0":"+m"(*p):"r"(v):"cc");return *p;}"#,4,"subl %1,%0"),
+        (r#"long f(long *p,long v){__asm__ volatile("subq %1,%0":"+m"(p[2]):"r"(v):"cc","memory");return p[2];}"#,8,"subq %1,%0"),
+        (r#"int f(int v){int x=8;asm volatile("subl %1,%0":"+m"(x):"r"(v):"memory","cc");return x;}"#,4,"subl %1,%0"),
+    ] {
+        let checked=check(source).expect("reviewed +m SUB must pass source semantic checker");
+        let CheckedItem::Function(f)=&checked[0] else {panic!("function expected")};
+        let CheckedStmt::Block(items)=&f.body else {panic!("checked compound")};
+        let CheckedStmt::ExtendedAsm {outputs,inputs,template,clobbers,..}=
+            items.iter().find(|s|matches!(s,CheckedStmt::ExtendedAsm{..}))
+                .expect("checked sub RMW")
+        else {unreachable!()};
+        assert_eq!((outputs.len(),inputs.len()),(1,1));
+        assert_eq!((outputs[0].constraint.as_str(),inputs[0].constraint.as_str()),("+m","r"));
+        assert_eq!(outputs[0].expr.category,Category::LValue);
+        assert_eq!(outputs[0].expr.ty.size_bytes(Target::default()),Some(width));
+        assert_eq!(inputs[0].expr.ty.size_bytes(Target::default()),Some(width));
+        assert_eq!(template,expect);
+        assert!(clobbers.contains(&"cc".to_string()));
+    }
+}
+#[test]
+fn asm3_p02e3_checked_plus_m_sub_rejects_unsupported_shapes() {
+    for source in [
+        r#"int f(int*p,int v){asm("subl %1,%0":"+m"(*p):"r"(v));return *p;}"#,
+        r#"int f(int*p,int v){asm("subl %1,%0":"+m"(*p):"r"(v):"memory");return *p;}"#,
+        r#"int f(int*p,int v){asm("subq %1,%0":"+m"(*p):"r"(v):"cc");return *p;}"#,
+        r#"int f(int*p,long v){asm("subl %1,%0":"+m"(*p):"r"(v):"cc");return *p;}"#,
+        r#"int f(const int*p,int v){asm("subl %1,%0":"+m"(*p):"r"(v):"cc");return *p;}"#,
+        r#"int f(int*p,int v){asm("lock subl %1,%0":"+m"(*p):"r"(v):"cc");return *p;}"#,
+        r#"int f(int*p,int v){asm("sbbl %1,%0":"+m"(*p):"r"(v):"cc");return *p;}"#,
+        r#"int f(int*p,int v){asm("subl %1,%0":"=m"(*p):"r"(v):"cc");return *p;}"#,
+        r#"int f(int*p,int v){asm("subl %1,%0":"+m"(*p):"r"(v):"cc","rax");return *p;}"#,
+        r#"int f(int*p,int v){asm("subl %1,%0":"+m"(*p):"m"(v):"cc");return *p;}"#,
+        r#"int f(int*p,int v){asm("subl %1,%0":"+m"(*p):"r"(v),"r"(v):"cc");return *p;}"#,
+    ] { assert!(check(source).is_err(),"unsupported GNU +m SUB source admitted: {source}"); }
+}
+
+
+#[test]
+fn c99_pointer_arithmetic_offset_promotions_and_array_scaling() {
+    // Check the frontend's typed pointer operations, not target-dependent
+    // machine-address arithmetic. Native byte scaling belongs to lowering.
+    check("int *f(int *p, _Bool b) { return p + b; }")
+        .expect("_Bool offset promotes to int");
+    check("int *f(int *p, unsigned long n) { return n + p; }")
+        .expect("integer + pointer is commutative for addition");
+    check("int *f(int *p, long n) { return p - n; }")
+        .expect("signed long subtraction offset");
+    check("long f(int *p) { return (p + 3) - (p - 2); }")
+        .expect("pointer difference after opposite signed offsets");
+    check("long f(const int *p, volatile int *q) { return p - q; }")
+        .expect("top-level pointed-to qualifiers do not prevent subtraction");
+    check("long f(int (*p)[3], int (*q)[3]) { return p - q; }")
+        .expect("pointer-to-array difference counts whole array elements");
+
+    reject("int *f(void *p) { return p + 1; }",
+        "pointer arithmetic requires a complete object type");
+    reject("long f(void *p, void *q) { return p - q; }",
+        "pointer subtraction requires a complete object type");
+    reject("long f(int *p, short *q) { return p - q; }",
+        "pointer subtraction requires compatible pointed-to types");
+    reject("int *f(int *p, int *q) { return p + q; }",
+        "compatible integer operands");
+}
+
+
+#[test]
+fn c99_pointer_compound_offsets_and_updates_require_complete_pointees() {
+    check("int *f(int *p, unsigned long n) { p += n; p -= 2L; ++p; p--; return p; }")
+        .expect("pointer compound assignments and updates retain element scaling");
+    check("void f(int (*p)[4]) { p += 2; --p; }")
+        .expect("pointer-to-array updates use array-sized elements");
+
+    reject("void f(void *p) { p += 1; }",
+        "pointer arithmetic requires a complete object type");
+    reject("void f(void *p) { ++p; }",
+        "increment/decrement requires pointer to complete object type");
+    reject("void f(int *p, int *q) { p += q; }",
+        "compound assignment requires integer operands");
+    reject("void f(int *p) { p *= 2; }",
+        "compound assignment requires a modifiable arithmetic lvalue or pointer");
+}
+
+#[test]
+fn asm3_p02f_noncarry_gp_rmw_class_checked_source_matrix() {
+    // New operation/width members use one checked output/input grammar.
+    for (ty,suffix) in [("int","l"),("long","q")] {
+        for mnemonic in ["add","sub","and","or","xor"] {
+            let source=format!(
+                "{ty} f({ty} *p,{ty} v) {{ __asm__ volatile(\"{mnemonic}{suffix} %1,%0\" : \"+m\"(p[2]) : \"r\"(v) : \"cc\",\"memory\"); return p[2]; }}"
+            );
+            assert!(check(&source).is_ok(),
+                "checked noncarry GP +m class rejected {mnemonic}{suffix}");
+        }
+    }
+}
+#[test]
+fn asm3_p02f_noncarry_gp_rmw_rejects_carry_implicit_and_unreviewed_forms() {
+    for mnemonic in ["adcl","sbbl","incl","decl","xchgl","mull","notl","lock xorl","xorw"] {
+        let source=format!(
+            "int f(int *p,int v) {{ asm(\"{mnemonic} %1,%0\" : \"+m\"(*p) : \"r\"(v) : \"cc\");return *p; }}"
+        );
+        assert!(check(&source).is_err(),"unreviewed template {mnemonic} admitted");
+    }
+    for mnemonic in ["andl","orl","xorl"] {
+        let source=format!(
+            "int f(int *p,int v) {{ asm(\"{mnemonic} %1,%0\" : \"+m\"(*p) : \"r\"(v) : \"memory\");return *p; }}"
+        );
+        assert!(check(&source).is_err(),"missing cc clobber for {mnemonic}");
+    }
+}

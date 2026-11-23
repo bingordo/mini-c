@@ -62,7 +62,9 @@ fn reject_abi_affecting_or_semantically_unsafe_attributes() {
         let error = Parser::new(&source).next_item().unwrap_err();
         assert_eq!(error.code, DiagnosticCode::SyntaxInvalidDeclaration,
             "attribute {attribute}: {error:?}");
-        assert!(error.message.contains("unsupported GNU attribute"),
+        assert!(error.message.contains("unsupported GNU attribute")
+                || (attribute == "mode(QI)" &&
+                    error.message.contains("unsupported GNU integer mode")),
             "attribute {attribute}: {error:?}");
     }
 }
