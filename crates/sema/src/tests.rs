@@ -3717,7 +3717,13 @@ fn asm3_p02b3_checked_memory_input_preserves_single_lvalue_operand() {
 }
 #[test]
 fn asm3_p02b3_rejects_unreviewed_memory_shapes_and_alias_roles() {
-    for source in [
+    // Only source operand roles, widths, lvalues and clobber spelling are
+    // frontend errors. ISA-specific templates and omitted "cc" declarations
+    // are deliberately opaque until the backend's physical admission gate.
+    let expected_source_rejection: &[bool] = &[
+        true, false, true, true, true, false, false, true, false, false, true, true
+    ];
+    for (index, source) in [
         r#"int f(int *p){int y=0;asm("movl %1,%0":"=&r"(y):"m"(*p));return y;}"#,
         r#"int f(int *p){int y=0;asm("addl %1,%0":"=m"(y):"r"(*p));return y;}"#,
         r#"int f(int *p){asm("addl $1,%0":"+m"(*p)::"cc");return *p;}"#,
@@ -3730,9 +3736,9 @@ fn asm3_p02b3_rejects_unreviewed_memory_shapes_and_alias_roles() {
         r#"int f(int *p){int y=0;asm("movl %1,%0":"=r"(y):"m"(*p):"cc");return y;}"#,
         r#"int f(int *p){int y=0;asm("movl %1,%0":"=r"(y):"m"(*p):"memory","memory");return y;}"#,
         r#"int f(int x){int y=0;asm("movl %1,%0":"=r"(y):"m"(x+1));return y;}"#,
-    ] {
-        assert!(check(source).is_err(),
-            "unverified memory binding/constraint was accepted: {source}");
+    ].into_iter().enumerate() {
+        assert_eq!(check(source).is_err(), expected_source_rejection[index],
+            "incorrect source/target admission boundary for case {index}: {source}");
     }
 }
 
@@ -4198,7 +4204,13 @@ fn asm3_p02c3_checked_output_memory_retains_real_writable_lvalue() {
 }
 #[test]
 fn asm3_p02c3_memory_output_rejects_unsupported_source_forms() {
-    for source in [
+    // Only source operand roles, widths, lvalues and clobber spelling are
+    // frontend errors. ISA-specific templates and omitted "cc" declarations
+    // are deliberately opaque until the backend's physical admission gate.
+    let expected_source_rejection: &[bool] = &[
+        false, false, false, true, false, true, false, true, true, true, true, true, true
+    ];
+    for (index, source) in [
         r#"int f(int *p,int v){asm("movl %1,%0":"=m"(*p):"r"(v):"cc");return *p;}"#,
         r#"int f(int *p,int v){asm("movl %1,%0":"=m"(*p):"r"(v):"rax");return *p;}"#,
         r#"int f(int *p,int v){asm("addl %1,%0":"=m"(*p):"r"(v):"memory");return *p;}"#,
@@ -4212,11 +4224,11 @@ fn asm3_p02c3_memory_output_rejects_unsupported_source_forms() {
         r#"int f(int *p,int v){asm("movl %1,%0":"=m"(*p):"r"(v),"r"(v));return *p;}"#,
         r#"int f(int *p,int v){asm("movl %1,%0":"=m"(*p):"m"(v));return *p;}"#,
         r#"int f(int *p,int v){asm("movl %1,%0":"=m"(*p):"r"(v):"memory","memory");return *p;}"#,
-    ] {
-        assert!(check(source).is_err(),"unreviewed source =m accepted: {source}");
+    ].into_iter().enumerate() {
+        assert_eq!(check(source).is_err(), expected_source_rejection[index],
+            "incorrect source/target admission boundary for case {index}: {source}");
     }
 }
-
 
 #[test]
 fn asm3_p02d3_checked_plus_m_add_preserves_writable_lvalue_and_flags() {
@@ -4245,7 +4257,13 @@ fn asm3_p02d3_checked_plus_m_add_preserves_writable_lvalue_and_flags() {
 
 #[test]
 fn asm3_p02d3_plus_m_add_rejects_unreviewed_source_mutants() {
-    for source in [
+    // Only source operand roles, widths, lvalues and clobber spelling are
+    // frontend errors. ISA-specific templates and omitted "cc" declarations
+    // are deliberately opaque until the backend's physical admission gate.
+    let expected_source_rejection: &[bool] = &[
+        false, false, false, false, false, false, false, true, true, true, false, true, true, true, false, true
+    ];
+    for (index, source) in [
         // Arithmetic flags must be explicitly clobbered.
         r#"int f(int *p,int v){asm("addl %1,%0":"+m"(*p):"r"(v));return *p;}"#,
         r#"int f(int *p,int v){asm("addl %1,%0":"+m"(*p):"r"(v):"memory");return *p;}"#,
@@ -4265,8 +4283,9 @@ fn asm3_p02d3_plus_m_add_rejects_unreviewed_source_mutants() {
         r#"int f(int *p,int v){asm("addl %1,%0":"+m"(*p):"r"(v),"r"(v):"cc");return *p;}"#,
         r#"int f(int *p,int v){asm("addl %1,%0":"+m"(*p):"r"(v):"cc","rax");return *p;}"#,
         r#"int f(int *p,int v){asm("addl %1,%0":"+m"(*p):"r"(v):"cc","cc");return *p;}"#,
-    ] {
-        assert!(check(source).is_err(),"unreviewed source GNU +m accepted: {source}");
+    ].into_iter().enumerate() {
+        assert_eq!(check(source).is_err(), expected_source_rejection[index],
+            "incorrect source/target admission boundary for case {index}: {source}");
     }
 }
 
@@ -4295,7 +4314,13 @@ fn asm3_p02e3_checked_plus_m_sub_32_64_preserves_lvalue_and_cc() {
 }
 #[test]
 fn asm3_p02e3_checked_plus_m_sub_rejects_unsupported_shapes() {
-    for source in [
+    // Only source operand roles, widths, lvalues and clobber spelling are
+    // frontend errors. ISA-specific templates and omitted "cc" declarations
+    // are deliberately opaque until the backend's physical admission gate.
+    let expected_source_rejection: &[bool] = &[
+        false, false, false, true, true, false, false, false, false, true, true
+    ];
+    for (index, source) in [
         r#"int f(int*p,int v){asm("subl %1,%0":"+m"(*p):"r"(v));return *p;}"#,
         r#"int f(int*p,int v){asm("subl %1,%0":"+m"(*p):"r"(v):"memory");return *p;}"#,
         r#"int f(int*p,int v){asm("subq %1,%0":"+m"(*p):"r"(v):"cc");return *p;}"#,
@@ -4307,9 +4332,11 @@ fn asm3_p02e3_checked_plus_m_sub_rejects_unsupported_shapes() {
         r#"int f(int*p,int v){asm("subl %1,%0":"+m"(*p):"r"(v):"cc","rax");return *p;}"#,
         r#"int f(int*p,int v){asm("subl %1,%0":"+m"(*p):"m"(v):"cc");return *p;}"#,
         r#"int f(int*p,int v){asm("subl %1,%0":"+m"(*p):"r"(v),"r"(v):"cc");return *p;}"#,
-    ] { assert!(check(source).is_err(),"unsupported GNU +m SUB source admitted: {source}"); }
+    ].into_iter().enumerate() {
+        assert_eq!(check(source).is_err(), expected_source_rejection[index],
+            "incorrect source/target admission boundary for case {index}: {source}");
+    }
 }
-
 
 #[test]
 fn c99_pointer_arithmetic_offset_promotions_and_array_scaling() {
@@ -4375,12 +4402,36 @@ fn asm3_p02f_noncarry_gp_rmw_rejects_carry_implicit_and_unreviewed_forms() {
         let source=format!(
             "int f(int *p,int v) {{ asm(\"{mnemonic} %1,%0\" : \"+m\"(*p) : \"r\"(v) : \"cc\");return *p; }}"
         );
-        assert!(check(&source).is_err(),"unreviewed template {mnemonic} admitted");
+        assert!(check(&source).is_ok(),"source checker incorrectly decoded {mnemonic}");
     }
     for mnemonic in ["andl","orl","xorl"] {
         let source=format!(
             "int f(int *p,int v) {{ asm(\"{mnemonic} %1,%0\" : \"+m\"(*p) : \"r\"(v) : \"memory\");return *p; }}"
         );
-        assert!(check(&source).is_err(),"missing cc clobber for {mnemonic}");
+        assert!(check(&source).is_ok(),"source checker inferred flags from {mnemonic}");
+    }
+}
+
+#[test]
+fn asm3_p03_gnu_extended_template_is_instruction_opaque_in_source_checker() {
+    for template in [
+        "adcl %1,%0", "sbbl %1,%0", "lock addl %1,%0",
+        "invalid_future_opcode %1,%0", "addl %1,%0\\n\\tadcl $0,%%eax",
+    ] {
+        for cc in ["", ":\"cc\"", ":\"memory\""] {
+            let src=format!(
+                "int f(int *p,int v){{asm volatile(\"{template}\":\"+m\"(*p):\"r\"(v){cc});return *p;}}"
+            );
+            let checked=check(&src).unwrap_or_else(|e|panic!("source rejected opaque template: {}: {e:?}",src));
+            let CheckedItem::Function(function)=&checked[0] else{panic!("checked function")};
+            let CheckedStmt::Block(items)=&function.body else{panic!("checked body")};
+            let CheckedStmt::ExtendedAsm{template:original,outputs,inputs,..}=
+                items.iter().find(|stmt|matches!(stmt,CheckedStmt::ExtendedAsm{..})).unwrap()
+            else{panic!("checked extended asm")};
+            assert_eq!(original, template);
+            assert_eq!((outputs.len(),inputs.len()),(1,1));
+            assert_eq!((outputs[0].constraint.as_str(),inputs[0].constraint.as_str()),("+m","r"));
+            assert_eq!(outputs[0].expr.category,Category::LValue);
+        }
     }
 }
