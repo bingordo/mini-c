@@ -1789,11 +1789,21 @@ impl Checker {
                     .map(|operand|operand.name.as_deref()).collect::<Vec<_>>();
                 let template=asm_names::positional_template(template,&names)
                     .map_err(|error|type_error(*span,error))?;
-                // Bounded GP slice: one output, up to two explicit independent inputs.
-                // Multiple inputs require =&r early-clobber and are validated
-                // again against the exact reviewed two-input template.
-                if outputs.len()>1 || inputs.len()>2 {
-                    return Err(type_error(*span,"extended asm supports one GP output and at most two inputs"));
+                // P11: one GP output and one genuine memory output can
+                // share the same opaque assembler block, in either order.
+                // Its single r input belongs to the memory output width,
+                // and neither output's C lvalue may be implicitly scalarized.
+                // Additional independent register results require a multi-
+                // result machine contract, not speculative source admission.
+                let mixed_gp_memory=outputs.len()==2 && inputs.len()==1
+                    && inputs[0].constraint=="r"
+                    && outputs.iter().filter(|o|
+                        matches!(o.constraint.as_str(),"=r"|"=&r")).count()==1
+                    && outputs.iter().filter(|o|
+                        matches!(o.constraint.as_str(),"=m"|"+m")).count()==1;
+                if (!mixed_gp_memory && outputs.len()>1) || inputs.len()>2 {
+                    return Err(type_error(*span,
+                        "extended asm supports one output or a GP and memory output pair"));
                 }
                 let mut checked_outputs=Vec::new();
                 for output in outputs {
@@ -1854,7 +1864,7 @@ impl Checker {
                 // clobber output instead needs one independent r input:
                 // the machine allocator must keep its result distinct from
                 // all input registers. Other constraints still fail closed.
-                if !checked_outputs.is_empty() {
+                if !checked_outputs.is_empty() && !mixed_gp_memory {
                     let out=&checked_outputs[0];
                     if out.constraint=="+r" && !inputs.is_empty() {
                         return Err(type_error(*span,"+r output cannot have a separate input in the bounded ASM2 form"));
@@ -1892,6 +1902,14 @@ impl Checker {
                     {
                         return Err(type_error(input.span,
                             "ASM3 memory input must be an addressable same-width i32/i64 C lvalue"));
+                    }
+                    if mixed_gp_memory && expr.ty.size_bytes(self.target)
+                        !=checked_outputs.iter()
+                            .find(|o|matches!(o.constraint.as_str(),"=m"|"+m"))
+                            .and_then(|o|o.expr.ty.size_bytes(self.target))
+                    {
+                        return Err(type_error(input.span,
+                            "ASM3 mixed GP/memory input must match the memory object width"));
                     }
                     if (gp_memory_write || gp_memory_rmw) && expr.ty.size_bytes(self.target)
                         !=checked_outputs[0].expr.ty.size_bytes(self.target)
@@ -1931,9 +1949,9 @@ impl Checker {
                 let mut clobbered_gp=0u16;
                 for (index,clobber) in clobbers.iter().enumerate() {
                     if let Some(reg)=gp_clobber(clobber) {
-                        if outputs.len()!=1 {
+                        if outputs.len()!=1 && !mixed_gp_memory {
                             return Err(type_error(*span,
-                                "explicit GP clobbers require a checked one-output ASM2 operation"));
+                                "explicit GP clobbers require a checked GP asm output contract"));
                         }
                         let bit=1u16 << reg;
                         if clobbered_gp & bit != 0 {
