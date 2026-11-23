@@ -1763,19 +1763,14 @@ impl Checker {
                     let output_bytes=checked_outputs[0].expr.ty.size_bytes(self.target)
                         .ok_or_else(||type_error(*span,
                             "ASM3 output width unknown"))?;
-                    let reviewed=match output_bytes {
-                        4=>"movl %1,%0",
-                        8=>"movq %1,%0",
-                        _=>return Err(type_error(*span,
-                            "ASM3 memory input requires 32/64-bit output")),
-                    };
-                    if template!=reviewed {
+                    // One reviewed memory-MOV class owns both direction and
+                    // width. This checker retains source lvalue/type ownership.
+                    if !asm_gp_mov::reviewed_gp_memory_mov_source(
+                        template,output_bytes,&checked_outputs[0].constraint,
+                        &inputs[0].constraint,clobbers,
+                    ) {
                         return Err(type_error(*span,
-                            "ASM3 memory input requires reviewed movl/movq template"));
-                    }
-                    if clobbers.iter().any(|name|name!="memory") {
-                        return Err(type_error(*span,
-                            "ASM3 memory input supports only the compiler memory clobber"));
+                            "ASM3 memory input requires reviewed movl/movq and optional memory clobber"));
                     }
                 }
                 // ASM3 P02C3: output-only memory MOV is different from a
@@ -1792,15 +1787,14 @@ impl Checker {
                     let output_bytes=checked_outputs[0].expr.ty.size_bytes(self.target)
                         .ok_or_else(||type_error(*span,
                             "ASM3 memory output width unknown"))?;
-                    let reviewed=match output_bytes {
-                        4=>"movl %1,%0",
-                        8=>"movq %1,%0",
-                        _=>return Err(type_error(*span,
-                            "ASM3 memory output requires 32/64-bit scalar")),
-                    };
-                    if template!=reviewed || clobbers.iter().any(|name|name!="memory") {
+                    // One reviewed memory-MOV class owns both direction and
+                    // width. This checker retains source lvalue/type ownership.
+                    if !asm_gp_mov::reviewed_gp_memory_mov_source(
+                        template,output_bytes,&checked_outputs[0].constraint,
+                        &inputs[0].constraint,clobbers,
+                    ) {
                         return Err(type_error(*span,
-                            "ASM3 memory output requires reviewed MOV and optional memory clobber"));
+                            "ASM3 memory output requires reviewed movl/movq and optional memory clobber"));
                     }
                 }
                 // ASM3 P02G: "+m" is one opaque noncarry GP memory RMW,
