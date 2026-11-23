@@ -55,22 +55,91 @@ fn c99_func_is_a_const_static_array_with_one_function_scoped_identity() {
     reject("int n=sizeof __func__;", "undeclared identifier");
 }
 
+/// The semantic checker preserves C11 atomic integer object storage
+/// identity. Native codegen must still admit those effects separately.
 #[test]
-fn c11_atomic_type_specifier_remains_fail_closed_before_codegen() {
+fn c11_atomic_qualified_integer_objects_and_layout() {
     for source in [
         "_Atomic(int) counter;",
         "_Atomic int counter;",
         "int _Atomic counter;",
-        "int * _Atomic pointer;",
         "const _Atomic int counter;",
-        "int f(void) { _Atomic int local; return 0; }",
         "const _Atomic(int) counter;",
         "_Atomic(int) *p;",
         "typedef _Atomic(int) AtomicInt;",
         "int f(void) { _Atomic(int) local; return 0; }",
+        "int f(void) { _Atomic int local; return 0; }",
+        "struct S { _Atomic int state; }; struct S object;",
     ] {
-        reject(source, "C11 _Atomic type is unsupported");
+        let items=check(source).unwrap_or_else(|err|panic!("{source}: {err:?}"));
+        assert!(items.iter().any(CheckedItem::contains_atomic_type),
+            "lost atomic object qualifier: {source}");
     }
+    let items=check("_Atomic int x; const _Atomic int y=2; _Atomic int *p;").unwrap();
+    let CheckedItem::Declaration(x)=&items[0] else {panic!("atomic declaration")};
+    assert!(x.ty.is_atomic() && !x.ty.is_const());
+    assert_eq!(x.ty.unqualified(),&CType::int());
+    assert_eq!(x.ty.align_bytes(Target::default()),Some(4));
+    assert_eq!(x.ty.size_bytes(Target::default()),Some(4));
+    let CheckedItem::Declaration(y)=&items[1] else {panic!("const atomic declaration")};
+    assert!(y.ty.is_atomic() && y.ty.is_const());
+    let CheckedItem::Declaration(p)=&items[2] else {panic!("pointer declaration")};
+    assert!(!p.ty.is_atomic());
+    let CType::Pointer(pointee)=&p.ty else {panic!("pointer type")};
+    assert!(pointee.is_atomic());
+    assert_eq!(pointee.unqualified(),&CType::int());
+    check("int f(void){return sizeof(_Atomic int)==sizeof(int);}")
+        .expect("atomic sizeof");
+    check("int f(void){return sizeof(_Atomic(long long))==sizeof(long long);}")
+        .expect("atomic long long sizeof");
+}
+
+/// Checked lvalue-to-rvalue conversion strips immediate qualifiers, so the
+/// nested lvalue and source declaration must retain the atomic distinction.
+#[test]
+fn c11_atomic_loads_and_updates_preserve_checked_lvalues() {
+    let items=check("_Atomic int value; int f(void){return value;}").unwrap();
+    let CheckedItem::Function(f)=&items[1] else {panic!("atomic reader")};
+    let CheckedStmt::Block(stmts)=&f.body else {panic!("function block")};
+    let CheckedStmt::Return(Some(result))=&stmts[0] else {panic!("return")};
+    assert_eq!(result.ty,CType::int());
+    let CheckedExprKind::Load(inner)=&result.kind else {panic!("atomic source load")};
+    assert!(inner.ty.is_atomic());
+    assert!(CheckedItem::Function(f.clone()).contains_atomic_type());
+    assert!(!CheckedItem::Function(f.clone()).contains_volatile_type());
+    for source in [
+        "void f(void){ _Atomic int x; x=3; }",
+        "void f(_Atomic int *p){++*p;}",
+        "void f(_Atomic int *p){*p+=7;}",
+        "void f(_Atomic int *p){(void)*p;}",
+        "struct S {_Atomic int state;}; int f(struct S *p){return p->state;}",
+    ] {
+        let checked=check(source).unwrap_or_else(|err|panic!("{source}: {err:?}"));
+        assert!(checked.iter().any(CheckedItem::contains_atomic_type),
+            "atomic effects escaped qualified-memory scan: {source}");
+    }
+}
+
+/// Until TypeId emission explicitly maps atomic-qualified memory, reject
+/// unsupported atomic pointer objects, aggregates and duplicate qualifiers.
+#[test]
+fn c11_atomic_unsupported_storage_remains_fail_closed() {
+    for source in [
+        "int * _Atomic pointer;",
+        "_Atomic(int*) pointer;",
+        "_Atomic float x;",
+        "_Atomic(void) x;",
+        "_Atomic _Atomic int x;",
+        "_Atomic(int) _Atomic x;",
+    ] {
+        assert!(check(source).is_err(),"invalid atomic type admitted: {source}");
+    }
+    assert!(!CType::compatible_pointee_assignment(
+        &CType::int(),&CType::int().with_atomic()));
+    assert!(!CType::compatible_pointee_assignment(
+        &CType::int().with_atomic(),&CType::int()));
+    assert!(CType::compatible_pointee_assignment(
+        &CType::int().with_atomic(),&CType::int().with_atomic()));
 }
 
 #[test]

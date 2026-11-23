@@ -458,7 +458,7 @@ impl<'a> Parser<'a> {
                 let type_name = self.peek()?.is_some_and(|next| {
                     matches!(next.text.as_ref(), "int" | "_Bool" | "char" | "short" | "long" | "_Float128" |
                         "float" | "double" | "void" | "signed" | "unsigned" |
-                        "struct" | "union" | "enum" | "const" | "volatile" | "restrict" |
+                        "struct" | "union" | "enum" | "const" | "volatile" | "_Atomic" | "restrict" |
                         "__restrict" | "__restrict__")
                         || next.kind == TokenKind::TypedefName
                 });
@@ -578,7 +578,7 @@ impl<'a> Parser<'a> {
                 let cast_type = self.peek()?.is_some_and(|next| {
                     matches!(next.text.as_ref(), "int" | "_Bool" | "char" | "short" | "long" | "_Float128" | "float" | "double" | "void" |
                         "signed" | "unsigned" | "struct" | "union" | "enum" |
-                        "const" | "volatile" | "restrict" | "__restrict" | "__restrict__")
+                        "const" | "volatile" | "_Atomic" | "restrict" | "__restrict" | "__restrict__")
                         || next.kind == TokenKind::TypedefName
                 });
                 if cast_type {
