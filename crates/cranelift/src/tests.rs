@@ -88,11 +88,14 @@
     fn native_warning_options_share_frontend_policy() {
         let opts = parse_options([
             "--emit-obj", "out.o", "-Wall", "-Werror",
-            "-Wno-shadow", "main.c",
+            "-Wno-unused-variable", "-Wno-shadow", "main.c",
         ].into_iter().map(str::to_owned)).unwrap();
         assert!(opts.warnings.wall);
         assert!(opts.warnings.warnings_as_errors);
         assert!(!opts.warnings.enabled("shadow"));
+        assert!(!opts.warnings.enabled("unused-variable"));
+        assert!(parse_options(["--emit-obj", "out.o", "-Wall", "main.c"]
+            .into_iter().map(str::to_owned)).is_err());
         assert!(parse_options([
             "--emit-obj", "out.o", "-Wshadow", "main.c",
         ].into_iter().map(str::to_owned)).is_err());
