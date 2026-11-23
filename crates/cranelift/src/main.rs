@@ -106,6 +106,10 @@ fn format_semantic_warnings(
     filename: &str, source: &str, preprocessed: bool, policy: &WarningPolicy,
 ) -> Result<(Vec<String>, bool), Diagnostic> {
     let reports = collect_semantic_warnings(source, policy)?;
+    // No source map or location index is needed for the common no-warning case.
+    if reports.is_empty() {
+        return Ok((Vec::new(), false));
+    }
     let source_file = SourceFile::new(filename, source);
     let map = preprocessed.then(|| SourceMap::from_preprocessed(source, filename));
     let mut failed = false;
