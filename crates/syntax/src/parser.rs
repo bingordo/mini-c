@@ -1277,9 +1277,19 @@ impl<'a> Parser<'a> {
     /// GNU basic asm is a *statement*, not a declaration-level symbol alias.
     /// Preserve the decoded template exactly, including adjacent C strings.
     /// Extended-asm operands and asm goto are not silently accepted.
-    /// One positional GNU extended-asm operand. Named operands and
-    /// constraint alternatives remain unsupported until allocator binding.
+    /// Parse a positional or [named] GNU operand without decoding its asm body.
     fn parse_asm_operand(&mut self) -> Result<AsmOperand, Diagnostic> {
+        let name=if self.peek()?.is_some_and(|t| t.text.as_ref()=="[") {
+            self.expect("[")?;
+            let token=self.take()?.ok_or_else(||Diagnostic::new(
+                self.eof_span(),"expected GNU asm operand name"))?;
+            if token.kind!=TokenKind::Identifier {
+                return Err(Diagnostic::new(token.span,"GNU asm operand name must be an identifier"));
+            }
+            let name=token.text.to_string();
+            self.expect("]")?;
+            Some(name)
+        } else { None };
         let token=self.take()?.ok_or_else(||Diagnostic::new(
             self.eof_span(),"expected asm constraint string"))?;
         if token.kind!=TokenKind::String {
@@ -1295,7 +1305,7 @@ impl<'a> Parser<'a> {
         self.expect("(")?;
         let expr=self.parse_assign()?;
         let end=self.expect(")")?;
-        Ok(AsmOperand {constraint:name,expr,span:Span{
+        Ok(AsmOperand {name,constraint:name,expr,span:Span{
             lo:token.span.lo,hi:end.span.hi,
         }})
     }
@@ -1342,11 +1352,11 @@ impl<'a> Parser<'a> {
         let mut clobbers=Vec::new();
         if extended {
             self.expect(":")?;
-            if self.peek()?.is_some_and(|t|t.kind==TokenKind::String) {
+            if self.peek()?.is_some_and(|t|t.kind==TokenKind::String || t.text.as_ref()=="[") {
                 outputs.push(self.parse_asm_operand()?);
             }
             self.expect(":")?;
-            if self.peek()?.is_some_and(|t|t.kind==TokenKind::String) {
+            if self.peek()?.is_some_and(|t|t.kind==TokenKind::String || t.text.as_ref()=="[") {
                 loop {
                     inputs.push(self.parse_asm_operand()?);
                     if inputs.len()>2 {
@@ -1357,7 +1367,7 @@ impl<'a> Parser<'a> {
                         break;
                     }
                     self.take()?;
-                    if !self.peek()?.is_some_and(|t|t.kind==TokenKind::String) {
+                    if !self.peek()?.is_some_and(|t|t.kind==TokenKind::String || t.text.as_ref()=="[") {
                         return Err(Diagnostic::new(self.eof_span(),
                             "ASM2 asm input list requires a constraint string after comma"));
                     }
