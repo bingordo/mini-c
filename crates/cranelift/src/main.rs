@@ -154,6 +154,12 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    compile_to_object(&opts)
+}
+
+/// Compile the selected C source and write an object only after all enabled
+/// semantic diagnostics have passed the configured warning policy.
+fn compile_to_object(opts: &Options) -> ExitCode {
     let source = match &opts.cpp {
         Some(config) => preprocess::file(Path::new(&opts.source), config)
             .map_err(|e| e.to_string()),
