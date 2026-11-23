@@ -2,6 +2,7 @@
 use super::*;
 use mini_c_syntax::parser::Parser;
 use mini_c_syntax::diag::WarningPolicy;
+use crate::Target;
 
 fn warnings(source: &str, flags: &[&str]) -> Vec<ReportedDiagnostic> {
     let mut parser = Parser::new_with_spans(source);
