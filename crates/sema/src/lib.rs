@@ -3213,7 +3213,14 @@ impl Checker {
                 }
                 let rhs_typed = self.check_expr(rhs, span)?;
                 let rhs_typed = self.convert_for_assignment(rhs_typed, &lhs.ty, rhs, rhs_span)?;
-                Ok(CheckedExpr::value(lhs.ty.clone(), CheckedExprKind::Assign(Box::new(lhs), Box::new(rhs_typed))))
+                // C assignment returns a value, not a qualified atomic
+                // lvalue. Keep the lvalue itself qualified inside the AST
+                // for the TypeId emitter to select ordered atomic storage.
+                let result_ty=if lhs.ty.is_atomic() {
+                    lhs.ty.unqualified().clone()
+                } else {lhs.ty.clone()};
+                Ok(CheckedExpr::value(result_ty, CheckedExprKind::Assign(
+                    Box::new(lhs),Box::new(rhs_typed))))
             }
             Expr::CompoundAssign(op, lhs, rhs) => {
                 let lhs_span = lhs.location().unwrap_or(span);
@@ -3287,7 +3294,9 @@ impl Checker {
                     computation_ty.clone()
                 };
                 let rhs_checked = self.convert(rhs_checked, &rhs_ty);
-                let result_ty = lhs.ty.clone();
+                let result_ty = if lhs.ty.is_atomic() {
+                    lhs.ty.unqualified().clone()
+                } else {lhs.ty.clone()};
                 Ok(CheckedExpr::value(result_ty, CheckedExprKind::CompoundAssign(
                     *op, Box::new(lhs), Box::new(rhs_checked), computation_ty)))
             }
@@ -3312,7 +3321,11 @@ impl Checker {
                 } else {
                     checked.integer_promotion_type(self.target)
                 };
-                let ty = checked.ty.clone();
+                // Prefix/postfix C atomic updates produce ordinary value
+                // types, although their target remains a qualified lvalue.
+                let ty = if checked.ty.is_atomic() {
+                    checked.ty.unqualified().clone()
+                } else {checked.ty.clone()};
                 Ok(CheckedExpr::value(ty, CheckedExprKind::Update {
                     target: Box::new(checked),
                     increment: *increment,

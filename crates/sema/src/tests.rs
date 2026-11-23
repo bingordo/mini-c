@@ -122,6 +122,37 @@ fn c11_atomic_loads_and_updates_preserve_checked_lvalues() {
 
 /// Until TypeId emission explicitly maps atomic-qualified memory, reject
 /// unsupported atomic pointer objects, aggregates and duplicate qualifiers.
+/// Atomic-qualified lvalues stay typed for memory lowering, but their C
+/// assignment, compound assignment and update expression values must have
+/// ordinary unqualified scalar types (including nested returns/initializers).
+#[test]
+fn c11_atomic_update_and_assignment_results_are_unqualified() {
+    for source in [
+        "int f(_Atomic int *p){return *p=21;}",
+        "int f(_Atomic int *p){return *p+=7;}",
+        "int f(_Atomic int *p){return *p-=5;}",
+        "int f(_Atomic int *p){return *p^=3;}",
+        "int f(_Atomic int *p){return ++*p;}",
+        "int f(_Atomic int *p){return (*p)++;}",
+        "int f(int v){_Atomic int local=v;return ++local;}",
+        "int f(_Atomic unsigned char *p){return (*p)++;}",
+        "int f(_Atomic short *p){return *p-=2;}",
+        "long long f(_Atomic long long *p){return ++*p;}",
+    ] {
+        let items=check(source).unwrap_or_else(|e|panic!("{source}: {e:?}"));
+        let CheckedItem::Function(function)=items.last().expect("function") else {
+            panic!("not a checked function: {source}")
+        };
+        let CheckedStmt::Block(statements)=&function.body else {panic!("function block")};
+        let ret=statements.iter().find_map(|stmt|match stmt {
+            CheckedStmt::Return(Some(e))=>Some(e),_=>None
+        }).expect("source has a return");
+        assert!(!ret.ty.is_atomic(),"atomic C expression result retained qualifier: {source}");
+        assert!(CheckedItem::Function(function.clone()).contains_atomic_type(),
+            "underlying atomic lvalue disappeared: {source}");
+    }
+}
+
 #[test]
 fn c11_atomic_unsupported_storage_remains_fail_closed() {
     for source in [
