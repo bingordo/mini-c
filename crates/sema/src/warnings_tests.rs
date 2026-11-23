@@ -1,6 +1,7 @@
 //! Focused semantic warning regressions with lexical binding identities.
 use super::*;
 use mini_c_syntax::parser::Parser;
+use mini_c_syntax::diag::WarningPolicy;
 
 fn warnings(source: &str, flags: &[&str]) -> Vec<ReportedDiagnostic> {
     let mut parser = Parser::new_with_spans(source);
