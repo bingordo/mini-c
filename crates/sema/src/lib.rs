@@ -10,6 +10,7 @@ mod asm_gp_rmw;
 #[allow(dead_code)] // source checker does not decode assembler mnemonics
 mod asm_gp_mov;
 mod asm_names;
+pub mod asm_output_roles;
 #[cfg(test)]
 mod asm_names_tests;
 #[cfg(test)]
@@ -1789,15 +1790,20 @@ impl Checker {
                     .map(|operand|operand.name.as_deref()).collect::<Vec<_>>();
                 let template=asm_names::positional_template(template,&names)
                     .map_err(|error|type_error(*span,error))?;
+                // Parse independent GP output constraints once, without
+                // inspecting target mnemonics. The physical binder selects
+                // three distinct registers, which satisfies early-clobber
+                // requirements even when a plain =r could legally overlap.
+                let dual_gp_results=asm_output_roles::plan_dual_gp(
+                    &outputs.iter().map(|o|o.constraint.as_str()).collect::<Vec<_>>(),
+                    &inputs.iter().map(|i|i.constraint.as_str()).collect::<Vec<_>>(),
+                ).is_some();
                 // P11: one GP output and one genuine memory output can
                 // share the same opaque assembler block, in either order.
                 // Its single r input belongs to the memory output width,
                 // and neither output's C lvalue may be implicitly scalarized.
                 // Additional independent register results require a multi-
                 // result machine contract, not speculative source admission.
-                let dual_gp_results=outputs.len()==2 && inputs.len()==1
-                    && inputs[0].constraint=="r"
-                    && outputs.iter().all(|out|out.constraint=="=&r");
                 let mixed_gp_memory=outputs.len()==2 && inputs.len()==1
                     && inputs[0].constraint=="r"
                     && outputs.iter().filter(|o|
@@ -1807,7 +1813,7 @@ impl Checker {
                 if (!mixed_gp_memory && !dual_gp_results && outputs.len()>1)
                     || inputs.len()>2 {
                     return Err(type_error(*span,
-                        "extended asm supports one output or a GP and memory output pair"));
+                        "extended asm supports one output or a reviewed two-output GP/memory pair"));
                 }
                 let mut checked_outputs=Vec::new();
                 for output in outputs {
