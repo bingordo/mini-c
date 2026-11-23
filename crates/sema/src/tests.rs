@@ -4416,7 +4416,7 @@ fn asm3_p02f_noncarry_gp_rmw_rejects_carry_implicit_and_unreviewed_forms() {
 fn asm3_p03_gnu_extended_template_is_instruction_opaque_in_source_checker() {
     for template in [
         "adcl %1,%0", "sbbl %1,%0", "lock addl %1,%0",
-        "invalid_future_opcode %1,%0", "addl %1,%0\\n\\tadcl $0,%%eax",
+        "invalid_future_opcode %1,%0", "addl %1,%0; adcl $0,%%eax",
     ] {
         for cc in ["", ":\"cc\"", ":\"memory\""] {
             let src=format!(
