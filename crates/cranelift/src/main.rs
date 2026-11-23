@@ -99,15 +99,17 @@ fn collect_semantic_warnings(
     Ok(checker.take_warnings())
 }
 
-/// Render optional source-located warnings and report whether -Werror
-/// disallows writing the object file.
-fn emit_semantic_warnings(
-    filename: &str, source: &str, preprocessed: bool, policy: &WarningPolicy
-) -> Result<bool, Diagnostic> {
+/// Format source-located semantic warnings and report whether -Werror
+/// prevents writing an object file. Keep formatting independently testable
+/// so header-origin and raw-column regressions do not depend on stderr.
+fn format_semantic_warnings(
+    filename: &str, source: &str, preprocessed: bool, policy: &WarningPolicy,
+) -> Result<(Vec<String>, bool), Diagnostic> {
     let reports = collect_semantic_warnings(source, policy)?;
     let source_file = SourceFile::new(filename, source);
     let map = preprocessed.then(|| SourceMap::from_preprocessed(source, filename));
     let mut failed = false;
+    let mut messages = Vec::new();
     for report in reports {
         let Some(severity) = policy.resolve(&report) else { continue; };
         let position = if let Some(ref map) = map {
@@ -122,8 +124,19 @@ fn emit_semantic_warnings(
             DiagnosticSeverity::Error => { failed = true; "error" },
             DiagnosticSeverity::Note => "note",
         };
-        eprintln!("{position}: {label}: {} [-W{}]",
-            report.diagnostic.message, report.warning_group.unwrap_or("unknown"));
+        messages.push(format!("{position}: {label}: {} [-W{}]",
+            report.diagnostic.message, report.warning_group.unwrap_or("unknown")));
+    }
+    Ok((messages, failed))
+}
+
+/// Print semantic warnings, retaining the fast path when none are enabled.
+fn emit_semantic_warnings(
+    filename: &str, source: &str, preprocessed: bool, policy: &WarningPolicy
+) -> Result<bool, Diagnostic> {
+    let (messages, failed) = format_semantic_warnings(filename, source, preprocessed, policy)?;
+    for message in messages {
+        eprintln!("{message}");
     }
     Ok(failed)
 }
