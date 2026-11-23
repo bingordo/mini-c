@@ -116,6 +116,8 @@ pub enum Type {
 }
 #[derive(Debug, Clone, PartialEq)]
 pub struct AsmOperand {
+    /// Optional GNU symbolic operand name, resolved by semantic checking.
+    pub name: Option<String>,
     pub constraint: String,
     pub expr: Expr,
     pub span: Span,
