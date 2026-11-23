@@ -172,22 +172,25 @@ fn compile_to_object(opts: &Options) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // A promoted warning should reject the translation unit before native
+    // code generation. Without enabled semantic groups, this is a no-op and
+    // preserves the ordinary fast compilation path.
+    match emit_semantic_warnings(
+        &opts.source, &source, opts.cpp.is_some(), &opts.warnings,
+    ) {
+        Ok(true) => return ExitCode::FAILURE,
+        Ok(false) => {}
+        Err(error) => {
+            eprintln!("{}: error[{}]: {}", opts.source,
+                error.code.as_str(), error.message);
+            return ExitCode::FAILURE;
+        }
+    }
+
     match compile_source_diagnostic(&source) {
-        Ok(bytes) => {
-            match emit_semantic_warnings(
-                &opts.source, &source, opts.cpp.is_some(), &opts.warnings,
-            ) {
-                Ok(true) => ExitCode::FAILURE,
-                Ok(false) => match fs::write(&opts.output, bytes) {
-                    Ok(()) => ExitCode::SUCCESS,
-                    Err(e) => { eprintln!("{}: {e}", opts.output); ExitCode::FAILURE }
-                },
-                Err(error) => {
-                    eprintln!("{}: error[{}]: {}", opts.source,
-                        error.code.as_str(), error.message);
-                    ExitCode::FAILURE
-                }
-            }
+        Ok(bytes) => match fs::write(&opts.output, bytes) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => { eprintln!("{}: {e}", opts.output); ExitCode::FAILURE }
         },
         Err(error) => {
             eprintln!("{}", format_compiler_error(
