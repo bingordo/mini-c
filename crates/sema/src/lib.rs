@@ -4,6 +4,7 @@
 pub mod types;
 pub mod const_eval;
 pub mod builtins;
+mod warnings;
 #[allow(dead_code)] // generated target ISA tables remain test oracles, not source admission
 mod asm_gp_rmw;
 #[allow(dead_code)] // source checker does not decode assembler mnemonics
@@ -17,11 +18,12 @@ mod asm_gp_mov_tests;
 use std::collections::{HashMap, HashSet};
 use std::cell::{Cell, RefCell};
 use mini_c_syntax::ast::{BinOp, Decl, Designator, Expr, Function, Span, Stmt, StorageClass, TagKind, Type, UnOp};
-use mini_c_syntax::diag::{Diagnostic, DiagnosticCode};
+use mini_c_syntax::diag::{Diagnostic, DiagnosticCode, ReportedDiagnostic, WarningPolicy};
 use mini_c_syntax::stream::{ExternalItem, ItemSource};
 
 pub use types::{CType, IntRank, Target};
 use types::type_error;
+use warnings::UsageBinding;
 
 /// Backend-private, per-function ELF object for C99's implicit
 /// `static const char __func__[] = "function-name"`. Source identifiers
@@ -411,12 +413,27 @@ pub struct Checker {
     statement_undo: Vec<HashMap<String, Option<Symbol>>>,
     recovery_errors: Option<Vec<Diagnostic>>,
     recovery_limit: usize,
+    warning_policy: WarningPolicy,
+    emitted_warnings: Vec<ReportedDiagnostic>,
+    warning_scopes: RefCell<Vec<HashMap<String, UsageBinding>>>,
 }
 
 impl Checker {
     pub fn new(target: Target) -> Result<Self, Diagnostic> {
         Ok(Self { target: target.validate()?, next_tag_identity: Cell::new(1), next_static_compound_identity: Cell::new(1), tags: RefCell::new(vec![HashMap::new()]), tag_definitions: RefCell::new(HashMap::new()), globals: HashMap::new(), locals: Vec::new(), result_ty: None, loop_depth: 0, switches: Vec::new(), function_labels: HashMap::new(), rollback_log: None, statement_undo: Vec::new(),
-            recovery_errors: None, recovery_limit: 0 })
+            recovery_errors: None, recovery_limit: 0,
+            warning_policy: WarningPolicy::default(), emitted_warnings: Vec::new(),
+            warning_scopes: RefCell::new(Vec::new()) })
+    }
+
+    /// Set policy before checking items. Warnings never change semantic acceptance.
+    pub fn set_warning_policy(&mut self, policy: WarningPolicy) {
+        self.warning_policy = policy;
+    }
+
+    /// Retrieve diagnostics emitted by successfully checked items.
+    pub fn take_warnings(&mut self) -> Vec<ReportedDiagnostic> {
+        std::mem::take(&mut self.emitted_warnings)
     }
 
     pub fn global(&self, name: &str) -> Option<&Symbol> { self.globals.get(name) }
@@ -822,13 +839,28 @@ impl Checker {
     }
 
     fn define_local(&mut self, name: &str, ty: CType, kind: SymbolKind, linkage: Linkage, is_register: bool, span: Span) -> Result<(), Diagnostic> {
-        let scope = self.locals.last_mut().expect("local declaration outside a function");
+        let scope = self.locals.last().expect("local declaration outside a function");
         if scope.contains_key(name) {
             return Err(Diagnostic::coded(span, DiagnosticCode::SemanticDuplicateDeclaration, format!("duplicate declaration of '{name}'")));
         }
-        scope.insert(name.to_owned(), Symbol {
+        // Only a genuinely outer binding counts: the current scope is
+        // checked above, and sibling scopes are not visible.
+        let shadows = self.locals.iter().rev().skip(1).any(|s| s.contains_key(name))
+            || self.globals.contains_key(name);
+        if shadows && self.warning_policy.enabled("shadow") {
+            self.emitted_warnings.push(ReportedDiagnostic::warning(
+                Diagnostic::semantic(span, format!("declaration of '{name}' shadows a previous declaration")),
+                "shadow",
+            ));
+        }
+        self.locals.last_mut().expect("local scope").insert(name.to_owned(), Symbol {
             ty, kind, linkage, defined: true, asm_label: None, enum_value: None, is_register,
         });
+        if kind == SymbolKind::Object {
+            // Extern aliases hide an outer automatic binding but are not
+            // themselves candidates for unused-local diagnostics.
+            self.register_warning_binding(name, span, false, linkage != Linkage::None);
+        }
         Ok(())
     }
 
@@ -943,7 +975,19 @@ impl Checker {
         result
     }
 
+    /// Check one top-level item and discard warnings emitted by a failed item.
+    /// A rejected declaration must not leave misleading diagnostics in the
+    /// stream consumed by subsequent successful items.
     pub fn check_item(&mut self, item: ExternalItem) -> Result<CheckedItem, Diagnostic> {
+        let previous = self.emitted_warnings.len();
+        let result = self.check_item_impl(item);
+        if result.is_err() {
+            self.emitted_warnings.truncate(previous);
+        }
+        result
+    }
+
+    fn check_item_impl(&mut self, item: ExternalItem) -> Result<CheckedItem, Diagnostic> {
         match item {
             ExternalItem::Tag(ty) => {
                 self.declare_tag_only(&ty, Span::default())?;
@@ -1574,6 +1618,7 @@ impl Checker {
         self.declare_global(&func.name, signature.clone(), SymbolKind::Function, true, func.storage,
             func.name_span.unwrap_or(func.span))?;
         self.locals.push(HashMap::new());
+        self.push_warning_scope();
         self.tags.borrow_mut().push(HashMap::new());
         self.function_labels = function_labels;
         self.result_ty = Some(result);
@@ -1600,9 +1645,17 @@ impl Checker {
                 parsed_param.storage == StorageClass::Register,
                 parsed_param.name_span.unwrap_or(param.span)) {
                 self.pop_tag_scope();
+                self.pop_warning_scope();
                 self.locals.pop();
                 self.result_ty = None;
                 return Err(err);
+            }
+        }
+        // Mark parameters distinctly for -Wunused-parameter after successful registration.
+        for param in &func.params {
+            if !param.name.is_empty() {
+                self.register_warning_binding(&param.name,
+                    param.name_span.unwrap_or(param.span), true, false);
             }
         }
         // Function parameters and its outermost compound statement share one scope.
@@ -1611,6 +1664,7 @@ impl Checker {
             other => self.check_stmt(other, func.span),
         };
         self.pop_tag_scope();
+        self.pop_warning_scope();
         self.locals.pop();
         self.result_ty = None;
         self.function_labels.clear();
@@ -1662,9 +1716,11 @@ impl Checker {
         Ok(match stmt {
             Stmt::Block(stmts) => {
                 self.locals.push(HashMap::new());
+                self.push_warning_scope();
                 self.tags.borrow_mut().push(HashMap::new());
                 let inner = self.check_statements(stmts, span);
                 self.pop_tag_scope();
+                self.pop_warning_scope();
                 self.locals.pop();
                 CheckedStmt::Block(inner?)
             }
@@ -1938,6 +1994,7 @@ impl Checker {
                 // The initializer's identifiers and tags remain visible in
                 // the condition, increment and body, but not after the loop.
                 self.locals.push(HashMap::new());
+                self.push_warning_scope();
                 self.tags.borrow_mut().push(HashMap::new());
                 let checked = (|| -> Result<CheckedStmt, Diagnostic> {
                     let init = init.as_deref()
@@ -1957,6 +2014,7 @@ impl Checker {
                     })))
                 })();
                 self.pop_tag_scope();
+                self.pop_warning_scope();
                 self.locals.pop();
                 checked?
             }
@@ -2705,6 +2763,7 @@ impl Checker {
                     SymbolKind::Function => Category::Function,
                     SymbolKind::Object => Category::LValue,
                 };
+                self.reference_warning_binding(name);
                 // The implicit object is internally named so that a
                 // frontend user cannot collide with it and every use
                 // within this function refers to the same static array.
@@ -3336,3 +3395,6 @@ where
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod warning_tests;

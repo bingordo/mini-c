@@ -91,3 +91,119 @@ impl Diagnostic {
         Self { span, message: message.into(), code }
     }
 }
+
+
+/// Severity of a frontend diagnostic. Errors remain the default for the
+/// existing `Diagnostic` API; warnings are opt-in through `ReportedDiagnostic`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiagnosticSeverity {
+    Error,
+    Warning,
+    Note,
+}
+
+/// A diagnostic with presentation metadata, without changing the legacy
+/// parser/semantic error type or requiring downstream users to update literals.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReportedDiagnostic {
+    pub diagnostic: Diagnostic,
+    pub severity: DiagnosticSeverity,
+    /// GCC-style warning group, without the "-W" prefix.
+    pub warning_group: Option<&'static str>,
+}
+
+impl ReportedDiagnostic {
+    pub fn error(diagnostic: Diagnostic) -> Self {
+        Self { diagnostic, severity: DiagnosticSeverity::Error, warning_group: None }
+    }
+
+    pub fn warning(diagnostic: Diagnostic, group: &'static str) -> Self {
+        Self {
+            diagnostic,
+            severity: DiagnosticSeverity::Warning,
+            warning_group: Some(group),
+        }
+    }
+}
+
+/// Small, intentionally explicit warning policy. Frontends should only emit
+/// warnings they actually implement; recognizing a -W group is not a claim
+/// that a corresponding analysis already exists.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WarningPolicy {
+    pub wall: bool,
+    pub wextra: bool,
+    pub warnings_as_errors: bool,
+    /// Ordered per-group overrides. The last matching flag wins.
+    pub overrides: Vec<(String, bool)>,
+}
+
+impl WarningPolicy {
+    /// Handles the common GCC driver spellings. Unknown flags are rejected,
+    /// rather than silently claiming that a warning is implemented.
+    pub fn apply_flag(&mut self, flag: &str) -> Result<(), String> {
+        match flag {
+            "-Wall" => self.wall = true,
+            "-Wno-all" => self.wall = false,
+            "-Wextra" => self.wextra = true,
+            "-Wno-extra" => self.wextra = false,
+            "-Werror" => self.warnings_as_errors = true,
+            "-Wno-error" => self.warnings_as_errors = false,
+            _ => {
+                if let Some(name) = flag.strip_prefix("-Wno-") {
+                    if !Self::known_group(name) {
+                        return Err(format!("unsupported warning option: {flag}"));
+                    }
+                    self.overrides.push((name.to_owned(), false));
+                } else if let Some(name) = flag.strip_prefix("-W") {
+                    if !Self::known_group(name) {
+                        return Err(format!("unsupported warning option: {flag}"));
+                    }
+                    self.overrides.push((name.to_owned(), true));
+                } else {
+                    return Err(format!("not a warning option: {flag}"));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn known_group(group: &str) -> bool {
+        // Only claim groups with working diagnostic producers. Other
+        // groups must not silently turn into no-op compatibility flags.
+        matches!(group, "shadow" | "unused-variable" | "unused-parameter")
+    }
+
+    /// Default enablement is conservative until Mini-C has a tested
+    /// implementation of each analysis.
+    pub fn enabled(&self, group: &str) -> bool {
+        // GCC keeps -Wshadow opt-in. Local-variable and parameter warnings
+        // follow -Wall and -Wextra respectively.
+        let default = match group {
+            "unused-variable" => self.wall,
+            "unused-parameter" => self.wextra,
+            _ => false,
+        };
+        self.overrides.iter().rev().find(|(name, _)| name == group)
+            .map_or(default, |(_, enabled)| *enabled)
+    }
+
+    pub fn resolve(&self, report: &ReportedDiagnostic) -> Option<DiagnosticSeverity> {
+        match report.severity {
+            DiagnosticSeverity::Warning => {
+                let group = report.warning_group?;
+                if !self.enabled(group) { return None; }
+                Some(if self.warnings_as_errors {
+                    DiagnosticSeverity::Error
+                } else {
+                    DiagnosticSeverity::Warning
+                })
+            }
+            other => Some(other),
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "warning_policy_tests.rs"]
+mod warning_policy_tests;
