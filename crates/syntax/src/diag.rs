@@ -169,19 +169,17 @@ impl WarningPolicy {
     }
 
     pub fn known_group(group: &str) -> bool {
-        matches!(group, "unused-variable" | "unused-parameter" | "shadow"
-            | "conversion" | "sign-conversion" | "return-type"
-            | "switch" | "switch-enum" | "uninitialized")
+        // Only claim groups with working diagnostic producers. Other
+        // groups must not silently turn into no-op compatibility flags.
+        matches!(group, "shadow")
     }
 
     /// Default enablement is conservative until Mini-C has a tested
     /// implementation of each analysis.
     pub fn enabled(&self, group: &str) -> bool {
-        let default = match group {
-            "unused-variable" | "return-type" | "switch" => self.wall,
-            "unused-parameter" | "shadow" => self.wextra,
-            _ => false,
-        };
+        // GCC does not include -Wshadow in -Wall or -Wextra. At present
+        // Mini-C's only implemented semantic warning is opt-in -Wshadow.
+        let default = false;
         self.overrides.iter().rev().find(|(name, _)| name == group)
             .map_or(default, |(_, enabled)| *enabled)
     }
