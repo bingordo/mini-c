@@ -244,13 +244,13 @@ fn warning_promotion_prevents_object_creation_but_normal_warning_emits_elf() {
         compile_to_object(&options(&["-Wunused-variable"])),
         ExitCode::SUCCESS
     );
-    assert!(std::fs::read(&output).unwrap().starts_with(b"\\x7fELF"));
+    assert!(std::fs::read(&output).unwrap().starts_with(b"\x7fELF"));
     std::fs::remove_file(&output).unwrap();
     assert_eq!(
         compile_to_object(&options(&["-Wunused-variable", "-Werror",
                                      "-Wno-unused-variable"])),
         ExitCode::SUCCESS
     );
-    assert!(std::fs::read(&output).unwrap().starts_with(b"\\x7fELF"));
+    assert!(std::fs::read(&output).unwrap().starts_with(b"\x7fELF"));
     let _ = std::fs::remove_dir_all(dir);
 }
