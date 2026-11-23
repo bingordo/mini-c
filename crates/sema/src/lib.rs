@@ -7,8 +7,7 @@ pub mod builtins;
 #[allow(dead_code)] // generated target ISA tables remain test oracles, not source admission
 mod asm_gp_rmw;
 #[allow(dead_code)] // source checker does not decode assembler mnemonics
-mod asm_gp_mov;
-#[cfg(test)]
+undefined#[cfg(test)]
 mod asm_gp_mov_tests;
 
 use std::collections::{HashMap, HashSet};
@@ -1723,8 +1722,7 @@ impl Checker {
             Stmt::BasicAsm { template, span } => CheckedStmt::BasicAsm {
                 template: template.clone(), span: *span,
             },
-            Stmt::ExtendedAsm { template, outputs, inputs, clobbers, span } => {
-                // Bounded GP slice: one output, up to two explicit independent inputs.
+undefined                // Bounded GP slice: one output, up to two explicit independent inputs.
                 // Multiple inputs require =&r early-clobber and are validated
                 // again against the exact reviewed two-input template.
                 if outputs.len()>1 || inputs.len()>2 {
