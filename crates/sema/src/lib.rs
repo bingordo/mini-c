@@ -957,7 +957,19 @@ impl Checker {
         result
     }
 
+    /// Check one top-level item and discard warnings emitted by a failed item.
+    /// A rejected declaration must not leave misleading diagnostics in the
+    /// stream consumed by subsequent successful items.
     pub fn check_item(&mut self, item: ExternalItem) -> Result<CheckedItem, Diagnostic> {
+        let previous = self.emitted_warnings.len();
+        let result = self.check_item_impl(item);
+        if result.is_err() {
+            self.emitted_warnings.truncate(previous);
+        }
+        result
+    }
+
+    fn check_item_impl(&mut self, item: ExternalItem) -> Result<CheckedItem, Diagnostic> {
         match item {
             ExternalItem::Tag(ty) => {
                 self.declare_tag_only(&ty, Span::default())?;
