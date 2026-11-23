@@ -94,11 +94,12 @@
         assert!(opts.warnings.warnings_as_errors);
         assert!(!opts.warnings.enabled("shadow"));
         assert!(!opts.warnings.enabled("unused-variable"));
-        assert!(parse_options(["--emit-obj", "out.o", "-Wall", "main.c"]
-            .into_iter().map(str::to_owned)).is_err());
+        let enabled = parse_options(["--emit-obj", "out.o", "-Wall", "main.c"]
+            .into_iter().map(str::to_owned)).unwrap();
+        assert!(enabled.warnings.enabled("unused-variable"));
         assert!(parse_options([
             "--emit-obj", "out.o", "-Wshadow", "main.c",
-        ].into_iter().map(str::to_owned)).is_err());
+        ].into_iter().map(str::to_owned)).unwrap().warnings.enabled("shadow"));
         assert!(parse_options([
             "--emit-obj", "out.o", "-Wformat", "main.c",
         ].into_iter().map(str::to_owned)).is_err());
@@ -145,3 +146,37 @@
         }
         let _ = std::fs::remove_dir_all(dir);
     }
+
+#[test]
+fn native_warning_collection_respects_scope_and_groups() {
+    let source = "int f(int a, int unused) { int x = a; int dead = 1; return x; }";
+    let mut policy = WarningPolicy::default();
+    policy.apply_flag("-Wall").unwrap();
+    policy.apply_flag("-Wextra").unwrap();
+    let warnings = collect_semantic_warnings(source, &policy).unwrap();
+    let groups: Vec<_> = warnings.iter().map(|d| d.warning_group).collect();
+    assert_eq!(groups, vec![Some("unused-parameter"), Some("unused-variable")]);
+    assert!(warnings.iter().any(|d| d.diagnostic.message.contains("dead")));
+    assert!(warnings.iter().any(|d| d.diagnostic.message.contains("unused")));
+}
+
+#[test]
+fn native_warning_promotion_blocks_object_write() {
+    let source = "int f(void) { int dead = 1; return 0; }";
+    let mut policy = WarningPolicy::default();
+    assert!(collect_semantic_warnings(source, &policy).unwrap().is_empty());
+    policy.apply_flag("-Wall").unwrap();
+    assert!(!emit_semantic_warnings("source.c", source, false, &policy).unwrap());
+    policy.apply_flag("-Werror").unwrap();
+    assert!(emit_semantic_warnings("source.c", source, false, &policy).unwrap());
+    policy.apply_flag("-Wno-unused-variable").unwrap();
+    assert!(!emit_semantic_warnings("source.c", source, false, &policy).unwrap());
+}
+
+#[test]
+fn native_warning_checks_preserve_preprocessed_origins() {
+    let source = "# 20 \"source.h\"\nint f(void) { int dead = 1; return 0; }\n";
+    let mut policy = WarningPolicy::default();
+    policy.apply_flag("-Wunused-variable").unwrap();
+    assert!(!emit_semantic_warnings("main.c", source, true, &policy).unwrap());
+}
