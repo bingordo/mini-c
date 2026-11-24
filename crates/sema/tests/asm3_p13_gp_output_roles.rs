@@ -9,7 +9,7 @@ fn both_output_roles_are_preserved_without_register_assignment() {
             let outputs=[if a {"=&r"}else{"=r"},if b {"=&r"}else{"=r"}];
             assert_eq!(
                 plan_dual_gp(&outputs,&["r"]),
-                Some(DualGpOutputPlan{early_clobber:[a,b]})
+                Some(DualGpOutputPlan{early_clobber:[a,b],alternative:0,input_tie:None})
             );
         }
     }
@@ -26,7 +26,7 @@ fn input_ties_readwrite_memory_alternatives_and_extras_fail_closed() {
             "unexpected dual-GP source plan: {outputs:?}");
     }
     for inputs in [
-        vec![],vec!["0"],vec!["1"],vec!["m"],
+        vec![],vec!["1"],vec!["m"],
         vec!["r","r"],vec!["rm"],vec!["r,m"],
     ] {
         assert!(plan_dual_gp(&["=r","=&r"],&inputs).is_none());
