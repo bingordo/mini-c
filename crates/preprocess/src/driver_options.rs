@@ -148,6 +148,21 @@ mod tests {
     }
 
     #[test]
+    fn split_system_and_macro_flags_preserve_spaced_values() {
+        let mut options = CppOptions::default();
+        let mut input = ["dir with spaces".to_owned(), "VALUE=two words".to_owned(),
+                         "/sdk with spaces".to_owned()].into_iter();
+        for flag in ["-I", "-D", "--sysroot"] {
+            assert!(options.consume(flag, &mut input).unwrap());
+        }
+        let config = options.finish().unwrap().unwrap();
+        assert_eq!(config.args, vec![
+            "-E", "-Idir with spaces", "-DVALUE=two words",
+            "--sysroot=/sdk with spaces",
+        ].into_iter().map(OsString::from).collect::<Vec<_>>());
+    }
+
+    #[test]
     fn disabled_preprocessor_forbids_ignored_flags() {
         let mut options = CppOptions::default();
         assert!(options.consume("--cpp=none", &mut std::iter::empty()).unwrap());
