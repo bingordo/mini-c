@@ -1925,20 +1925,23 @@ impl Checker {
                 }
                 let mut checked_inputs=Vec::new();
                 for input in inputs {
-                    let effective_constraint=if dual_gp_results {
-                        // The source planner requires one 'r' input at the
-                        // SAME selected alternative as both GP outputs.
-                        "r"
+                    let effective_constraint=if let Some(plan)=dual_gp_plan {
+                        // Select ONE GNU alternative shared by every operand.
+                        // A numeric tie has a real physical output register,
+                        // not a fabricated independent GP input.
+                        plan.input_constraint()
                     } else {input.constraint.as_str()};
-                    if !matches!(effective_constraint,"r"|"0"|"m") {
+                    if !matches!(effective_constraint,"r"|"0"|"1"|"m") {
                         return Err(type_error(input.span,"extended asm input requires r, matching 0 or reviewed m"));
                     }
                     if input.constraint=="m" && !gp_memory_read {
                         return Err(type_error(input.span,"ASM3 memory input requires one reviewed mov"));
                     }
-                    if input.constraint=="0" && (checked_outputs.len()!=1
-                        || checked_outputs[0].constraint!="=r") {
-                        return Err(type_error(input.span,"matching 0 requires exactly one =r output"));
+                    if matches!(effective_constraint,"0"|"1") && !dual_gp_results
+                        && (checked_outputs.len()!=1 || effective_constraint!="0"
+                            || checked_outputs[0].constraint!="=r") {
+                        return Err(type_error(input.span,
+                            "matching input requires a non-early GP output"));
                     }
                     let expr=self.check_expr(&input.expr,input.span)?;
                     if !matches!(expr.ty.unqualified(),CType::Integer { .. })
@@ -1967,7 +1970,14 @@ impl Checker {
                         return Err(type_error(input.span,
                             "ASM3 memory output/RMW GP input must match its object width"));
                     }
-                    if input.constraint=="0" &&
+                    if let Some(tied_index)=dual_gp_plan.and_then(|p|p.input_tie) {
+                        if expr.ty.size_bytes(self.target)
+                            !=checked_outputs[tied_index as usize].expr.ty.size_bytes(self.target)
+                        {
+                            return Err(type_error(input.span,
+                                "ASM3 tied input and selected GP output widths must agree"));
+                        }
+                    } else if effective_constraint=="0" &&
                         expr.ty.size_bytes(self.target)!=checked_outputs[0].expr.ty.size_bytes(self.target)
                     {
                         return Err(type_error(input.span,"matching 0 input/output GP widths must agree"));
