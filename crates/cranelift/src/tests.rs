@@ -353,3 +353,33 @@ fn unused_parameter_object_gate_follows_wextra() {
     assert!(std::fs::read(&output).unwrap().starts_with(b"\x7fELF"));
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+fn object_output_must_not_overwrite_source_or_hard_link() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let dir = std::env::temp_dir().join(format!(
+        "mini-c-object-alias-{}-{nonce}", std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("program.c");
+    let alias = dir.join("program-alias.o");
+    let symlink = dir.join("program-symlink.o");
+    let original = b"int main(void) { return 0; }\n";
+    std::fs::write(&source, original).unwrap();
+    std::fs::hard_link(&source, &alias).unwrap();
+    std::os::unix::fs::symlink(&source, &symlink).unwrap();
+
+    for output in [&source, &alias, &symlink] {
+        let options = parse_options([
+            "--cpp=none".to_owned(), "--emit-obj".to_owned(),
+            output.to_string_lossy().into_owned(),
+            source.to_string_lossy().into_owned(),
+        ]).unwrap();
+        assert_eq!(compile_to_object(&options), ExitCode::FAILURE);
+        assert_eq!(std::fs::read(&source).unwrap(), original);
+        assert_eq!(std::fs::read(&alias).unwrap(), original);
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
