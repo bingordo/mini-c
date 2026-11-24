@@ -10,6 +10,7 @@ mod asm_gp_rmw;
 #[allow(dead_code)] // source checker does not decode assembler mnemonics
 mod asm_gp_mov;
 mod asm_names;
+pub mod asm_output_roles;
 #[cfg(test)]
 mod asm_names_tests;
 #[cfg(test)]
@@ -275,84 +276,94 @@ pub enum CheckedItem {
 
 
 // This walker is intentionally structural: checked lvalue-to-rvalue conversion
-// strips top-level qualifiers from its result, so native capability checking
-// must inspect every input operand and every declaration, not only final types.
+// strips top-level qualifiers from its result. Use one traversal for volatile
+// and atomic memory so nested pointees, operands and declarations cannot
+// silently escape the native backend's explicit capability check.
 impl CheckedExpr {
-    fn contains_volatile_type(&self) -> bool {
-        if self.ty.contains_volatile() { return true; }
+    fn contains_memory_qualifier(&self, has:fn(&CType)->bool)->bool {
+        if has(&self.ty) {return true;}
         use CheckedExprKind as K;
         match &self.kind {
-            K::Initializer(values) => values.iter().any(Self::contains_volatile_type),
-            K::SparseInitializer(values) => values.iter().any(|(_, e)| e.contains_volatile_type()),
-            K::DeepInitializer(values) => values.iter().any(|(_, e)| e.contains_volatile_type()),
-            K::CompoundLiteral(inner) | K::StaticCompoundLiteral { initializer: inner, .. } |
-            K::Unary(_, inner) | K::BuiltinCtz(inner) | K::Convert(inner) |
-            K::Load(inner) | K::ArrayDecay(inner) | K::Member(inner, _) |
-            K::BitFieldMember(inner, ..) =>
-                inner.contains_volatile_type(),
-            K::BuiltinAtomic(checked) => checked.operands.iter().any(Self::contains_volatile_type),
-            K::Binary(_, a, b) | K::Comma(a, b) | K::Assign(a, b) =>
-                a.contains_volatile_type() || b.contains_volatile_type(),
-            K::Conditional(a, b, c) =>
-                a.contains_volatile_type() || b.contains_volatile_type() || c.contains_volatile_type(),
-            K::CompoundAssign(_, a, b, computation_ty) =>
-                computation_ty.contains_volatile() ||
-                a.contains_volatile_type() || b.contains_volatile_type(),
-            K::Update { target, computation_ty, .. } =>
-                computation_ty.contains_volatile() || target.contains_volatile_type(),
-            K::Call(callee, args) => callee.contains_volatile_type()
-                || args.iter().any(Self::contains_volatile_type),
+            K::Initializer(values) => values.iter().any(|e|e.contains_memory_qualifier(has)),
+            K::SparseInitializer(values) => values.iter()
+                .any(|(_,e)|e.contains_memory_qualifier(has)),
+            K::DeepInitializer(values) => values.iter()
+                .any(|(_,e)|e.contains_memory_qualifier(has)),
+            K::CompoundLiteral(inner) | K::StaticCompoundLiteral {initializer:inner,..} |
+            K::Unary(_,inner) | K::BuiltinCtz(inner) | K::Convert(inner) |
+            K::Load(inner) | K::ArrayDecay(inner) | K::Member(inner,_) |
+            K::BitFieldMember(inner,..) => inner.contains_memory_qualifier(has),
+            K::BuiltinAtomic(checked) => checked.operands.iter()
+                .any(|e|e.contains_memory_qualifier(has)),
+            K::Binary(_,a,b) | K::Comma(a,b) | K::Assign(a,b) =>
+                a.contains_memory_qualifier(has) || b.contains_memory_qualifier(has),
+            K::Conditional(a,b,c) => a.contains_memory_qualifier(has)
+                || b.contains_memory_qualifier(has) || c.contains_memory_qualifier(has),
+            K::CompoundAssign(_,a,b,computation_ty) => has(computation_ty)
+                || a.contains_memory_qualifier(has) || b.contains_memory_qualifier(has),
+            K::Update {target,computation_ty,..} =>
+                has(computation_ty) || target.contains_memory_qualifier(has),
+            K::Call(callee,args) => callee.contains_memory_qualifier(has)
+                || args.iter().any(|e|e.contains_memory_qualifier(has)),
             K::Literal(_) | K::FloatLiteral(_) | K::EnumConstant(_) |
             K::StringLiteral(_) | K::Name(_) => false,
         }
     }
 }
-
 impl CheckedDecl {
-    fn contains_volatile_type(&self) -> bool {
-        self.ty.contains_volatile() || self.initializer.as_ref()
-            .is_some_and(CheckedExpr::contains_volatile_type)
+    fn contains_memory_qualifier(&self,has:fn(&CType)->bool)->bool {
+        has(&self.ty) || self.initializer.as_ref()
+            .is_some_and(|e|e.contains_memory_qualifier(has))
     }
 }
 impl CheckedStmt {
-    fn contains_volatile_type(&self) -> bool {
+    fn contains_memory_qualifier(&self,has:fn(&CType)->bool)->bool {
         match self {
-            Self::Block(stmts) => stmts.iter().any(Self::contains_volatile_type),
-            Self::Decl(decl) => decl.contains_volatile_type(),
-            Self::Typedef { ty, .. } => ty.contains_volatile(),
-            Self::Expr(expr) | Self::Return(expr) =>
-                expr.as_ref().is_some_and(CheckedExpr::contains_volatile_type),
-            Self::ExtendedAsm { outputs, inputs, .. } =>
-                outputs.iter().chain(inputs).any(|op| op.expr.contains_volatile_type()),
-            Self::If { cond, then, otherwise } =>
-                cond.contains_volatile_type() || then.contains_volatile_type() ||
-                otherwise.as_ref().is_some_and(|stmt| stmt.contains_volatile_type()),
-            Self::While { cond, body } | Self::Switch { control: cond, body } |
-            Self::DoWhile { cond, body } =>
-                cond.contains_volatile_type() || body.contains_volatile_type(),
-            Self::Case { body, .. } | Self::Default(body) | Self::Label { body, .. } =>
-                body.contains_volatile_type(),
-            Self::For(f) => f.init.as_ref().is_some_and(|stmt| stmt.contains_volatile_type())
-                || f.cond.as_ref().is_some_and(CheckedExpr::contains_volatile_type)
-                || f.step.as_ref().is_some_and(CheckedExpr::contains_volatile_type)
-                || f.body.contains_volatile_type(),
-            Self::Tag | Self::BasicAsm { .. } | Self::Break | Self::Continue |
-            Self::Goto { .. } => false,
+            Self::Block(stmts) => stmts.iter().any(|s|s.contains_memory_qualifier(has)),
+            Self::Decl(decl) => decl.contains_memory_qualifier(has),
+            Self::Typedef {ty,..} => has(ty),
+            Self::Expr(expr) | Self::Return(expr) => expr.as_ref()
+                .is_some_and(|e|e.contains_memory_qualifier(has)),
+            Self::ExtendedAsm {outputs,inputs,..} => outputs.iter().chain(inputs)
+                .any(|op|op.expr.contains_memory_qualifier(has)),
+            Self::If {cond,then,otherwise} => cond.contains_memory_qualifier(has)
+                || then.contains_memory_qualifier(has)
+                || otherwise.as_ref().is_some_and(|s|s.contains_memory_qualifier(has)),
+            Self::While {cond,body} | Self::Switch {control:cond,body} |
+            Self::DoWhile {cond,body} => cond.contains_memory_qualifier(has)
+                || body.contains_memory_qualifier(has),
+            Self::Case {body,..} | Self::Default(body) | Self::Label {body,..} =>
+                body.contains_memory_qualifier(has),
+            Self::For(f) => f.init.as_ref().is_some_and(|s|s.contains_memory_qualifier(has))
+                || f.cond.as_ref().is_some_and(|e|e.contains_memory_qualifier(has))
+                || f.step.as_ref().is_some_and(|e|e.contains_memory_qualifier(has))
+                || f.body.contains_memory_qualifier(has),
+            Self::Tag | Self::BasicAsm {..} | Self::Break | Self::Continue |
+            Self::Goto {..} => false,
         }
     }
 }
 impl CheckedItem {
-    /// Native backends must fail closed until TypeId volatile effects exist.
-    /// Includes volatile pointer targets, local objects and nested expressions.
-    pub fn contains_volatile_type(&self) -> bool {
+    fn contains_memory_qualifier(&self,has:fn(&CType)->bool)->bool {
         match self {
-            Self::Declaration(decl) => decl.contains_volatile_type(),
-            Self::Typedef { ty, .. } => ty.contains_volatile(),
-            Self::Function(f) => f.signature.contains_volatile()
-                || f.params.iter().any(CheckedDecl::contains_volatile_type)
-                || f.body.contains_volatile_type(),
+            Self::Declaration(decl) => decl.contains_memory_qualifier(has),
+            Self::Typedef {ty,..} => has(ty),
+            Self::Function(f) => has(&f.signature)
+                || f.params.iter().any(|p|p.contains_memory_qualifier(has))
+                || f.body.contains_memory_qualifier(has),
             Self::Tag => false,
         }
+    }
+    /// Check all volatile types, even behind pointer expressions or in nested
+    /// declarations; existing reference lowering is not volatile-safe.
+    pub fn contains_volatile_type(&self)->bool {
+        self.contains_memory_qualifier(CType::contains_volatile)
+    }
+    /// Check all C11 atomic qualified storage before code generation. The
+    /// current Cranelift backend must refuse it rather than emit ordinary
+    /// loads, stores or read-modify-writes.
+    pub fn contains_atomic_type(&self)->bool {
+        self.contains_memory_qualifier(CType::contains_atomic)
     }
 }
 
@@ -527,6 +538,7 @@ impl Checker {
         match ty {
             CType::Qualified(inner) => Ok(self.complete_tag_type(*inner, span)?.with_const()),
             CType::Volatile(inner) => Ok(self.complete_tag_type(*inner, span)?.with_volatile()),
+            CType::Atomic(inner) => Ok(self.complete_tag_type(*inner, span)?.with_atomic()),
             CType::TagRef { name, identity, .. } => self.tag_definitions.borrow()
                 .get(&identity).cloned().ok_or_else(|| type_error(span,
                     format!("incomplete struct, union or enum tag '{name}'"))),
@@ -540,6 +552,7 @@ impl Checker {
         match ty {
             CType::Qualified(inner) => Ok(self.try_complete_tag_type(*inner)?.with_const()),
             CType::Volatile(inner) => Ok(self.try_complete_tag_type(*inner)?.with_volatile()),
+            CType::Atomic(inner) => Ok(self.try_complete_tag_type(*inner)?.with_atomic()),
             CType::TagRef { kind, name, identity } => Ok(self.tag_definitions.borrow()
                 .get(&identity).cloned()
                 .unwrap_or(CType::TagRef { kind, name, identity })),
@@ -577,18 +590,34 @@ impl Checker {
         Ok(())
     }
 
+    /// Classify a C11 atomic-qualified integer storage object without
+    /// allowing ordinary pointer/aggregate atomics or duplicate qualification.
+    /// Runtime access lowering is a separate capability gate.
+    fn atomic_integer_type(&self, base:CType, span:Span)->Result<CType,Diagnostic>{
+        if base.is_atomic() {
+            return Err(type_error(span,"duplicate C11 _Atomic qualification"));
+        }
+        if !matches!(base.unqualified(),CType::Integer{..}) {
+            return Err(type_error(span,
+                "C11 _Atomic currently requires a scalar integer object"));
+        }
+        let bytes=base.size_bytes(self.target)
+            .ok_or_else(||type_error(span,"C11 _Atomic requires complete integer storage"))?;
+        let align=base.align_bytes(self.target)
+            .ok_or_else(||type_error(span,"C11 _Atomic requires naturally aligned storage"))?;
+        if !matches!(bytes,1|2|4|8) || align<bytes || !align.is_power_of_two() {
+            return Err(type_error(span,"unsupported C11 _Atomic width or alignment"));
+        }
+        Ok(base.with_atomic())
+    }
+
     fn resolve(&mut self, ty: &Type, span: Span) -> Result<CType, Diagnostic> {
         Ok(match ty {
-            Type::Atomic(_) => {
-                // Atomic loads/stores and alignment are not ordinary C accesses.
-                return Err(type_error(span,
-                    "C11 _Atomic type is unsupported until atomic-aware checked types and TypeId lowering are implemented"));
+            Type::Atomic(inner) => {
+                let base=self.resolve(inner,span)?;
+                self.atomic_integer_type(base,span)?
             }
             Type::Qualified(inner, qualifiers) => {
-                if qualifiers.is_atomic {
-                    return Err(type_error(span,
-                        "C11 _Atomic type is unsupported until atomic-aware checked types and TypeId lowering are implemented"));
-                }
                 let base = self.resolve(inner, span)?;
                 if qualifiers.is_restrict && !matches!(base.unqualified(), CType::Pointer(_)) {
                     return Err(type_error(span, "restrict requires a pointer object type"));
@@ -600,6 +629,9 @@ impl Checker {
                     return Err(type_error(span,
                         "const/volatile cannot qualify a function type"));
                 }
+                let base = if qualifiers.is_atomic {
+                    self.atomic_integer_type(base,span)?
+                } else {base};
                 let base = if qualifiers.is_const { base.with_const() } else { base };
                 if qualifiers.is_volatile { base.with_volatile() } else { base }
             }
@@ -1789,11 +1821,26 @@ impl Checker {
                     .map(|operand|operand.name.as_deref()).collect::<Vec<_>>();
                 let template=asm_names::positional_template(template,&names)
                     .map_err(|error|type_error(*span,error))?;
-                // Bounded GP slice: one output, up to two explicit independent inputs.
-                // Multiple inputs require =&r early-clobber and are validated
-                // again against the exact reviewed two-input template.
-                if outputs.len()>1 || inputs.len()>2 {
-                    return Err(type_error(*span,"extended asm supports one GP output and at most two inputs"));
+                // P11: one GP output and one genuine memory output can
+                // share the same opaque assembler block, in either order.
+                // Its single r input belongs to the memory output width,
+                // and neither output's C lvalue may be implicitly scalarized.
+                // Additional independent register results require a multi-
+                // result machine contract, not speculative source admission.
+                let dual_gp_results=asm_output_roles::plan_dual_gp(
+                    &outputs.iter().map(|o|o.constraint.as_str()).collect::<Vec<_>>(),
+                    &inputs.iter().map(|i|i.constraint.as_str()).collect::<Vec<_>>(),
+                ).is_some();
+                let mixed_gp_memory=outputs.len()==2 && inputs.len()==1
+                    && inputs[0].constraint=="r"
+                    && outputs.iter().filter(|o|
+                        matches!(o.constraint.as_str(),"=r"|"=&r")).count()==1
+                    && outputs.iter().filter(|o|
+                        matches!(o.constraint.as_str(),"=m"|"+m")).count()==1;
+                if (!mixed_gp_memory && !dual_gp_results && outputs.len()>1)
+                    || inputs.len()>2 {
+                    return Err(type_error(*span,
+                        "extended asm supports one output or a reviewed two-output GP/memory pair"));
                 }
                 let mut checked_outputs=Vec::new();
                 for output in outputs {
@@ -1854,7 +1901,8 @@ impl Checker {
                 // clobber output instead needs one independent r input:
                 // the machine allocator must keep its result distinct from
                 // all input registers. Other constraints still fail closed.
-                if !checked_outputs.is_empty() {
+                if !checked_outputs.is_empty() && !mixed_gp_memory
+                    && !dual_gp_results {
                     let out=&checked_outputs[0];
                     if out.constraint=="+r" && !inputs.is_empty() {
                         return Err(type_error(*span,"+r output cannot have a separate input in the bounded ASM2 form"));
@@ -1892,6 +1940,14 @@ impl Checker {
                     {
                         return Err(type_error(input.span,
                             "ASM3 memory input must be an addressable same-width i32/i64 C lvalue"));
+                    }
+                    if mixed_gp_memory && expr.ty.size_bytes(self.target)
+                        !=checked_outputs.iter()
+                            .find(|o|matches!(o.constraint.as_str(),"=m"|"+m"))
+                            .and_then(|o|o.expr.ty.size_bytes(self.target))
+                    {
+                        return Err(type_error(input.span,
+                            "ASM3 mixed GP/memory input must match the memory object width"));
                     }
                     if (gp_memory_write || gp_memory_rmw) && expr.ty.size_bytes(self.target)
                         !=checked_outputs[0].expr.ty.size_bytes(self.target)
@@ -1931,9 +1987,10 @@ impl Checker {
                 let mut clobbered_gp=0u16;
                 for (index,clobber) in clobbers.iter().enumerate() {
                     if let Some(reg)=gp_clobber(clobber) {
-                        if outputs.len()!=1 {
+                        if outputs.len()!=1 && !mixed_gp_memory
+                            && !dual_gp_results {
                             return Err(type_error(*span,
-                                "explicit GP clobbers require a checked one-output ASM2 operation"));
+                                "explicit GP clobbers require a checked GP asm output contract"));
                         }
                         let bit=1u16 << reg;
                         if clobbered_gp & bit != 0 {
@@ -2474,10 +2531,11 @@ impl Checker {
             }
             Type::Pointer(inner) => CType::Pointer(Box::new(
                 self.resolve_sizeof_type(inner, span)?)),
+            Type::Atomic(inner) => {
+                let base=self.resolve_sizeof_type(inner,span)?;
+                self.atomic_integer_type(base,span)?
+            }
             Type::Qualified(inner, qualifiers) => {
-                if qualifiers.is_atomic {
-                    return Err(type_error(span, "C11 _Atomic type is unsupported in sizeof"));
-                }
                 let inner = self.resolve_sizeof_type(inner, span)?;
                 if qualifiers.is_restrict && !matches!(inner.unqualified(), CType::Pointer(_)) {
                     return Err(type_error(span, "restrict requires pointer type"));
@@ -2490,6 +2548,9 @@ impl Checker {
                     CType::Function { .. } | CType::VariadicFunction { .. }) {
                     return Err(type_error(span, "volatile cannot qualify a function type"));
                 }
+                let inner = if qualifiers.is_atomic {
+                    self.atomic_integer_type(inner,span)?
+                } else {inner};
                 let inner = if qualifiers.is_const { inner.with_const() } else { inner };
                 if qualifiers.is_volatile { inner.with_volatile() } else { inner }
             }
@@ -3152,7 +3213,14 @@ impl Checker {
                 }
                 let rhs_typed = self.check_expr(rhs, span)?;
                 let rhs_typed = self.convert_for_assignment(rhs_typed, &lhs.ty, rhs, rhs_span)?;
-                Ok(CheckedExpr::value(lhs.ty.clone(), CheckedExprKind::Assign(Box::new(lhs), Box::new(rhs_typed))))
+                // C assignment returns a value, not a qualified atomic
+                // lvalue. Keep the lvalue itself qualified inside the AST
+                // for the TypeId emitter to select ordered atomic storage.
+                let result_ty=if lhs.ty.is_atomic() {
+                    lhs.ty.unqualified().clone()
+                } else {lhs.ty.clone()};
+                Ok(CheckedExpr::value(result_ty, CheckedExprKind::Assign(
+                    Box::new(lhs),Box::new(rhs_typed))))
             }
             Expr::CompoundAssign(op, lhs, rhs) => {
                 let lhs_span = lhs.location().unwrap_or(span);
@@ -3226,7 +3294,9 @@ impl Checker {
                     computation_ty.clone()
                 };
                 let rhs_checked = self.convert(rhs_checked, &rhs_ty);
-                let result_ty = lhs.ty.clone();
+                let result_ty = if lhs.ty.is_atomic() {
+                    lhs.ty.unqualified().clone()
+                } else {lhs.ty.clone()};
                 Ok(CheckedExpr::value(result_ty, CheckedExprKind::CompoundAssign(
                     *op, Box::new(lhs), Box::new(rhs_checked), computation_ty)))
             }
@@ -3251,7 +3321,11 @@ impl Checker {
                 } else {
                     checked.integer_promotion_type(self.target)
                 };
-                let ty = checked.ty.clone();
+                // Prefix/postfix C atomic updates produce ordinary value
+                // types, although their target remains a qualified lvalue.
+                let ty = if checked.ty.is_atomic() {
+                    checked.ty.unqualified().clone()
+                } else {checked.ty.clone()};
                 Ok(CheckedExpr::value(ty, CheckedExprKind::Update {
                     target: Box::new(checked),
                     increment: *increment,

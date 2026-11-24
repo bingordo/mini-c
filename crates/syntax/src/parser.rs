@@ -458,7 +458,7 @@ impl<'a> Parser<'a> {
                 let type_name = self.peek()?.is_some_and(|next| {
                     matches!(next.text.as_ref(), "int" | "_Bool" | "char" | "short" | "long" | "_Float128" |
                         "float" | "double" | "void" | "signed" | "unsigned" |
-                        "struct" | "union" | "enum" | "const" | "volatile" | "restrict" |
+                        "struct" | "union" | "enum" | "const" | "volatile" | "_Atomic" | "restrict" |
                         "__restrict" | "__restrict__")
                         || next.kind == TokenKind::TypedefName
                 });
@@ -578,7 +578,7 @@ impl<'a> Parser<'a> {
                 let cast_type = self.peek()?.is_some_and(|next| {
                     matches!(next.text.as_ref(), "int" | "_Bool" | "char" | "short" | "long" | "_Float128" | "float" | "double" | "void" |
                         "signed" | "unsigned" | "struct" | "union" | "enum" |
-                        "const" | "volatile" | "restrict" | "__restrict" | "__restrict__")
+                        "const" | "volatile" | "_Atomic" | "restrict" | "__restrict" | "__restrict__")
                         || next.kind == TokenKind::TypedefName
                 });
                 if cast_type {
@@ -1353,7 +1353,22 @@ impl<'a> Parser<'a> {
         if extended {
             self.expect(":")?;
             if self.peek()?.is_some_and(|t|t.kind==TokenKind::String || t.text.as_ref()=="[") {
-                outputs.push(self.parse_asm_operand()?);
+                // Parse all syntactic output operands; the semantic checker
+                // (not this parser) establishes whether the target supports
+                // the resulting GP/memory multi-output constraint contract.
+                loop {
+                    outputs.push(self.parse_asm_operand()?);
+                    if !self.peek()?.is_some_and(|t|t.text.as_ref()==",") {
+                        break;
+                    }
+                    self.take()?;
+                    if !self.peek()?.is_some_and(|t|
+                        t.kind==TokenKind::String || t.text.as_ref()=="[")
+                    {
+                        return Err(Diagnostic::new(self.eof_span(),
+                            "GNU asm output list requires operand after comma"));
+                    }
+                }
             }
             self.expect(":")?;
             if self.peek()?.is_some_and(|t|t.kind==TokenKind::String || t.text.as_ref()=="[") {
@@ -3066,7 +3081,7 @@ mod tests {
     #[test]
     fn asm2_p5_operand_syntax_rejects_multiple_or_malformed_constraints() {
         for source in [
-            r#"int f(void){ asm("nop":"=r"(x),"=r"(y):"r"(z)); }"#,
+            r#"int f(void){ asm("nop":"=r"(x),:"r"(z)); }"#,
             r#"int f(void){ asm("nop":"=r"x:"r"(z)); }"#,
             r#"int f(void){ asm("nop":"=r"(x):"r"(z),"r"(y),"r"(w)); }"#,
             r#"int f(void){ asm("nop":"=r"(x):"r"(z):"memory",); }"#,
