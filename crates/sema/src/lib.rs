@@ -1827,10 +1827,11 @@ impl Checker {
                 // and neither output's C lvalue may be implicitly scalarized.
                 // Additional independent register results require a multi-
                 // result machine contract, not speculative source admission.
-                let dual_gp_results=asm_output_roles::plan_dual_gp(
+                let dual_gp_plan=asm_output_roles::plan_dual_gp(
                     &outputs.iter().map(|o|o.constraint.as_str()).collect::<Vec<_>>(),
                     &inputs.iter().map(|i|i.constraint.as_str()).collect::<Vec<_>>(),
-                ).is_some();
+                );
+                let dual_gp_results=dual_gp_plan.is_some();
                 let mixed_gp_memory=outputs.len()==2 && inputs.len()==1
                     && inputs[0].constraint=="r"
                     && outputs.iter().filter(|o|
@@ -1843,14 +1844,20 @@ impl Checker {
                         "extended asm supports one output or a reviewed two-output GP/memory pair"));
                 }
                 let mut checked_outputs=Vec::new();
-                for output in outputs {
-                    if !matches!(output.constraint.as_str(),"=r"|"+r"|"=&r"|"=m"|"+m") {
+                for (output_index,output) in outputs.iter().enumerate() {
+                    // GNU alternatives are selected once for the statement.
+                    // Checked IR sees only that plan's precise GP role; all
+                    // operand labels retain their original positional index.
+                    let effective_constraint=dual_gp_plan
+                        .map(|plan|plan.output_constraint(output_index))
+                        .unwrap_or(output.constraint.as_str());
+                    if !matches!(effective_constraint,"=r"|"+r"|"=&r"|"=m"|"+m") {
                         return Err(type_error(output.span,"extended asm output requires reviewed GP, =m or +m memory constraint"));
                     }
                     // Register results still require a checked local name;
                     // "=m"/"+m" instead bind a genuine checked addressable C
                     // lvalue, such as *p, p[i], or a writable local scalar.
-                    if !matches!(output.constraint.as_str(),"=m"|"+m")
+                    if !matches!(effective_constraint,"=m"|"+m")
                         && !matches!(output.expr.without_location(),Expr::Name(_)) {
                         return Err(type_error(output.span,"extended asm output currently requires local variable"));
                     }
@@ -1863,7 +1870,7 @@ impl Checker {
                         return Err(type_error(output.span,"extended asm output must be writable i32/i64 lvalue"));
                     }
                     checked_outputs.push(CheckedAsmOperand {
-                        constraint:output.constraint.clone(),expr,
+                        constraint:effective_constraint.to_owned(),expr,
                     });
                 }
                 // GNU extended asm is opaque to the C checker: the template
@@ -1918,15 +1925,23 @@ impl Checker {
                 }
                 let mut checked_inputs=Vec::new();
                 for input in inputs {
-                    if !matches!(input.constraint.as_str(),"r"|"0"|"m") {
+                    let effective_constraint=if let Some(plan)=dual_gp_plan {
+                        // Select ONE GNU alternative shared by every operand.
+                        // A numeric tie has a real physical output register,
+                        // not a fabricated independent GP input.
+                        plan.input_constraint()
+                    } else {input.constraint.as_str()};
+                    if !matches!(effective_constraint,"r"|"0"|"1"|"m") {
                         return Err(type_error(input.span,"extended asm input requires r, matching 0 or reviewed m"));
                     }
                     if input.constraint=="m" && !gp_memory_read {
                         return Err(type_error(input.span,"ASM3 memory input requires one reviewed mov"));
                     }
-                    if input.constraint=="0" && (checked_outputs.len()!=1
-                        || checked_outputs[0].constraint!="=r") {
-                        return Err(type_error(input.span,"matching 0 requires exactly one =r output"));
+                    if matches!(effective_constraint,"0"|"1") && !dual_gp_results
+                        && (checked_outputs.len()!=1 || effective_constraint!="0"
+                            || checked_outputs[0].constraint!="=r") {
+                        return Err(type_error(input.span,
+                            "matching input requires a non-early GP output"));
                     }
                     let expr=self.check_expr(&input.expr,input.span)?;
                     if !matches!(expr.ty.unqualified(),CType::Integer { .. })
@@ -1955,7 +1970,14 @@ impl Checker {
                         return Err(type_error(input.span,
                             "ASM3 memory output/RMW GP input must match its object width"));
                     }
-                    if input.constraint=="0" &&
+                    if let Some(tied_index)=dual_gp_plan.and_then(|p|p.input_tie) {
+                        if expr.ty.size_bytes(self.target)
+                            !=checked_outputs[tied_index as usize].expr.ty.size_bytes(self.target)
+                        {
+                            return Err(type_error(input.span,
+                                "ASM3 tied input and selected GP output widths must agree"));
+                        }
+                    } else if effective_constraint=="0" &&
                         expr.ty.size_bytes(self.target)!=checked_outputs[0].expr.ty.size_bytes(self.target)
                     {
                         return Err(type_error(input.span,"matching 0 input/output GP widths must agree"));
@@ -1967,7 +1989,7 @@ impl Checker {
                             "two independent ASM2 GP input widths must match the output"));
                     }
                     checked_inputs.push(CheckedAsmOperand{
-                        constraint:input.constraint.clone(),
+                        constraint:effective_constraint.to_owned(),
                         expr:if gp_memory_read {expr} else {expr.rvalue()},
                     });
                 }
