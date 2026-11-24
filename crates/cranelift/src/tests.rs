@@ -240,31 +240,39 @@ fn semantic_warning_groups_gate_elf_object_output() {
 
     // GCC-compatible policy: unused-variable follows -Wall,
     // unused-parameter follows -Wextra, and shadow is explicitly opt-in.
-    let cases: [(&str, &str, &[&str], &[&str], &[&str]); 3] = [
-        (
-            "unused-variable",
-            "int main(void) { int dead = 1; return 0; }",
-            &["-Wunused-variable"],
-            &["-Wunused-variable", "-Werror"],
-            &["-Wunused-variable", "-Werror", "-Wno-unused-variable"],
-        ),
-        (
-            "shadow",
-            "int value; int main(void) { int value = 3; return value - 3; }",
-            &["-Wall", "-Werror"],
-            &["-Wshadow", "-Werror"],
-            &["-Wshadow", "-Werror", "-Wno-shadow"],
-        ),
-        (
-            "unused-parameter",
-            "int f(int unused) { return 17; } int main(void) { return f(4)-17; }",
-            &["-Wall", "-Werror"],
-            &["-Wextra", "-Werror"],
-            &["-Wextra", "-Werror", "-Wno-unused-parameter"],
-        ),
+    /// One C fixture with the expected warning-policy outcomes.
+    struct WarningCase {
+        name: &'static str,
+        contents: &'static str,
+        allowed: &'static [&'static str],
+        promoted: &'static [&'static str],
+        suppressed: &'static [&'static str],
+    }
+    let cases = [
+        WarningCase {
+            name: "unused-variable",
+            contents: "int main(void) { int dead = 1; return 0; }",
+            allowed: &["-Wunused-variable"],
+            promoted: &["-Wunused-variable", "-Werror"],
+            suppressed: &["-Wunused-variable", "-Werror", "-Wno-unused-variable"],
+        },
+        WarningCase {
+            name: "shadow",
+            contents: "int value; int main(void) { int value = 3; return value - 3; }",
+            allowed: &["-Wall", "-Werror"],
+            promoted: &["-Wshadow", "-Werror"],
+            suppressed: &["-Wshadow", "-Werror", "-Wno-shadow"],
+        },
+        WarningCase {
+            name: "unused-parameter",
+            contents: "int f(int unused) { return 17; } int main(void) { return f(4)-17; }",
+            allowed: &["-Wall", "-Werror"],
+            promoted: &["-Wextra", "-Werror"],
+            suppressed: &["-Wextra", "-Werror", "-Wno-unused-parameter"],
+        },
     ];
 
-    for (name, contents, allowed, promoted, suppressed) in cases {
+    for WarningCase { name, contents, allowed, promoted, suppressed } in cases {
         let source = dir.join(format!("{name}.c"));
         let output = dir.join(format!("{name}.o"));
         std::fs::write(&source, contents).unwrap();
