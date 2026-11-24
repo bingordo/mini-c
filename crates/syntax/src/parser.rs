@@ -458,7 +458,7 @@ impl<'a> Parser<'a> {
                 let type_name = self.peek()?.is_some_and(|next| {
                     matches!(next.text.as_ref(), "int" | "_Bool" | "char" | "short" | "long" | "_Float128" |
                         "float" | "double" | "void" | "signed" | "unsigned" |
-                        "struct" | "union" | "enum" | "const" | "volatile" | "restrict" |
+                        "struct" | "union" | "enum" | "const" | "volatile" | "_Atomic" | "restrict" |
                         "__restrict" | "__restrict__")
                         || next.kind == TokenKind::TypedefName
                 });
@@ -532,10 +532,23 @@ impl<'a> Parser<'a> {
         }
         let mut expr = match self.take()? {
             Some(t) if t.kind == TokenKind::String => {
-                let bytes = crate::string_literal::decode_narrow_string(t.text.as_ref())
+                // C translation phase 6 concatenates adjacent string tokens
+                // into one array with exactly one final implicit NUL. Decode
+                // each token independently so escapes never cross boundaries.
+                let mut bytes = crate::string_literal::decode_narrow_string(t.text.as_ref())
                     .map_err(|reason| Diagnostic::coded(
                         t.span, DiagnosticCode::LexicalInvalidCharacter, reason))?;
-                self.located(Expr::StringLiteral(bytes), t.span)
+                let mut end = t.span.hi;
+                while matches!(self.peek()?, Some(next) if next.kind == TokenKind::String) {
+                    let next = self.take()?.expect("peeked string token");
+                    let fragment = crate::string_literal::decode_narrow_string(next.text.as_ref())
+                        .map_err(|reason| Diagnostic::coded(
+                            next.span, DiagnosticCode::LexicalInvalidCharacter, reason))?;
+                    bytes.pop(); // remove only the previous implicit terminator
+                    bytes.extend(fragment);
+                    end = next.span.hi;
+                }
+                self.located(Expr::StringLiteral(bytes), Span { lo: t.span.lo, hi: end })
             }
             Some(t) if t.kind == TokenKind::Character => {
                 let value = crate::char_literal::parse_ascii_character(t.text.as_ref())
@@ -565,7 +578,7 @@ impl<'a> Parser<'a> {
                 let cast_type = self.peek()?.is_some_and(|next| {
                     matches!(next.text.as_ref(), "int" | "_Bool" | "char" | "short" | "long" | "_Float128" | "float" | "double" | "void" |
                         "signed" | "unsigned" | "struct" | "union" | "enum" |
-                        "const" | "volatile" | "restrict" | "__restrict" | "__restrict__")
+                        "const" | "volatile" | "_Atomic" | "restrict" | "__restrict" | "__restrict__")
                         || next.kind == TokenKind::TypedefName
                 });
                 if cast_type {
@@ -1264,9 +1277,19 @@ impl<'a> Parser<'a> {
     /// GNU basic asm is a *statement*, not a declaration-level symbol alias.
     /// Preserve the decoded template exactly, including adjacent C strings.
     /// Extended-asm operands and asm goto are not silently accepted.
-    /// One positional GNU extended-asm operand. Named operands and
-    /// constraint alternatives remain unsupported until allocator binding.
+    /// Parse a positional or [named] GNU operand without decoding its asm body.
     fn parse_asm_operand(&mut self) -> Result<AsmOperand, Diagnostic> {
+        let operand_name=if self.peek()?.is_some_and(|t| t.text.as_ref()=="[") {
+            self.expect("[")?;
+            let token=self.take()?.ok_or_else(||Diagnostic::new(
+                self.eof_span(),"expected GNU asm operand name"))?;
+            if token.kind!=TokenKind::Identifier {
+                return Err(Diagnostic::new(token.span,"GNU asm operand name must be an identifier"));
+            }
+            let name=token.text.to_string();
+            self.expect("]")?;
+            Some(name)
+        } else { None };
         let token=self.take()?.ok_or_else(||Diagnostic::new(
             self.eof_span(),"expected asm constraint string"))?;
         if token.kind!=TokenKind::String {
@@ -1282,7 +1305,7 @@ impl<'a> Parser<'a> {
         self.expect("(")?;
         let expr=self.parse_assign()?;
         let end=self.expect(")")?;
-        Ok(AsmOperand {constraint:name,expr,span:Span{
+        Ok(AsmOperand {name:operand_name,constraint:name,expr,span:Span{
             lo:token.span.lo,hi:end.span.hi,
         }})
     }
@@ -1329,11 +1352,26 @@ impl<'a> Parser<'a> {
         let mut clobbers=Vec::new();
         if extended {
             self.expect(":")?;
-            if self.peek()?.is_some_and(|t|t.kind==TokenKind::String) {
-                outputs.push(self.parse_asm_operand()?);
+            if self.peek()?.is_some_and(|t|t.kind==TokenKind::String || t.text.as_ref()=="[") {
+                // Parse all syntactic output operands; the semantic checker
+                // (not this parser) establishes whether the target supports
+                // the resulting GP/memory multi-output constraint contract.
+                loop {
+                    outputs.push(self.parse_asm_operand()?);
+                    if !self.peek()?.is_some_and(|t|t.text.as_ref()==",") {
+                        break;
+                    }
+                    self.take()?;
+                    if !self.peek()?.is_some_and(|t|
+                        t.kind==TokenKind::String || t.text.as_ref()=="[")
+                    {
+                        return Err(Diagnostic::new(self.eof_span(),
+                            "GNU asm output list requires operand after comma"));
+                    }
+                }
             }
             self.expect(":")?;
-            if self.peek()?.is_some_and(|t|t.kind==TokenKind::String) {
+            if self.peek()?.is_some_and(|t|t.kind==TokenKind::String || t.text.as_ref()=="[") {
                 loop {
                     inputs.push(self.parse_asm_operand()?);
                     if inputs.len()>2 {
@@ -1344,7 +1382,7 @@ impl<'a> Parser<'a> {
                         break;
                     }
                     self.take()?;
-                    if !self.peek()?.is_some_and(|t|t.kind==TokenKind::String) {
+                    if !self.peek()?.is_some_and(|t|t.kind==TokenKind::String || t.text.as_ref()=="[") {
                         return Err(Diagnostic::new(self.eof_span(),
                             "ASM2 asm input list requires a constraint string after comma"));
                     }
@@ -3043,7 +3081,7 @@ mod tests {
     #[test]
     fn asm2_p5_operand_syntax_rejects_multiple_or_malformed_constraints() {
         for source in [
-            r#"int f(void){ asm("nop":"=r"(x),"=r"(y):"r"(z)); }"#,
+            r#"int f(void){ asm("nop":"=r"(x),:"r"(z)); }"#,
             r#"int f(void){ asm("nop":"=r"x:"r"(z)); }"#,
             r#"int f(void){ asm("nop":"=r"(x):"r"(z),"r"(y),"r"(w)); }"#,
             r#"int f(void){ asm("nop":"=r"(x):"r"(z):"memory",); }"#,
@@ -3051,6 +3089,38 @@ mod tests {
             assert!(Parser::new(source).next_item().is_err(),"{source}");
         }
     }
+    #[test]
+    fn asm3_named_operands_preserve_labels_and_source_template() {
+        let source=r#"int f(int x) {
+            int y=0;
+            __asm__ volatile("movl %[input], %[output]"
+                : [output] "=r"(y) : [input] "r"(x) : "cc");
+            return y;
+        }"#;
+        let Some(ExternalItem::Function(f))=Parser::new(source).next_item().unwrap()
+        else {panic!("function expected")};
+        let Stmt::Block(stmts)=f.body else {panic!("block expected")};
+        let Stmt::ExtendedAsm {template,outputs,inputs,..}=&stmts[1]
+        else {panic!("asm expected")};
+        assert_eq!(template,"movl %[input], %[output]");
+        assert_eq!(outputs[0].name.as_deref(),Some("output"));
+        assert_eq!(outputs[0].constraint,"=r");
+        assert_eq!(inputs[0].name.as_deref(),Some("input"));
+        assert_eq!(inputs[0].constraint,"r");
+    }
+
+    #[test]
+    fn asm3_malformed_operand_label_rejects_before_sema() {
+        for src in [
+            r#"int f(int x) { int y; asm("nop" : [x "=r"(y) : "r"(x)); }"#,
+            r#"int f(int x) { int y; asm("nop" : [] "=r"(y) : "r"(x)); }"#,
+            r#"int f(int x) { int y; asm("nop" : [42] "=r"(y) : "r"(x)); }"#,
+            r#"int f(int x) { int y; asm("nop" : [output] "=r"(y) : [x] "r"(x), [bad "r"(x)); }"#,
+        ] {
+            assert!(Parser::new(src).next_item().is_err(),"invalid source: {src}");
+        }
+    }
+
     #[test]
     fn gnu_word_mode_preserves_glibc_register_t_abi_width() {
         let source = "typedef int register_t __attribute__ ((__mode__ (__word__)));";

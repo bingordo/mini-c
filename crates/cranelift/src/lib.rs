@@ -755,6 +755,13 @@ impl Compiler {
         if item.contains_volatile_type() {
             return Err("native volatile memory accesses are unsupported until compiler IR #1047".into());
         }
+        // Checked C11 atomic integer types retain their distinct storage
+        // contract through semantic analysis. Do not let ordinary Cranelift
+        // loads/stores implement them accidentally; the TypeId atomic
+        // backend must receive an explicitly qualified operation first.
+        if item.contains_atomic_type() {
+            return Err("C11 _Atomic object requires native TypeId atomic lowering; ordinary Cranelift memory access is forbidden".into());
+        }
         match item {
             CheckedItem::Typedef { .. } | CheckedItem::Tag => Ok(()),
             CheckedItem::Declaration(decl) => {

@@ -80,3 +80,21 @@ fn atomic_qualifier_is_not_lost_in_declaration_or_pointer_binding() {
         Type::Qualified(Box::new(Type::Pointer(Box::new(Type::Int))), const_atomic));
     assert!(Parser::new("_Atomic _Atomic int counter;").next_item().is_err());
 }
+
+
+/// C11 _Atomic participates in type-name lookahead for sizeof and casts,
+/// not just declaration specifiers. The semantic cast gate remains separate.
+#[test]
+fn c11_atomic_typenames_in_sizeof_and_cast_syntax() {
+    for source in [
+        "int f(void){return sizeof(_Atomic int);}",
+        "int f(void){return sizeof(_Atomic(int));}",
+        "int f(void){return sizeof(const _Atomic(long long));}",
+        "int f(void){return (_Atomic int)7;}",
+    ] {
+        let mut parser=Parser::new(source);
+        assert!(matches!(parser.next_item(),Ok(Some(ExternalItem::Function(_)))),
+            "failed C11 atomic type-name parse: {source}");
+        assert!(parser.next_item().unwrap().is_none());
+    }
+}
