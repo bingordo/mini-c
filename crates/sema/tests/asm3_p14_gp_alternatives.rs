@@ -17,7 +17,7 @@ fn first_compatible_gp_alternative_selected_for_whole_statement() {
     ];
     for (outputs,input,alternative,early_clobber) in cases {
         let plan=plan_dual_gp(&outputs,&[input]).expect("compatible full GP alternative");
-        assert_eq!(plan,DualGpOutputPlan{early_clobber,alternative});
+        assert_eq!(plan,DualGpOutputPlan{early_clobber,alternative,input_tie:None});
         for (index,expected) in early_clobber.iter().enumerate() {
             assert_eq!(plan.output_constraint(index),
                 if *expected {"=&r"} else {"=r"});
@@ -35,14 +35,12 @@ fn constraint_counts_and_unsupported_tied_input_alternatives_fail_closed() {
         (["=m,m","=r,r"],"r,r"),
         (["=r,,r","=r,r,r"],"r,r,r"),
         (["=r,r,","=r,r,r"],"r,r,r"),
-        (["=r,&r","=r,r"],"0,r"),
-        (["=r,&r","=r,r"],"1,r"),
-        (["=r,&r","=r,r"],"r,0"),
+        (["=&r,&r","=r,r"],"0,0"),
+        (["=r,r","=&r,&r"],"1,1"),
         (["=r,&r","=r,r"],"r,m"),
         (["=rm,r","=r,r"],"r,r"),
         (["=r,r","=r,r"],"r,rm"),
         (["=r,r","=r,r"],"r,"),
-        (["=r,r","=r,r"],"r,1"),
         (["=r,r","=r,r"],"r,r,m"),
         (["=r,r","=r,r"],"r,r,"),
         (["=r,r","=r,r"],"r,,r"),
