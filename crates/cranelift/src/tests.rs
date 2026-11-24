@@ -106,6 +106,21 @@
     }
 
     #[test]
+    fn output_filename_option_does_not_consume_the_next_flag() {
+        for next in ["-Werror", "-Wall", "-I", "--cpp=none", "--emit-obj", "--"] {
+            let args = ["--emit-obj", next, "main.c"];
+            let err = parse_options(args.into_iter().map(str::to_owned)).err()
+                .expect("option-looking output name must be rejected");
+            assert!(err.contains("output filename"), "{next}: {err}");
+        }
+        // Explicitly supplied filenames, including spaces, remain valid.
+        let opts = parse_options([
+            "--emit-obj", "obj with spaces.o", "-Wall", "main.c",
+        ].into_iter().map(str::to_owned)).unwrap();
+        assert_eq!(opts.output, "obj with spaces.o");
+    }
+
+    #[test]
     fn invalid_native_cpp_options_are_rejected() {
         for args in [
             vec!["source.c"],
