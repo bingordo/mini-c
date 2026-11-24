@@ -226,131 +226,68 @@ fn native_warning_locations_keep_raw_columns_and_werror_severity() {
     assert!(suppressed.is_empty(), "{suppressed:?}");
 }
 
+/// Exercise all implemented semantic warning groups through native ELF
+/// emission, including default enablement, promotion, and explicit suppression.
 #[test]
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
-fn warning_promotion_prevents_object_creation_but_normal_warning_emits_elf() {
+fn semantic_warning_groups_gate_elf_object_output() {
     use std::time::{SystemTime, UNIX_EPOCH};
     let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
     let dir = std::env::temp_dir().join(format!(
-        "mini-c-cranelift-warning-gate-{}-{nonce}", std::process::id()
+        "mini-c-warning-matrix-{}-{nonce}", std::process::id()
     ));
     std::fs::create_dir_all(&dir).unwrap();
-    let source = dir.join("source.c");
-    let output = dir.join("output.o");
-    std::fs::write(&source, "int main(void) { int unused = 1; return 0; }\n").unwrap();
 
-    let options = |warnings: &[&str]| {
-        let mut args = vec![
-            "--cpp=none".to_owned(),
-            "--emit-obj".to_owned(),
-            output.to_string_lossy().into_owned(),
-        ];
-        args.extend(warnings.iter().map(|flag| (*flag).to_owned()));
-        args.push(source.to_string_lossy().into_owned());
-        parse_options(args).unwrap()
-    };
+    // GCC-compatible policy: unused-variable follows -Wall,
+    // unused-parameter follows -Wextra, and shadow is explicitly opt-in.
+    let cases: [(&str, &str, &[&str], &[&str], &[&str]); 3] = [
+        (
+            "unused-variable",
+            "int main(void) { int dead = 1; return 0; }",
+            &["-Wunused-variable"],
+            &["-Wunused-variable", "-Werror"],
+            &["-Wunused-variable", "-Werror", "-Wno-unused-variable"],
+        ),
+        (
+            "shadow",
+            "int value; int main(void) { int value = 3; return value - 3; }",
+            &["-Wall", "-Werror"],
+            &["-Wshadow", "-Werror"],
+            &["-Wshadow", "-Werror", "-Wno-shadow"],
+        ),
+        (
+            "unused-parameter",
+            "int f(int unused) { return 17; } int main(void) { return f(4)-17; }",
+            &["-Wall", "-Werror"],
+            &["-Wextra", "-Werror"],
+            &["-Wextra", "-Werror", "-Wno-unused-parameter"],
+        ),
+    ];
 
-    assert_eq!(
-        compile_to_object(&options(&["-Wunused-variable", "-Werror"])),
-        ExitCode::FAILURE
-    );
-    assert!(!output.exists(), "-Werror must not create an object");
-    assert_eq!(
-        compile_to_object(&options(&["-Wunused-variable"])),
-        ExitCode::SUCCESS
-    );
-    assert!(std::fs::read(&output).unwrap().starts_with(b"\x7fELF"));
-    std::fs::remove_file(&output).unwrap();
-    assert_eq!(
-        compile_to_object(&options(&["-Wunused-variable", "-Werror",
-                                     "-Wno-unused-variable"])),
-        ExitCode::SUCCESS
-    );
-    assert!(std::fs::read(&output).unwrap().starts_with(b"\x7fELF"));
-    let _ = std::fs::remove_dir_all(dir);
-}
+    for (name, contents, allowed, promoted, suppressed) in cases {
+        let source = dir.join(format!("{name}.c"));
+        let output = dir.join(format!("{name}.o"));
+        std::fs::write(&source, contents).unwrap();
+        let options = |flags: &[&str]| {
+            let mut args = vec![
+                "--cpp=none".to_owned(), "--emit-obj".to_owned(),
+                output.to_string_lossy().into_owned(),
+            ];
+            args.extend(flags.iter().map(|flag| (*flag).to_owned()));
+            args.push(source.to_string_lossy().into_owned());
+            parse_options(args).unwrap()
+        };
 
-#[test]
-#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
-fn shadow_warning_object_gate_is_opt_in() {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-    let dir = std::env::temp_dir().join(format!(
-        "mini-c-cranelift-shadow-gate-{}-{nonce}", std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    let source = dir.join("shadow.c");
-    let output = dir.join("shadow.o");
-    std::fs::write(&source,
-        "int value; int main(void) { int value = 3; return value - 3; }\n"
-    ).unwrap();
+        assert_eq!(compile_to_object(&options(allowed)), ExitCode::SUCCESS, "{name}");
+        assert!(std::fs::read(&output).unwrap().starts_with(b"\x7fELF"), "{name}");
+        std::fs::remove_file(&output).unwrap();
 
-    let options = |flags: &[&str]| {
-        let mut args = vec![
-            "--cpp=none".to_owned(), "--emit-obj".to_owned(),
-            output.to_string_lossy().into_owned(),
-        ];
-        args.extend(flags.iter().map(|flag| (*flag).to_owned()));
-        args.push(source.to_string_lossy().into_owned());
-        parse_options(args).unwrap()
-    };
+        assert_eq!(compile_to_object(&options(promoted)), ExitCode::FAILURE, "{name}");
+        assert!(!output.exists(), "{name}: promoted warning created an object");
 
-    // -Wall does not imply -Wshadow; the existing default output path works.
-    assert_eq!(compile_to_object(&options(&["-Wall", "-Werror"])), ExitCode::SUCCESS);
-    assert!(std::fs::read(&output).unwrap().starts_with(b"\x7fELF"));
-    std::fs::remove_file(&output).unwrap();
-
-    // Explicitly enabling -Wshadow must fail before object creation.
-    assert_eq!(compile_to_object(&options(&["-Wshadow", "-Werror"])), ExitCode::FAILURE);
-    assert!(!output.exists());
-
-    // Last matching override disables this diagnostic again.
-    assert_eq!(
-        compile_to_object(&options(&["-Wshadow", "-Werror", "-Wno-shadow"])),
-        ExitCode::SUCCESS
-    );
-    assert!(std::fs::read(&output).unwrap().starts_with(b"\x7fELF"));
-    let _ = std::fs::remove_dir_all(dir);
-}
-
-#[test]
-#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
-fn unused_parameter_object_gate_follows_wextra() {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-    let dir = std::env::temp_dir().join(format!(
-        "mini-c-cranelift-param-warning-{}-{nonce}", std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    let source = dir.join("params.c");
-    let output = dir.join("params.o");
-    std::fs::write(&source,
-        "int unused_parameter(int arg) { return 17; }\nint main(void) { return unused_parameter(4)-17; }\n"
-    ).unwrap();
-
-    let options = |flags: &[&str]| {
-        let mut args = vec![
-            "--cpp=none".to_owned(), "--emit-obj".to_owned(),
-            output.to_string_lossy().into_owned(),
-        ];
-        args.extend(flags.iter().map(|flag| (*flag).to_owned()));
-        args.push(source.to_string_lossy().into_owned());
-        parse_options(args).unwrap()
-    };
-
-    // -Wall alone does not imply unused-parameter, but -Wextra does.
-    assert_eq!(compile_to_object(&options(&["-Wall", "-Werror"])), ExitCode::SUCCESS);
-    assert!(std::fs::read(&output).unwrap().starts_with(b"\x7fELF"));
-    std::fs::remove_file(&output).unwrap();
-
-    assert_eq!(compile_to_object(&options(&["-Wextra", "-Werror"])), ExitCode::FAILURE);
-    assert!(!output.exists(), "promoted unused parameter must block new ELF output");
-
-    assert_eq!(
-        compile_to_object(&options(&["-Wextra", "-Werror", "-Wno-unused-parameter"])),
-        ExitCode::SUCCESS
-    );
-    assert!(std::fs::read(&output).unwrap().starts_with(b"\x7fELF"));
+        assert_eq!(compile_to_object(&options(suppressed)), ExitCode::SUCCESS, "{name}");
+        assert!(std::fs::read(&output).unwrap().starts_with(b"\x7fELF"), "{name}");
+    }
     let _ = std::fs::remove_dir_all(dir);
 }
 
