@@ -88,3 +88,56 @@ pub fn plan_dual_gp(outputs:&[&str],inputs:&[&str])->Option<DualGpOutputPlan> {
         })
     })
 }
+
+
+/// Selected GP output-group roles. This source-only plan has no artificial
+/// operand cap: the target later checks simultaneous physical register demand.
+#[derive(Clone,Debug,Eq,PartialEq)]
+pub struct GpOutputGroupPlan {
+    pub early_clobber:Vec<bool>,
+    pub alternative:usize,
+    pub input_tie:Option<usize>,
+}
+impl GpOutputGroupPlan {
+    /// Return the checked write-only GP constraint at this output position.
+    pub fn output_constraint(&self,index:usize)->&'static str {
+        if self.early_clobber[index] {"=&r"} else {"=r"}
+    }
+    /// Return the independent or numeric matching input constraint.
+    pub fn input_constraint(&self)->String {
+        self.input_tie.map_or_else(||"r".into(),|n|n.to_string())
+    }
+}
+
+/// Choose one complete executable GP alternative for a group of 3+ outputs.
+/// The source grammar accepts any group size; only a selected 'r'/'&r'
+/// alternative is lowered. Numeric ties require a non-early result and
+/// must be staged into the very same physical output register downstream.
+pub fn plan_gp_output_group(outputs:&[&str],inputs:&[&str])->Option<GpOutputGroupPlan> {
+    if outputs.len()<3 || inputs.len()!=1 {return None;}
+    let out=outputs.iter().map(|s|{
+        let tail=s.strip_prefix('=')?;
+        let modes=tail.split(',').collect::<Vec<_>>();
+        if modes.iter().any(|mode|!matches!(*mode,"r"|"&r"|"m")) {
+            return None;
+        }
+        Some(modes)
+    }).collect::<Option<Vec<_>>>()?;
+    let input=inputs[0].split(',').collect::<Vec<_>>();
+    if out.iter().any(|options|options.len()!=input.len())
+        || input.iter().any(|role|*role!="r"
+            && role.parse::<usize>().is_err())
+    {
+        return None;
+    }
+    (0..input.len()).find_map(|alternative|{
+        let early_clobber=out.iter().map(|options|match options[alternative]{
+            "r"=>Some(false),"&r"=>Some(true),_=>None,
+        }).collect::<Option<Vec<_>>>()?;
+        let input_tie=if input[alternative]=="r"{None}
+            else{Some(input[alternative].parse::<usize>().ok()?)};
+        if input_tie.is_some_and(|index|
+            index>=outputs.len() || early_clobber[index]) {return None;}
+        Some(GpOutputGroupPlan{early_clobber,alternative,input_tie})
+    })
+}

@@ -1832,13 +1832,19 @@ impl Checker {
                     &inputs.iter().map(|i|i.constraint.as_str()).collect::<Vec<_>>(),
                 );
                 let dual_gp_results=dual_gp_plan.is_some();
+                let group_gp_plan=asm_output_roles::plan_gp_output_group(
+                    &outputs.iter().map(|o|o.constraint.as_str()).collect::<Vec<_>>(),
+                    &inputs.iter().map(|i|i.constraint.as_str()).collect::<Vec<_>>(),
+                );
+                let group_gp_results=group_gp_plan.is_some();
                 let mixed_gp_memory=outputs.len()==2 && inputs.len()==1
                     && inputs[0].constraint=="r"
                     && outputs.iter().filter(|o|
                         matches!(o.constraint.as_str(),"=r"|"=&r")).count()==1
                     && outputs.iter().filter(|o|
                         matches!(o.constraint.as_str(),"=m"|"+m")).count()==1;
-                if (!mixed_gp_memory && !dual_gp_results && outputs.len()>1)
+                if (!mixed_gp_memory && !dual_gp_results
+                    && !group_gp_results && outputs.len()>1)
                     || inputs.len()>2 {
                     return Err(type_error(*span,
                         "extended asm supports one output or a reviewed two-output GP/memory pair"));
@@ -1850,6 +1856,8 @@ impl Checker {
                     // operand labels retain their original positional index.
                     let effective_constraint=dual_gp_plan
                         .map(|plan|plan.output_constraint(output_index))
+                        .or_else(||group_gp_plan.as_ref().map(|plan|
+                            plan.output_constraint(output_index)))
                         .unwrap_or(output.constraint.as_str());
                     if !matches!(effective_constraint,"=r"|"+r"|"=&r"|"=m"|"+m") {
                         return Err(type_error(output.span,"extended asm output requires reviewed GP, =m or +m memory constraint"));
@@ -1909,7 +1917,7 @@ impl Checker {
                 // the machine allocator must keep its result distinct from
                 // all input registers. Other constraints still fail closed.
                 if !checked_outputs.is_empty() && !mixed_gp_memory
-                    && !dual_gp_results {
+                    && !dual_gp_results && !group_gp_results {
                     let out=&checked_outputs[0];
                     if out.constraint=="+r" && !inputs.is_empty() {
                         return Err(type_error(*span,"+r output cannot have a separate input in the bounded ASM2 form"));
@@ -1925,19 +1933,22 @@ impl Checker {
                 }
                 let mut checked_inputs=Vec::new();
                 for input in inputs {
+                    let group_input=group_gp_plan.as_ref()
+                        .map(|plan|plan.input_constraint());
                     let effective_constraint=if let Some(plan)=dual_gp_plan {
-                        // Select ONE GNU alternative shared by every operand.
-                        // A numeric tie has a real physical output register,
-                        // not a fabricated independent GP input.
                         plan.input_constraint()
-                    } else {input.constraint.as_str()};
-                    if !matches!(effective_constraint,"r"|"0"|"1"|"m") {
+                    } else {group_input.as_deref().unwrap_or(input.constraint.as_str())};
+                    if !matches!(effective_constraint,"r"|"0"|"1"|"m")
+                        && !(group_gp_results
+                            && effective_constraint.parse::<usize>().is_ok())
+                    {
                         return Err(type_error(input.span,"extended asm input requires r, matching 0 or reviewed m"));
                     }
                     if input.constraint=="m" && !gp_memory_read {
                         return Err(type_error(input.span,"ASM3 memory input requires one reviewed mov"));
                     }
-                    if matches!(effective_constraint,"0"|"1") && !dual_gp_results
+                    if matches!(effective_constraint,"0"|"1")
+                        && !dual_gp_results && !group_gp_results
                         && (checked_outputs.len()!=1 || effective_constraint!="0"
                             || checked_outputs[0].constraint!="=r") {
                         return Err(type_error(input.span,
@@ -1970,7 +1981,14 @@ impl Checker {
                         return Err(type_error(input.span,
                             "ASM3 memory output/RMW GP input must match its object width"));
                     }
-                    if let Some(tied_index)=dual_gp_plan.and_then(|p|p.input_tie) {
+                    if let Some(index)=group_gp_plan.as_ref().and_then(|p|p.input_tie) {
+                        if expr.ty.size_bytes(self.target)
+                            !=checked_outputs[index].expr.ty.size_bytes(self.target)
+                        {
+                            return Err(type_error(input.span,
+                                "ASM3 group matching input/output widths disagree"));
+                        }
+                    } else if let Some(tied_index)=dual_gp_plan.and_then(|p|p.input_tie) {
                         if expr.ty.size_bytes(self.target)
                             !=checked_outputs[tied_index as usize].expr.ty.size_bytes(self.target)
                         {
@@ -2010,7 +2028,7 @@ impl Checker {
                 for (index,clobber) in clobbers.iter().enumerate() {
                     if let Some(reg)=gp_clobber(clobber) {
                         if outputs.len()!=1 && !mixed_gp_memory
-                            && !dual_gp_results {
+                            && !dual_gp_results && !group_gp_results {
                             return Err(type_error(*span,
                                 "explicit GP clobbers require a checked GP asm output contract"));
                         }
