@@ -32,7 +32,10 @@ fn parse_options(args: impl IntoIterator<Item = String>) -> Result<Options, Stri
             end_options = true;
         } else if arg == "--emit-obj" {
             let name = args.next().ok_or("--emit-obj requires an output filename")?;
-            if name.is_empty() || output.replace(name).is_some() {
+            if name.is_empty() || name.starts_with('-') {
+                return Err("--emit-obj requires an output filename, not another option".into());
+            }
+            if output.replace(name).is_some() {
                 return Err("--emit-obj requires exactly one output filename".into());
             }
         } else if arg.starts_with("-W") {
