@@ -297,3 +297,44 @@ fn shadow_warning_object_gate_is_opt_in() {
     assert!(std::fs::read(&output).unwrap().starts_with(b"\x7fELF"));
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+fn unused_parameter_object_gate_follows_wextra() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let dir = std::env::temp_dir().join(format!(
+        "mini-c-cranelift-param-warning-{}-{nonce}", std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("params.c");
+    let output = dir.join("params.o");
+    std::fs::write(&source,
+        "int unused_parameter(int arg) { return 17; }\nint main(void) { return unused_parameter(4)-17; }\n"
+    ).unwrap();
+
+    let options = |flags: &[&str]| {
+        let mut args = vec![
+            "--cpp=none".to_owned(), "--emit-obj".to_owned(),
+            output.to_string_lossy().into_owned(),
+        ];
+        args.extend(flags.iter().map(|flag| (*flag).to_owned()));
+        args.push(source.to_string_lossy().into_owned());
+        parse_options(args).unwrap()
+    };
+
+    // -Wall alone does not imply unused-parameter, but -Wextra does.
+    assert_eq!(compile_to_object(&options(&["-Wall", "-Werror"])), ExitCode::SUCCESS);
+    assert!(std::fs::read(&output).unwrap().starts_with(b"\x7fELF"));
+    std::fs::remove_file(&output).unwrap();
+
+    assert_eq!(compile_to_object(&options(&["-Wextra", "-Werror"])), ExitCode::FAILURE);
+    assert!(!output.exists(), "promoted unused parameter must block new ELF output");
+
+    assert_eq!(
+        compile_to_object(&options(&["-Wextra", "-Werror", "-Wno-unused-parameter"])),
+        ExitCode::SUCCESS
+    );
+    assert!(std::fs::read(&output).unwrap().starts_with(b"\x7fELF"));
+    let _ = std::fs::remove_dir_all(dir);
+}
