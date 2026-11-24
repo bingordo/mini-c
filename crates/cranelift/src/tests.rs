@@ -94,14 +94,30 @@
         assert!(opts.warnings.warnings_as_errors);
         assert!(!opts.warnings.enabled("shadow"));
         assert!(!opts.warnings.enabled("unused-variable"));
-        assert!(parse_options(["--emit-obj", "out.o", "-Wall", "main.c"]
-            .into_iter().map(str::to_owned)).is_err());
+        let enabled = parse_options(["--emit-obj", "out.o", "-Wall", "main.c"]
+            .into_iter().map(str::to_owned)).unwrap();
+        assert!(enabled.warnings.enabled("unused-variable"));
         assert!(parse_options([
             "--emit-obj", "out.o", "-Wshadow", "main.c",
-        ].into_iter().map(str::to_owned)).is_err());
+        ].into_iter().map(str::to_owned)).unwrap().warnings.enabled("shadow"));
         assert!(parse_options([
             "--emit-obj", "out.o", "-Wformat", "main.c",
         ].into_iter().map(str::to_owned)).is_err());
+    }
+
+    #[test]
+    fn output_filename_option_does_not_consume_the_next_flag() {
+        for next in ["-Werror", "-Wall", "-I", "--cpp=none", "--emit-obj", "--"] {
+            let args = ["--emit-obj", next, "main.c"];
+            let err = parse_options(args.into_iter().map(str::to_owned)).err()
+                .expect("option-looking output name must be rejected");
+            assert!(err.contains("output filename"), "{next}: {err}");
+        }
+        // Explicitly supplied filenames, including spaces, remain valid.
+        let opts = parse_options([
+            "--emit-obj", "obj with spaces.o", "-Wall", "main.c",
+        ].into_iter().map(str::to_owned)).unwrap();
+        assert_eq!(opts.output, "obj with spaces.o");
     }
 
     #[test]
@@ -145,3 +161,170 @@
         }
         let _ = std::fs::remove_dir_all(dir);
     }
+
+#[test]
+fn native_warning_collection_respects_scope_and_groups() {
+    let source = "int f(int a, int unused) { int x = a; int dead = 1; return x; }";
+    let mut policy = WarningPolicy::default();
+    policy.apply_flag("-Wall").unwrap();
+    policy.apply_flag("-Wextra").unwrap();
+    let warnings = collect_semantic_warnings(source, &policy).unwrap();
+    let groups: Vec<_> = warnings.iter().map(|d| d.warning_group).collect();
+    assert_eq!(groups, vec![Some("unused-parameter"), Some("unused-variable")]);
+    assert!(warnings.iter().any(|d| d.diagnostic.message.contains("dead")));
+    assert!(warnings.iter().any(|d| d.diagnostic.message.contains("unused")));
+}
+
+#[test]
+fn native_warning_promotion_blocks_object_write() {
+    let source = "int f(void) { int dead = 1; return 0; }";
+    let mut policy = WarningPolicy::default();
+    assert!(collect_semantic_warnings(source, &policy).unwrap().is_empty());
+    policy.apply_flag("-Wall").unwrap();
+    assert!(!emit_semantic_warnings("source.c", source, false, &policy).unwrap());
+    policy.apply_flag("-Werror").unwrap();
+    assert!(emit_semantic_warnings("source.c", source, false, &policy).unwrap());
+    policy.apply_flag("-Wno-unused-variable").unwrap();
+    assert!(!emit_semantic_warnings("source.c", source, false, &policy).unwrap());
+}
+
+#[test]
+fn native_warning_checks_preserve_preprocessed_origins() {
+    let source = "# 20 \"source.h\"\nint f(void) { int dead = 1; return 0; }\n";
+    let mut policy = WarningPolicy::default();
+    policy.apply_flag("-Wunused-variable").unwrap();
+    let (messages, failed) =
+        format_semantic_warnings("main.c", source, true, &policy).unwrap();
+    assert!(!failed);
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    assert!(messages[0].starts_with("source.h:20: warning:"), "{messages:?}");
+    assert!(messages[0].contains("[-Wunused-variable]"), "{messages:?}");
+}
+
+#[test]
+fn native_warning_locations_keep_raw_columns_and_werror_severity() {
+    let source = "int f(void) { int dead = 1; return 0; }";
+    let mut policy = WarningPolicy::default();
+    policy.apply_flag("-Wunused-variable").unwrap();
+    let (warnings, failed) =
+        format_semantic_warnings("raw.c", source, false, &policy).unwrap();
+    assert!(!failed);
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].starts_with("raw.c:1:"), "{warnings:?}");
+    assert!(warnings[0].contains(": warning:"), "{warnings:?}");
+    policy.apply_flag("-Werror").unwrap();
+    let (errors, failed) =
+        format_semantic_warnings("raw.c", source, false, &policy).unwrap();
+    assert!(failed);
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(errors[0].contains(": error:"), "{errors:?}");
+    assert!(errors[0].contains("[-Wunused-variable]"), "{errors:?}");
+    policy.apply_flag("-Wno-unused-variable").unwrap();
+    let (suppressed, failed) =
+        format_semantic_warnings("raw.c", source, false, &policy).unwrap();
+    assert!(!failed);
+    assert!(suppressed.is_empty(), "{suppressed:?}");
+}
+
+/// Exercise all implemented semantic warning groups through native ELF
+/// emission, including default enablement, promotion, and explicit suppression.
+#[test]
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+fn semantic_warning_groups_gate_elf_object_output() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let dir = std::env::temp_dir().join(format!(
+        "mini-c-warning-matrix-{}-{nonce}", std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+
+    // GCC-compatible policy: unused-variable follows -Wall,
+    // unused-parameter follows -Wextra, and shadow is explicitly opt-in.
+    /// One C fixture with the expected warning-policy outcomes.
+    struct WarningCase {
+        name: &'static str,
+        contents: &'static str,
+        allowed: &'static [&'static str],
+        promoted: &'static [&'static str],
+        suppressed: &'static [&'static str],
+    }
+    let cases = [
+        WarningCase {
+            name: "unused-variable",
+            contents: "int main(void) { int dead = 1; return 0; }",
+            allowed: &["-Wunused-variable"],
+            promoted: &["-Wunused-variable", "-Werror"],
+            suppressed: &["-Wunused-variable", "-Werror", "-Wno-unused-variable"],
+        },
+        WarningCase {
+            name: "shadow",
+            contents: "int value; int main(void) { int value = 3; return value - 3; }",
+            allowed: &["-Wall", "-Werror"],
+            promoted: &["-Wshadow", "-Werror"],
+            suppressed: &["-Wshadow", "-Werror", "-Wno-shadow"],
+        },
+        WarningCase {
+            name: "unused-parameter",
+            contents: "int f(int unused) { return 17; } int main(void) { return f(4)-17; }",
+            allowed: &["-Wall", "-Werror"],
+            promoted: &["-Wextra", "-Werror"],
+            suppressed: &["-Wextra", "-Werror", "-Wno-unused-parameter"],
+        },
+    ];
+
+    for WarningCase { name, contents, allowed, promoted, suppressed } in cases {
+        let source = dir.join(format!("{name}.c"));
+        let output = dir.join(format!("{name}.o"));
+        std::fs::write(&source, contents).unwrap();
+        let options = |flags: &[&str]| {
+            let mut args = vec![
+                "--cpp=none".to_owned(), "--emit-obj".to_owned(),
+                output.to_string_lossy().into_owned(),
+            ];
+            args.extend(flags.iter().map(|flag| (*flag).to_owned()));
+            args.push(source.to_string_lossy().into_owned());
+            parse_options(args).unwrap()
+        };
+
+        assert_eq!(compile_to_object(&options(allowed)), ExitCode::SUCCESS, "{name}");
+        assert!(std::fs::read(&output).unwrap().starts_with(b"\x7fELF"), "{name}");
+        std::fs::remove_file(&output).unwrap();
+
+        assert_eq!(compile_to_object(&options(promoted)), ExitCode::FAILURE, "{name}");
+        assert!(!output.exists(), "{name}: promoted warning created an object");
+
+        assert_eq!(compile_to_object(&options(suppressed)), ExitCode::SUCCESS, "{name}");
+        assert!(std::fs::read(&output).unwrap().starts_with(b"\x7fELF"), "{name}");
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+fn object_output_must_not_overwrite_source_or_hard_link() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let dir = std::env::temp_dir().join(format!(
+        "mini-c-object-alias-{}-{nonce}", std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("program.c");
+    let alias = dir.join("program-alias.o");
+    let symlink = dir.join("program-symlink.o");
+    let original = b"int main(void) { return 0; }\n";
+    std::fs::write(&source, original).unwrap();
+    std::fs::hard_link(&source, &alias).unwrap();
+    std::os::unix::fs::symlink(&source, &symlink).unwrap();
+
+    for output in [&source, &alias, &symlink] {
+        let options = parse_options([
+            "--cpp=none".to_owned(), "--emit-obj".to_owned(),
+            output.to_string_lossy().into_owned(),
+            source.to_string_lossy().into_owned(),
+        ]).unwrap();
+        assert_eq!(compile_to_object(&options), ExitCode::FAILURE);
+        assert_eq!(std::fs::read(&source).unwrap(), original);
+        assert_eq!(std::fs::read(&alias).unwrap(), original);
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
