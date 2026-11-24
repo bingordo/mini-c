@@ -185,8 +185,12 @@ fn compile_to_object(opts: &Options) -> ExitCode {
         Ok(true) => return ExitCode::FAILURE,
         Ok(false) => {}
         Err(error) => {
-            eprintln!("{}: error[{}]: {}", opts.source,
-                error.code.as_str(), error.message);
+            // The warning checker reads the same preprocessed input as
+            // codegen, so its failures need the same #line origin mapping.
+            eprintln!("{}", format_compiler_error(
+                &opts.source, &source, opts.cpp.is_some(),
+                CompileError::Diagnostic(error),
+            ));
             return ExitCode::FAILURE;
         }
     }
