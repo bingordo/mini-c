@@ -9,7 +9,7 @@ fn both_output_roles_are_preserved_without_register_assignment() {
             let outputs=[if a {"=&r"}else{"=r"},if b {"=&r"}else{"=r"}];
             assert_eq!(
                 plan_dual_gp(&outputs,&["r"]),
-                Some(DualGpOutputPlan{early_clobber:[a,b]})
+                Some(DualGpOutputPlan{early_clobber:[a,b],alternative:0})
             );
         }
     }
