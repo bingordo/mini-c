@@ -59,7 +59,7 @@
 
     #[cfg(feature = "internal-cpp")]
     #[test]
-    fn opt_in_bounded_cpp_pipe_rejects_atomic_types_explicitly() {
+    fn opt_in_bounded_cpp_pipe_accepts_atomic_integers_and_rejects_unsupported_types() {
         use std::time::{SystemTime, UNIX_EPOCH};
         let dir = std::env::temp_dir().join(format!(
             "mini-c-direct-atomic-{}-{}",
@@ -72,15 +72,21 @@
             executable: "internal-stream".into(),
             args: vec!["-E", "-nostdinc"].into_iter().map(Into::into).collect(),
         };
-        // A preceding valid declaration must not make an unsupported
-        // atomic type appear successful in the pull-driven checker.
+
+        // C11 atomic integer declarations are now part of the supported
+        // semantic type system, including in the streaming checker.
         std::fs::write(&root, "int first;\n_Atomic int counter;\n").unwrap();
+        assert!(check(root.to_str().unwrap(), Some(&config)).is_ok());
+        assert!(check_recovering(root.to_str().unwrap(), Some(&config), 4).is_ok());
+
+        // Unsupported atomic storage must still fail rather than allowing
+        // the preceding valid declaration to hide a late semantic error.
+        std::fs::write(&root, "int first;\n_Atomic float counter;\n").unwrap();
         let failure = check(root.to_str().unwrap(), Some(&config)).unwrap_err();
-        assert!(failure.contains("C11 _Atomic type is unsupported"), "{failure}");
         assert!(failure.contains("atomic.c:2:"), "{failure}");
         let failure = check_recovering(root.to_str().unwrap(), Some(&config), 4).unwrap_err();
-        // Syntax is now retained; the checked semantic type is still rejected.
         assert!(failure.contains("error[T0001]"), "{failure}");
+
         std::fs::remove_dir_all(dir).unwrap();
     }
 
