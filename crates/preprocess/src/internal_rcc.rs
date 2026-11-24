@@ -37,8 +37,29 @@ fn options_from_args(args: &[std::ffi::OsString]) -> Result<rcc_session::Options
     // its final operation before passing it into the independent engine.
     // The outer Option distinguishes undef from a valueless -DNAME.
     let mut macro_actions: BTreeMap<String, Option<Option<String>>> = BTreeMap::new();
-    for arg in args {
-        let arg = arg.to_str().ok_or("internal preprocessor needs UTF-8 option values")?;
+    let mut args = args.iter();
+    while let Some(raw) = args.next() {
+        let raw = raw.to_str().ok_or("internal preprocessor needs UTF-8 option values")?;
+        // GCC accepts both attached and separate operands for these options.
+        // Normalize once here: batch and streaming CPP share this parser.
+        // Never consume a subsequent flag as a missing operand.
+        let normalized;
+        let arg = if matches!(raw, "-I" | "-D" | "-U" | "-isystem" | "--sysroot") {
+            let value = args.next()
+                .ok_or_else(|| format!("internal {raw} requires an operand"))?
+                .to_str().ok_or("internal preprocessor needs UTF-8 option values")?;
+            if value.is_empty() || value.starts_with('-') {
+                return Err(format!("internal {raw} requires a nonempty operand"));
+            }
+            normalized = if raw == "--sysroot" {
+                format!("--sysroot={value}")
+            } else {
+                format!("{raw}{value}")
+            };
+            normalized.as_str()
+        } else {
+            raw
+        };
         if arg == "-E" {
             continue;
         }
@@ -347,6 +368,82 @@ mod tests {
         let error = super::file(&source, &[OsString::from("-E")]).unwrap_err();
         assert!(error.contains("source byte limit exceeded"), "{error}");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+
+    #[test]
+    fn separated_gcc_cpp_options_match_attached_forms_in_both_adapters() {
+        let split = [
+            OsString::from("-E"), OsString::from("-nostdinc"),
+            OsString::from("-I"), OsString::from("/project/includes"),
+            OsString::from("-isystem"), OsString::from("/sdk/includes"),
+            OsString::from("--sysroot"), OsString::from("/sdk"),
+            OsString::from("-D"), OsString::from("ANSWER=41"),
+            OsString::from("-U"), OsString::from("ANSWER"),
+            OsString::from("-D"), OsString::from("ANSWER=42"),
+        ];
+        let attached = [
+            OsString::from("-E"), OsString::from("-nostdinc"),
+            OsString::from("-I/project/includes"),
+            OsString::from("-isystem/sdk/includes"),
+            OsString::from("--sysroot=/sdk"),
+            OsString::from("-DANSWER=41"),
+            OsString::from("-UANSWER"),
+            OsString::from("-DANSWER=42"),
+        ];
+        let split = options_from_args(&split).unwrap();
+        let attached = options_from_args(&attached).unwrap();
+        assert_eq!(split.include_paths, attached.include_paths);
+        assert_eq!(split.system_include_paths, attached.system_include_paths);
+        assert_eq!(split.sysroot, attached.sysroot);
+        assert_eq!(split.cli_defines, attached.cli_defines);
+        assert_eq!(split.cli_undefines, attached.cli_undefines);
+        assert_eq!(split.cli_defines, vec![("ANSWER".into(), Some("42".into()))]);
+    }
+
+
+    #[test]
+    fn separated_flags_work_in_batch_and_streaming_cpp() {
+        let dir = std::env::temp_dir().join(format!(
+            "mini-c-cpp-split-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos(),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.join("source.c");
+        std::fs::write(dir.join("constants.h"), "#define BASE 9\n").unwrap();
+        std::fs::write(&root, "#include \"constants.h\"\nint answer = BASE + OFFSET;\n").unwrap();
+        let args = vec![
+            OsString::from("-E"), OsString::from("-nostdinc"),
+            OsString::from("-I"), dir.clone().into_os_string(),
+            OsString::from("-D"), OsString::from("OFFSET=33"),
+        ];
+        let batch = file(&root, &args).expect("split flags in batch preprocessor");
+        let stream = stream::start(&root, &args)
+            .expect("split flags in streaming preprocessor")
+            .map(|token| token.expect("stream token").spelling.to_string())
+            .collect::<Vec<_>>().join(" ");
+        std::fs::remove_dir_all(dir).unwrap();
+        for output in [batch.as_str(), stream.as_str()] {
+            assert!(output.contains("answer"), "{output}");
+            assert!(output.contains("9"), "{output}");
+            assert!(output.contains("33"), "{output}");
+        }
+    }
+
+    #[test]
+    fn separated_gcc_cpp_options_reject_missing_and_flag_operands() {
+        for args in [
+            vec!["-I"], vec!["-D"], vec!["-U"],
+            vec!["-isystem"], vec!["--sysroot"],
+            vec!["-I", "-DNAME=1"], vec!["-D", "-UFOO"],
+            vec!["-isystem", "-nostdinc"],
+            vec!["--sysroot", "-E"],
+        ] {
+            let options = args.iter().copied().map(OsString::from).collect::<Vec<_>>();
+            let error = options_from_args(&options).unwrap_err();
+            assert!(error.contains("requires"), "{args:?}: {error}");
+        }
     }
 
     #[test]
