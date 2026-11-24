@@ -254,3 +254,46 @@ fn warning_promotion_prevents_object_creation_but_normal_warning_emits_elf() {
     assert!(std::fs::read(&output).unwrap().starts_with(b"\x7fELF"));
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+fn shadow_warning_object_gate_is_opt_in() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let dir = std::env::temp_dir().join(format!(
+        "mini-c-cranelift-shadow-gate-{}-{nonce}", std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("shadow.c");
+    let output = dir.join("shadow.o");
+    std::fs::write(&source,
+        "int value; int main(void) { int value = 3; return value - 3; }\n"
+    ).unwrap();
+
+    let options = |flags: &[&str]| {
+        let mut args = vec![
+            "--cpp=none".to_owned(), "--emit-obj".to_owned(),
+            output.to_string_lossy().into_owned(),
+        ];
+        args.extend(flags.iter().map(|flag| (*flag).to_owned()));
+        args.push(source.to_string_lossy().into_owned());
+        parse_options(args).unwrap()
+    };
+
+    // -Wall does not imply -Wshadow; the existing default output path works.
+    assert_eq!(compile_to_object(&options(&["-Wall", "-Werror"])), ExitCode::SUCCESS);
+    assert!(std::fs::read(&output).unwrap().starts_with(b"\x7fELF"));
+    std::fs::remove_file(&output).unwrap();
+
+    // Explicitly enabling -Wshadow must fail before object creation.
+    assert_eq!(compile_to_object(&options(&["-Wshadow", "-Werror"])), ExitCode::FAILURE);
+    assert!(!output.exists());
+
+    // Last matching override disables this diagnostic again.
+    assert_eq!(
+        compile_to_object(&options(&["-Wshadow", "-Werror", "-Wno-shadow"])),
+        ExitCode::SUCCESS
+    );
+    assert!(std::fs::read(&output).unwrap().starts_with(b"\x7fELF"));
+    let _ = std::fs::remove_dir_all(dir);
+}
