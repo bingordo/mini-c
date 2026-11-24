@@ -45,7 +45,9 @@ impl CppOptions {
             self.arguments.push(arg.into());
         } else if matches!(arg, "-isystem" | "--sysroot") {
             let value = remaining.next().ok_or_else(|| format!("{arg} requires a directory"))?;
-            if value.is_empty() { return Err(format!("{arg} requires a directory")); }
+            if value.is_empty() || value.starts_with('-') {
+                return Err(format!("{arg} requires a directory, not another option"));
+            }
             let joined = if arg == "--sysroot" {
                 format!("{arg}={value}")
             } else {
@@ -56,7 +58,9 @@ impl CppOptions {
             self.arguments.push(arg.into());
         } else if matches!(arg, "-I" | "-D" | "-U") {
             let value = remaining.next().ok_or_else(|| format!("{arg} requires a value"))?;
-            if value.is_empty() { return Err(format!("{arg} requires a nonempty value")); }
+            if value.is_empty() || value.starts_with('-') {
+                return Err(format!("{arg} requires a value, not another option"));
+            }
             self.arguments.push(format!("{arg}{value}").into());
         } else if arg.starts_with("-I") || arg.starts_with("-D") || arg.starts_with("-U") {
             self.arguments.push(arg.into());
@@ -129,6 +133,33 @@ mod tests {
             vec!["-E", "-isystemmy system headers", "--sysroot=/tmp/test root",
                  "-nostdinc", "-Iproject"].into_iter().map(OsString::from)
                 .collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn missing_split_cpp_operands_do_not_swallow_following_flags() {
+        for arg in ["-I", "-D", "-U", "-isystem", "--sysroot"] {
+            for next in ["-E", "-DVALUE=1", "-nostdinc"] {
+                let mut options = CppOptions::default();
+                let mut remaining = [next.to_owned()].into_iter();
+                let err = options.consume(arg, &mut remaining).unwrap_err();
+                assert!(err.contains("requires"), "{arg} {next}: {err}");
+            }
+        }
+    }
+
+    #[test]
+    fn split_system_and_macro_flags_preserve_spaced_values() {
+        let mut options = CppOptions::default();
+        let mut input = ["dir with spaces".to_owned(), "VALUE=two words".to_owned(),
+                         "/sdk with spaces".to_owned()].into_iter();
+        for flag in ["-I", "-D", "--sysroot"] {
+            assert!(options.consume(flag, &mut input).unwrap());
+        }
+        let config = options.finish().unwrap().unwrap();
+        assert_eq!(config.args, vec![
+            "-E", "-Idir with spaces", "-DVALUE=two words",
+            "--sysroot=/sdk with spaces",
+        ].into_iter().map(OsString::from).collect::<Vec<_>>());
     }
 
     #[test]
