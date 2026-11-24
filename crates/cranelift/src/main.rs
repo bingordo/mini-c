@@ -164,9 +164,34 @@ fn main() -> ExitCode {
     compile_to_object(&opts)
 }
 
+/// Reject output paths that refer to the input file itself. On Unix,
+/// comparing device and inode also catches hard links and symlink aliases.
+fn output_aliases_source(source: &str, output: &str) -> bool {
+    let (Ok(input), Ok(destination)) = (fs::metadata(source), fs::metadata(output)) else {
+        return false;
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        input.dev() == destination.dev() && input.ino() == destination.ino()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (input, destination);
+        match (fs::canonicalize(source), fs::canonicalize(output)) {
+            (Ok(input_path), Ok(output_path)) => input_path == output_path,
+            _ => false,
+        }
+    }
+}
+
 /// Compile the selected C source and write an object only after all enabled
 /// semantic diagnostics have passed the configured warning policy.
 fn compile_to_object(opts: &Options) -> ExitCode {
+    if output_aliases_source(&opts.source, &opts.output) {
+        eprintln!("{}: refusing to overwrite C input source {}", opts.output, opts.source);
+        return ExitCode::FAILURE;
+    }
     let source = match &opts.cpp {
         Some(config) => preprocess::file(Path::new(&opts.source), config)
             .map_err(|e| e.to_string()),
