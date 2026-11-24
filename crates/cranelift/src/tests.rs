@@ -348,7 +348,7 @@ fn cmake_abi_adjacent_literals_parse_emit_link_and_execute() {
     // remains after translation phase 6 concatenation.
     std::fs::write(&source, concat!(
         "static char const info_abi[] = \"INFO:abi[\" \"ELF\" \"]\";\n",
-        "static char const embedded[] = \"a\\\\0\" /* join */ \"b\";\n",
+        "static char const embedded[] = \"a\\0\" /* join */ \"b\";\n",
         "int main(void) {\n",
         "  return !(sizeof(info_abi) == 14 && info_abi[9] == 'E'\n",
         "    && info_abi[11] == 'F' && sizeof(embedded) == 4\n",
