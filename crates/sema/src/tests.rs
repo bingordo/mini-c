@@ -4540,3 +4540,28 @@ fn asm3_p03_gnu_extended_template_is_instruction_opaque_in_source_checker() {
         }
     }
 }
+
+#[test]
+fn c99_flexible_array_member_constraints_and_access() {
+    for source in [
+        "struct S{int n; int data[];}; int f(struct S *p){return p->data[1];}",
+        "struct S{char n; double data[];}; int f(void){return sizeof(struct S)==8;}",
+        "struct S{int n; int data[];}; struct S s={1};",
+        "struct S{int n; int data[];}; union U{struct S s; int n;}; union U u;",
+        "struct S{int n; int data[];}; struct T{struct S *p;};",
+    ] {
+        check(source).unwrap_or_else(|err| panic!("{source}: {err:?}"));
+    }
+    for source in [
+        "struct S{int data[];};",
+        "struct S{int data[]; int n;};",
+        "union U{int n; int data[];};",
+        "struct S{int n; int data[];}; struct T{struct S s;};",
+        "struct S{int n; int data[];}; struct S a[2];",
+        "struct S{int n; int data[];}; union U{struct S s; int n;}; struct T{union U u;};",
+        "struct S{int n; int data[];}; struct S s={1,{2}};",
+        "struct S{int n; int data[];}; struct S s={.data={2}};",
+    ] {
+        assert!(check(source).is_err(), "accepted invalid C99: {source}");
+    }
+}
