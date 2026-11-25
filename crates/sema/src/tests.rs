@@ -4540,3 +4540,23 @@ fn asm3_p03_gnu_extended_template_is_instruction_opaque_in_source_checker() {
         }
     }
 }
+
+#[test]
+fn c99_composite_pointer_types_in_value_contexts() {
+    for source in [
+        "int f(int (*a)[], int (*b)[4]){a=b;return a==b;}",
+        "int f(int (*a)[], int (*b)[4]){b=a;return a!=b;}",
+        "int f(int c, int (*a)[], int (*b)[4]){return sizeof *(c?a:b)==4*sizeof(int);}",
+        "typedef int F(int (*)[]); typedef int G(int (*)[4]); int f(F *p,G *q){p=q;return p==q;}",
+    ] {
+        check(source).unwrap_or_else(|err| panic!("{source}: {err:?}"));
+    }
+    for source in [
+        "int f(int (*a)[3], int (*b)[4]){a=b;return 0;}",
+        "int f(int (*a)[3], int (*b)[4]){return a==b;}",
+        "int f(int c,int (*a)[3],int (*b)[4]){return (c?a:b)!=0;}",
+        "typedef int F(int (*)[3]); typedef int G(int (*)[4]); int f(F *p,G *q){p=q;return 0;}",
+    ] {
+        assert!(check(source).is_err(), "accepted incompatible C99 types: {source}");
+    }
+}
