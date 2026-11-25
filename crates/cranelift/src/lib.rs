@@ -935,8 +935,17 @@ impl Compiler {
             span: Default::default(),
         })?;
         let (label_names, referenced_labels) = Self::native_goto_plan(&function.body)?;
+        // A declaration immediately preceding a definition need not be
+        // installed as an import with an obsolete no-prototype ABI.
+        let pending = self.pending_functions.remove(&function.name);
+        let label = if let Some(pending) = &pending {
+            if pending.ty.composite(&function.signature).is_none() {
+                return Err(format!("conflicting backend signature for '{}'", function.name));
+            }
+            Some(pending.link_name.as_str())
+        } else { None };
         self.flush_pending_imports()?;
-        let id = self.declare(&function.name, &function.signature, function.linkage, true, None)?;
+        let id = self.declare(&function.name, &function.signature, function.linkage, true, label)?;
         let mut ctx = self.module.make_context();
         ctx.func.signature = signature(&self.module, &function.signature)?;
         ctx.func.name = ir::UserFuncName::user(0, id.as_u32());
@@ -972,7 +981,10 @@ impl Compiler {
                     .ok_or("missing hidden SysV sret parameter")?);
                 next += 1;
             }
-            for param in &function.params {
+            let CType::Function { params: source_abi_types, .. } = &function.signature else {
+                return Err("function signature expected".into());
+            };
+            for (param, abi_type) in function.params.iter().zip(source_abi_types) {
                 if is_aggregate(&param.ty) {
                     lower.bind_storage(&mut builder, &param.name, &param.ty)?;
                     let address = lower.object_address(&mut builder, &param.name)?;
@@ -998,6 +1010,11 @@ impl Compiler {
                 } else {
                     let value = *params.get(next)
                         .ok_or_else(|| format!("ABI parameter mismatch for '{}'", function.name))?;
+                    // An identifier-list definition receives default-promoted
+                    // ABI values but its local parameter keeps the declared type.
+                    let value = if abi_type.unqualified() != param.ty.unqualified() {
+                        Lower::convert(&mut builder, value, abi_type, &param.ty)?
+                    } else { value };
                     lower.bind(&mut builder, &param.name, &param.ty, Some(value))?;
                     next += 1;
                 }
