@@ -3020,7 +3020,7 @@ impl Checker {
                 // pairs; ordering requires compatible object pointer types.
                 let equality = matches!(op, BinOp::Eq | BinOp::Ne);
                 if relation && (matches!((&left.ty, &right.ty), (CType::Pointer(a), CType::Pointer(b))
-                        if (a.unqualified().same_type(b.unqualified())
+                        if (a.unqualified().composite(b.unqualified()).is_some()
                             && (equality || a.unqualified().is_object()))
                             || (equality && ((*a.unqualified() == CType::Void && b.unqualified().is_object())
                                 || (*b.unqualified() == CType::Void && a.unqualified().is_object()))))
@@ -3147,8 +3147,8 @@ impl Checker {
                 {
                     let base_a = a.unqualified();
                     let base_b = b.unqualified();
-                    let unified = if base_a.same_type(base_b) {
-                        base_a.clone()
+                    let unified = if let Some(composite) = base_a.composite(base_b) {
+                        composite
                     } else if (*base_a == CType::Void && base_b.is_object())
                         || (*base_b == CType::Void && base_a.is_object())
                     {
