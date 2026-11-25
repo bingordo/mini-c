@@ -840,6 +840,10 @@ impl Checker {
             }
             Type::Array(element, bound) => {
                 let element = self.resolve(element, span)?;
+                let element = self.try_complete_tag_type(element)?;
+                if element.has_flexible_array_member() {
+                    return Err(type_error(span, "array element cannot contain a flexible array member"));
+                }
                 if !element.is_object() || matches!(element, CType::Array(_, None)) {
                     return Err(type_error(span, "array element requires a complete object type"));
                 }
@@ -1378,6 +1382,11 @@ impl Checker {
     ) -> Result<CheckedExpr, Diagnostic> {
         let span = original.location().unwrap_or(span);
         let original = original.without_location();
+        // Top-level incomplete arrays are completed before reaching this
+        // checker; a remaining incomplete array is not an initializer target.
+        if matches!(ty.unqualified(), CType::Array(_, None)) {
+            return Err(type_error(span, "incomplete array initializer"));
+        }
         // Bit-fields use the ordinary typed integer initializer checker.
         // The checked aggregate retains member indices; native automatic and
         // static object emitters pack only each selected bit range and leave
@@ -2603,6 +2612,10 @@ impl Checker {
             }
             Type::Array(inner, bound) => {
                 let element = self.resolve_sizeof_type(inner, span)?;
+                let element = self.try_complete_tag_type(element)?;
+                if element.has_flexible_array_member() {
+                    return Err(type_error(span, "array element cannot contain a flexible array member"));
+                }
                 let count = bound.as_ref().map(|expr| {
                     let typed = self.check_expr(expr, span)?;
                     if !typed.ty.is_integer() {
