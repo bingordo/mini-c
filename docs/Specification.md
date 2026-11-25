@@ -42,7 +42,7 @@ Each milestone requires positive and negative parser tests, semantic tests, exec
 
 ## Embeddable frontend contract
 
-Mini-C must be usable as a Rust library from `bingundu/compiler` without spawning a CLI or requiring a backend. The dependency graph is strictly one-way: `mini-c-syntax` -> `mini-c-sema` -> `mini-c-front`; a separate optional `mini-c-compiler-bridge` may depend on `compiler-ir`, but core Mini-C crates must never depend on `compiler`. The `compiler` driver can select the Mini-C frontend and use the same IR/optimization/backend pipeline as Oberon. Do not add a cyclic dependency.
+Mini-C must be usable as a Rust library from `bingordo/compiler` without spawning a CLI or requiring a backend. The dependency graph is one-way: `mini-c-sema` depends on `mini-c-syntax`; the standalone `mini-c` CLI and optional `mini-c-cranelift` reference depend on the frontend crates. The compiler-owned adapter in `bingordo/compiler/tools/mini-c-driver` depends on `mini-c-syntax` and `mini-c-sema`, not the reverse. Core Mini-C crates must never depend on `compiler-ir` or native backend crates. The `compiler` driver selects the checked Mini-C frontend and uses the same TypeId optimization/native backend pipeline as Oberon. Do not introduce a cyclic dependency.
 
 Current embedding contract: a streaming `mini_c_syntax::parser::Parser`
 (`ItemSource`) feeds `mini_c_sema::Checker`, which produces checked
@@ -54,7 +54,7 @@ avoid global parser state. No process exit, printing, filesystem reads,
 subprocess invocation, or hidden global mutable state in the core library.
 A separate CLI crate owns files, external preprocessing, diagnostics rendering and command-line parsing. Library tests must run without an installed C compiler. Prefer narrow stable public types; keep generated parser internals private.
 
-Integration strategy: pin a Git revision of Mini-C from the compiler driver, or later publish crates; keep a feature-free syntax/sema path. The backend bridge can live in `bingundu/compiler` to keep Mini-C entirely independent of compiler internals, or in an optional leaf crate with a one-way dependency. Initially prefer the bridge in compiler for the smallest coupling. Document compatibility and version bumps when checked representations change.
+Integration strategy: pin a Git revision of Mini-C from the compiler driver, or later publish crates; keep a feature-free syntax/sema path. The compiler-owned bridge lives in `bingordo/compiler/tools/mini-c-driver`, preserving Mini-C's independence from compiler internals; new compiler integration belongs there rather than in the reference Cranelift crate. Document compatibility and version bumps when checked representations change.
 
 ## Production and reference backend boundary
 
