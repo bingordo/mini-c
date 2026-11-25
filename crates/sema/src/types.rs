@@ -321,13 +321,28 @@ pub fn layout_struct_with_bits(
     let mut bit_cursor: Option<u64> = None;
     let mut members = Vec::with_capacity(fields.len());
     let mut seen = std::collections::HashSet::new();
-    for (name, ty, bit_width) in fields {
+    let field_count = fields.len();
+    for (index, (name, ty, bit_width)) in fields.into_iter().enumerate() {
         let unnamed = name.is_empty();
         if unnamed && bit_width.is_none() {
             return Err("unnamed aggregate member requires a bit-field width");
         }
         if !unnamed && !seen.insert(name.clone()) {
             return Err("duplicate structure member");
+        }
+        if let CType::Array(element, None) = ty.unqualified() {
+            if index + 1 != field_count || members.is_empty() || bit_width.is_some()
+                || element.size_bytes(target).filter(|size| *size > 0).is_none()
+                || !element.is_object()
+            {
+                return Err("invalid flexible array member");
+            }
+            let field_align = element.align_bytes(target).ok_or("incomplete flexible array element")?;
+            align = align.max(field_align);
+            let offset = align_up(size, field_align).ok_or("structure member layout overflow")?;
+            size = offset;
+            members.push(StructMember { name, ty, offset, bit_field: None });
+            continue;
         }
         let field_size = ty.size_bytes(target).ok_or("structure member has incomplete type")?;
         let field_align = ty.align_bytes(target).ok_or("structure member has incomplete type")?;
@@ -737,4 +752,25 @@ mod tests {
         assert_eq!(new_array.composite(&old_array), Some(new_array));
     }
 
+}
+
+#[cfg(test)]
+mod flexible_array_layout_tests {
+    use super::*;
+
+    #[test]
+    fn trailing_incomplete_array_layout() {
+        let target = Target::default();
+        let array = CType::Array(Box::new(CType::int()), None);
+        let ty = layout_struct(None, vec![("n".into(), CType::int()), ("data".into(), array.clone())], target).unwrap();
+        assert_eq!(ty.size_bytes(target), Some(4));
+        assert_eq!(ty.align_bytes(target), Some(4));
+        if let CType::Struct { members, .. } = ty {
+            assert_eq!(members[1].offset, 4);
+            assert_eq!(members[1].ty, array);
+        } else { panic!("expected structure"); }
+        assert!(layout_struct(None, vec![("data".into(), array.clone())], target).is_err());
+        assert!(layout_struct(None, vec![("data".into(), array.clone()), ("n".into(), CType::int())], target).is_err());
+        assert!(layout_union(None, vec![("n".into(), CType::int()), ("data".into(), array)], target).is_err());
+    }
 }
