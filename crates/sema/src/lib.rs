@@ -619,7 +619,8 @@ impl Checker {
             }
             Type::Qualified(inner, qualifiers) => {
                 let base = self.resolve(inner, span)?;
-                if qualifiers.is_restrict && !matches!(base.unqualified(), CType::Pointer(_)) {
+                if qualifiers.is_restrict && !matches!(base.unqualified(), CType::Pointer(pointee)
+                    if !matches!(pointee.unqualified(), CType::Function { .. } | CType::VariadicFunction { .. })) {
                     return Err(type_error(span, "restrict requires a pointer object type"));
                 }
                 if (qualifiers.is_const || qualifiers.is_volatile)
@@ -820,8 +821,11 @@ impl Checker {
             Type::Pointer(inner) => CType::Pointer(Box::new(self.resolve(inner, span)?)),
             Type::Function { result, params } | Type::VariadicFunction { result, params } => {
                 let result = self.resolve(result, span)?;
-                if matches!(result, CType::Function { .. } | CType::VariadicFunction { .. }) {
+                if matches!(result.unqualified(), CType::Function { .. } | CType::VariadicFunction { .. }) {
                     return Err(type_error(span, "function cannot return a function"));
+                }
+                if matches!(result.unqualified(), CType::Array(..)) {
+                    return Err(type_error(span, "function cannot return an array"));
                 }
                 let mut converted = Vec::with_capacity(params.len());
                 for param in params {
@@ -840,6 +844,9 @@ impl Checker {
             }
             Type::Array(element, bound) => {
                 let element = self.resolve(element, span)?;
+                if self.try_complete_tag_type(element.clone())?.has_flexible_array_member() {
+                    return Err(type_error(span, "array element cannot contain a flexible array member"));
+                }
                 if !element.is_object() || matches!(element, CType::Array(_, None)) {
                     return Err(type_error(span, "array element requires a complete object type"));
                 }
@@ -1378,6 +1385,11 @@ impl Checker {
     ) -> Result<CheckedExpr, Diagnostic> {
         let span = original.location().unwrap_or(span);
         let original = original.without_location();
+        // Top-level incomplete arrays are completed before reaching this
+        // checker; a remaining incomplete array is not an initializer target.
+        if matches!(ty.unqualified(), CType::Array(_, None)) {
+            return Err(type_error(span, "incomplete array initializer"));
+        }
         // Bit-fields use the ordinary typed integer initializer checker.
         // The checked aggregate retains member indices; native automatic and
         // static object emitters pack only each selected bit range and leave
@@ -1616,8 +1628,11 @@ impl Checker {
         }
         let result = self.resolve(&func.result, func.span)?;
         let result = self.complete_tag_type(result, func.span)?;
-        if matches!(result, CType::Function { .. } | CType::VariadicFunction { .. }) {
+        if matches!(result.unqualified(), CType::Function { .. } | CType::VariadicFunction { .. }) {
             return Err(type_error(func.span, "function cannot return a function"));
+        }
+        if matches!(result.unqualified(), CType::Array(..)) {
+            return Err(type_error(func.span, "function cannot return an array"));
         }
         let mut params = Vec::new();
         for param in &func.params {
@@ -2577,7 +2592,8 @@ impl Checker {
             }
             Type::Qualified(inner, qualifiers) => {
                 let inner = self.resolve_sizeof_type(inner, span)?;
-                if qualifiers.is_restrict && !matches!(inner.unqualified(), CType::Pointer(_)) {
+                if qualifiers.is_restrict && !matches!(inner.unqualified(), CType::Pointer(pointee)
+                    if !matches!(pointee.unqualified(), CType::Function { .. } | CType::VariadicFunction { .. })) {
                     return Err(type_error(span, "restrict requires pointer type"));
                 }
                 if qualifiers.is_const && matches!(inner.unqualified(),
@@ -2603,6 +2619,10 @@ impl Checker {
             }
             Type::Array(inner, bound) => {
                 let element = self.resolve_sizeof_type(inner, span)?;
+                let element = self.try_complete_tag_type(element)?;
+                if element.has_flexible_array_member() {
+                    return Err(type_error(span, "array element cannot contain a flexible array member"));
+                }
                 let count = bound.as_ref().map(|expr| {
                     let typed = self.check_expr(expr, span)?;
                     if !typed.ty.is_integer() {
@@ -3020,7 +3040,7 @@ impl Checker {
                 // pairs; ordering requires compatible object pointer types.
                 let equality = matches!(op, BinOp::Eq | BinOp::Ne);
                 if relation && (matches!((&left.ty, &right.ty), (CType::Pointer(a), CType::Pointer(b))
-                        if (a.unqualified().same_type(b.unqualified())
+                        if (a.unqualified().composite(b.unqualified()).is_some()
                             && (equality || a.unqualified().is_object()))
                             || (equality && ((*a.unqualified() == CType::Void && b.unqualified().is_object())
                                 || (*b.unqualified() == CType::Void && a.unqualified().is_object()))))
@@ -3147,8 +3167,8 @@ impl Checker {
                 {
                     let base_a = a.unqualified();
                     let base_b = b.unqualified();
-                    let unified = if base_a.same_type(base_b) {
-                        base_a.clone()
+                    let unified = if let Some(composite) = base_a.composite(base_b) {
+                        composite
                     } else if (*base_a == CType::Void && base_b.is_object())
                         || (*base_b == CType::Void && base_a.is_object())
                     {
