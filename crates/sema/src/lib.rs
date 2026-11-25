@@ -380,6 +380,8 @@ pub struct Symbol {
     pub enum_value: Option<i64>,
     /// C register object: the address of this object cannot be computed.
     pub is_register: bool,
+    // For old-style definitions, retain the promoted ABI separately from the visible C type.
+    old_style_signature: Option<CType>,
 }
 
 #[derive(Clone)]
@@ -904,7 +906,7 @@ impl Checker {
             ));
         }
         self.locals.last_mut().expect("local scope").insert(name.to_owned(), Symbol {
-            ty, kind, linkage, defined: true, asm_label: None, enum_value: None, is_register,
+            ty, kind, linkage, defined: true, asm_label: None, enum_value: None, is_register, old_style_signature: None,
         });
         if kind == SymbolKind::Object {
             // Extern aliases hide an outer automatic binding but are not
@@ -938,6 +940,12 @@ impl Checker {
             }
         }
         if let Some(prior) = self.globals.get_mut(name) {
+            if let Some(abi) = &prior.old_style_signature {
+                if !matches!(&ty, CType::UnprototypedFunction { .. }) && abi.composite(&ty).is_none() {
+                    return Err(Diagnostic::coded(span, DiagnosticCode::SemanticConflictingDeclaration,
+                        format!("conflicting declaration of '{name}'")));
+                }
+            }
             let Some(composite) = prior.ty.composite(&ty).filter(|_| prior.kind == kind) else {
                 return Err(Diagnostic::coded(span, DiagnosticCode::SemanticConflictingDeclaration, format!("conflicting declaration of '{name}'")));
             };
@@ -953,7 +961,7 @@ impl Checker {
             prior.defined |= defining;
         } else {
             self.globals.insert(name.to_owned(), Symbol {
-                ty, kind, linkage: requested, defined: defining, asm_label: None, enum_value: None, is_register: false,
+                ty, kind, linkage: requested, defined: defining, asm_label: None, enum_value: None, is_register: false, old_style_signature: None,
             });
         }
         Ok(())
@@ -1666,15 +1674,36 @@ impl Checker {
         }
         let signature = CType::Function {
             result: Box::new(result.clone()),
-            params: params.iter().map(|p| p.ty.unqualified().clone()).collect(),
+            params: params.iter().map(|p| {
+                let ty = p.ty.unqualified();
+                if !func.old_style { return ty.clone(); }
+                if matches!(ty, CType::Floating(mini_c_syntax::ast::FloatRank::Float)) {
+                    CType::Floating(mini_c_syntax::ast::FloatRank::Double)
+                } else { self.target.promote(ty) }
+            }).collect(),
         };
         // Resolve labels independently of ordinary lexical identifier scopes.
         // A jump may target a label declared later in the same function.
         let mut function_labels = HashMap::new();
         Self::collect_function_labels(&func.body, &mut function_labels)?;
         // Register before checking the body: recursive calls are legal.
-        self.declare_global(&func.name, signature.clone(), SymbolKind::Function, true, func.storage,
+        let declaration_type = if func.old_style {
+            if let Some(prior) = self.global(&func.name) {
+                if !matches!(&prior.ty, CType::UnprototypedFunction { .. })
+                    && signature.composite(&prior.ty).is_none()
+                {
+                    return Err(Diagnostic::coded(func.span, DiagnosticCode::SemanticConflictingDeclaration,
+                        format!("conflicting declaration of '{}'", func.name)));
+                }
+            }
+            CType::UnprototypedFunction { result: Box::new(result.clone()) }
+        } else { signature.clone() };
+        self.declare_global(&func.name, declaration_type, SymbolKind::Function, true, func.storage,
             func.name_span.unwrap_or(func.span))?;
+        if func.old_style {
+            self.globals.get_mut(&func.name).expect("registered function")
+                .old_style_signature = Some(signature.clone());
+        }
         self.locals.push(HashMap::new());
         self.push_warning_scope();
         self.tags.borrow_mut().push(HashMap::new());
@@ -1695,7 +1724,7 @@ impl Checker {
         self.locals.last_mut().expect("function scope").insert("__func__".into(), Symbol {
             ty: name_type, kind: SymbolKind::Object, linkage: Linkage::None,
             defined: true, asm_label: Some(implicit_function_name_symbol(&func.name)),
-            enum_value: None, is_register: false,
+            enum_value: None, is_register: false, old_style_signature: None,
         });
         for (parsed_param, param) in func.params.iter().zip(&params) {
             if let Err(err) = self.define_local(&param.name, param.ty.clone(),
