@@ -984,9 +984,28 @@ impl<'a> Parser<'a> {
         }
         let mut direct = if self.peek()?.is_some_and(|token| token.text.as_ref() == "(") {
             self.take()?;
-            let inner = self.parse_declarator_shape(allow_abstract)?;
-            self.expect(")")?;
-            inner
+            // In an abstract declarator, '(' followed by a type specifier
+            // begins a function parameter list, not a grouped declarator.
+            // A typedef name in this ambiguous parameter context denotes
+            // a type (C99 6.7.5.3). '*' or '[' still starts grouping.
+            let parameter_list = allow_abstract && self.peek()?.is_some_and(|token|
+                token.kind == TokenKind::TypedefName
+                || matches!(token.text.as_ref(),
+                    ")" | "void" | "_Bool" | "char" | "short" | "int" | "long"
+                    | "signed" | "unsigned" | "float" | "double" | "_Float128"
+                    | "const" | "volatile" | "restrict" | "__restrict" | "__restrict__"
+                    | "_Atomic" | "struct" | "union" | "enum" | "register"
+                    | "__builtin_va_list"));
+            if parameter_list {
+                let (params, variadic) = self.parse_parameter_list()?;
+                self.expect(")")?;
+                Declarator::Function(Box::new(Declarator::Name(String::new(), None)),
+                    params, variadic)
+            } else {
+                let inner = self.parse_declarator_shape(allow_abstract)?;
+                self.expect(")")?;
+                inner
+            }
         } else if let Some(token) = self.peek()?.filter(|token| {
             matches!(token.kind, TokenKind::Identifier | TokenKind::TypedefName)
                 && !matches!(token.text.as_ref(), "int" | "_Bool" | "char" | "short" | "long" | "_Float128" | "float" | "double" | "void"
@@ -2611,6 +2630,24 @@ mod tests {
         for source in ["int (*bad)(int;", "int a[1;", "int *;", "int f(int,);"] {
             assert!(Parser::new(source).next_item().is_err(), "accepted {source:?}");
         }
+    }
+
+    #[test]
+    fn c99_abstract_function_parameter_declarators() {
+        let mut p = Parser::new("typedef long T; int h(int (int), int (T), int (void), int (int,...));");
+        p.next_item().unwrap().unwrap();
+        let Some(ExternalItem::Declaration(decl)) = p.next_item().unwrap()
+            else { panic!("expected prototype") };
+        assert_eq!(decl.ty, Type::Function {
+            result: Box::new(Type::Int),
+            params: vec![
+                Type::Function { result: Box::new(Type::Int), params: vec![Type::Int] },
+                Type::Function { result: Box::new(Type::Int), params: vec![Type::Alias("T".into())] },
+                Type::Function { result: Box::new(Type::Int), params: vec![] },
+                Type::VariadicFunction { result: Box::new(Type::Int), params: vec![Type::Int] },
+            ],
+        });
+        assert!(Parser::new("int h(int (int,));").next_item().is_err());
     }
 
     #[test]
