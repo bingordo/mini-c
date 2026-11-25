@@ -328,3 +328,47 @@ fn object_output_must_not_overwrite_source_or_hard_link() {
     }
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+fn cmake_abi_adjacent_literals_parse_emit_link_and_execute() {
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let dir = std::env::temp_dir().join(format!(
+        "mini-c-cmake-abi-{}-{nonce}", std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("cmake_abi.c");
+    let object = dir.join("cmake_abi.o");
+    let executable = dir.join("cmake_abi");
+    // This exact initializer shape previously blocked CMakeCCompilerABI.c.
+    // Each fragment has its own escapes, and exactly one implicit NUL
+    // remains after translation phase 6 concatenation.
+    std::fs::write(&source, concat!(
+        "static char const info_abi[] = \"INFO:abi[\" \"ELF\" \"]\";\n",
+        "static char const embedded[] = \"a\\0\" /* join */ \"b\";\n",
+        "int main(void) {\n",
+        "  return !(sizeof(info_abi) == 14 && info_abi[9] == 'E'\n",
+        "    && info_abi[11] == 'F' && sizeof(embedded) == 4\n",
+        "    && embedded[0] == 'a' && embedded[1] == 0\n",
+        "    && embedded[2] == 'b' && embedded[3] == 0);\n",
+        "}\n",
+    )).unwrap();
+    let opts = parse_options([
+        "--cpp=none".to_owned(),
+        "--emit-obj".to_owned(),
+        object.to_string_lossy().into_owned(),
+        source.to_string_lossy().into_owned(),
+    ]).unwrap();
+    assert_eq!(compile_to_object(&opts), ExitCode::SUCCESS);
+    assert!(std::fs::read(&object).unwrap().starts_with(b"\x7fELF"));
+    let link = Command::new("cc")
+        .arg(&object).arg("-o").arg(&executable)
+        .output().unwrap();
+    assert!(link.status.success(), "link: {}", String::from_utf8_lossy(&link.stderr));
+    assert!(Command::new(&executable).status().unwrap().success(),
+        "adjacent string fragment content or NUL termination is wrong");
+    let _ = std::fs::remove_dir_all(dir);
+}
