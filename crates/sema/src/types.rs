@@ -155,7 +155,7 @@ impl CType {
         // and their atomic-aware operations are separately validated.
         if source.is_atomic()!=dest.is_atomic() { return false; }
         let (dest, source) = (dest.unqualified(), source.unqualified());
-        dest.same_type(source)
+        dest.composite(source).is_some()
             || (matches!(dest, Self::Void) && source.is_object())
             || (matches!(source, Self::Void) && dest.is_object())
     }
