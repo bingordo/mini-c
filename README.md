@@ -99,7 +99,7 @@ one function.
 
 ## Embedding in bingundu/compiler
 
-Mini-C is designed as reusable Rust library crates, not just a standalone compiler. See the [embeddable frontend contract](docs/Specification.md#embeddable-frontend-contract) and [integration acceptance gates](docs/Implementation_Plan.md#modular-integration-acceptance-gate). The compiler driver should depend on Mini-C's frontend libraries and provide the adapter to its existing `compiler-ir`; Mini-C's syntax and semantic crates remain backend-independent.
+Mini-C is designed as reusable Rust library crates, not just a standalone compiler. See the [embeddable frontend contract](docs/Specification.md#embeddable-frontend-contract) and [integration acceptance gates](docs/Implementation_Plan.md#modular-integration-acceptance-gate). The compiler-owned adapter consumes Mini-C's syntax/semantic checked items and lowers **directly into the production TypeId/`TypedSsaModule` IR**; no legacy `compiler_ir::Function`, `from_legacy`/`to_legacy`, or legacy optimizer/backend path is permitted. Mini-C's AST, C-specific types, qualifiers and checked representation intentionally remain frontend-owned and independent of compiler IR internals. The optional `mini-c-cranelift` backend remains as an independent executable **reference**, not production compiler code generation.
 
 ## Updating the expression grammar
 
