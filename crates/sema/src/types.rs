@@ -155,7 +155,7 @@ impl CType {
         // and their atomic-aware operations are separately validated.
         if source.is_atomic()!=dest.is_atomic() { return false; }
         let (dest, source) = (dest.unqualified(), source.unqualified());
-        dest.same_type(source)
+        dest.composite(source).is_some()
             || (matches!(dest, Self::Void) && source.is_object())
             || (matches!(source, Self::Void) && dest.is_object())
     }
@@ -271,6 +271,19 @@ impl CType {
     pub fn is_scalar(&self) -> bool {
         matches!(self.unqualified(), Self::Integer { .. } | Self::Floating(_) | Self::Pointer(_))
     }
+    /// C99 6.7.2.1: a struct with a flexible array member (or a union
+    /// containing one recursively) cannot be an array element or struct member.
+    pub fn has_flexible_array_member(&self) -> bool {
+        match self.unqualified() {
+            Self::Struct { members, .. } => members.last().is_some_and(|member|
+                matches!(member.ty.unqualified(), Self::Array(_, None))),
+            Self::Union { members, .. } => members.iter().any(|member|
+                member.ty.has_flexible_array_member()),
+            Self::Array(element, _) => element.has_flexible_array_member(),
+            _ => false,
+        }
+    }
+
     pub fn is_object(&self) -> bool {
         !matches!(self.unqualified(), Self::Void | Self::Function { .. } | Self::VariadicFunction { .. })
     }
@@ -321,13 +334,31 @@ pub fn layout_struct_with_bits(
     let mut bit_cursor: Option<u64> = None;
     let mut members = Vec::with_capacity(fields.len());
     let mut seen = std::collections::HashSet::new();
-    for (name, ty, bit_width) in fields {
+    let field_count = fields.len();
+    for (index, (name, ty, bit_width)) in fields.into_iter().enumerate() {
         let unnamed = name.is_empty();
         if unnamed && bit_width.is_none() {
             return Err("unnamed aggregate member requires a bit-field width");
         }
         if !unnamed && !seen.insert(name.clone()) {
             return Err("duplicate structure member");
+        }
+        if ty.has_flexible_array_member() {
+            return Err("structure member cannot contain a flexible array member");
+        }
+        if let CType::Array(element, None) = ty.unqualified() {
+            if index + 1 != field_count || members.is_empty() || bit_width.is_some()
+                || element.size_bytes(target).filter(|size| *size > 0).is_none()
+                || !element.is_object()
+            {
+                return Err("invalid flexible array member");
+            }
+            let field_align = element.align_bytes(target).ok_or("incomplete flexible array element")?;
+            align = align.max(field_align);
+            let offset = align_up(size, field_align).ok_or("structure member layout overflow")?;
+            size = offset;
+            members.push(StructMember { name, ty, offset, bit_field: None });
+            continue;
         }
         let field_size = ty.size_bytes(target).ok_or("structure member has incomplete type")?;
         let field_align = ty.align_bytes(target).ok_or("structure member has incomplete type")?;
@@ -737,4 +768,25 @@ mod tests {
         assert_eq!(new_array.composite(&old_array), Some(new_array));
     }
 
+}
+
+#[cfg(test)]
+mod flexible_array_layout_tests {
+    use super::*;
+
+    #[test]
+    fn trailing_incomplete_array_layout() {
+        let target = Target::default();
+        let array = CType::Array(Box::new(CType::int()), None);
+        let ty = layout_struct(None, vec![("n".into(), CType::int()), ("data".into(), array.clone())], target).unwrap();
+        assert_eq!(ty.size_bytes(target), Some(4));
+        assert_eq!(ty.align_bytes(target), Some(4));
+        if let CType::Struct { members, .. } = ty {
+            assert_eq!(members[1].offset, 4);
+            assert_eq!(members[1].ty, array);
+        } else { panic!("expected structure"); }
+        assert!(layout_struct(None, vec![("data".into(), array.clone())], target).is_err());
+        assert!(layout_struct(None, vec![("data".into(), array.clone()), ("n".into(), CType::int())], target).is_err());
+        assert!(layout_union(None, vec![("n".into(), CType::int()), ("data".into(), array)], target).is_err());
+    }
 }
