@@ -403,3 +403,36 @@ fn c99_nonprototype_call_links_to_typed_external_definition() {
         "non-prototype call did not pass promoted arguments correctly");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+fn c99_identifier_list_definition_receives_promoted_arguments() {
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let dir = std::env::temp_dir().join(format!("mini-c-kr-{}-{nonce}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("definition.c");
+    let helper = dir.join("caller.c");
+    let object = dir.join("definition.o");
+    let executable = dir.join("program");
+    std::fs::write(&source, concat!(
+        "int mix();\n",
+        "int mix(a,b,c) float c; signed char a; short b; {\n",
+        "  return sizeof(a)==1 && sizeof(b)==2 && sizeof(c)==4 && a==-7 && b==9 && c==2.5;\n",
+        "}\n",
+    )).unwrap();
+    std::fs::write(&helper,
+        "int mix(int, int, double); int main(void) { return !mix(-7,9,2.5); }\n").unwrap();
+    let opts = parse_options([
+        "--cpp=none".to_owned(), "--emit-obj".to_owned(),
+        object.to_string_lossy().into_owned(), source.to_string_lossy().into_owned(),
+    ]).unwrap();
+    assert_eq!(compile_to_object(&opts), ExitCode::SUCCESS);
+    let link = Command::new("cc").arg(&object).arg(&helper)
+        .arg("-o").arg(&executable).output().unwrap();
+    assert!(link.status.success(), "link: {}", String::from_utf8_lossy(&link.stderr));
+    assert!(Command::new(&executable).status().unwrap().success(),
+        "old-style definition did not receive promoted arguments correctly");
+    let _ = std::fs::remove_dir_all(dir);
+}
