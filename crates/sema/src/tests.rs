@@ -4540,3 +4540,24 @@ fn asm3_p03_gnu_extended_template_is_instruction_opaque_in_source_checker() {
         }
     }
 }
+
+#[test]
+fn c99_function_result_type_constraints() {
+    for source in [
+        "typedef int A[4]; A f(void);",
+        "typedef int A[4]; A f(void){for(;;){}}",
+        "typedef int A[4]; typedef A F(void);",
+        "typedef int F(void); F f(void);",
+        "typedef int F(void); F f(void){for(;;){}}",
+    ] {
+        assert!(check(source).is_err(), "accepted invalid function result: {source}");
+    }
+    for source in [
+        "typedef int A[4]; A *f(void);",
+        "typedef int F(void); F *f(void);",
+        "typedef int A[4]; A *f(void){return 0;}",
+        "typedef int F(void); F *f(void){return 0;}",
+    ] {
+        check(source).unwrap_or_else(|err| panic!("{source}: {err:?}"));
+    }
+}
