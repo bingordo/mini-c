@@ -225,6 +225,25 @@
         check(&options.paths[0], options.cpp.as_ref()).unwrap();
     }
 
+    #[cfg(all(feature = "internal-cpp", target_os = "linux"))]
+    #[test]
+    fn unchanged_musl_memmem_passes_checked_frontend() {
+        // The original musl source exercises multiple helpers, complex
+        // pointer arithmetic, shifts, statement expressions, and system
+        // declarations. Do not modify the fixture or preprocess it by hand.
+        let input = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/musl-s10/string/memmem.c");
+        if !Path::new("/usr/include/string.h").is_file() {
+            return;
+        }
+        let opts = parse_options([
+            "check".to_owned(), "--cpp=internal".to_owned(),
+            input.to_string_lossy().into_owned(),
+        ]).unwrap();
+        let result = check(&opts.paths[0], opts.cpp.as_ref());
+        assert!(result.is_ok(), "unchanged musl memmem.c: {result:?}");
+    }
+
     #[cfg(feature = "internal-cpp")]
     #[test]
     fn internal_cpp_driver_checks_macro_expanded_translation_unit() {
