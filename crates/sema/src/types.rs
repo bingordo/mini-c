@@ -61,6 +61,7 @@ pub enum CType {
     /// Incomplete arrays use None; bound and full object layout are target-dependent.
     Array(Box<CType>, Option<u64>),
     Function { result: Box<CType>, params: Vec<CType> },
+    UnprototypedFunction { result: Box<CType> },
     VariadicFunction { result: Box<CType>, params: Vec<CType> },
 }
 
@@ -93,6 +94,7 @@ impl CType {
             Self::Qualified(inner) | Self::Atomic(inner) |
             Self::Pointer(inner) | Self::Array(inner, _) =>
                 inner.contains_volatile(),
+            Self::UnprototypedFunction { result } => result.contains_volatile(),
             Self::Function { result, params } |
             Self::VariadicFunction { result, params } =>
                 result.contains_volatile() || params.iter().any(Self::contains_volatile),
@@ -116,6 +118,7 @@ impl CType {
             Self::Atomic(_) => true,
             Self::Qualified(inner) | Self::Volatile(inner) |
             Self::Pointer(inner) | Self::Array(inner, _) => inner.contains_atomic(),
+            Self::UnprototypedFunction { result } => result.contains_atomic(),
             Self::Function {result,params} | Self::VariadicFunction {result,params} =>
                 result.contains_atomic() || params.iter().any(Self::contains_atomic),
             Self::Struct {members,..} | Self::Union {members,..} =>
@@ -162,7 +165,7 @@ impl CType {
     /// Target-specific object alignment in bytes, including wasm32 ILP32.
     pub fn align_bytes(&self, target: Target) -> Option<u64> {
         match self {
-            Self::Void | Self::Function { .. } | Self::VariadicFunction { .. } | Self::TagRef { .. } => None,
+            Self::Void | Self::Function { .. } | Self::VariadicFunction { .. } | Self::UnprototypedFunction { .. } | Self::TagRef { .. } => None,
             Self::Qualified(inner) | Self::Volatile(inner) | Self::Atomic(inner) =>
                 inner.align_bytes(target),
             Self::Struct { align, .. } | Self::Union { align, .. } => Some(*align),
@@ -197,6 +200,8 @@ impl CType {
             (TagRef { kind: TagKind::Union, identity: a, .. }, Union { identity: b, .. }) =>
                 a == b,
             (CType::Pointer(a), CType::Pointer(b)) => a.same_type(b),
+            (CType::UnprototypedFunction { .. }, _) | (_, CType::UnprototypedFunction { .. }) =>
+                self.composite(other).is_some(),
             // C17 6.7.6.3p15 ignores a function parameter's top-level
             // qualifiers when determining compatibility, including through
             // pointers to functions.
@@ -236,6 +241,21 @@ impl CType {
                 };
                 Some(Self::Array(Box::new(a.composite(b)?), count))
             }
+            (Self::UnprototypedFunction { result: a }, Self::UnprototypedFunction { result: b }) =>
+                Some(Self::UnprototypedFunction { result: Box::new(a.composite(b)?) }),
+            (Self::UnprototypedFunction { result: a }, Self::Function { result: b, params })
+            | (Self::Function { result: b, params }, Self::UnprototypedFunction { result: a }) => {
+                // A prototype is compatible only if every parameter is unchanged
+                // by the default argument promotions (C99 6.7.5.3p15).
+                if params.iter().any(|p| matches!(p.unqualified(),
+                    Self::Integer { rank: IntRank::Bool | IntRank::Char | IntRank::Short, .. }
+                    | Self::Floating(FloatRank::Float))) {
+                    return None;
+                }
+                Some(Self::Function { result: Box::new(a.composite(b)?),
+                    params: params.clone() })
+            }
+            (Self::UnprototypedFunction { .. }, _) | (_, Self::UnprototypedFunction { .. }) => None,
             (Self::VariadicFunction { result: ar, params: ap },
              Self::VariadicFunction { result: br, params: bp }) if ap.len() == bp.len() => {
                 let result = Box::new(ar.composite(br)?);
@@ -285,14 +305,14 @@ impl CType {
     }
 
     pub fn is_object(&self) -> bool {
-        !matches!(self.unqualified(), Self::Void | Self::Function { .. } | Self::VariadicFunction { .. })
+        !matches!(self.unqualified(), Self::Void | Self::Function { .. } | Self::VariadicFunction { .. } | Self::UnprototypedFunction { .. })
     }
 
     /// Object size in bytes for the selected C target data model.
     /// Incomplete arrays, void/function types and overflowing extents have no size.
     pub fn size_bytes(&self, target: Target) -> Option<u64> {
         match self {
-            Self::Void | Self::Function { .. } | Self::VariadicFunction { .. } | Self::TagRef { .. } => None,
+            Self::Void | Self::Function { .. } | Self::VariadicFunction { .. } | Self::UnprototypedFunction { .. } | Self::TagRef { .. } => None,
             Self::Qualified(inner) | Self::Volatile(inner) | Self::Atomic(inner) =>
                 inner.size_bytes(target),
             Self::Struct { size, .. } | Self::Union { size, .. } => Some(*size),
