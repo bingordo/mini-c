@@ -1207,6 +1207,10 @@ impl<'a> Parser<'a> {
     /// Callers inside blocks flatten these into statements in the same scope.
     fn parse_decl_group(&mut self, is_typedef: bool) -> Result<Vec<Decl>, Diagnostic> {
         let storage_span = self.peek()?.map_or(self.eof_span(), |t| t.span);
+        // Inline and storage-class specifiers may appear in either order.
+        let leading_inline = self.peek()?.is_some_and(|t|
+            matches!(t.text.as_ref(), "inline" | "__inline" | "__inline__"));
+        if leading_inline { self.take()?; }
         let storage = match self.peek()?.map(|t| t.text).as_deref() {
             Some("static") => { self.take()?; StorageClass::Static },
             Some("extern") => { self.take()?; StorageClass::Extern },
@@ -1989,10 +1993,17 @@ impl ItemSource for Parser<'_> {
         // Hosted glibc uses "static __inline" for private helper bodies.
         // Inline is advisory for static linkage; *do not* drop plain or
         // extern inline where C99/GNU external definition rules differ.
-        let static_inline = storage == StorageClass::Static
-            && self.peek()?.is_some_and(|t|
-                matches!(t.text.as_ref(), "inline" | "__inline" | "__inline__"));
-        if static_inline { self.take()?; }
+        let mut static_inline = leading_inline;
+        while self.peek()?.is_some_and(|t|
+            matches!(t.text.as_ref(), "inline" | "__inline" | "__inline__"))
+        {
+            self.take()?;
+            static_inline = true;
+        }
+        if static_inline && (storage != StorageClass::Static || is_typedef) {
+            return Err(Diagnostic::coded(storage_span, DiagnosticCode::SyntaxInvalidDeclaration,
+                "only static inline functions are currently supported"));
+        }
         let Some((base, start)) = self.parse_type()? else {
             // EOF only succeeds when no declaration specifiers were consumed.
             if is_typedef || storage != StorageClass::Default {
@@ -2000,7 +2011,22 @@ impl ItemSource for Parser<'_> {
             }
             return Ok(None);
         };
+        // Also accept inline after the complete return type, before the declarator.
+        while self.peek()?.is_some_and(|t|
+            matches!(t.text.as_ref(), "inline" | "__inline" | "__inline__"))
+        {
+            self.take()?;
+            static_inline = true;
+        }
+        if static_inline && (storage != StorageClass::Static || is_typedef) {
+            return Err(Diagnostic::coded(storage_span, DiagnosticCode::SyntaxInvalidDeclaration,
+                "only static inline functions are currently supported"));
+        }
         if self.peek()?.is_some_and(|t| t.text.as_ref() == ";") {
+            if static_inline {
+                return Err(Diagnostic::coded(storage_span, DiagnosticCode::SyntaxInvalidDeclaration,
+                    "static inline requires a function declarator"));
+            }
             if !matches!(&base, Type::Struct { .. } | Type::Union { .. } | Type::Enum { .. } | Type::TagRef(..)) {
                 return Err(Diagnostic::coded(self.peek()?.expect("peeked").span,
                     DiagnosticCode::SyntaxExpectedDeclarator,
@@ -3158,6 +3184,18 @@ mod tests {
             assert_eq!(func.storage, StorageClass::Static);
         }
         for src in [
+            "inline static int helper(int x) { return x; }",
+            "static int inline helper(int x) { return x; }",
+            "static inline inline int helper(int x) { return x; }",
+        ] {
+            let Some(ExternalItem::Function(func)) = Parser::new(src).next_item().unwrap()
+                else { panic!("expected static inline function: {src}") };
+            assert_eq!(func.storage, StorageClass::Static);
+        }
+        for src in [
+            "static inline struct S { int x; };",
+            "inline static int global;",
+            "int inline external(void);",
             "static inline int global;",
             "inline int external(void) { return 1; }",
             "extern __inline int external(void) { return 1; }",
