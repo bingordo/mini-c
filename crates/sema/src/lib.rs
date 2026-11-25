@@ -820,8 +820,11 @@ impl Checker {
             Type::Pointer(inner) => CType::Pointer(Box::new(self.resolve(inner, span)?)),
             Type::Function { result, params } | Type::VariadicFunction { result, params } => {
                 let result = self.resolve(result, span)?;
-                if matches!(result, CType::Function { .. } | CType::VariadicFunction { .. }) {
+                if matches!(result.unqualified(), CType::Function { .. } | CType::VariadicFunction { .. }) {
                     return Err(type_error(span, "function cannot return a function"));
+                }
+                if matches!(result.unqualified(), CType::Array(..)) {
+                    return Err(type_error(span, "function cannot return an array"));
                 }
                 let mut converted = Vec::with_capacity(params.len());
                 for param in params {
@@ -1616,8 +1619,11 @@ impl Checker {
         }
         let result = self.resolve(&func.result, func.span)?;
         let result = self.complete_tag_type(result, func.span)?;
-        if matches!(result, CType::Function { .. } | CType::VariadicFunction { .. }) {
+        if matches!(result.unqualified(), CType::Function { .. } | CType::VariadicFunction { .. }) {
             return Err(type_error(func.span, "function cannot return a function"));
+        }
+        if matches!(result.unqualified(), CType::Array(..)) {
+            return Err(type_error(func.span, "function cannot return an array"));
         }
         let mut params = Vec::new();
         for param in &func.params {
