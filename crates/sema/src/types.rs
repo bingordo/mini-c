@@ -271,6 +271,19 @@ impl CType {
     pub fn is_scalar(&self) -> bool {
         matches!(self.unqualified(), Self::Integer { .. } | Self::Floating(_) | Self::Pointer(_))
     }
+    /// C99 6.7.2.1: a struct with a flexible array member (or a union
+    /// containing one recursively) cannot be an array element or struct member.
+    pub fn has_flexible_array_member(&self) -> bool {
+        match self.unqualified() {
+            Self::Struct { members, .. } => members.last().is_some_and(|member|
+                matches!(member.ty.unqualified(), Self::Array(_, None))),
+            Self::Union { members, .. } => members.iter().any(|member|
+                member.ty.has_flexible_array_member()),
+            Self::Array(element, _) => element.has_flexible_array_member(),
+            _ => false,
+        }
+    }
+
     pub fn is_object(&self) -> bool {
         !matches!(self.unqualified(), Self::Void | Self::Function { .. } | Self::VariadicFunction { .. })
     }
@@ -329,6 +342,9 @@ pub fn layout_struct_with_bits(
         }
         if !unnamed && !seen.insert(name.clone()) {
             return Err("duplicate structure member");
+        }
+        if ty.has_flexible_array_member() {
+            return Err("structure member cannot contain a flexible array member");
         }
         if let CType::Array(element, None) = ty.unqualified() {
             if index + 1 != field_count || members.is_empty() || bit_width.is_some()
