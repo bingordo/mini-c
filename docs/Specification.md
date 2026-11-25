@@ -4,7 +4,7 @@ Status: implementation target, not a claim of ISO conformance. Reference: ISO/IE
 
 ## Goals
 
-Implement a small practical C frontend in minimal-dependency Rust. Follow the phase separation of bingundu/oberon: syntax AST, semantic analysis, and lowering. Reuse LALRPOP 0.23 only inside the syntax crate. Lower checked functions into bingundu/compiler's typed CFG SSA (`compiler-ir`), then reuse `compiler-opt`, `compiler-backend`, and `compiler-backend-x86`. Keep the AST frontend-specific and independent of backend crates. No separate C machine-code generator.
+Implement a small practical C frontend in minimal-dependency Rust. Follow the phase separation of bingundu/oberon: syntax AST, semantic analysis, and lowering. Reuse LALRPOP 0.23 only inside the syntax crate. Lower checked functions directly into bingordo/compiler's TypeId-owned CFG SSA (`compiler-ir`), then reuse `compiler-opt`, `compiler-backend`, and `compiler-backend-x86`. Keep the AST frontend-specific and independent of backend crates. No separate C machine-code generator.
 
 ## Supported language, staged
 
@@ -30,7 +30,7 @@ AST owns TranslationUnit, Item, Decl, Function, Stmt, Expr, Type, Span; preserve
 
 ## IR/backend contract
 
-Prefer existing `compiler-ir` typed CFG SSA; do not invent a second shared IR. Preserve signed overflow behavior required by C (undefined, not Oberon wraparound), evaluation order and short-circuiting. Extend IR/backend deliberately for pointers, 64-bit operations, calls, globals, relocations and aggregates. Keep x86-specific ABI, instruction selection and object writing in backend crates. Initial output: x86-64 SysV ELF64 relocatable objects, linked by system cc. Optional Cranelift adapter consumes compiler-ir later, rather than Mini-C AST.
+The production `bingordo/compiler` adapter builds canonical `TypeId`/`TypedSsaModule` CFG SSA directly from Mini-C checked items. It must never construct intermediate legacy `compiler_ir::Function` SSA, use `from_legacy`/`to_legacy`, invoke legacy optimizer passes or dispatch to a legacy backend. The Mini-C AST, semantic `CType`, checked expressions, lexical bindings and C-specific qualifiers remain frontend-owned: they are not a competing compiler IR. Preserve signed overflow behavior required by C (undefined, not Oberon wraparound), evaluation order and short-circuiting. Extend IR/backend deliberately for pointers, 64-bit operations, calls, globals, relocations and aggregates. Keep x86-specific ABI, instruction selection and object writing in backend crates. Initial output: x86-64 SysV ELF64 relocatable objects, linked by system cc. The optional Cranelift reference backend consumes Mini-C checked items independently; it is not part of the production compiler path, and it must not require legacy compiler IR.
 
 ## Dependencies and portability
 
@@ -44,9 +44,31 @@ Each milestone requires positive and negative parser tests, semantic tests, exec
 
 Mini-C must be usable as a Rust library from `bingundu/compiler` without spawning a CLI or requiring a backend. The dependency graph is strictly one-way: `mini-c-syntax` -> `mini-c-sema` -> `mini-c-front`; a separate optional `mini-c-compiler-bridge` may depend on `compiler-ir`, but core Mini-C crates must never depend on `compiler`. The `compiler` driver can select the Mini-C frontend and use the same IR/optimization/backend pipeline as Oberon. Do not add a cyclic dependency.
 
-Public API design: `parse_translation_unit(&str) -> Result<TranslationUnit, Vec<Diagnostic>>`; `check_translation_unit(&TranslationUnit, &TargetInfo) -> Result<CheckedUnit, Vec<Diagnostic>>`; and bridge `lower_function(&CheckedFunction) -> Result<compiler_ir::Function, LowerError>`. These are proposed contracts, to be finalized as milestones land. Use explicit source-file identifiers, spans, target ABI/layout information, and an options struct; avoid global parser state. No process exit, printing, filesystem reads, subprocess invocation or hidden mutable singletons in library APIs. A separate CLI crate owns files, external preprocessing, diagnostics rendering and command-line parsing. Library tests must run without an installed C compiler. Prefer narrow stable public types; keep generated parser internals private.
+Current embedding contract: a streaming `mini_c_syntax::parser::Parser`
+(`ItemSource`) feeds `mini_c_sema::Checker`, which produces checked
+`CheckedItem` declarations/functions. The compiler-owned adapter lowers these
+directly to canonical `TypeId` types and `TypedSsaModule`/`TypedFunction`
+values. There is no `compiler_ir::Function` bridge or legacy IR import/export.
+Keep source-file identifiers, spans, target ABI/layout, and diagnostics explicit;
+avoid global parser state. No process exit, printing, filesystem reads,
+subprocess invocation, or hidden global mutable state in the core library.
+A separate CLI crate owns files, external preprocessing, diagnostics rendering and command-line parsing. Library tests must run without an installed C compiler. Prefer narrow stable public types; keep generated parser internals private.
 
 Integration strategy: pin a Git revision of Mini-C from the compiler driver, or later publish crates; keep a feature-free syntax/sema path. The backend bridge can live in `bingundu/compiler` to keep Mini-C entirely independent of compiler internals, or in an optional leaf crate with a one-way dependency. Initially prefer the bridge in compiler for the smallest coupling. Document compatibility and version bumps when checked representations change.
+
+## Production and reference backend boundary
+
+Mini-C stays an independent syntax and semantic frontend. **All production
+native compilation in `bingordo/compiler` flows from checked Mini-C items
+directly through TypeId SSA**, its verifier, optimizer and target backends.
+There must be no old `Function` IR, legacy SSA translation or silent fallback,
+including when introducing FP, aggregates, GNU extensions or atomics.
+Unsupported constructs are rejected with diagnostics.
+
+Keep `mini-c-cranelift` as an optional, independent checked-frontend reference
+backend. It must remain available for executable differential validation
+against GCC/Clang and the native TypeId compiler, but never become a production
+compiler IR bridge or a dependency of the core syntax/sema crates.
 
 ## Cranelift reference backend milestone
 
