@@ -984,9 +984,28 @@ impl<'a> Parser<'a> {
         }
         let mut direct = if self.peek()?.is_some_and(|token| token.text.as_ref() == "(") {
             self.take()?;
-            let inner = self.parse_declarator_shape(allow_abstract)?;
-            self.expect(")")?;
-            inner
+            // In an abstract declarator, '(' followed by a type specifier
+            // begins a function parameter list, not a grouped declarator.
+            // A typedef name in this ambiguous parameter context denotes
+            // a type (C99 6.7.5.3). '*' or '[' still starts grouping.
+            let parameter_list = allow_abstract && self.peek()?.is_some_and(|token|
+                token.kind == TokenKind::TypedefName
+                || matches!(token.text.as_ref(),
+                    ")" | "void" | "_Bool" | "char" | "short" | "int" | "long"
+                    | "signed" | "unsigned" | "float" | "double" | "_Float128"
+                    | "const" | "volatile" | "restrict" | "__restrict" | "__restrict__"
+                    | "_Atomic" | "struct" | "union" | "enum" | "register"
+                    | "__builtin_va_list"));
+            if parameter_list {
+                let (params, variadic) = self.parse_parameter_list()?;
+                self.expect(")")?;
+                Declarator::Function(Box::new(Declarator::Name(String::new(), None)),
+                    params, variadic)
+            } else {
+                let inner = self.parse_declarator_shape(allow_abstract)?;
+                self.expect(")")?;
+                inner
+            }
         } else if let Some(token) = self.peek()?.filter(|token| {
             matches!(token.kind, TokenKind::Identifier | TokenKind::TypedefName)
                 && !matches!(token.text.as_ref(), "int" | "_Bool" | "char" | "short" | "long" | "_Float128" | "float" | "double" | "void"
@@ -1972,6 +1991,10 @@ impl ItemSource for Parser<'_> {
         let is_typedef = self.peek()?.is_some_and(|t| t.text.as_ref() == "typedef");
         if is_typedef { self.take()?; }
         let storage_span = self.peek()?.map_or(self.eof_span(), |t| t.span);
+        // Inline and storage-class specifiers may appear in either order.
+        let leading_inline = self.peek()?.is_some_and(|t|
+            matches!(t.text.as_ref(), "inline" | "__inline" | "__inline__"));
+        if leading_inline { self.take()?; }
         let storage = match self.peek()?.map(|t| t.text).as_deref() {
             Some("static") => { self.take()?; StorageClass::Static },
             Some("extern") => { self.take()?; StorageClass::Extern },
@@ -1989,10 +2012,17 @@ impl ItemSource for Parser<'_> {
         // Hosted glibc uses "static __inline" for private helper bodies.
         // Inline is advisory for static linkage; *do not* drop plain or
         // extern inline where C99/GNU external definition rules differ.
-        let static_inline = storage == StorageClass::Static
-            && self.peek()?.is_some_and(|t|
-                matches!(t.text.as_ref(), "inline" | "__inline" | "__inline__"));
-        if static_inline { self.take()?; }
+        let mut static_inline = leading_inline;
+        while self.peek()?.is_some_and(|t|
+            matches!(t.text.as_ref(), "inline" | "__inline" | "__inline__"))
+        {
+            self.take()?;
+            static_inline = true;
+        }
+        if static_inline && (storage != StorageClass::Static || is_typedef) {
+            return Err(Diagnostic::coded(storage_span, DiagnosticCode::SyntaxInvalidDeclaration,
+                "only static inline functions are currently supported"));
+        }
         let Some((base, start)) = self.parse_type()? else {
             // EOF only succeeds when no declaration specifiers were consumed.
             if is_typedef || storage != StorageClass::Default {
@@ -2000,7 +2030,22 @@ impl ItemSource for Parser<'_> {
             }
             return Ok(None);
         };
+        // Also accept inline after the complete return type, before the declarator.
+        while self.peek()?.is_some_and(|t|
+            matches!(t.text.as_ref(), "inline" | "__inline" | "__inline__"))
+        {
+            self.take()?;
+            static_inline = true;
+        }
+        if static_inline && (storage != StorageClass::Static || is_typedef) {
+            return Err(Diagnostic::coded(storage_span, DiagnosticCode::SyntaxInvalidDeclaration,
+                "only static inline functions are currently supported"));
+        }
         if self.peek()?.is_some_and(|t| t.text.as_ref() == ";") {
+            if static_inline {
+                return Err(Diagnostic::coded(storage_span, DiagnosticCode::SyntaxInvalidDeclaration,
+                    "static inline requires a function declarator"));
+            }
             if !matches!(&base, Type::Struct { .. } | Type::Union { .. } | Type::Enum { .. } | Type::TagRef(..)) {
                 return Err(Diagnostic::coded(self.peek()?.expect("peeked").span,
                     DiagnosticCode::SyntaxExpectedDeclarator,
@@ -2614,6 +2659,24 @@ mod tests {
     }
 
     #[test]
+    fn c99_abstract_function_parameter_declarators() {
+        let mut p = Parser::new("typedef long T; int h(int (int), int (T), int (void), int (int,...));");
+        p.next_item().unwrap().unwrap();
+        let Some(ExternalItem::Declaration(decl)) = p.next_item().unwrap()
+            else { panic!("expected prototype") };
+        assert_eq!(decl.ty, Type::Function {
+            result: Box::new(Type::Int),
+            params: vec![
+                Type::Function { result: Box::new(Type::Int), params: vec![Type::Int] },
+                Type::Function { result: Box::new(Type::Int), params: vec![Type::Alias("T".into())] },
+                Type::Function { result: Box::new(Type::Int), params: vec![] },
+                Type::VariadicFunction { result: Box::new(Type::Int), params: vec![Type::Int] },
+            ],
+        });
+        assert!(Parser::new("int h(int (int,));").next_item().is_err());
+    }
+
+    #[test]
     fn rejects_malformed_prototypes() {
         let mut parser = Parser::new("int f(int a,);");
         assert!(parser.next_item().is_err());
@@ -3158,6 +3221,18 @@ mod tests {
             assert_eq!(func.storage, StorageClass::Static);
         }
         for src in [
+            "inline static int helper(int x) { return x; }",
+            "static int inline helper(int x) { return x; }",
+            "static inline inline int helper(int x) { return x; }",
+        ] {
+            let Some(ExternalItem::Function(func)) = Parser::new(src).next_item().unwrap()
+                else { panic!("expected static inline function: {src}") };
+            assert_eq!(func.storage, StorageClass::Static);
+        }
+        for src in [
+            "static inline struct S { int x; };",
+            "inline static int global;",
+            "int inline external(void);",
             "static inline int global;",
             "inline int external(void) { return 1; }",
             "extern __inline int external(void) { return 1; }",
