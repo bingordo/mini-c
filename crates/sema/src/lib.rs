@@ -619,7 +619,8 @@ impl Checker {
             }
             Type::Qualified(inner, qualifiers) => {
                 let base = self.resolve(inner, span)?;
-                if qualifiers.is_restrict && !matches!(base.unqualified(), CType::Pointer(_)) {
+                if qualifiers.is_restrict && !matches!(base.unqualified(), CType::Pointer(pointee)
+                    if !matches!(pointee.unqualified(), CType::Function { .. } | CType::VariadicFunction { .. })) {
                     return Err(type_error(span, "restrict requires a pointer object type"));
                 }
                 if (qualifiers.is_const || qualifiers.is_volatile)
@@ -2577,7 +2578,8 @@ impl Checker {
             }
             Type::Qualified(inner, qualifiers) => {
                 let inner = self.resolve_sizeof_type(inner, span)?;
-                if qualifiers.is_restrict && !matches!(inner.unqualified(), CType::Pointer(_)) {
+                if qualifiers.is_restrict && !matches!(inner.unqualified(), CType::Pointer(pointee)
+                    if !matches!(pointee.unqualified(), CType::Function { .. } | CType::VariadicFunction { .. })) {
                     return Err(type_error(span, "restrict requires pointer type"));
                 }
                 if qualifiers.is_const && matches!(inner.unqualified(),
