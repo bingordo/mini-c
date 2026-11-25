@@ -4540,3 +4540,89 @@ fn asm3_p03_gnu_extended_template_is_instruction_opaque_in_source_checker() {
         }
     }
 }
+
+#[test]
+fn c99_flexible_array_member_constraints_and_access() {
+    for source in [
+        "struct S{int n; int data[];}; int f(struct S *p){return p->data[1];}",
+        "struct S{char n; double data[];}; int f(void){return sizeof(struct S)==8;}",
+        "struct S{int n; int data[];}; struct S s={1};",
+        "struct S{int n; int data[];}; union U{struct S s; int n;}; union U u;",
+        "struct S{int n; int data[];}; struct T{struct S *p;};",
+    ] {
+        check(source).unwrap_or_else(|err| panic!("{source}: {err:?}"));
+    }
+    for source in [
+        "struct S{int data[];};",
+        "struct S{int data[]; int n;};",
+        "union U{int n; int data[];};",
+        "struct S{int n; int data[];}; struct T{struct S s;};",
+        "struct S{int n; int data[];}; struct S a[2];",
+        "struct S{int n; int data[];}; union U{struct S s; int n;}; struct T{union U u;};",
+        "struct S{int n; int data[];}; struct S s={1,{2}};",
+        "struct S{int n; int data[];}; struct S s={.data={2}};",
+    ] {
+        assert!(check(source).is_err(), "accepted invalid C99: {source}");
+    }
+}
+
+#[test]
+fn c99_composite_pointer_types_in_value_contexts() {
+    for source in [
+        "int f(int (*a)[], int (*b)[4]){a=b;return a==b;}",
+        "int f(int (*a)[], int (*b)[4]){b=a;return a!=b;}",
+        "int f(int c, int (*a)[], int (*b)[4]){return sizeof *(c?a:b)==4*sizeof(int);}",
+        "typedef int F(int (*)[]); typedef int G(int (*)[4]); int f(F *p,G *q){p=q;return p==q;}",
+    ] {
+        check(source).unwrap_or_else(|err| panic!("{source}: {err:?}"));
+    }
+    for source in [
+        "int f(int (*a)[3], int (*b)[4]){a=b;return 0;}",
+        "int f(int (*a)[3], int (*b)[4]){return a==b;}",
+        "int f(int c,int (*a)[3],int (*b)[4]){return (c?a:b)!=0;}",
+        "typedef int F(int (*)[3]); typedef int G(int (*)[4]); int f(F *p,G *q){p=q;return 0;}",
+    ] {
+        assert!(check(source).is_err(), "accepted incompatible C99 types: {source}");
+    }
+}
+
+#[test]
+fn c99_function_result_type_constraints() {
+    for source in [
+        "typedef int A[4]; A f(void);",
+        "typedef int A[4]; A f(void){for(;;){}}",
+        "typedef int A[4]; typedef A F(void);",
+        "typedef int F(void); F f(void);",
+        "typedef int F(void); F f(void){for(;;){}}",
+    ] {
+        assert!(check(source).is_err(), "accepted invalid function result: {source}");
+    }
+    for source in [
+        "typedef int A[4]; A *f(void);",
+        "typedef int F(void); F *f(void);",
+        "typedef int A[4]; A *f(void){return 0;}",
+        "typedef int F(void); F *f(void){return 0;}",
+    ] {
+        check(source).unwrap_or_else(|err| panic!("{source}: {err:?}"));
+    }
+}
+
+#[test]
+fn c99_restrict_requires_pointer_to_object_or_incomplete_type() {
+    for source in [
+        "typedef int F(void); F *restrict p;",
+        "typedef int (*P)(void); restrict P p;",
+        "typedef int F(int,...); F *restrict p;",
+        "typedef int (*P)(void); int f(void){return sizeof(restrict P);}",
+    ] {
+        reject(source, "restrict requires");
+    }
+    for source in [
+        "int f(void *restrict p){return p!=0;}",
+        "struct S; int f(struct S *restrict p){return p!=0;}",
+        "typedef int F(void); F **restrict p;",
+        "typedef int *P; int f(void){return sizeof(restrict P)==sizeof(P);}",
+    ] {
+        check(source).unwrap_or_else(|err| panic!("{source}: {err:?}"));
+    }
+}
