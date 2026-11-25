@@ -1932,7 +1932,7 @@ fn c99_bitfield_positional_sparse_and_nested_object_initializers_are_checked() {
 fn inline_struct_member_errors() {
     reject("struct X { int a; int a; } x;", "duplicate structure member");
     reject("struct X { void a; } x;", "incomplete");
-    reject("struct X { int a[]; } x;", "incomplete");
+    reject("struct X { int a[]; } x;", "invalid flexible array member");
     reject("int main(void) { int n; return n.foo; }", "requires a struct");
     reject("int main(void) { struct { int a; } s; return s.missing; }",
         "unknown struct member");
