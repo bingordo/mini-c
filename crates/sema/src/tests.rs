@@ -4540,3 +4540,23 @@ fn asm3_p03_gnu_extended_template_is_instruction_opaque_in_source_checker() {
         }
     }
 }
+
+#[test]
+fn c99_restrict_requires_pointer_to_object_or_incomplete_type() {
+    for source in [
+        "typedef int F(void); F *restrict p;",
+        "typedef int (*P)(void); restrict P p;",
+        "typedef int F(int,...); F *restrict p;",
+        "typedef int (*P)(void); int f(void){return sizeof(restrict P);}",
+    ] {
+        reject(source, "restrict requires");
+    }
+    for source in [
+        "int f(void *restrict p){return p!=0;}",
+        "struct S; int f(struct S *restrict p){return p!=0;}",
+        "typedef int F(void); F **restrict p;",
+        "typedef int *P; int f(void){return sizeof(restrict P)==sizeof(P);}",
+    ] {
+        check(source).unwrap_or_else(|err| panic!("{source}: {err:?}"));
+    }
+}
