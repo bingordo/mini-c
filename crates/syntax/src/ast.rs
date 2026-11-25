@@ -109,6 +109,8 @@ pub enum Type {
         result: Box<Type>,
         params: Vec<Type>,
     },
+    /// C99 empty parameter list in a declaration: no prototype, not (void).
+    UnprototypedFunction { result: Box<Type> },
     VariadicFunction {
         result: Box<Type>,
         params: Vec<Type>,

@@ -22,7 +22,7 @@ enum Declarator {
     Name(String, Option<Span>),
     Pointer(Box<Self>, Qualifiers),
     Array(Box<Self>, Option<Expr>),
-    Function(Box<Self>, Vec<Decl>, bool),
+    Function(Box<Self>, Vec<Decl>, bool, bool),
 }
 
 impl Declarator {
@@ -38,9 +38,11 @@ impl Declarator {
                 })
             },
             Self::Array(inner, bound) => inner.finish(Type::Array(Box::new(base), bound.map(Box::new))),
-            Self::Function(inner, params, variadic) => {
+            Self::Function(inner, params, variadic, unprototyped) => {
                 let param_types = params.iter().map(|param| param.ty.clone()).collect();
-                let function_ty = if variadic {
+                let function_ty = if unprototyped {
+                    Type::UnprototypedFunction { result: Box::new(base) }
+                } else if variadic {
                     Type::VariadicFunction { result: Box::new(base), params: param_types }
                 } else {
                     Type::Function { result: Box::new(base), params: param_types }
@@ -58,7 +60,7 @@ impl Declarator {
                 // function pointer. Never overwrite the inner definition
                 // parameters with those of the returned function.
                 let definition_params = if matches!(&ty,
-                    Type::Function { .. } | Type::VariadicFunction { .. })
+                    Type::Function { .. } | Type::VariadicFunction { .. } | Type::UnprototypedFunction { .. })
                 {
                     inner_params.or(Some(params))
                 } else {
@@ -997,10 +999,11 @@ impl<'a> Parser<'a> {
                     | "_Atomic" | "struct" | "union" | "enum" | "register"
                     | "__builtin_va_list"));
             if parameter_list {
+                let unprototyped = self.peek()?.is_some_and(|t| t.text.as_ref() == ")");
                 let (params, variadic) = self.parse_parameter_list()?;
                 self.expect(")")?;
                 Declarator::Function(Box::new(Declarator::Name(String::new(), None)),
-                    params, variadic)
+                    params, variadic, unprototyped)
             } else {
                 let inner = self.parse_declarator_shape(allow_abstract)?;
                 self.expect(")")?;
@@ -1035,16 +1038,17 @@ impl<'a> Parser<'a> {
                 direct = Declarator::Array(Box::new(direct), bound);
             } else if self.peek()?.is_some_and(|token| token.text.as_ref() == "(") {
                 self.take()?;
+                let unprototyped = self.peek()?.is_some_and(|t| t.text.as_ref() == ")");
                 let (params, variadic) = self.parse_parameter_list()?;
                 self.expect(")")?;
-                direct = Declarator::Function(Box::new(direct), params, variadic);
-            } else if matches!(&direct, Declarator::Function(_, _, _))
+                direct = Declarator::Function(Box::new(direct), params, variadic, unprototyped);
+            } else if matches!(&direct, Declarator::Function(_, _, _, _))
                 && self.peek()?.is_some_and(|token|
                     token.text.as_ref() == "__attribute__" || token.text.as_ref() == "__attribute")
             {
                 self.parse_gnu_declarator_attributes(
                     match &direct {
-                        Declarator::Function(_, params, variadic) => Some((params.len(), *variadic)),
+                        Declarator::Function(_, params, variadic, _) => Some((params.len(), *variadic)),
                         _ => None,
                     }, None
                 )?;
@@ -1758,7 +1762,7 @@ impl<'a> Parser<'a> {
                             } else {
                                 self.parse_declarator_shape(false)?.finish(base.clone())
                             };
-                        if params.is_some() || matches!(ty, Type::Function { .. } | Type::VariadicFunction { .. }) {
+                        if params.is_some() || matches!(ty, Type::Function { .. } | Type::VariadicFunction { .. } | Type::UnprototypedFunction { .. }) {
                             return Err(Diagnostic::new(Span { lo: start, hi: start },
                                 "struct member cannot have function type"));
                         }
@@ -1925,7 +1929,7 @@ impl ItemSource for Parser<'_> {
                 self.parse_declarator_shape(false)?.finish(base.clone());
             let asm_label = self.parse_asm_linkage_label()?;
             if static_inline &&
-                !matches!(&ty, Type::Function { .. } | Type::VariadicFunction { .. })
+                !matches!(&ty, Type::Function { .. } | Type::VariadicFunction { .. } | Type::UnprototypedFunction { .. })
             {
                 return Err(Diagnostic::coded(name_span.unwrap_or(Span { lo: start, hi: start }),
                     DiagnosticCode::SyntaxInvalidDeclaration,
@@ -1942,7 +1946,7 @@ impl ItemSource for Parser<'_> {
                 self.parse_gnu_declarator_attributes(signature, Some(&mut ty))?;
             }
             if asm_label.is_some() &&
-                (!matches!(ty, Type::Function { .. } | Type::VariadicFunction { .. }) || is_typedef)
+                (!matches!(ty, Type::Function { .. } | Type::VariadicFunction { .. } | Type::UnprototypedFunction { .. }) || is_typedef)
             {
                 return Err(Diagnostic::coded(name_span.unwrap_or(Span { lo: start, hi: start }),
                     DiagnosticCode::SyntaxInvalidDeclaration,
@@ -2061,7 +2065,7 @@ impl ItemSource for Parser<'_> {
         }
         let (name, mut ty, definition_params, name_span) = self.parse_declarator_shape(false)?.finish(base.clone());
         let asm_label = self.parse_asm_linkage_label()?;
-        if static_inline && !matches!(&ty, Type::Function { .. } | Type::VariadicFunction { .. }) {
+        if static_inline && !matches!(&ty, Type::Function { .. } | Type::VariadicFunction { .. } | Type::UnprototypedFunction { .. }) {
             return Err(Diagnostic::coded(name_span.unwrap_or(storage_span),
                 DiagnosticCode::SyntaxInvalidDeclaration,
                 "static inline requires a function declarator"));
@@ -2078,7 +2082,7 @@ impl ItemSource for Parser<'_> {
             self.parse_gnu_declarator_attributes(signature, Some(&mut ty))?;
         }
         if asm_label.is_some() &&
-            (!matches!(ty, Type::Function { .. } | Type::VariadicFunction { .. }) || is_typedef)
+            (!matches!(ty, Type::Function { .. } | Type::VariadicFunction { .. } | Type::UnprototypedFunction { .. }) || is_typedef)
         {
             return Err(Diagnostic::coded(name_span.unwrap_or(Span { lo: start, hi: start }),
                 DiagnosticCode::SyntaxInvalidDeclaration,
@@ -2088,7 +2092,7 @@ impl ItemSource for Parser<'_> {
         self.scopes.declare(&name, if is_typedef { Binding::Typedef } else { Binding::Ordinary });
 
         if let Some(brace) = self.peek()?.filter(|token| token.text.as_ref() == "{") {
-            let Type::Function { result, .. } = ty else {
+            let (Type::Function { result, .. } | Type::UnprototypedFunction { result }) = ty else {
                 return Err(Diagnostic::coded(brace.span, DiagnosticCode::SyntaxInvalidDeclaration,
                     "function body requires a function declarator"));
             };
@@ -2542,8 +2546,8 @@ mod tests {
     fn parses_function_prototypes() {
         let mut parser = Parser::new("int f(); long g(int a, char *p); int h(void);");
         match parser.next_item().unwrap().unwrap() {
-            ExternalItem::Declaration(d) => assert_eq!(d.ty, Type::Function {
-                result: Box::new(Type::Int), params: vec![],
+            ExternalItem::Declaration(d) => assert_eq!(d.ty, Type::UnprototypedFunction {
+                result: Box::new(Type::Int),
             }),
             _ => panic!("expected prototype"),
         }
@@ -2554,7 +2558,12 @@ mod tests {
             }),
             _ => panic!("expected prototype"),
         }
-        assert!(matches!(parser.next_item().unwrap(), Some(ExternalItem::Declaration(_))));
+        match parser.next_item().unwrap().unwrap() {
+            ExternalItem::Declaration(d) => assert_eq!(d.ty, Type::Function {
+                result: Box::new(Type::Int), params: vec![],
+            }),
+            _ => panic!("expected explicit void prototype"),
+        }
         assert!(parser.next_item().unwrap().is_none());
     }
 

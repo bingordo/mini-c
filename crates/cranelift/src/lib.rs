@@ -96,7 +96,8 @@ fn aggregate_abi_types(ty: &CType) -> Result<Vec<ir::Type>> {
 fn signature(module: &ObjectModule, ty: &CType) -> Result<ir::Signature> {
     let (params, result) = match ty {
         CType::Function { params, result } |
-        CType::VariadicFunction { params, result } => (params, result),
+        CType::VariadicFunction { params, result } => (params.as_slice(), result),
+        CType::UnprototypedFunction { result } => (&[][..], result),
         _ => return Err("function declaration requires a function type".into()),
     };
     let mut sig = module.make_signature();
@@ -765,7 +766,7 @@ impl Compiler {
         match item {
             CheckedItem::Typedef { .. } | CheckedItem::Tag => Ok(()),
             CheckedItem::Declaration(decl) => {
-                if matches!(decl.ty, CType::Function { .. } | CType::VariadicFunction { .. }) {
+                if matches!(decl.ty, CType::Function { .. } | CType::VariadicFunction { .. } | CType::UnprototypedFunction { .. }) {
                     // Header prototypes do not need an emitted ABI signature
                     // until they are used. In particular, glibc stdio.h
                     // declares unused functions with by-value aggregate or
@@ -2239,25 +2240,25 @@ impl Lower<'_> {
                 // the count of used vector argument registers, preserving
                 // GP, SSE and outgoing stack arguments before jumping to libc.
                 let variadic = match &callee.ty {
-                    CType::VariadicFunction { .. } => true,
+                    CType::VariadicFunction { .. } | CType::UnprototypedFunction { .. } => true,
                     CType::Pointer(inner) =>
-                        matches!(inner.as_ref(), CType::VariadicFunction { .. }),
+                        matches!(inner.as_ref(), CType::VariadicFunction { .. } | CType::UnprototypedFunction { .. }),
                     _ => false,
                 };
                 if variadic && !matches!(
                     (&callee.kind, &callee.ty),
-                    (CheckedExprKind::Name(_), CType::VariadicFunction { .. })
+                    (CheckedExprKind::Name(_), CType::VariadicFunction { .. } | CType::UnprototypedFunction { .. })
                 ) {
                     return Err("indirect SysV variadic calls are unsupported".into());
                 }
                 let function_ty = match callee.ty.unqualified() {
-                    CType::Function { .. } | CType::VariadicFunction { .. } => callee.ty.unqualified(),
+                    CType::Function { .. } | CType::VariadicFunction { .. } | CType::UnprototypedFunction { .. } => callee.ty.unqualified(),
                     CType::Pointer(inner) if matches!(inner.unqualified(),
-                        CType::Function { .. } | CType::VariadicFunction { .. }) => inner.unqualified(),
+                        CType::Function { .. } | CType::VariadicFunction { .. } | CType::UnprototypedFunction { .. }) => inner.unqualified(),
                     _ => return Err("call target is not a function".into()),
                 };
                 let result_ty = match function_ty {
-                    CType::Function { result, .. } | CType::VariadicFunction { result, .. } =>
+                    CType::Function { result, .. } | CType::VariadicFunction { result, .. } | CType::UnprototypedFunction { result } =>
                         result.as_ref(),
                     _ => unreachable!(),
                 };
@@ -2312,7 +2313,7 @@ impl Lower<'_> {
                     }
                 }
                 let inst = if let (CheckedExprKind::Name(name),
-                    CType::VariadicFunction { result, .. }) = (&callee.kind, &callee.ty)
+                    CType::VariadicFunction { result, .. } | CType::UnprototypedFunction { result }) = (&callee.kind, &callee.ty)
                 {
                     let target = self.functions.get(name)
                         .map(|known| known.id)

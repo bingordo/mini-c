@@ -558,6 +558,9 @@ impl Checker {
                 .unwrap_or(CType::TagRef { kind, name, identity })),
             CType::Array(element, count) => Ok(CType::Array(
                 Box::new(self.try_complete_tag_type(*element)?), count)),
+            CType::UnprototypedFunction { result } => Ok(CType::UnprototypedFunction {
+                result: Box::new(self.try_complete_tag_type(*result)?),
+            }),
             CType::Function { result, params } => Ok(CType::Function {
                 result: Box::new(self.try_complete_tag_type(*result)?),
                 params: params.into_iter()
@@ -620,12 +623,12 @@ impl Checker {
             Type::Qualified(inner, qualifiers) => {
                 let base = self.resolve(inner, span)?;
                 if qualifiers.is_restrict && !matches!(base.unqualified(), CType::Pointer(pointee)
-                    if !matches!(pointee.unqualified(), CType::Function { .. } | CType::VariadicFunction { .. })) {
+                    if !matches!(pointee.unqualified(), CType::Function { .. } | CType::VariadicFunction { .. } | CType::UnprototypedFunction { .. })) {
                     return Err(type_error(span, "restrict requires a pointer object type"));
                 }
                 if (qualifiers.is_const || qualifiers.is_volatile)
                     && matches!(base.unqualified(),
-                        CType::Function { .. } | CType::VariadicFunction { .. })
+                        CType::Function { .. } | CType::VariadicFunction { .. } | CType::UnprototypedFunction { .. })
                 {
                     return Err(type_error(span,
                         "const/volatile cannot qualify a function type"));
@@ -819,9 +822,17 @@ impl Checker {
             Type::BitField(..) => return Err(type_error(span,
                 "bit-field declaration is only valid inside a struct or union")),
             Type::Pointer(inner) => CType::Pointer(Box::new(self.resolve(inner, span)?)),
+            Type::UnprototypedFunction { result } => {
+                let result = self.resolve(result, span)?;
+                if matches!(result.unqualified(), CType::Array(..) | CType::Function { .. }
+                    | CType::VariadicFunction { .. } | CType::UnprototypedFunction { .. }) {
+                    return Err(type_error(span, "invalid function result type"));
+                }
+                CType::UnprototypedFunction { result: Box::new(result) }
+            }
             Type::Function { result, params } | Type::VariadicFunction { result, params } => {
                 let result = self.resolve(result, span)?;
-                if matches!(result.unqualified(), CType::Function { .. } | CType::VariadicFunction { .. }) {
+                if matches!(result.unqualified(), CType::Function { .. } | CType::VariadicFunction { .. } | CType::UnprototypedFunction { .. }) {
                     return Err(type_error(span, "function cannot return a function"));
                 }
                 if matches!(result.unqualified(), CType::Array(..)) {
@@ -872,7 +883,7 @@ impl Checker {
     fn adjust_parameter(&self, ty: CType) -> CType {
         match ty {
             CType::Array(element, _) => CType::Pointer(element),
-            CType::Function { .. } | CType::VariadicFunction { .. } => CType::Pointer(Box::new(ty)),
+            CType::Function { .. } | CType::VariadicFunction { .. } | CType::UnprototypedFunction { .. } => CType::Pointer(Box::new(ty)),
             other => other,
         }
     }
@@ -1537,7 +1548,7 @@ impl Checker {
         let raw = self.resolve(&decl.ty, decl.span)?;
         let raw = self.try_complete_tag_type(raw)?;
         let ty = self.complete_string_array(raw, decl.init.as_ref(), decl.span)?;
-        let kind = if matches!(ty, CType::Function { .. } | CType::VariadicFunction { .. }) { SymbolKind::Function } else { SymbolKind::Object };
+        let kind = if matches!(ty, CType::Function { .. } | CType::VariadicFunction { .. } | CType::UnprototypedFunction { .. }) { SymbolKind::Function } else { SymbolKind::Object };
         if kind == SymbolKind::Object && !ty.is_object() {
             return Err(type_error(decl.span, "object cannot have void or function type"));
         }
@@ -1628,7 +1639,7 @@ impl Checker {
         }
         let result = self.resolve(&func.result, func.span)?;
         let result = self.complete_tag_type(result, func.span)?;
-        if matches!(result.unqualified(), CType::Function { .. } | CType::VariadicFunction { .. }) {
+        if matches!(result.unqualified(), CType::Function { .. } | CType::VariadicFunction { .. } | CType::UnprototypedFunction { .. }) {
             return Err(type_error(func.span, "function cannot return a function"));
         }
         if matches!(result.unqualified(), CType::Array(..)) {
@@ -2266,7 +2277,7 @@ impl Checker {
                 Expr::Name(name) => self.globals.get(name).is_some_and(|s|
                     matches!(&s.ty, CType::Array(..)) ||
                     (s.kind == SymbolKind::Function && matches!(ty, CType::Pointer(inner)
-                        if matches!(inner.as_ref(), CType::Function { .. } | CType::VariadicFunction { .. })))),
+                        if matches!(inner.as_ref(), CType::Function { .. } | CType::VariadicFunction { .. } | CType::UnprototypedFunction { .. })))),
                 Expr::StringLiteral(_) => matches!(ty, CType::Pointer(element)
                     if matches!(element.as_ref(), CType::Integer { rank: IntRank::Char, .. } | CType::Void)),
                 _ => false,
@@ -2593,15 +2604,15 @@ impl Checker {
             Type::Qualified(inner, qualifiers) => {
                 let inner = self.resolve_sizeof_type(inner, span)?;
                 if qualifiers.is_restrict && !matches!(inner.unqualified(), CType::Pointer(pointee)
-                    if !matches!(pointee.unqualified(), CType::Function { .. } | CType::VariadicFunction { .. })) {
+                    if !matches!(pointee.unqualified(), CType::Function { .. } | CType::VariadicFunction { .. } | CType::UnprototypedFunction { .. })) {
                     return Err(type_error(span, "restrict requires pointer type"));
                 }
                 if qualifiers.is_const && matches!(inner.unqualified(),
-                    CType::Function { .. } | CType::VariadicFunction { .. }) {
+                    CType::Function { .. } | CType::VariadicFunction { .. } | CType::UnprototypedFunction { .. }) {
                     return Err(type_error(span, "const cannot qualify a function type"));
                 }
                 if qualifiers.is_volatile && matches!(inner.unqualified(),
-                    CType::Function { .. } | CType::VariadicFunction { .. }) {
+                    CType::Function { .. } | CType::VariadicFunction { .. } | CType::UnprototypedFunction { .. }) {
                     return Err(type_error(span, "volatile cannot qualify a function type"));
                 }
                 let inner = if qualifiers.is_atomic {
@@ -2996,7 +3007,7 @@ impl Checker {
                             return Err(Diagnostic::coded(span, DiagnosticCode::SemanticInvalidOperatorOperands, "dereference requires a pointer"));
                         };
                         let ty = self.complete_tag_type((**inner_ty).clone(), span)?;
-                        let category = if matches!(ty, CType::Function { .. } | CType::VariadicFunction { .. }) { Category::Function } else if ty == CType::Void {
+                        let category = if matches!(ty, CType::Function { .. } | CType::VariadicFunction { .. } | CType::UnprototypedFunction { .. }) { Category::Function } else if ty == CType::Void {
                             return Err(type_error(span, "cannot dereference void pointer"));
                         } else { Category::LValue };
                         Ok(CheckedExpr { ty, category, kind: CheckedExprKind::Unary(*op, Box::new(typed)) })
@@ -3451,9 +3462,11 @@ impl Checker {
                 let signature = match &callee.ty {
                     CType::Function { result, params } => Some((result.as_ref(), params.as_slice(), false)),
                     CType::VariadicFunction { result, params } => Some((result.as_ref(), params.as_slice(), true)),
+                    CType::UnprototypedFunction { result } => Some((result.as_ref(), &[][..], true)),
                     CType::Pointer(inner) => match inner.as_ref() {
                         CType::Function { result, params } => Some((result.as_ref(), params.as_slice(), false)),
                         CType::VariadicFunction { result, params } => Some((result.as_ref(), params.as_slice(), true)),
+                    CType::UnprototypedFunction { result } => Some((result.as_ref(), &[][..], true)),
                         _ => None,
                     },
                     _ => None,
@@ -3476,7 +3489,7 @@ impl Checker {
                     checked_args.push(self.convert_for_assignment(typed, ty, arg,
                         arg.location().unwrap_or(span))?);
                 }
-                // C default argument promotions apply only to ellipsis arguments.
+                // C default argument promotions apply to ellipsis and non-prototype arguments.
                 for arg in args.iter().skip(params.len()) {
                     let typed = self.check_expr(arg, span)?.rvalue();
                     if !typed.ty.is_scalar() {
