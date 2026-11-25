@@ -4626,3 +4626,34 @@ fn c99_restrict_requires_pointer_to_object_or_incomplete_type() {
         check(source).unwrap_or_else(|err| panic!("{source}: {err:?}"));
     }
 }
+
+#[test]
+fn c99_nonprototype_function_declarations_and_promotions() {
+    for source in [
+        "int f(); int g(void){return f(1,2);}",
+        "int f(); int f(int x); int g(void){return f(1);}",
+        "int f(int x); int f(); int g(void){return f(1);}",
+        "int f(); int f(double x);",
+        "int f(); int f(void);",
+        "int f(); int g(void){int (*p)()=f;return p(1);}",
+    ] {
+        check(source).unwrap_or_else(|err| panic!("{source}: {err:?}"));
+    }
+    for source in [
+        "int f(); int f(char x);",
+        "int f(); int f(short x);",
+        "int f(); int f(float x);",
+        "int f(); int f(int x,...);",
+        "int f(void); int g(void){return f(1);}",
+        "int f(); int f(int x); int g(void){return f();}",
+    ] {
+        assert!(check(source).is_err(), "accepted incompatible declaration or call: {source}");
+    }
+    let items = check("int f(); int g(char a, float b){return f(a,b);}").unwrap();
+    let CheckedItem::Function(g) = &items[1] else { panic!("function") };
+    let CheckedStmt::Block(stmts) = &g.body else { panic!("block") };
+    let CheckedStmt::Return(Some(expr)) = &stmts[0] else { panic!("return") };
+    let CheckedExprKind::Call(_, args) = &expr.kind else { panic!("call") };
+    assert_eq!(args[0].ty, CType::int());
+    assert_eq!(args[1].ty, CType::Floating(mini_c_syntax::ast::FloatRank::Double));
+}
