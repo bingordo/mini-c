@@ -31,6 +31,8 @@ pub struct Function {
     /// Name token range in opt-in location-aware parser mode.
     pub name_span: Option<Span>,
     pub result: Type,
+    /// An identifier-list or empty-list definition, rather than a prototype.
+    pub old_style: bool,
     pub params: Vec<Decl>,
     pub body: Stmt,
     pub span: Span,
