@@ -2546,8 +2546,8 @@ mod tests {
     fn parses_function_prototypes() {
         let mut parser = Parser::new("int f(); long g(int a, char *p); int h(void);");
         match parser.next_item().unwrap().unwrap() {
-            ExternalItem::Declaration(d) => assert_eq!(d.ty, Type::Function {
-                result: Box::new(Type::Int), params: vec![],
+            ExternalItem::Declaration(d) => assert_eq!(d.ty, Type::UnprototypedFunction {
+                result: Box::new(Type::Int),
             }),
             _ => panic!("expected prototype"),
         }
@@ -2558,7 +2558,12 @@ mod tests {
             }),
             _ => panic!("expected prototype"),
         }
-        assert!(matches!(parser.next_item().unwrap(), Some(ExternalItem::Declaration(_))));
+        match parser.next_item().unwrap().unwrap() {
+            ExternalItem::Declaration(d) => assert_eq!(d.ty, Type::Function {
+                result: Box::new(Type::Int), params: vec![],
+            }),
+            _ => panic!("expected explicit void prototype"),
+        }
         assert!(parser.next_item().unwrap().is_none());
     }
 
