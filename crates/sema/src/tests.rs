@@ -4657,3 +4657,41 @@ fn c99_nonprototype_function_declarations_and_promotions() {
     assert_eq!(args[0].ty, CType::int());
     assert_eq!(args[1].ty, CType::Floating(mini_c_syntax::ast::FloatRank::Double));
 }
+
+#[test]
+fn c99_identifier_list_definitions_preserve_parameter_types_and_promoted_abi() {
+    let items = check("int f(a,b,c) float c; register char a; short b; {return sizeof(a)+sizeof(b)+sizeof(c);}").unwrap();
+    let CheckedItem::Function(f) = &items[0] else { panic!("function expected") };
+    let CType::Function { params, .. } = &f.signature else { panic!("ABI signature expected") };
+    assert_eq!(params, &vec![CType::int(), CType::int(), CType::Floating(mini_c_syntax::ast::FloatRank::Double)]);
+    assert_eq!(f.params[0].name, "a");
+    assert_eq!(f.params[1].name, "b");
+    assert_eq!(f.params[2].name, "c");
+    assert_eq!(f.params[0].ty.size_bytes(Target::default()), Some(1));
+    assert_eq!(f.params[1].ty.size_bytes(Target::default()), Some(2));
+    assert_eq!(f.params[2].ty.size_bytes(Target::default()), Some(4));
+    for source in [
+        "int f(int, double); int f(a,b) char a; float b; {return a;}",
+        "int f(a,b) char a; float b; {return a;} int f(int,double);",
+        "int f(); int f(a,b) int a,b; {return a+b;}",
+        "int f(a) int a; {return a;} int g(void){return f(1);}",
+        "int f(){return 0;} int f(void);",
+    ] {
+        check(source).unwrap_or_else(|err| panic!("{source}: {err:?}"));
+    }
+    for source in [
+        "int f(a,a) int a; {return a;}",
+        "int f(a,b) int a; {return a;}",
+        "int f(a) int a,b; {return a;}",
+        "int f(a) int a; int a; {return a;}",
+        "int f(a) int a=1; {return a;}",
+        "int f(a) static int a; {return a;}",
+        "int f(a);",
+        "int f(char); int f(a) char a; {return a;}",
+        "int f(a) char a; {return a;} int f(char);",
+        "int f(a) int a; {return a;} int f(void);",
+        "int f(int); int f(){return 0;}",
+    ] {
+        assert!(check(source).is_err(), "accepted invalid old-style definition: {source}");
+    }
+}
