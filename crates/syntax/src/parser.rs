@@ -1226,10 +1226,6 @@ impl<'a> Parser<'a> {
     /// Callers inside blocks flatten these into statements in the same scope.
     fn parse_decl_group(&mut self, is_typedef: bool) -> Result<Vec<Decl>, Diagnostic> {
         let storage_span = self.peek()?.map_or(self.eof_span(), |t| t.span);
-        // Inline and storage-class specifiers may appear in either order.
-        let leading_inline = self.peek()?.is_some_and(|t|
-            matches!(t.text.as_ref(), "inline" | "__inline" | "__inline__"));
-        if leading_inline { self.take()?; }
         let storage = match self.peek()?.map(|t| t.text).as_deref() {
             Some("static") => { self.take()?; StorageClass::Static },
             Some("extern") => { self.take()?; StorageClass::Extern },
@@ -1995,6 +1991,10 @@ impl ItemSource for Parser<'_> {
         let is_typedef = self.peek()?.is_some_and(|t| t.text.as_ref() == "typedef");
         if is_typedef { self.take()?; }
         let storage_span = self.peek()?.map_or(self.eof_span(), |t| t.span);
+        // Inline and storage-class specifiers may appear in either order.
+        let leading_inline = self.peek()?.is_some_and(|t|
+            matches!(t.text.as_ref(), "inline" | "__inline" | "__inline__"));
+        if leading_inline { self.take()?; }
         let storage = match self.peek()?.map(|t| t.text).as_deref() {
             Some("static") => { self.take()?; StorageClass::Static },
             Some("extern") => { self.take()?; StorageClass::Extern },
