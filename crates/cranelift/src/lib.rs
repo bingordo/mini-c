@@ -940,6 +940,40 @@ impl Compiler {
         false
     }
 
+    /// Register static-duration locals before generating the executable CFG,
+    /// even when their lexical declaration is skipped by a goto or branch.
+    /// Checked names already refer to these private backing symbols.
+    fn register_block_statics(&mut self, stmt: &CheckedStmt) -> Result<()> {
+        match stmt {
+            CheckedStmt::Decl(decl) if decl.storage == StorageClass::Static => {
+                let mut object = decl.clone();
+                object.name = object.asm_label.take()
+                    .filter(|name| mini_c_sema::is_private_block_static_symbol(name))
+                    .ok_or("block-static declaration has no private backing identity")?;
+                object.linkage = Linkage::Internal;
+                object.runtime_bounds = Box::default();
+                self.declare_object(object)?;
+            }
+            CheckedStmt::Block(stmts) => {
+                for stmt in stmts { self.register_block_statics(stmt)?; }
+            }
+            CheckedStmt::If { then, otherwise, .. } => {
+                self.register_block_statics(then)?;
+                if let Some(otherwise) = otherwise { self.register_block_statics(otherwise)?; }
+            }
+            CheckedStmt::While { body, .. } | CheckedStmt::DoWhile { body, .. }
+            | CheckedStmt::Switch { body, .. } | CheckedStmt::Case { body, .. }
+            | CheckedStmt::Default(body) | CheckedStmt::Label { body, .. } =>
+                self.register_block_statics(body)?,
+            CheckedStmt::For(for_loop) => {
+                if let Some(init) = &for_loop.init { self.register_block_statics(init)?; }
+                self.register_block_statics(&for_loop.body)?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     fn define(&mut self, function: CheckedFunction) -> Result<()> {
         // C99 __func__ is a separately addressable, function-scope
         // static const char array, not an interned string literal. Reserve
@@ -968,6 +1002,7 @@ impl Compiler {
             }),
             span: Default::default(),
         })?;
+        self.register_block_statics(&function.body)?;
         let (label_names, referenced_labels) = Self::native_goto_plan(&function.body)?;
         // A declaration immediately preceding a definition need not be
         // installed as an import with an obsolete no-prototype ABI.
@@ -1095,7 +1130,7 @@ impl Compiler {
             // checked at construction. Do not treat these as undeclared
             // user globals or weaken source-name completeness checks.
             if name.starts_with(".Lmini_c_compound_")
-                || name.starts_with(".Lmini_c_funcname_")
+                || mini_c_sema::is_private_block_static_symbol(name)
             { continue; }
             let resolved = checker.completed_global_type(name)
                 .ok_or_else(|| format!("missing semantic declaration for global '{name}'"))?;
@@ -2687,13 +2722,15 @@ impl Lower<'_> {
             if !live && !referenced {
                 match tail {
                     CheckedStmt::Decl(CheckedDecl { name, ty, storage, runtime_bounds, .. }) => {
-                        if !matches!(*storage, StorageClass::Default | StorageClass::Register) {
+                        if !matches!(*storage, StorageClass::Default | StorageClass::Register | StorageClass::Static) {
                             return Err(format!("M2.5 does not emit storage-class local '{name}'"));
                         }
                         for (id, bound) in runtime_bounds {
                             self.bind_storage(b, &mini_c_sema::vla_bound_name(*id), &bound.ty)?;
                         }
-                        self.bind_storage(b, name, ty)?;
+                        if *storage != StorageClass::Static {
+                            self.bind_storage(b, name, ty)?;
+                        }
                     }
                     CheckedStmt::Block(inner) if self.contains_referenced_label(tail)
                         || self.contains_active_switch_case(tail) =>
@@ -2765,7 +2802,7 @@ impl Lower<'_> {
                 self.statement(b, body)
             },
             CheckedStmt::Decl(CheckedDecl { name, ty, storage, initializer, runtime_bounds, .. }) => {
-                if !matches!(*storage, StorageClass::Default | StorageClass::Register) {
+                if !matches!(*storage, StorageClass::Default | StorageClass::Register | StorageClass::Static) {
                     return Err(format!("M2.5 does not emit storage-class local '{name}'"));
                 }
                 if ty.is_variable_array() {
@@ -2775,6 +2812,9 @@ impl Lower<'_> {
                     let value = self.expression(b, bound)?;
                     self.bind(b, &mini_c_sema::vla_bound_name(*id), &bound.ty, Some(value))?;
                 }
+                // Static storage was initialized in the object file, not
+                // at the declaration's runtime control-flow position.
+                if *storage == StorageClass::Static { return Ok(true); }
                 self.bind(b, name, ty, None)?;
                 if let Some(initializer) = initializer {
                     let address = self.object_address(b, name)?;

@@ -4946,3 +4946,28 @@ fn c99_static_pointer_offsets_share_target_layout() {
         reject(source, "pointer initializer requires");
     }
 }
+
+#[test]
+fn c99_block_static_identity_and_storage_duration() {
+    let items = check("int f(void){static int a[3]; static int *p=a+1; {static int a; static int *q=&a; return *q+*p;}}").unwrap();
+    let CheckedItem::Function(fun) = &items[0] else { panic!("function"); };
+    let CheckedStmt::Block(stmts) = &fun.body else { panic!("body"); };
+    let CheckedStmt::Decl(a) = &stmts[0] else { panic!("array"); };
+    let CheckedStmt::Decl(p) = &stmts[1] else { panic!("pointer"); };
+    let CheckedStmt::Block(nested) = &stmts[2] else { panic!("nested"); };
+    let CheckedStmt::Decl(inner_a) = &nested[0] else { panic!("shadow"); };
+    let CheckedStmt::Decl(q) = &nested[1] else { panic!("pointer"); };
+    assert_eq!(a.linkage, Linkage::None);
+    assert_eq!(a.name, "a");
+    assert_ne!(a.asm_label, inner_a.asm_label);
+    for (object, pointer, expected) in [(a,p,4), (inner_a,q,0)] {
+        let (root, offset) = const_eval::static_address(pointer.initializer.as_ref().unwrap(), Target::default()).unwrap();
+        assert!(matches!(&root.kind, CheckedExprKind::Name(name) if Some(name) == object.asm_label.as_ref()));
+        assert_eq!(offset, expected);
+    }
+    check("void *f(void){static void *p=&p; return p;}").unwrap();
+    check("const char *f(void){static const char *p=__func__; return p;}").unwrap();
+    reject("int f(void){static int x; {int x; static int *p=&x; return 0;}}",
+        "pointer initializer requires");
+    reject("int f(int x){static int y=x; return y;}", "integer constant expression");
+}
