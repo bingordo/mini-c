@@ -2528,14 +2528,17 @@ impl Checker {
         Ok(typed)
     }
 
-    /// Only file-scope compound literal objects can contribute static
-    /// object addresses to another file-scope pointer initializer. A block
-    /// compound literal is automatic even inside a block-scope static
-    /// declaration; its address cannot be a static initializer.
-    fn static_compound_lvalue(expr: &CheckedExpr) -> bool {
+    /// Recognize checked lvalues rooted in a linkable static object or a
+    /// file-scope compound literal, without treating a pointer load as an
+    /// address constant. Resolve names in the actual lexical scope so an
+    /// automatic object shadowing a global cannot acquire static duration.
+    fn static_address_lvalue(&self, expr: &CheckedExpr) -> bool {
         match &expr.kind {
+            CheckedExprKind::Name(name) => self.lookup(name).is_some_and(|s|
+                matches!(s.kind, SymbolKind::Object | SymbolKind::Function)
+                    && s.linkage != Linkage::None && !s.is_thread_local),
             CheckedExprKind::StaticCompoundLiteral { .. } => true,
-            CheckedExprKind::Member(base, _) => Self::static_compound_lvalue(base),
+            CheckedExprKind::Member(base, _) => self.static_address_lvalue(base),
             _ => false,
         }
     }
@@ -2572,28 +2575,20 @@ impl Checker {
             }
             let null = constant.ty.is_integer()
                 && const_eval::evaluate(constant, self.target) == Ok(0);
-            let address_of_global = match original {
-                Expr::Unary(UnOp::Address, inner) => match inner.without_location() {
-                    Expr::Name(name) => self.globals.get(name).is_some_and(|s| !s.is_thread_local && s.kind != SymbolKind::Typedef),
-                    _ => false,
-                },
-                Expr::Name(name) => self.globals.get(name).is_some_and(|s|
-                    (!s.is_thread_local && matches!(&s.ty, CType::Array(..))) ||
-                    (s.kind == SymbolKind::Function && matches!(ty, CType::Pointer(inner)
-                        if matches!(inner.as_ref(), CType::Function { .. } | CType::VariadicFunction { .. } | CType::UnprototypedFunction { .. })))),
-                Expr::StringLiteral(_) => matches!(ty, CType::Pointer(element)
-                    if matches!(element.as_ref(), CType::Integer { rank: IntRank::Char, .. } | CType::Void)),
+            // Check the normalized address expression rather than matching
+            // its original spelling. This admits member addresses and the
+            // equivalent &*(&object) without admitting reads of pointer objects.
+            let address = match &constant.kind {
+                CheckedExprKind::Unary(UnOp::Address, inner) |
+                CheckedExprKind::ArrayDecay(inner) => self.static_address_lvalue(inner),
+                _ if constant.category == Category::Function || constant.ty.is_array() =>
+                    self.static_address_lvalue(constant),
                 _ => false,
             };
-            let static_compound_address = match &constant.kind {
-                CheckedExprKind::Unary(UnOp::Address, inner) |
-                CheckedExprKind::ArrayDecay(inner) =>
-                    Self::static_compound_lvalue(inner),
-                // Static array compound literals decay only after this
-                // validator; the raw checked expression is still an lvalue.
-                _ => Self::static_compound_lvalue(constant),
-            };
-            if !null && !address_of_global && !static_compound_address {
+            let string_address = matches!(original, Expr::StringLiteral(_))
+                && matches!(ty, CType::Pointer(element)
+                    if matches!(element.unqualified(), CType::Integer { rank: IntRank::Char, .. } | CType::Void));
+            if !null && !address && !string_address {
                 return Err(type_error(span, "pointer initializer requires a null constant or address of global symbol"));
             }
         }
