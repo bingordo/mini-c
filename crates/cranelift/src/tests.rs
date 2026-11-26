@@ -570,3 +570,36 @@ fn c99_runtime_sizeof_evaluates_each_bound_once() {
     assert!(status.success(), "runtime sizeof failed: {status}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+fn c99_saved_vla_pointer_strides_execute() {
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let dir = std::env::temp_dir().join(format!("mini-c-vla-stride-{}-{nonce}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("main.c");
+    let object = dir.join("main.o");
+    let executable = dir.join("program");
+    std::fs::write(&source, concat!(
+        "int main(void){int a[3][4];int n=4;int (*p)[n++]=a;\n",
+        "if(n!=5 || sizeof *p!=16)return 1; n=9;\n",
+        "p[1][2]=17; if(a[1][2]!=17)return 2;\n",
+        "int (*q)[4]=p; p++; if(p-q!=1)return 3;\n",
+        "p+=1; (*p)[3]=23; if(a[2][3]!=23)return 4;\n",
+        "p-=2; if(p!=q || sizeof *p!=16)return 5;\n",
+        "return 0;}\n",
+    )).unwrap();
+    let opts = parse_options([
+        "--cpp=none".to_owned(), "--emit-obj".to_owned(),
+        object.to_string_lossy().into_owned(), source.to_string_lossy().into_owned(),
+    ]).unwrap();
+    assert_eq!(compile_to_object(&opts), ExitCode::SUCCESS);
+    let link = Command::new("cc").arg(&object)
+        .arg("-o").arg(&executable).output().unwrap();
+    assert!(link.status.success(), "link: {}", String::from_utf8_lossy(&link.stderr));
+    let status = Command::new(&executable).status().unwrap();
+    assert!(status.success(), "saved VLA stride failed: {status}");
+    let _ = std::fs::remove_dir_all(dir);
+}
