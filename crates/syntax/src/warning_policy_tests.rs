@@ -68,7 +68,7 @@ fn per_group_werror_enables_and_promotes_only_selected_warning() {
 #[test]
 fn per_group_warning_error_controls_do_not_claim_unsupported_groups() {
     let mut policy = WarningPolicy::default();
-    for flag in ["-Werror=conversion", "-Wno-error=conversion",
+    for flag in ["-Werror=sign-conversion", "-Wno-error=sign-conversion",
                  "-Werror=", "-Wno-error="] {
         assert!(policy.apply_flag(flag).is_err(), "{flag}");
     }
