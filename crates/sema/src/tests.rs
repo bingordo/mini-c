@@ -1413,7 +1413,7 @@ fn c99_completed_tagged_aggregate_members_have_full_layout_and_type_identity() {
         "structure member has incomplete type");
     reject("struct Self{struct Self member;};", "structure member has incomplete type");
     reject("struct Incomplete; struct Holder{struct Incomplete items[2];};",
-        "structure member has incomplete type");
+        "array element requires a complete object type");
     reject("struct Node{int x;};struct Holder{struct Node node;struct Node node;};",
         "duplicate structure member");
 }
@@ -4826,7 +4826,8 @@ fn c99_local_vla_bound_capture_and_runtime_types() {
         ("int f(int n){static int a[n];return 0;}", "static storage"),
         ("int f(int n){extern int a[n];return 0;}", "cannot have linkage"),
         ("int f(int n){int a[n]={1};return 0;}", "cannot have an initializer"),
-        ("int f(int n){struct S {int a[n];};return 0;}", "variably modified type"),
+        ("int f(int n){struct S {int a[n];};return 0;}", "array bound requires an integer constant expression"),
+        ("int f(int n){struct S {int (*a)[n];} s;return 0;}", "variably modified type"),
         ("int f(int n){int a[n][];return 0;}", "complete object type"),
     ] { reject(source, expected); }
 }
