@@ -592,19 +592,19 @@ impl Checker {
         Ok(())
     }
 
-    /// Classify a C11 atomic-qualified integer storage object without
-    /// allowing ordinary pointer/aggregate atomics or duplicate qualification.
+    /// Classify supported C11 atomic-qualified scalar storage, preserving
+    /// source type identity and rejecting duplicate qualification.
     /// Runtime access lowering is a separate capability gate.
-    fn atomic_integer_type(&self, base:CType, span:Span)->Result<CType,Diagnostic>{
+    fn atomic_scalar_type(&self, base:CType, span:Span)->Result<CType,Diagnostic>{
         if base.is_atomic() {
             return Err(type_error(span,"duplicate C11 _Atomic qualification"));
         }
-        if !matches!(base.unqualified(),CType::Integer{..}) {
+        if !matches!(base.unqualified(),CType::Integer{..}|CType::Pointer(_)) {
             return Err(type_error(span,
-                "C11 _Atomic currently requires a scalar integer object"));
+                "C11 _Atomic currently requires integer or pointer storage"));
         }
         let bytes=base.size_bytes(self.target)
-            .ok_or_else(||type_error(span,"C11 _Atomic requires complete integer storage"))?;
+            .ok_or_else(||type_error(span,"C11 _Atomic requires complete scalar storage"))?;
         let align=base.align_bytes(self.target)
             .ok_or_else(||type_error(span,"C11 _Atomic requires naturally aligned storage"))?;
         if !matches!(bytes,1|2|4|8) || align<bytes || !align.is_power_of_two() {
@@ -617,7 +617,7 @@ impl Checker {
         Ok(match ty {
             Type::Atomic(inner) => {
                 let base=self.resolve(inner,span)?;
-                self.atomic_integer_type(base,span)?
+                self.atomic_scalar_type(base,span)?
             }
             Type::Qualified(inner, qualifiers) => {
                 let base = self.resolve(inner, span)?;
@@ -632,7 +632,7 @@ impl Checker {
                         "const/volatile cannot qualify a function type"));
                 }
                 let base = if qualifiers.is_atomic {
-                    self.atomic_integer_type(base,span)?
+                    self.atomic_scalar_type(base,span)?
                 } else {base};
                 let base = if qualifiers.is_const { base.with_const() } else { base };
                 if qualifiers.is_volatile { base.with_volatile() } else { base }
@@ -2631,7 +2631,7 @@ impl Checker {
                 self.resolve_sizeof_type(inner, span)?)),
             Type::Atomic(inner) => {
                 let base=self.resolve_sizeof_type(inner,span)?;
-                self.atomic_integer_type(base,span)?
+                self.atomic_scalar_type(base,span)?
             }
             Type::Qualified(inner, qualifiers) => {
                 let inner = self.resolve_sizeof_type(inner, span)?;
@@ -2647,7 +2647,7 @@ impl Checker {
                     return Err(type_error(span, "volatile cannot qualify a function type"));
                 }
                 let inner = if qualifiers.is_atomic {
-                    self.atomic_integer_type(inner,span)?
+                    self.atomic_scalar_type(inner,span)?
                 } else {inner};
                 let inner = if qualifiers.is_const { inner.with_const() } else { inner };
                 if qualifiers.is_volatile { inner.with_volatile() } else { inner }
@@ -3327,7 +3327,7 @@ impl Checker {
                 let arithmetic = matches!(op,
                     BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod);
                 let pointer_arithmetic = matches!(op, BinOp::Add | BinOp::Sub)
-                    && matches!(&lhs.ty, CType::Pointer(_));
+                    && matches!(lhs.ty.unqualified(), CType::Pointer(_));
                 if lhs.category != Category::LValue || lhs.ty.is_const()
                     || !(lhs.ty.is_integer()
                         || matches!(lhs.ty.unqualified(), CType::Floating(_))
@@ -3359,7 +3359,7 @@ impl Checker {
                 let computation_ty = if pointer_arithmetic {
                     // C only permits +/- a scalar integer offset for pointers
                     // to complete object types, with element-sized scaling.
-                    let CType::Pointer(element) = &lhs.ty else { unreachable!() };
+                    let CType::Pointer(element) = lhs.ty.unqualified() else { unreachable!() };
                     let complete = self.complete_tag_type(element.as_ref().clone(), lhs_span)?;
                     if complete.size_bytes(self.target).is_none() {
                         return Err(type_error(lhs_span,
@@ -3409,7 +3409,7 @@ impl Checker {
                         DiagnosticCode::SemanticInvalidAssignmentTarget,
                         "increment/decrement requires a modifiable scalar lvalue"));
                 }
-                let computation_ty = if let CType::Pointer(pointee) = &checked.ty {
+                let computation_ty = if let CType::Pointer(pointee) = checked.ty.unqualified() {
                     let complete = self.complete_tag_type(pointee.as_ref().clone(), target_span)?;
                     if complete.size_bytes(self.target).is_none() {
                         return Err(type_error(target_span,
