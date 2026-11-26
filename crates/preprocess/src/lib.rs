@@ -2,6 +2,7 @@
 //! Commands are invoked directly, never through a shell.
 pub mod driver_options;
 pub mod source_map;
+pub mod token_origins;
 #[cfg(feature = "internal-rcc")]
 pub mod internal_rcc;
 
@@ -80,6 +81,15 @@ pub fn file(path: &Path, config: &Config) -> Result<String, Error> {
         });
     }
     String::from_utf8(output.stdout).map_err(Error::InvalidUtf8)
+}
+
+/// Request original token spellings when the selected preprocessor supports them.
+pub fn file_with_origins(path: &Path, config: &Config) -> Result<(String, token_origins::TokenOrigins), Error> {
+    #[cfg(feature = "internal-rcc")]
+    if config.executable == std::ffi::OsStr::new("internal") {
+        return internal_rcc::file_with_origins(path, &config.args).map_err(Error::Internal);
+    }
+    file(path, config).map(|text| (text, token_origins::TokenOrigins::default()))
 }
 
 /// For already-preprocessed input, bypass all subprocesses and preserve the bytes.
