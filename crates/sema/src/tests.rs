@@ -4558,3 +4558,33 @@ fn gnu_member_alignment_checks_natural_target_layout() {
     reject("struct X { int a __attribute__((aligned(3))); };", "positive power of two");
     reject("struct X { int a __attribute__((aligned(__alignof__(void)))); };", "complete object type");
 }
+
+#[test]
+fn gnu_nan_empty_payload_has_checked_float_and_double_type() {
+    for (name, expected) in [
+        ("__builtin_nanf", mini_c_syntax::ast::FloatRank::Float),
+        ("__builtin_nan", mini_c_syntax::ast::FloatRank::Double),
+    ] {
+        let src = format!("double f(void) {{ return {name}(\\\"\\\"); }}");
+        let items = check(&src).expect("empty GNU NaN payload");
+        let CheckedItem::Function(func) = &items[0] else { panic!("function") };
+        let CheckedStmt::Block(body) = &func.body else { panic!("body") };
+        let CheckedStmt::Return(Some(expr)) = &body[0] else { panic!("return") };
+        // float can be converted to double for the function return.
+        let nan = if let CheckedExprKind::Convert(inner) = &expr.kind {
+            inner.as_ref()
+        } else { expr };
+        assert_eq!(nan.ty, CType::Floating(expected));
+        assert!(matches!(&nan.kind, CheckedExprKind::FloatLiteral(text) if text == "NaN"));
+    }
+    for source in [
+        "float f(void) { return __builtin_nanf(); }",
+        "double f(void) { return __builtin_nan(\"\",\"\"); }",
+        "float f(void) { return __builtin_nanf(\"0x123\"); }",
+        "double f(void) { return __builtin_nan(\"123\"); }",
+        "float f(int x) { return __builtin_nanf(x); }",
+        "float f(void) { return __builtin_nanf(\"\" \"x\"); }",
+    ] {
+        assert!(check(source).is_err(), "invalid GNU NaN accepted: {source}");
+    }
+}
