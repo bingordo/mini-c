@@ -1791,6 +1791,7 @@ fn c99_bitfield_integer_promotions_follow_value_width_not_base_rank() {
         let member = CheckedExpr {
             ty, category: Category::LValue,
             kind: CheckedExprKind::BitFieldMember(Box::new(base.clone()), 0, 0, width),
+            source_span: None,
         };
         assert_eq!(member.integer_promotion_type(lp64), expected,
             "promotion of bit-field lvalue of width {width}");
