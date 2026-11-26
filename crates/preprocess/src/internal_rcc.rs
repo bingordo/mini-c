@@ -151,7 +151,17 @@ fn options_from_args(args: &[std::ffi::OsString]) -> Result<rcc_session::Options
     Ok(opts)
 }
 
+use crate::token_origins::{TokenOrigin, TokenOrigins};
+
 pub fn file(path: &Path, args: &[std::ffi::OsString]) -> Result<String, String> {
+    run_file(path, args, false).map(|(text, _)| text)
+}
+
+pub fn file_with_origins(path: &Path, args: &[std::ffi::OsString]) -> Result<(String, TokenOrigins), String> {
+    run_file(path, args, true)
+}
+
+fn run_file(path: &Path, args: &[std::ffi::OsString], track: bool) -> Result<(String, TokenOrigins), String> {
     let opts = options_from_args(args)?;
     let (mut session, captured) = Session::for_test();
     session.opts = opts;
@@ -180,6 +190,8 @@ pub fn file(path: &Path, args: &[std::ffi::OsString]) -> Result<String, String> 
     // The callback receives current #line metadata from the preprocessor.
     // Nothing is committed: a late error discards all buffered text.
     let mut output = String::new();
+    let mut origins = TokenOrigins::default();
+    let mut names = std::collections::HashMap::<u32, Arc<str>>::new();
     let mut last_origin: Option<(u32, u32)> = None;
     let mut adapter_error: Option<String> = None;
     preprocessor.run_with_context_sink(root, &mut |context, chunk| {
@@ -229,6 +241,18 @@ pub fn file(path: &Path, args: &[std::ffi::OsString]) -> Result<String, String> 
             if !output.is_empty() && !output.ends_with('\n') {
                 output.push(' ');
             }
+            if track && original_file {
+                let logical_file = context.line_overrides.effective_file(
+                    &map, token.span.file, token.span.lo);
+                let line = context.line_overrides.effective_line(
+                    &map, token.span.file, token.span.lo) as usize;
+                let file = names.entry(logical_file.0).or_insert_with(||
+                    Arc::from(map.file(logical_file).name.to_string_lossy().as_ref())).clone();
+                origins.push(TokenOrigin {
+                    output_start: output.len(), output_end: output.len() + spelling.len(),
+                    source: source.src.clone(), source_start: lo, source_end: hi, file, line,
+                });
+            }
             output.push_str(spelling);
             if output.len() > MAX_OUTPUT_BYTES {
                 adapter_error = Some("internal preprocessor output exceeded 16 MiB limit".into());
@@ -272,7 +296,7 @@ pub fn file(path: &Path, args: &[std::ffi::OsString]) -> Result<String, String> 
         return Err(error);
     }
     output.push('\n');
-    Ok(output)
+    Ok((output, origins))
 }
 
 fn c_identifier(name: &str) -> bool {
