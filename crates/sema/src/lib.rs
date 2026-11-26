@@ -3437,7 +3437,8 @@ impl Checker {
                 // into a plain external call, regardless of a visible symbol.
                 if let Expr::Name(name) = callee.without_location() {
                     if let Some(spec) = builtins::lookup(name) {
-                        if spec.lowering == builtins::LoweringClass::AtomicIrRequired
+                        if matches!(spec.lowering, builtins::LoweringClass::AtomicIrRequired
+                            | builtins::LoweringClass::FloatNan)
                             || self.lookup(name).is_none()
                         {
                             if args.len() != spec.argument_count {
@@ -3450,6 +3451,29 @@ impl Checker {
                                     }));
                             }
                             match spec.id {
+                                builtins::BuiltinId::Nan(bits) => {
+                                    // Only the empty GCC payload is supported:
+                                    // it denotes a quiet NaN without a user
+                                    // payload or additional runtime effects.
+                                    // Nonempty strings require exact target
+                                    // payload encoding, never silent erasure.
+                                    let arg = args[0].without_location();
+                                    if !matches!(arg, Expr::StringLiteral(bytes) if bytes.as_slice() == [0]) {
+                                        return Err(type_error(
+                                            args[0].location().unwrap_or(span),
+                                            format!("{name} requires an empty string-literal NaN payload"),
+                                        ));
+                                    }
+                                    let rank = if bits == 32 {
+                                        mini_c_syntax::ast::FloatRank::Float
+                                    } else {
+                                        mini_c_syntax::ast::FloatRank::Double
+                                    };
+                                    return Ok(CheckedExpr::value(
+                                        CType::Floating(rank),
+                                        CheckedExprKind::FloatLiteral("NaN".to_owned()),
+                                    ));
+                                }
                                 builtins::BuiltinId::Ctz32 => {
                                     let argument = &args[0];
                                     let argument_span = argument.location().unwrap_or(span);
