@@ -176,7 +176,7 @@ impl CheckedExpr {
         }
         if self.category == Category::LValue {
             match self.ty.unqualified() {
-                CType::Array(element, _) => Self::value(
+                CType::Array(element, _) | CType::VariableArray(element, _) => Self::value(
                     CType::Pointer(element.clone()),
                     CheckedExprKind::ArrayDecay(Box::new(self)),
                 ),
@@ -193,9 +193,16 @@ impl CheckedExpr {
     }
 }
 
+/// Private storage name for a saved VLA extent.
+pub fn vla_bound_name(id: u64) -> String { format!(".Lmini_c_vla_bound_{id}") }
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct CheckedDecl {
     pub storage: StorageClass,
+    /// Declaration-time evaluation of each new variable array extent.
+    /// Consumers must store these in automatic, scope-local slots before
+    /// evaluating the initializer or allocating the declared object.
+    pub runtime_bounds: Box<[(u64, CheckedExpr)]>,
     pub is_inline: bool,
     pub name: String,
     pub ty: CType,
@@ -318,7 +325,7 @@ impl CheckedExpr {
 }
 impl CheckedDecl {
     fn contains_memory_qualifier(&self,has:fn(&CType)->bool)->bool {
-        has(&self.ty) || self.initializer.as_ref()
+        has(&self.ty) || self.runtime_bounds.iter().any(|(_, e)| e.contains_memory_qualifier(has)) || self.initializer.as_ref()
             .is_some_and(|e|e.contains_memory_qualifier(has))
     }
 }
@@ -427,6 +434,8 @@ pub struct Checker {
     /// Stable definition lookup independent of currently visible shadowing tags.
     tag_definitions: RefCell<HashMap<u64, CType>>,
     globals: HashMap<String, Symbol>,
+    next_vla_bound: u64,
+    capturing_vla_bounds: Option<Vec<(u64, CheckedExpr)>>,
     checking_inline_body: bool,
     inline_body_violation: RefCell<Option<Diagnostic>>,
     locals: Vec<HashMap<String, Symbol>>,
@@ -451,7 +460,7 @@ pub struct Checker {
 
 impl Checker {
     pub fn new(target: Target) -> Result<Self, Diagnostic> {
-        Ok(Self { target: target.validate()?, next_tag_identity: Cell::new(1), saw_atomic_aggregate: Cell::new(false), next_static_compound_identity: Cell::new(1), tags: RefCell::new(vec![HashMap::new()]), tag_definitions: RefCell::new(HashMap::new()), globals: HashMap::new(), checking_inline_body: false, inline_body_violation: RefCell::new(None), locals: Vec::new(), result_ty: None, loop_depth: 0, switches: Vec::new(), function_labels: HashMap::new(), rollback_log: None, statement_undo: Vec::new(),
+        Ok(Self { target: target.validate()?, next_tag_identity: Cell::new(1), saw_atomic_aggregate: Cell::new(false), next_static_compound_identity: Cell::new(1), tags: RefCell::new(vec![HashMap::new()]), tag_definitions: RefCell::new(HashMap::new()), globals: HashMap::new(), next_vla_bound: 0, capturing_vla_bounds: None, checking_inline_body: false, inline_body_violation: RefCell::new(None), locals: Vec::new(), result_ty: None, loop_depth: 0, switches: Vec::new(), function_labels: HashMap::new(), rollback_log: None, statement_undo: Vec::new(),
             recovery_errors: None, recovery_limit: 0,
             warning_policy: WarningPolicy::default(), emitted_warnings: Vec::new(),
             warning_scopes: RefCell::new(Vec::new()) })
@@ -597,6 +606,8 @@ impl Checker {
                     format!("incomplete struct, union or enum tag '{name}'"))),
             CType::Array(element, count) => Ok(CType::Array(
                 Box::new(self.complete_tag_type(*element, span)?), count)),
+            CType::VariableArray(element, id) => Ok(CType::VariableArray(
+                Box::new(self.complete_tag_type(*element, span)?), id)),
             other => Ok(other),
         }
     }
@@ -611,6 +622,8 @@ impl Checker {
                 .unwrap_or(CType::TagRef { kind, name, identity })),
             CType::Array(element, count) => Ok(CType::Array(
                 Box::new(self.try_complete_tag_type(*element)?), count)),
+            CType::VariableArray(element, id) => Ok(CType::VariableArray(
+                Box::new(self.try_complete_tag_type(*element)?), id)),
             CType::UnprototypedFunction { result } => Ok(CType::UnprototypedFunction {
                 result: Box::new(self.try_complete_tag_type(*result)?),
             }),
@@ -932,28 +945,71 @@ impl Checker {
                 if !element.is_object() || matches!(element, CType::Array(_, None)) {
                     return Err(type_error(span, "array element requires a complete object type"));
                 }
-                let bound = bound.as_deref().map(|expr| -> Result<u64, Diagnostic> {
+                if let Some(expr) = bound.as_deref() {
                     let typed = self.check_expr(expr, span)?.rvalue();
                     if !typed.ty.is_integer() {
-                        return Err(type_error(span, "array bound requires an integer constant expression"));
+                        return Err(type_error(span, "array bound requires an integer expression"));
                     }
-                    let value = const_eval::evaluate(&typed, self.target)
-                        .map_err(|reason| type_error(span, format!("array bound requires an integer constant expression: {reason}")))?;
-                    if value <= 0 {
-                        return Err(type_error(span, "array bound must be positive"));
+                    match const_eval::evaluate(&typed, self.target) {
+                        Ok(value) => {
+                            if value <= 0 { return Err(type_error(span, "array bound must be positive")); }
+                            let count = u64::try_from(value).map_err(|_|
+                                type_error(span, "array bound exceeds the supported range"))?;
+                            CType::Array(Box::new(element), Some(count))
+                        }
+                        Err("not an integer constant expression") if self.capturing_vla_bounds.is_some() => {
+                            let id = self.next_vla_bound;
+                            self.next_vla_bound += 1;
+                            let count = self.convert(typed, &self.size_type());
+                            self.capturing_vla_bounds.as_mut().expect("bound capture").push((id, count));
+                            CType::VariableArray(Box::new(element), id)
+                        }
+                        Err(reason) => return Err(type_error(span, format!(
+                            "array bound requires an integer constant expression: {reason}"))),
                     }
-                    u64::try_from(value).map_err(|_| type_error(span, "array bound exceeds the supported range"))
-                }).transpose()?;
-                CType::Array(Box::new(element), bound)
+                } else { CType::Array(Box::new(element), None) }
             },
         })
+    }
+
+    fn size_type(&self) -> CType {
+        CType::Integer { rank: IntRank::Long, unsigned: true }
+    }
+
+    /// Resolve a local declarator and take ownership of its bound evaluations.
+    /// Each occurrence gets a new ID even when the source expressions match.
+    fn resolve_local_type(&mut self, ty: &Type, span: Span) -> Result<(CType, Box<[(u64, CheckedExpr)]>), Diagnostic> {
+        debug_assert!(self.capturing_vla_bounds.is_none());
+        self.capturing_vla_bounds = Some(Vec::new());
+        let resolved = self.resolve(ty, span);
+        let bounds = self.capturing_vla_bounds.take().expect("local capture");
+        Ok((resolved?, bounds.into_boxed_slice()))
+    }
+
+    fn object_size_expression(&self, ty: &CType, span: Span) -> Result<CheckedExpr, Diagnostic> {
+        let size_ty = self.size_type();
+        if let Some(size) = ty.size_bytes(self.target) {
+            return Ok(CheckedExpr::value(size_ty, CheckedExprKind::Literal(size)));
+        }
+        let (element, count) = match ty.unqualified() {
+            CType::VariableArray(element, id) => {
+                let lvalue = CheckedExpr { ty: size_ty.clone(), category: Category::LValue,
+                    kind: CheckedExprKind::Name(vla_bound_name(*id)) };
+                (element, lvalue.rvalue())
+            }
+            CType::Array(element, Some(count)) =>
+                (element, CheckedExpr::value(size_ty.clone(), CheckedExprKind::Literal(*count))),
+            _ => return Err(type_error(span, "sizeof requires a complete object type (not void or function)")),
+        };
+        let size = self.object_size_expression(element, span)?;
+        Ok(CheckedExpr::value(size_ty, CheckedExprKind::Binary(BinOp::Mul, Box::new(count), Box::new(size))))
     }
 
     /// C adjusts array and function parameter declarations to pointers.
     /// Do this at both prototype resolution and definition checking.
     fn adjust_parameter(&self, ty: CType) -> CType {
         match ty {
-            CType::Array(element, _) => CType::Pointer(element),
+            CType::Array(element, _) | CType::VariableArray(element, _) => CType::Pointer(element),
             CType::Function { .. } | CType::VariadicFunction { .. } | CType::UnprototypedFunction { .. } => CType::Pointer(Box::new(ty)),
             other => other,
         }
@@ -1695,7 +1751,7 @@ impl Checker {
         let linkage = global.linkage;
         let asm_label = global.asm_label.clone();
         Ok(CheckedDecl {
-            storage: decl.storage, is_inline: decl.is_inline, name: decl.name, ty, linkage, asm_label,
+            storage: decl.storage, runtime_bounds: Box::default(), is_inline: decl.is_inline, name: decl.name, ty, linkage, asm_label,
             initializer, span: decl.span,
         })
     }
@@ -1764,7 +1820,7 @@ impl Checker {
                 return Err(type_error(param.span, "register parameter requires a scalar type"));
             }
             params.push(CheckedDecl {
-                storage: param.storage, is_inline: false, name: param.name.clone(), ty,
+                storage: param.storage, runtime_bounds: Box::default(), is_inline: false, name: param.name.clone(), ty,
                 linkage: Linkage::None, asm_label: None, initializer: None, span: param.span,
             });
         }
@@ -1926,11 +1982,22 @@ impl Checker {
                 CheckedStmt::Tag
             }
             Stmt::Decl(decl) => {
-                let resolved = self.resolve(&decl.ty, decl.span)?;
+                let (resolved, runtime_bounds) = self.resolve_local_type(&decl.ty, decl.span)?;
                 let ty = self.complete_string_array(
                     self.try_complete_tag_type(resolved)?,
                     decl.init.as_ref(), decl.span)?;
-                if decl.storage != StorageClass::Extern && ty.size_bytes(self.target).is_none() {
+                if ty.is_variably_modified() {
+                    if decl.storage == StorageClass::Extern {
+                        return Err(type_error(decl.span, "variably modified object cannot have linkage"));
+                    }
+                    if ty.is_variable_array() && decl.storage == StorageClass::Static {
+                        return Err(type_error(decl.span, "variable length array cannot have static storage duration"));
+                    }
+                    if ty.is_variable_array() && decl.init.is_some() {
+                        return Err(type_error(decl.span, "variable length array cannot have an initializer"));
+                    }
+                }
+                if decl.storage != StorageClass::Extern && ty.size_bytes(self.target).is_none() && !ty.is_variable_array() {
                     return Err(type_error(decl.span, "incomplete local object type"));
                 }
                 if !ty.is_object() {
@@ -1966,7 +2033,7 @@ impl Checker {
                         decl.storage == StorageClass::Static))
                     .transpose()?;
                 CheckedStmt::Decl(CheckedDecl {
-                    storage: decl.storage, is_inline: false, name: decl.name.clone(), ty,
+                    storage: decl.storage, runtime_bounds, is_inline: false, name: decl.name.clone(), ty,
                     linkage, asm_label: None,
                     initializer, span: decl.span,
                 })
@@ -2564,7 +2631,7 @@ impl Checker {
             return Err(type_error(span, "pointer arithmetic requires a pointer"));
         };
         let complete = self.complete_tag_type(element.as_ref().clone(), span)?;
-        if complete.size_bytes(self.target).is_none() {
+        if complete.size_bytes(self.target).is_none() && !complete.is_variable_array() {
             return Err(type_error(span, "pointer arithmetic requires a complete object type"));
         }
         let converted_pointer = CType::Pointer(Box::new(complete));
@@ -3094,12 +3161,14 @@ impl Checker {
                 if matches!(typed.kind, CheckedExprKind::BitFieldMember(..)) {
                     return Err(type_error(span, "sizeof cannot be applied to a bit-field"));
                 }
-                let ty = self.complete_tag_type(typed.ty, span)?;
-                let size = ty.size_bytes(self.target).ok_or_else(|| type_error(
-                    span, "sizeof requires a complete object type (not void or function)"
-                ))?;
-                let size_ty = CType::Integer { rank: IntRank::Long, unsigned: true };
-                Ok(CheckedExpr::value(size_ty, CheckedExprKind::Literal(size)))
+                let ty = self.complete_tag_type(typed.ty.clone(), span)?;
+                let size = self.object_size_expression(&ty, span)?;
+                if ty.is_variable_array() {
+                    // A VLA operand is evaluated, unlike fixed-size sizeof.
+                    // Array decay evaluates its address without loading its contents.
+                    Ok(CheckedExpr::value(size.ty.clone(), CheckedExprKind::Comma(
+                        Box::new(typed.rvalue()), Box::new(size))))
+                } else { Ok(size) }
             }
             Expr::SizeofType(type_name) => self.sizeof_type_expression(type_name, span),
             Expr::Int(number) => {
@@ -3318,7 +3387,7 @@ impl Checker {
                                 DiagnosticCode::SemanticInvalidOperatorOperands,
                                 "pointer subtraction requires compatible pointed-to types"));
                         }
-                        if left_element.size_bytes(self.target).is_none() {
+                        if left_element.size_bytes(self.target).is_none() && !left_element.is_variable_array() {
                             return Err(Diagnostic::coded(span,
                                 DiagnosticCode::SemanticInvalidOperatorOperands,
                                 "pointer subtraction requires a complete object type"));
@@ -3524,7 +3593,7 @@ impl Checker {
                 };
                 let lhs = self.check_expr(lhs, span)?;
                 if lhs.category != Category::LValue || lhs.ty.is_const()
-                    || matches!(lhs.ty.unqualified(), CType::Array(..)) {
+                    || lhs.ty.is_array() {
                     return Err(Diagnostic::coded(lhs_span, DiagnosticCode::SemanticInvalidAssignmentTarget, "left side of assignment must be a modifiable lvalue"));
                 }
                 let rhs_typed = self.check_expr(rhs, span)?;
@@ -3584,7 +3653,7 @@ impl Checker {
                     // to complete object types, with element-sized scaling.
                     let CType::Pointer(element) = &lhs.ty else { unreachable!() };
                     let complete = self.complete_tag_type(element.as_ref().clone(), lhs_span)?;
-                    if complete.size_bytes(self.target).is_none() {
+                    if complete.size_bytes(self.target).is_none() && !complete.is_variable_array() {
                         return Err(type_error(lhs_span,
                             "pointer arithmetic requires a complete object type"));
                     }
@@ -3634,7 +3703,7 @@ impl Checker {
                 }
                 let computation_ty = if let CType::Pointer(pointee) = &checked.ty {
                     let complete = self.complete_tag_type(pointee.as_ref().clone(), target_span)?;
-                    if complete.size_bytes(self.target).is_none() {
+                    if complete.size_bytes(self.target).is_none() && !complete.is_variable_array() {
                         return Err(type_error(target_span,
                             "increment/decrement requires pointer to complete object type"));
                     }
