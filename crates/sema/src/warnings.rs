@@ -10,6 +10,10 @@ use std::collections::HashMap;
 pub(super) struct UsageBinding {
     pub span: Span,
     pub referenced: bool,
+    /// Number of ordinary references, excluding the LHS of a plain assignment.
+    pub reads: usize,
+    /// Number of successful plain assignments to this binding.
+    pub writes: usize,
     pub parameter: bool,
     pub exempt: bool,
 }
@@ -26,13 +30,14 @@ impl Checker {
     fn track_unused_warnings(&self) -> bool {
         self.warning_policy.enabled("unused-variable")
             || self.warning_policy.enabled("unused-parameter")
+            || self.warning_policy.enabled("unused-but-set-variable")
     }
 
     /// Register only addressable ordinary declarations, not typedefs or extern aliases.
     pub(super) fn register_warning_binding(&self, name: &str, span: Span, parameter: bool, exempt: bool) {
         if !self.track_unused_warnings() || name.is_empty() { return; }
         if let Some(scope) = self.warning_scopes.borrow_mut().last_mut() {
-            scope.insert(name.to_owned(), UsageBinding { span, referenced: false, parameter, exempt });
+            scope.insert(name.to_owned(), UsageBinding { span, referenced: false, reads: 0, writes: 0, parameter, exempt });
         }
     }
 
@@ -42,6 +47,20 @@ impl Checker {
         for scope in self.warning_scopes.borrow_mut().iter_mut().rev() {
             if let Some(binding) = scope.get_mut(name) {
                 binding.referenced = true;
+                binding.reads += 1;
+                break;
+            }
+        }
+    }
+
+    /// Reclassify the checked name reference on a plain assignment's LHS
+    /// as a write. The expression checker has already visited the LHS once.
+    pub(super) fn write_warning_binding(&self, name: &str) {
+        if !self.track_unused_warnings() { return; }
+        for scope in self.warning_scopes.borrow_mut().iter_mut().rev() {
+            if let Some(binding) = scope.get_mut(name) {
+                binding.reads = binding.reads.saturating_sub(1);
+                binding.writes += 1;
                 break;
             }
         }
@@ -56,13 +75,21 @@ impl Checker {
             a.span.lo.cmp(&b.span.lo).then_with(|| name_a.cmp(name_b))
         });
         for (name, binding) in bindings {
-            if binding.referenced || binding.exempt { continue; }
-            let group = if binding.parameter { "unused-parameter" } else { "unused-variable" };
+            if binding.exempt { continue; }
+            let (group, message) = if !binding.referenced {
+                if binding.parameter {
+                    ("unused-parameter", format!("unused parameter '{name}'"))
+                } else {
+                    ("unused-variable", format!("unused variable '{name}'"))
+                }
+            } else if !binding.parameter && binding.writes > 0 && binding.reads == 0 {
+                ("unused-but-set-variable", format!("variable '{name}' set but not used"))
+            } else {
+                continue;
+            };
             if !self.warning_policy.enabled(group) { continue; }
-            let kind = if binding.parameter { "parameter" } else { "variable" };
             self.emitted_warnings.push(ReportedDiagnostic::warning(
-                Diagnostic::semantic(binding.span, format!("unused {kind} '{name}'")),
-                group,
+                Diagnostic::semantic(binding.span, message), group,
             ));
         }
     }
