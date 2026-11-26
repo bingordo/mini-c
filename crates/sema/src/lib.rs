@@ -3475,10 +3475,12 @@ impl Checker {
                 // Usual arithmetic conversions also implicitly change the
                 // operand type. Diagnose sign changes on the operands, not
                 // on the arithmetic result, preserving explicit-cast opt-out.
-                self.warn_implicit_sign_conversion(&left, &common,
-                    lhs.location().unwrap_or(span));
-                self.warn_implicit_sign_conversion(&right, &common,
-                    rhs.location().unwrap_or(span));
+                if !relation {
+                    self.warn_implicit_sign_conversion(&left, &common,
+                        lhs.location().unwrap_or(span));
+                    self.warn_implicit_sign_conversion(&right, &common,
+                        rhs.location().unwrap_or(span));
+                }
                 let left = self.convert(left, &common);
                 let right = self.convert(right, &common);
                 let result = if relation { CType::int() } else { common };
