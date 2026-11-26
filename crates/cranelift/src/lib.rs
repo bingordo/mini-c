@@ -768,6 +768,16 @@ impl Compiler {
         if matches!(&item, CheckedItem::Typedef { .. } | CheckedItem::Tag) {
             return Ok(());
         }
+        // Unused atomic-qualified function prototypes have no emitted
+        // signature. Calls and function-address uses remain checked below;
+        // never register an ABI we cannot implement.
+        if let CheckedItem::Declaration(decl) = &item {
+            if matches!(decl.ty, CType::Function { .. } | CType::VariadicFunction { .. }
+                | CType::UnprototypedFunction { .. }) && item.contains_atomic_type()
+            {
+                return Ok(());
+            }
+        }
         // Volatile reads and writes are observable C side effects.
         // Never emit an ordinary load/store in lieu of a volatile operation.
         // The canonical native TypeId IR support is compiler#1047.
