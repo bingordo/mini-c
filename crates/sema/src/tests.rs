@@ -2063,7 +2063,7 @@ fn function_designators_decay_in_initializer_and_assignment_contexts() {
            int main(void) { int (*local)(int) = identity; \
                local = identity; return local != 0; }").unwrap();
     reject("int identity(int x) { return x; } int *wrong = identity;",
-        "pointer initializer requires");
+        "incompatible assignment");
 }
 
 
