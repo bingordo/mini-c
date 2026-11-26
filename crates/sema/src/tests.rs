@@ -4919,3 +4919,30 @@ fn c99_static_member_addresses_use_lexically_resolved_static_roots() {
         reject(source, "pointer initializer requires");
     }
 }
+
+#[test]
+fn c99_static_pointer_offsets_share_target_layout() {
+    let items = check(concat!(
+        "int a[5]; int *p=a+2; int *q=&a[3]; int *end=a+5;",
+        "int *back=(a+4)-3; char *s=\"abc\"+1;",
+        "struct N{int x;}; struct N n[3]; int *member=&n[2].x;"
+    )).unwrap();
+    let mut offsets = Vec::new();
+    for item in &items {
+        let CheckedItem::Declaration(decl) = item else { continue; };
+        if let Some(init) = &decl.initializer {
+            let (_, offset) = const_eval::static_address(init, Target::default())
+                .expect("checked address decomposition");
+            offsets.push(offset);
+        }
+    }
+    assert_eq!(offsets, [8,12,20,4,1,8]);
+    for source in [
+        "int a[5]; int i; int *p=a+i;",
+        "int a[5]; int *q=a; int *p=q+1;",
+        "int a[5]; int *p=a+(1/0);",
+        "int a[5]; int f(void){int a[5]; static int *p=a+1;return 0;}",
+    ] {
+        reject(source, "pointer initializer requires");
+    }
+}

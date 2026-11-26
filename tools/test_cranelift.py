@@ -34,6 +34,20 @@ PROGRAMS = {
         return p[0]!='l' || p[1]!='a' || p[4]!='l'
             || p[5]!=0;
     }""",
+    "c99_static_pointer_offsets": """int a[5]={1,2,3,4,5};
+int *p=a+2;
+int *q=&a[3];
+int *end=a+5;
+int *back=(a+4)-3;
+char *s="abc"+1;
+struct N { int x; }; struct N n[3]={{5},{6},{7}};
+int *member=&n[2].x;
+int *table[2]={a+1,&a[4]};
+char *strings[1]={"xyz"+2};
+int main(void) {
+    return *p!=3 || *q!=4 || end-a!=5 || *back!=2 || *s!='b'
+        || *member!=7 || *table[0]!=2 || *table[1]!=5 || *strings[0]!='z';
+}""",
     "c99_static_nested_member_relocations": """struct N { int x; };
 struct S { int pad; struct N n; int a[3]; };
 struct S s={1,{7},{2,3,4}};

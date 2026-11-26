@@ -202,13 +202,13 @@ struct PendingFunction {
 #[derive(Clone)]
 enum RelocationSource {
     Object(String, i64),
-    Literal(Vec<u8>),
+    Literal(Vec<u8>, i64),
 }
 
 #[derive(Clone)]
 enum RelocationTarget {
     Object(String, i64),
-    Literal(DataId),
+    Literal(DataId, i64),
 }
 
 struct KnownData {
@@ -218,7 +218,7 @@ struct KnownData {
     thread_local: bool,
     initialized: Option<Vec<u8>>,
     address_of: Option<(String, i64)>,
-    string_address: Option<DataId>,
+    string_address: Option<(DataId, i64)>,
     /// Multiple pointer fields can carry independent ELF data relocations.
     aggregate_relocations: Vec<(u32, RelocationTarget)>,
     tentative: bool,
@@ -287,20 +287,15 @@ fn initializer_subobject(
     Ok((current.clone(), offset, bits))
 }
 
-/// Resolve a checked constant-address lvalue, preserving an optional
-/// struct/union member displacement for ELF data relocations. Arrays decay
-/// to their first element (zero displacement). Only the checker can permit
-/// these operands into a static pointer initializer.
-fn static_object_address(expr: &CheckedExpr) -> Option<(String, i64)> {
-    match &expr.kind {
-        CheckedExprKind::Name(name) => Some((name.clone(), 0)),
+/// Convert the shared checked address decomposition into a relocation source.
+fn static_relocation_source(expr: &CheckedExpr) -> Option<RelocationSource> {
+    let (root, addend) = mini_c_sema::const_eval::static_address(expr, Target::default())?;
+    match &root.kind {
+        CheckedExprKind::Name(name) => Some(RelocationSource::Object(name.clone(), addend)),
         CheckedExprKind::StaticCompoundLiteral { symbol, .. } =>
-            Some((symbol.clone(), 0)),
-        CheckedExprKind::Member(base, offset) => {
-            let (name, base_offset) = static_object_address(base)?;
-            let offset = i64::try_from(*offset).ok()?;
-            Some((name, base_offset.checked_add(offset)?))
-        }
+            Some(RelocationSource::Object(symbol.clone(), addend)),
+        CheckedExprKind::StringLiteral(bytes) =>
+            Some(RelocationSource::Literal(bytes.clone(), addend)),
         _ => None,
     }
 }
@@ -442,20 +437,8 @@ fn static_initializer_bytes(
                     if mini_c_sema::const_eval::evaluate(source, Target::default()) == Ok(0) {
                         out[offset..end].fill(0);
                     } else {
-                        let target = match &source.kind {
-                            CheckedExprKind::Unary(UnOp::Address, inner) |
-                            CheckedExprKind::ArrayDecay(inner) => inner.as_ref(),
-                            _ => return Err("aggregate pointer initializer requires constant address".into()),
-                        };
-                        let target = if let Some((name, addend)) =
-                            static_object_address(target)
-                        {
-                            RelocationSource::Object(name, addend)
-                        } else if let CheckedExprKind::StringLiteral(bytes) = &target.kind {
-                            RelocationSource::Literal(bytes.clone())
-                        } else {
-                            return Err("aggregate pointer initializer requires constant object address".into());
-                        };
+                        let target = static_relocation_source(init)
+                            .ok_or("aggregate pointer initializer requires constant object address")?;
                         let offset = u32::try_from(offset)
                             .map_err(|_| "aggregate relocation offset overflow")?;
                         relocations.push((offset, target));
@@ -650,8 +633,8 @@ impl Compiler {
                     let target = match source {
                         RelocationSource::Object(name, addend) =>
                             RelocationTarget::Object(name, addend),
-                        RelocationSource::Literal(bytes) => RelocationTarget::Literal(
-                            intern_string(&mut self.module, &mut self.strings, &bytes)?),
+                        RelocationSource::Literal(bytes, addend) => RelocationTarget::Literal(
+                            intern_string(&mut self.module, &mut self.strings, &bytes)?, addend),
                     };
                     aggregate_relocations.push((offset, target));
                 }
@@ -670,23 +653,17 @@ impl Compiler {
                 match mini_c_sema::const_eval::evaluate(integer, Target::default()) {
                     Ok(0) => 0,
                     _ => {
-                        let target = match &integer.kind {
-                            CheckedExprKind::Unary(UnOp::Address, target)
-                            | CheckedExprKind::ArrayDecay(target) => Some(target.as_ref()),
-                            _ => None,
-                        };
-                        if let Some((symbol, addend)) =
-                            target.and_then(static_object_address)
-                        {
-                            address_of = Some((symbol, addend));
-                            0
-                        } else if let Some(CheckedExprKind::StringLiteral(bytes)) =
-                            target.map(|expr| &expr.kind)
-                        {
-                            string_address = Some(intern_string(&mut self.module, &mut self.strings, bytes)?);
-                            0
-                        } else {
-                            return Err(format!("global initializer for '{name}' requires a null pointer or constant object address"));
+                        match static_relocation_source(init) {
+                            Some(RelocationSource::Object(symbol, addend)) => {
+                                address_of = Some((symbol, addend));
+                                0
+                            }
+                            Some(RelocationSource::Literal(bytes, addend)) => {
+                                let id = intern_string(&mut self.module, &mut self.strings, &bytes)?;
+                                string_address = Some((id, addend));
+                                0
+                            }
+                            None => return Err(format!("global initializer for '{name}' requires a null pointer or constant object address")),
                         }
                     }
                 }
@@ -1169,9 +1146,9 @@ impl Compiler {
                 } else {
                     return Err(format!("global initializer for '{name}' refers to unknown symbol '{symbol}'"));
                 }
-            } else if let Some(string) = data.string_address {
+            } else if let Some((string, addend)) = data.string_address {
                 let gv = self.module.declare_data_in_data(string, &mut desc);
-                desc.write_data_addr(0, gv, 0);
+                desc.write_data_addr(0, gv, addend);
             }
             for (offset, target) in &data.aggregate_relocations {
                 match target {
@@ -1190,9 +1167,9 @@ impl Compiler {
                             return Err(format!("aggregate initializer for '{name}' refers to unknown symbol '{symbol}'"));
                         }
                     }
-                    RelocationTarget::Literal(id) => {
+                    RelocationTarget::Literal(id, addend) => {
                         let gv = self.module.declare_data_in_data(*id, &mut desc);
-                        desc.write_data_addr(*offset, gv, 0);
+                        desc.write_data_addr(*offset, gv, *addend);
                     }
                 }
             }
