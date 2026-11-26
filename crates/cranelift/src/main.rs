@@ -93,6 +93,7 @@ fn collect_semantic_warnings(
         && !policy.enabled("unused-but-set-variable")
         && !policy.enabled("conversion")
         && !policy.enabled("sign-conversion")
+        && !policy.enabled("sign-compare")
     {
         return Ok(Vec::new());
     }
