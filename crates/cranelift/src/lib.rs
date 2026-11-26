@@ -1978,22 +1978,15 @@ impl Lower<'_> {
                 Err("braced initializer cannot be evaluated as an expression".into()),
             CheckedExprKind::Literal(n) => Ok(b.ins().iconst(scalar_type(&expr.ty)?, *n as i64)),
             CheckedExprKind::FloatLiteral(text) => {
-                // Keep rounding at the declared C rank; fail closed on C99
-                // hexadecimal forms until a correctly rounded parser exists.
-                if text.starts_with("0x") || text.starts_with("0X") {
-                    return Err("hexadecimal floating-point literal lowering is unsupported".into());
-                }
+                // Reuse the checked frontend's direct target-rank literal conversion.
                 match expr.ty.unqualified() {
                     CType::Floating(FloatRank::Float) => {
-                        let digits = text.trim_end_matches(['f', 'F']);
-                        let value = digits.parse::<f32>()
-                            .map_err(|e| format!("invalid binary32 literal '{text}': {e}"))?;
-                        Ok(b.ins().f32const(ir::immediates::Ieee32::with_bits(value.to_bits())))
+                        let bits = mini_c_sema::float_literal::binary32_bits(text)?;
+                        Ok(b.ins().f32const(ir::immediates::Ieee32::with_bits(bits)))
                     }
                     CType::Floating(FloatRank::Double) => {
-                        let value = text.parse::<f64>()
-                            .map_err(|e| format!("invalid binary64 literal '{text}': {e}"))?;
-                        Ok(b.ins().f64const(ir::immediates::Ieee64::with_bits(value.to_bits())))
+                        let bits = mini_c_sema::float_literal::binary64_bits(text)?;
+                        Ok(b.ins().f64const(ir::immediates::Ieee64::with_bits(bits)))
                     }
                     _ => Err("unsupported extended floating-point literal ABI".into()),
                 }
@@ -3698,7 +3691,8 @@ mod tests {
             assert_eq!(&object[..4], b"\x7fELF");
         }
         assert!(compile_source("long double f(void) { return 1.0L; }").is_err());
-        assert!(compile_source("double f(void) { return 0x1.8p+1; }").is_err());
+        let object = compile_source("double f(void) { return 0x1.8p+1; }").unwrap();
+        assert_eq!(&object[..4], b"\x7fELF");
     }
 
     #[test]
