@@ -34,6 +34,18 @@ PROGRAMS = {
         return p[0]!='l' || p[1]!='a' || p[4]!='l'
             || p[5]!=0;
     }""",
+    "c99_static_nested_member_relocations": """struct N { int x; };
+struct S { int pad; struct N n; int a[3]; };
+struct S s={1,{7},{2,3,4}};
+int *p=&s.n.x;
+int *q=s.a;
+int *r[2]={&s.pad,&s.n.x};
+int *t=&*(&s.pad);
+int main(void) {
+    if (*p!=7 || q[2]!=4 || *r[0]!=1 || *r[1]!=7 || t!=r[0]) return 1;
+    *p=13;
+    return s.n.x!=13 || *r[1]!=13;
+}""",
     "c99_unary_scalar_truth_and_address_cancel": """int a[3]; int count;
 int g(void) { return 7; }
 void *next(void) { ++count; return a; }
