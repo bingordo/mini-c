@@ -8,6 +8,26 @@ pub enum StorageClass {
     Static,
     /// Block-scope or parameter automatic object; its address cannot be taken.
     Register,
+    /// File-scope thread storage, kept distinct from ordinary static storage.
+    ThreadLocal,
+    ExternThreadLocal,
+    StaticThreadLocal,
+}
+
+impl StorageClass {
+    /// True for declarations whose object identity is per-thread.
+    pub fn is_thread_local(self) -> bool {
+        matches!(self, Self::ThreadLocal | Self::ExternThreadLocal | Self::StaticThreadLocal)
+    }
+    /// Linkage specifier independent of the thread storage duration.
+    pub fn linkage_storage(self) -> Self {
+        match self {
+            Self::ThreadLocal => Self::Default,
+            Self::ExternThreadLocal => Self::Extern,
+            Self::StaticThreadLocal => Self::Static,
+            other => other,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
