@@ -41,6 +41,47 @@ fn bounded_arithmetic(value: i128, ty: &CType, target: Target) -> Result<i128, &
     normalize(value, ty, target)
 }
 
+
+/// Decompose a checked constant address into a storage root and a signed
+/// byte displacement. The caller must validate that the root has static
+/// storage duration; no loads or runtime indices are evaluated here.
+/// Pointer casts affect subsequent arithmetic through the checked pointee
+/// type, not the underlying object's identity.
+pub fn static_address(expr: &CheckedExpr, target: Target) -> Option<(&CheckedExpr, i64)> {
+    fn lvalue(expr: &CheckedExpr, target: Target) -> Option<(&CheckedExpr, i64)> {
+        match &expr.kind {
+            CheckedExprKind::Name(_) | CheckedExprKind::StringLiteral(_) |
+            CheckedExprKind::StaticCompoundLiteral { .. } => Some((expr, 0)),
+            CheckedExprKind::Member(base, offset) => {
+                let (root, addend) = lvalue(base, target)?;
+                Some((root, addend.checked_add(i64::try_from(*offset).ok()?)?))
+            }
+            CheckedExprKind::Unary(UnOp::Deref, pointer) => static_address(pointer, target),
+            _ => None,
+        }
+    }
+    match &expr.kind {
+        CheckedExprKind::Unary(UnOp::Address, inner) |
+        CheckedExprKind::ArrayDecay(inner) => lvalue(inner, target),
+        CheckedExprKind::Convert(inner)
+            if matches!(expr.ty.unqualified(), CType::Pointer(_))
+                && matches!(inner.ty.unqualified(), CType::Pointer(_)) =>
+            static_address(inner, target),
+        CheckedExprKind::Binary(op @ (BinOp::Add | BinOp::Sub), pointer, index) => {
+            let CType::Pointer(element) = pointer.ty.unqualified() else { return None; };
+            if !index.ty.is_integer() { return None; }
+            let (root, addend) = static_address(pointer, target)?;
+            let stride = i128::from(element.size_bytes(target)?);
+            let offset = evaluate(index, target).ok()?.checked_mul(stride)?;
+            let offset = if *op == BinOp::Sub { offset.checked_neg()? } else { offset };
+            Some((root, i64::try_from(i128::from(addend).checked_add(offset)?).ok()?))
+        }
+        _ if expr.ty.is_array() || expr.category == crate::Category::Function =>
+            lvalue(expr, target),
+        _ => None,
+    }
+}
+
 pub fn evaluate(expr: &CheckedExpr, target: Target) -> Result<i128, &'static str> {
     match &expr.kind {
         CheckedExprKind::Literal(value) => Ok(i128::from(*value)),
