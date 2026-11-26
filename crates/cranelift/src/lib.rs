@@ -1276,7 +1276,11 @@ impl std::fmt::Display for CompileError {
 impl std::error::Error for CompileError {}
 
 pub fn compile_source_diagnostic(source: &str) -> std::result::Result<Vec<u8>, CompileError> {
-    let mut parser = Parser::new(source);
+    compile_source_diagnostic_with_mode(source,mini_c_syntax::parser::GnuExtensions::Enabled)
+}
+
+pub fn compile_source_diagnostic_with_mode(source:&str, mode:mini_c_syntax::parser::GnuExtensions)->std::result::Result<Vec<u8>,CompileError> {
+    let mut parser = Parser::new(source).with_gnu_extensions(mode);
     let mut checker = Checker::new(Target::default())
         .map_err(CompileError::Diagnostic)?;
     let mut compiler = Compiler::new().map_err(CompileError::Backend)?;

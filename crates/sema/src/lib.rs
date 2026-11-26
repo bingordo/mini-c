@@ -413,6 +413,8 @@ pub struct Symbol {
     pub enum_value: Option<i64>,
     /// C register object: the address of this object cannot be computed.
     pub is_register: bool,
+    /// Unique backing name when source scope starts after an initializer.
+    local_name: Option<String>,
     /// C thread storage duration, independently of linkage.
     pub is_thread_local: bool,
     // For old-style definitions, retain the promoted ABI separately from the visible C type.
@@ -451,6 +453,7 @@ pub struct Checker {
     next_tag_identity: Cell<u64>,
     saw_atomic_aggregate: Cell<bool>,
     next_static_compound_identity: Cell<u64>,
+    next_inferred_local_identity: u64,
     /// Independent tag namespace, parallel to ordinary identifier scopes.
     tags: RefCell<Vec<HashMap<String, TagEntry>>>,
     /// Stable definition lookup independent of currently visible shadowing tags.
@@ -486,7 +489,7 @@ pub struct Checker {
 
 impl Checker {
     pub fn new(target: Target) -> Result<Self, Diagnostic> {
-        Ok(Self { target: target.validate()?, next_tag_identity: Cell::new(1), saw_atomic_aggregate: Cell::new(false), next_static_compound_identity: Cell::new(1), tags: RefCell::new(vec![HashMap::new()]), tag_definitions: RefCell::new(HashMap::new()), globals: HashMap::new(), next_vla_bound: 0, capturing_vla_bounds: None, checking_inline_body: false, inline_body_violation: RefCell::new(None), locals: Vec::new(), result_ty: None, current_signature: None, loop_depth: 0, switches: Vec::new(), function_labels: HashMap::new(), rollback_log: None, statement_undo: Vec::new(),
+        Ok(Self { target: target.validate()?, next_tag_identity: Cell::new(1), saw_atomic_aggregate: Cell::new(false), next_static_compound_identity: Cell::new(1), next_inferred_local_identity: 0, tags: RefCell::new(vec![HashMap::new()]), tag_definitions: RefCell::new(HashMap::new()), globals: HashMap::new(), next_vla_bound: 0, capturing_vla_bounds: None, checking_inline_body: false, inline_body_violation: RefCell::new(None), locals: Vec::new(), result_ty: None, current_signature: None, loop_depth: 0, switches: Vec::new(), function_labels: HashMap::new(), rollback_log: None, statement_undo: Vec::new(),
             recovery_errors: None, recovery_limit: 0,
             warning_policy: WarningPolicy::default(), emitted_warnings: Vec::new(),
             conversion_warnings: RefCell::new(Vec::new()),
@@ -723,6 +726,7 @@ impl Checker {
 
     fn resolve(&mut self, ty: &Type, span: Span) -> Result<CType, Diagnostic> {
         Ok(match ty {
+            Type::AutoType => return Err(type_error(span,"__auto_type requires an inferred local declaration")),
             Type::Atomic(inner) => {
                 let base=self.resolve(inner,span)?;
                 self.atomic_object_type(base,span)?
@@ -1071,7 +1075,7 @@ impl Checker {
         // atomic stores are observable; only linked aliases are exempt.
         let warning_exempt = linkage != Linkage::None;
         self.locals.last_mut().expect("local scope").insert(name.to_owned(), Symbol {
-            ty, kind, linkage, defined: true, asm_label: None, enum_value: None, is_register, is_thread_local: false, old_style_signature: None, non_inline_or_extern: false, inline_declaration: None,
+            ty, kind, linkage, defined: true, asm_label: None, enum_value: None, is_register, is_thread_local: false, local_name: None, old_style_signature: None, non_inline_or_extern: false, inline_declaration: None,
         });
         if kind == SymbolKind::Object {
             // Extern aliases are not automatic locals for unused diagnostics.
@@ -1135,7 +1139,7 @@ impl Checker {
             prior.defined |= defining;
         } else {
             self.globals.insert(name.to_owned(), Symbol {
-                ty, kind, linkage: requested, defined: defining, asm_label: None, enum_value: None, is_register: false, is_thread_local, old_style_signature: None, non_inline_or_extern: false, inline_declaration: None,
+                ty, kind, linkage: requested, defined: defining, asm_label: None, enum_value: None, is_register: false, is_thread_local, local_name: None, old_style_signature: None, non_inline_or_extern: false, inline_declaration: None,
             });
         }
         Ok(())
@@ -1925,7 +1929,7 @@ impl Checker {
         self.locals.last_mut().expect("function scope").insert("__func__".into(), Symbol {
             ty: name_type, kind: SymbolKind::Object, linkage: Linkage::None,
             defined: true, asm_label: Some(implicit_function_name_symbol(&func.name)),
-            enum_value: None, is_register: false, is_thread_local: false, old_style_signature: None, non_inline_or_extern: false, inline_declaration: None,
+            enum_value: None, is_register: false, is_thread_local: false, local_name: None, old_style_signature: None, non_inline_or_extern: false, inline_declaration: None,
         });
         for (parsed_param, param) in func.params.iter().zip(&params) {
             if let Err(err) = self.define_local(&param.name, param.ty.clone(),
@@ -2030,6 +2034,45 @@ impl Checker {
             Stmt::Tag(ty) => {
                 self.declare_tag_only(ty, span)?;
                 CheckedStmt::Tag
+            }
+            Stmt::Decl(decl) if decl.ty==Type::AutoType => {
+                // Check before binding: the initializer may refer to an
+                // outer object with this same source name. A private checked
+                // name prevents either backend from capturing that reference
+                // when allocating the new local before initialization.
+                let original=decl.init.as_ref().ok_or_else(||type_error(decl.span,"__auto_type requires an initializer"))?;
+                let value=self.check_expr(original,decl.span)?;
+                if matches!(value.kind,CheckedExprKind::BitFieldMember(..)) {
+                    return Err(type_error(decl.span,"__auto_type cannot infer from a bit-field"));
+                }
+                let value=value.rvalue();
+                let ty=value.ty.clone();
+                if !ty.is_object() || ty.size_bytes(self.target).is_none() {
+                    return Err(type_error(decl.span,"__auto_type requires a complete object value"));
+                }
+                if decl.storage==StorageClass::Static {
+                    self.validate_static_initializer(&value,original,&ty,decl.span)?;
+                    if !ty.is_const_object() {
+                        self.note_inline_violation(decl.span,||format!("inline-only definition cannot define modifiable static object '{}'",decl.name));
+                    }
+                } else if !matches!(decl.storage,StorageClass::Default|StorageClass::Register) {
+                    return Err(type_error(decl.span,"invalid storage class for __auto_type"));
+                }
+                if decl.storage==StorageClass::Register && !ty.is_integer() && !matches!(ty.unqualified(),CType::Pointer(_)) {
+                    return Err(type_error(decl.span,"register local currently requires an integer or pointer type"));
+                }
+                let backing=if self.lookup(&decl.name).is_some() {
+                    let id=self.next_inferred_local_identity;
+                    self.next_inferred_local_identity=id.checked_add(1).ok_or_else(||type_error(decl.span,"inferred local identity overflow"))?;
+                    format!(".Lmini_c_inferred_{id}")
+                } else {decl.name.clone()};
+                self.define_local(&decl.name,ty.clone(),SymbolKind::Object,Linkage::None,
+                    decl.storage==StorageClass::Register,decl.name_span.unwrap_or(decl.span))?;
+                if backing!=decl.name {
+                    self.locals.last_mut().expect("local scope").get_mut(&decl.name).expect("defined local").local_name=Some(backing.clone());
+                }
+                CheckedStmt::Decl(CheckedDecl{storage:decl.storage,runtime_bounds:Box::default(),is_inline:false,
+                    name:backing,ty,linkage:Linkage::None,asm_label:None,initializer:Some(value),span:decl.span})
             }
             Stmt::Decl(decl) => {
                 let (resolved, runtime_bounds) = self.resolve_local_type(&decl.ty, decl.span)?;
@@ -3077,6 +3120,7 @@ impl Checker {
 
     fn resolve_sizeof_type(&self, ty: &Type, span: Span) -> Result<CType, Diagnostic> {
         Ok(match ty {
+            Type::AutoType => return Err(type_error(span,"__auto_type is not a type name")),
             Type::Void => CType::Void,
             Type::Bool => CType::Integer { rank: IntRank::Bool, unsigned: true },
             Type::Char => CType::Integer {
@@ -3421,7 +3465,7 @@ impl Checker {
                 // implementation) has no private backing name.
                 let resolved_name = if name == "__func__" {
                     symbol.asm_label.as_deref().unwrap_or(name)
-                } else { name };
+                } else { symbol.local_name.as_deref().unwrap_or(name) };
                 Ok(CheckedExpr { ty: symbol.ty.clone(), category,
                     kind: CheckedExprKind::Name(resolved_name.to_owned()), source_span:None })
             }
