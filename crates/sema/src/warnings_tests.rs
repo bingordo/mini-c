@@ -307,3 +307,48 @@ fn return_statement_uses_shared_narrowing_conversion_logic() {
     assert_eq!(reports.len(), 1, "{reports:?}");
     assert_eq!(reports[0].warning_group, Some("conversion"));
 }
+
+#[test]
+fn mixed_signed_unsigned_arithmetic_warns_for_signed_operand() {
+    let reports = signedness_warnings(
+        "unsigned int f(int a, unsigned int b) { return a + b; }",
+        Target::default());
+    assert_eq!(reports.len(), 1, "{reports:?}");
+    assert_eq!(reports[0].warning_group, Some("sign-conversion"));
+}
+
+#[test]
+fn explicit_cast_does_not_warn_in_mixed_arithmetic() {
+    let reports = signedness_warnings(
+        "unsigned int f(int a, unsigned int b) { return (unsigned int)a + b; }",
+        Target::default());
+    assert!(reports.is_empty(), "{reports:?}");
+}
+
+#[test]
+fn negative_constant_arithmetic_warns_but_positive_constant_does_not() {
+    let negative = signedness_warnings(
+        "unsigned int f(unsigned int x) { return x + -1; }",
+        Target::default());
+    assert_eq!(negative.len(), 1, "{negative:?}");
+    let positive = signedness_warnings(
+        "unsigned int f(unsigned int x) { return x + 1; }",
+        Target::default());
+    assert!(positive.is_empty(), "{positive:?}");
+}
+
+#[test]
+fn unsigned_operand_promoted_to_wider_signed_is_safe() {
+    let reports = signedness_warnings(
+        "long f(unsigned int a, long b) { return a + b; }",
+        Target::default());
+    assert!(reports.is_empty(), "{reports:?}");
+}
+
+#[test]
+fn mixed_relational_operators_warn_on_sign_conversions() {
+    let reports = signedness_warnings(
+        "int f(int a, unsigned int b) { return a < b; }",
+        Target::default());
+    assert_eq!(reports.len(), 1, "{reports:?}");
+}
