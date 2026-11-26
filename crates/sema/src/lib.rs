@@ -2565,6 +2565,35 @@ impl Checker {
         }
     }
 
+    /// GCC-style mixed-sign integer comparison warning. Only report when
+    /// the usual arithmetic conversions make a signed operand unsigned.
+    /// A wider signed common type can represent both operands safely.
+    fn warn_sign_comparison(
+        &self, left: &CheckedExpr, right: &CheckedExpr, common: &CType,
+        span: Span,
+    ) {
+        if !self.warning_policy.enabled("sign-compare") { return; }
+        let CType::Integer { unsigned: true, .. } = common.unqualified()
+            else { return; };
+        let signed_operand = match (left.ty.unqualified(), right.ty.unqualified()) {
+            (CType::Integer { unsigned: false, .. },
+                CType::Integer { unsigned: true, .. }) => left,
+            (CType::Integer { unsigned: true, .. },
+                CType::Integer { unsigned: false, .. }) => right,
+            _ => return,
+        };
+        // GCC ignores nonnegative integer constants in these comparisons.
+        if const_eval::evaluate(signed_operand, self.target)
+            .is_ok_and(|value| value >= 0) {
+            return;
+        }
+        self.conversion_warnings.borrow_mut().push(ReportedDiagnostic::warning(
+            Diagnostic::semantic(span,
+                "comparison between signed and unsigned integer expressions"),
+            "sign-compare",
+        ));
+    }
+
     fn convert_for_assignment(&self, expr: CheckedExpr, ty: &CType, _original: &Expr, span: Span) -> Result<CheckedExpr, Diagnostic> {
         // The source array undergoes the standard array-to-pointer conversion
         // before checking scalar assignment compatibility.
@@ -3475,7 +3504,9 @@ impl Checker {
                 // Usual arithmetic conversions also implicitly change the
                 // operand type. Diagnose sign changes on the operands, not
                 // on the arithmetic result, preserving explicit-cast opt-out.
-                if !relation {
+                if relation {
+                    self.warn_sign_comparison(&left, &right, &common, span);
+                } else {
                     self.warn_implicit_sign_conversion(&left, &common,
                         lhs.location().unwrap_or(span));
                     self.warn_implicit_sign_conversion(&right, &common,

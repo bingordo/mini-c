@@ -613,3 +613,24 @@ fn native_sign_conversion_respects_error_and_suppression() {
     assert!(none.is_empty());
     assert!(!failed);
 }
+
+#[test]
+fn native_sign_compare_warning_and_error_promotion() {
+    let source = "int f(int x, unsigned int y) { return x < y; }";
+    let mut policy = WarningPolicy::default();
+    policy.apply_flag("-Wall").unwrap();
+    let (warnings, failed) =
+        format_semantic_warnings("compare.c", source, false, &policy).unwrap();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(!failed);
+    assert!(warnings[0].contains("[-Wsign-compare]"));
+    policy.apply_flag("-Werror=sign-compare").unwrap();
+    let (_, failed) =
+        format_semantic_warnings("compare.c", source, false, &policy).unwrap();
+    assert!(failed);
+    policy.apply_flag("-Wno-sign-compare").unwrap();
+    let (none, failed) =
+        format_semantic_warnings("compare.c", source, false, &policy).unwrap();
+    assert!(none.is_empty());
+    assert!(!failed);
+}

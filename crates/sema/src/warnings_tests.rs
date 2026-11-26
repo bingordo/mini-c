@@ -353,3 +353,63 @@ fn mixed_relational_operators_do_not_emit_sign_conversion() {
         Target::default());
     assert!(reports.is_empty(), "{reports:?}");
 }
+
+fn sign_compare_warnings(source: &str, target: Target, flags: &[&str]) -> Vec<ReportedDiagnostic> {
+    let mut parser = Parser::new_with_spans(source);
+    let mut checker = Checker::new(target).unwrap();
+    let mut policy = WarningPolicy::default();
+    for flag in flags { policy.apply_flag(flag).unwrap(); }
+    checker.set_warning_policy(policy);
+    while let Some(item) = parser.next_item().unwrap() {
+        checker.check_item(item).unwrap();
+    }
+    checker.take_warnings()
+}
+
+#[test]
+fn mixed_sign_comparison_warns_under_wall() {
+    let reports = sign_compare_warnings(
+        "int f(int a, unsigned int b) { return a < b; }",
+        Target::default(), &["-Wall"]);
+    assert_eq!(reports.len(), 1, "{reports:?}");
+    assert_eq!(reports[0].warning_group, Some("sign-compare"));
+}
+
+#[test]
+fn nonnegative_constant_comparison_does_not_warn() {
+    let reports = sign_compare_warnings(
+        "int f(unsigned int b) { return 1 < b; }",
+        Target::default(), &["-Wsign-compare"]);
+    assert!(reports.is_empty(), "{reports:?}");
+}
+
+#[test]
+fn negative_constant_comparison_warns() {
+    let reports = sign_compare_warnings(
+        "int f(unsigned int b) { return -1 < b; }",
+        Target::default(), &["-Wsign-compare"]);
+    assert_eq!(reports.len(), 1, "{reports:?}");
+}
+
+#[test]
+fn widening_to_signed_common_type_needs_no_sign_compare() {
+    let source = "int f(unsigned int x, long y) { return x < y; }";
+    assert!(sign_compare_warnings(source, Target::default(), &["-Wall"]).is_empty());
+    assert_eq!(sign_compare_warnings(source, Target::wasm32(), &["-Wall"]).len(), 1);
+}
+
+#[test]
+fn sign_compare_can_be_disabled_independently_of_wall() {
+    let reports = sign_compare_warnings(
+        "int f(int x, unsigned int y) { return x == y; }",
+        Target::default(), &["-Wall", "-Wno-sign-compare"]);
+    assert!(reports.is_empty(), "{reports:?}");
+}
+
+#[test]
+fn sign_compare_is_not_implicitly_a_sign_conversion_warning() {
+    let reports = sign_compare_warnings(
+        "int f(int x, unsigned int y) { return x < y; }",
+        Target::default(), &["-Wsign-conversion"]);
+    assert!(reports.is_empty(), "{reports:?}");
+}
