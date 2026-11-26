@@ -483,3 +483,34 @@ fn c99_indirect_nonprototype_and_variadic_calls_preserve_registers_and_stack() {
     assert!(status.success(), "indirect argument forwarding failed: {status}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+fn c99_inline_only_body_uses_external_definition_across_translation_units() {
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let dir = std::env::temp_dir().join(format!("mini-c-inline-{}-{nonce}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("caller.c");
+    let helper = dir.join("definition.c");
+    let object = dir.join("caller.o");
+    let executable = dir.join("program");
+    std::fs::write(&source, concat!(
+        "inline int f(void){return 1;}\n",
+        "inline int g(void){return 3;}\n",
+        "int main(void){int (*p)(void)=f; return p()!=2 || g()!=3;}\n",
+        "extern inline int g(void);\n",
+    )).unwrap();
+    std::fs::write(&helper, "int f(void){return 2;}\n").unwrap();
+    let opts = parse_options([
+        "--cpp=none".to_owned(), "--emit-obj".to_owned(),
+        object.to_string_lossy().into_owned(), source.to_string_lossy().into_owned(),
+    ]).unwrap();
+    assert_eq!(compile_to_object(&opts), ExitCode::SUCCESS);
+    let link = Command::new("cc").arg(&object).arg(&helper)
+        .arg("-o").arg(&executable).output().unwrap();
+    assert!(link.status.success(), "link: {}", String::from_utf8_lossy(&link.stderr));
+    assert!(Command::new(&executable).status().unwrap().success());
+    let _ = std::fs::remove_dir_all(dir);
+}
