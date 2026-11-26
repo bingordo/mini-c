@@ -930,13 +930,15 @@ impl Checker {
                 "shadow",
             ));
         }
+        let warning_exempt = linkage != Linkage::None
+            || ty.is_volatile() || ty.is_atomic();
         self.locals.last_mut().expect("local scope").insert(name.to_owned(), Symbol {
             ty, kind, linkage, defined: true, asm_label: None, enum_value: None, is_register, old_style_signature: None,
         });
         if kind == SymbolKind::Object {
-            // Extern aliases hide an outer automatic binding but are not
-            // themselves candidates for unused-local diagnostics.
-            self.register_warning_binding(name, span, false, linkage != Linkage::None);
+            // Extern aliases, volatile and atomic objects are not candidates
+            // for set-but-unused warnings: their operations are observable.
+            self.register_warning_binding(name, span, false, warning_exempt);
         }
         Ok(())
     }
@@ -3406,6 +3408,10 @@ impl Checker {
             Expr::Assign(lhs, rhs) => {
                 let lhs_span = lhs.location().unwrap_or(span);
                 let rhs_span = rhs.location().unwrap_or(span);
+                let direct_name = match lhs.without_location() {
+                    Expr::Name(name) => Some(name.as_str()),
+                    _ => None,
+                };
                 let lhs = self.check_expr(lhs, span)?;
                 if lhs.category != Category::LValue || lhs.ty.is_const()
                     || matches!(lhs.ty.unqualified(), CType::Array(..)) {
@@ -3413,6 +3419,11 @@ impl Checker {
                 }
                 let rhs_typed = self.check_expr(rhs, span)?;
                 let rhs_typed = self.convert_for_assignment(rhs_typed, &lhs.ty, rhs, rhs_span)?;
+                // Checking a direct name LHS visited it as a normal expression.
+                // A plain assignment writes rather than reads that binding.
+                if let Some(name) = direct_name {
+                    self.write_warning_binding(name);
+                }
                 // C assignment returns a value, not a qualified atomic
                 // lvalue. Keep the lvalue itself qualified inside the AST
                 // for the TypeId emitter to select ordered atomic storage.
