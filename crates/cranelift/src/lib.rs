@@ -3060,16 +3060,17 @@ mod tests {
     }
 
     #[test]
-    fn variadic_calls_fail_with_explicit_sysv_abi_diagnostic() {
-        // GP-class direct variadic calls are supported. Indirect calls must
-        // still fail explicitly rather than lowering with a wrong ABI.
+    fn scalar_variadic_calls_supported_and_aggregate_abi_fails_closed() {
         assert!(compile_source(
             "extern int printf(const char *, ...); int main(void) { return printf(\"%s\", \"hi\"); }"
         ).is_ok());
+        assert!(compile_source(
+            "int invoke(int (*callback)(const char *, ...)) { return callback(\"%s\", \"hi\"); }"
+        ).is_ok());
         let error = compile_source(
-            "int main(void) { int (*callback)(const char *, ...) = 0; return callback(\"%s\", \"hi\"); }"
+            "struct S {int x;}; extern int f(struct S, ...); int g(void) {struct S s={1}; return f(s,2);}"
         ).unwrap_err();
-        assert!(error.contains("indirect SysV variadic"), "{error}");
+        assert!(error.contains("unsupported SysV aggregate-by-value ABI in variadic call"), "{error}");
         assert!(compile_source(
             "extern int puts(const char *); int main(void) { return puts(\"hello\"); }"
         ).is_ok());
