@@ -4896,3 +4896,26 @@ fn c99_address_of_dereference_cancels_without_evaluating_indirection() {
     assert!(matches!(expr.kind, CheckedExprKind::Call(..)));
     reject("int *f(int x){return &*x;}", "dereference requires a pointer");
 }
+
+#[test]
+fn c99_static_member_addresses_use_lexically_resolved_static_roots() {
+    for source in [
+        "struct S{int a,b;}; struct S s; int *p=&s.b;",
+        "struct S{int a[3];}; struct S s; int *p=s.a;",
+        "struct N{int x;}; struct S{int pad; struct N n;}; struct S s; int *p=&s.n.x;",
+        "int x; int *p=&*(&x);",
+        "struct S{int a,b;}; struct S s; int *p[2]={&s.a,&s.b};",
+        "int x; int f(void){static int *p=&x; return *p;}",
+    ] {
+        check(source).unwrap_or_else(|err| panic!("{source}: {err:?}"));
+    }
+    for source in [
+        "int x; int f(void){int x; static int *p=&x; return 0;}",
+        "struct S{int a,b;}; struct S s; int f(void){struct S s; static int *p=&s.b; return 0;}",
+        "struct S{int a,b;}; struct S s; struct S *q=&s; int *p=&q->b;",
+        "int x; int *q=&x; int *p=&*q;",
+        "struct S{int *p;}; struct S s; int *p=s.p;",
+    ] {
+        reject(source, "pointer initializer requires");
+    }
+}
