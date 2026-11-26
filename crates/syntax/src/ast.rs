@@ -27,6 +27,7 @@ pub enum Item {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Function {
     pub storage: StorageClass,
+    pub is_inline: bool,
     pub name: Ident,
     /// Name token range in opt-in location-aware parser mode.
     pub name_span: Option<Span>,
@@ -40,6 +41,7 @@ pub struct Function {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Decl {
     pub storage: StorageClass,
+    pub is_inline: bool,
     pub name: Ident,
     /// Name token range; `span` continues to cover the full declaration.
     pub name_span: Option<Span>,
