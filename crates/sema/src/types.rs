@@ -323,7 +323,7 @@ impl CType {
     pub fn is_variable_array(&self) -> bool {
         match self.unqualified() {
             Self::VariableArray(..) => true,
-            Self::Array(element, _) => element.is_variable_array(),
+            Self::Array(element, Some(_)) => element.is_variable_array(),
             _ => false,
         }
     }
