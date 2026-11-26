@@ -1925,6 +1925,12 @@ impl Lower<'_> {
             }
             CheckedExprKind::BuiltinAtomic(_) => Err(
                 "GNU atomic builtin requires native TypeId atomic legalization; Cranelift cannot emit an ordinary memory access or external call".into()),
+            CheckedExprKind::BuiltinByteSwap(bits,inner) => {
+                let value=self.integer_value(b,inner)?;
+                let ty=b.func.dfg.value_type(value);
+                if ty.bits()!=u32::from(*bits) {return Err("invalid byte-swap width".into());}
+                Ok(b.ins().bswap(value))
+            }
             CheckedExprKind::BuiltinCtz(inner) => {
                 // GCC defines __builtin_ctz(0) as undefined behavior. The
                 // source must guard zero; CLIF ctz is permitted to produce
