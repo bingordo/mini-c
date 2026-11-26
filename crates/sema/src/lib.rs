@@ -435,6 +435,7 @@ pub struct Checker {
     recovery_limit: usize,
     warning_policy: WarningPolicy,
     emitted_warnings: Vec<ReportedDiagnostic>,
+    conversion_warnings: RefCell<Vec<ReportedDiagnostic>>,
     warning_scopes: RefCell<Vec<HashMap<String, UsageBinding>>>,
 }
 
@@ -443,6 +444,7 @@ impl Checker {
         Ok(Self { target: target.validate()?, next_tag_identity: Cell::new(1), saw_atomic_aggregate: Cell::new(false), next_static_compound_identity: Cell::new(1), tags: RefCell::new(vec![HashMap::new()]), tag_definitions: RefCell::new(HashMap::new()), globals: HashMap::new(), locals: Vec::new(), result_ty: None, loop_depth: 0, switches: Vec::new(), function_labels: HashMap::new(), rollback_log: None, statement_undo: Vec::new(),
             recovery_errors: None, recovery_limit: 0,
             warning_policy: WarningPolicy::default(), emitted_warnings: Vec::new(),
+            conversion_warnings: RefCell::new(Vec::new()),
             warning_scopes: RefCell::new(Vec::new()) })
     }
 
@@ -453,7 +455,10 @@ impl Checker {
 
     /// Retrieve diagnostics emitted by successfully checked items.
     pub fn take_warnings(&mut self) -> Vec<ReportedDiagnostic> {
-        std::mem::take(&mut self.emitted_warnings)
+        let mut reports = std::mem::take(&mut self.emitted_warnings);
+        reports.extend(std::mem::take(self.conversion_warnings.get_mut()));
+        reports.sort_by_key(|report| report.diagnostic.span.lo);
+        reports
     }
 
     pub fn global(&self, name: &str) -> Option<&Symbol> { self.globals.get(name) }
@@ -1067,6 +1072,7 @@ impl Checker {
     /// stream consumed by subsequent successful items.
     pub fn check_item(&mut self, item: ExternalItem) -> Result<CheckedItem, Diagnostic> {
         let previous = self.emitted_warnings.len();
+        let previous_conversions = self.conversion_warnings.borrow().len();
         let result = self.check_item_impl(item).and_then(|checked| {
             // No additional tree traversal on units without atomic aggregates.
             // Type-only declarations and unused prototypes may introduce the
@@ -1090,6 +1096,7 @@ impl Checker {
         });
         if result.is_err() {
             self.emitted_warnings.truncate(previous);
+            self.conversion_warnings.get_mut().truncate(previous_conversions);
         }
         result
     }
@@ -2488,6 +2495,39 @@ impl Checker {
         };
         if !compatible {
             return Err(Diagnostic::coded(span, DiagnosticCode::SemanticIncompatibleAssignment, format!("incompatible assignment: {:?} to {:?}", expr.ty, ty)));
+        }
+        // Warn only for implicit integer width loss. Signedness-only
+        // conversions belong to a separate -Wsign-conversion analysis.
+        if self.warning_policy.enabled("conversion") {
+            if let (CType::Integer { rank: src, .. },
+                    CType::Integer { rank: dst, unsigned }) =
+                (expr.ty.unqualified(), value_ty.unqualified())
+            {
+                let source_bits = self.target.bits(*src);
+                let dest_bits = self.target.bits(*dst);
+                if dest_bits < source_bits && *dst != IntRank::Bool {
+                    // GCC does not warn for an integer constant whose value
+                    // fits the destination representation.
+                    let fits = const_eval::evaluate(&expr, self.target).ok()
+                        .is_some_and(|value| {
+                            if *unsigned {
+                                value >= 0 && value <= ((1i128 << dest_bits) - 1)
+                            } else {
+                                value >= -(1i128 << (dest_bits - 1))
+                                    && value < (1i128 << (dest_bits - 1))
+                            }
+                        });
+                    if !fits {
+                        self.conversion_warnings.borrow_mut().push(
+                            ReportedDiagnostic::warning(
+                                Diagnostic::semantic(span,
+                                    "implicit integer conversion may change value"),
+                                "conversion",
+                            )
+                        );
+                    }
+                }
+            }
         }
         Ok(self.convert(expr, &value_ty))
     }
