@@ -436,3 +436,50 @@ fn c99_identifier_list_definition_receives_promoted_arguments() {
         "old-style definition did not receive promoted arguments correctly");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+fn c99_indirect_nonprototype_and_variadic_calls_preserve_registers_and_stack() {
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let dir = std::env::temp_dir().join(format!("mini-c-indirect-varargs-{}-{nonce}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("caller.c");
+    let helper = dir.join("helper.c");
+    let object = dir.join("caller.o");
+    let executable = dir.join("program");
+    std::fs::write(&source, concat!(
+        "int small(); int large(); int vari(int,...);\n",
+        "int main(void) {\n",
+        "  int (*p)()=small; int (*q)()=large; int (*v)(int,...)=vari;\n",
+        "  char a=3; float b=2.5f;\n",
+        "  if(p(a,b)!=1 || (*p)(a,b)!=1) return 1;\n",
+        "  if(q(1,2,3,4,5,6,7,1.0,2.0,3.0,4.0,5.0,6.0,7.0,8.0,9.0)!=1) return 2;\n",
+        "  if(v(1,2,3,4,5,6,7,1.0,2.0,3.0,4.0,5.0,6.0,7.0,8.0,9.0)!=1) return 3;\n",
+        "  return 0;\n",
+        "}\n",
+    )).unwrap();
+    std::fs::write(&helper, concat!(
+        "#include <stdarg.h>\n",
+        "int small(int a,double b) {return a==3 && b==2.5;}\n",
+        "int large(int a,int b,int c,int d,int e,int f,int g,",
+        "double h,double i,double j,double k,double l,double m,double n,double o,double p) {",
+        "return a==1&&b==2&&c==3&&d==4&&e==5&&f==6&&g==7&&h==1&&i==2&&j==3&&k==4&&l==5&&m==6&&n==7&&o==8&&p==9;}\n",
+        "int vari(int a,...) { va_list ap; va_start(ap,a); int ok=a==1; ",
+        "for(int i=2;i<=7;i++) if(va_arg(ap,int)!=i) ok=0; ",
+        "for(int i=1;i<=9;i++) if(va_arg(ap,double)!=i) ok=0; ",
+        "va_end(ap);return ok;}\n",
+    )).unwrap();
+    let opts = parse_options([
+        "--cpp=none".to_owned(), "--emit-obj".to_owned(),
+        object.to_string_lossy().into_owned(), source.to_string_lossy().into_owned(),
+    ]).unwrap();
+    assert_eq!(compile_to_object(&opts), ExitCode::SUCCESS);
+    let link = Command::new("cc").arg(&object).arg(&helper)
+        .arg("-o").arg(&executable).output().unwrap();
+    assert!(link.status.success(), "link: {}", String::from_utf8_lossy(&link.stderr));
+    let status = Command::new(&executable).status().unwrap();
+    assert!(status.success(), "indirect argument forwarding failed: {status}");
+    let _ = std::fs::remove_dir_all(dir);
+}
