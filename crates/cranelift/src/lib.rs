@@ -2082,6 +2082,14 @@ impl Lower<'_> {
                 if *op == UnOp::Deref {
                     return self.expression(b, inner);
                 }
+                // All scalar truth conversions (including pointers and NaNs)
+                // use the same path as if/while and short-circuit operators.
+                if *op == UnOp::Not {
+                    let truth = self.condition(b, inner)?;
+                    let zero = b.ins().iconst(types::I32, 0);
+                    let one = b.ins().iconst(types::I32, 1);
+                    return Ok(b.ins().select(truth, zero, one));
+                }
                 let floating = matches!(inner.ty.unqualified(), CType::Floating(_));
                 let val = if floating {
                     self.expression(b, inner)?
@@ -2093,22 +2101,7 @@ impl Lower<'_> {
                     UnOp::Neg => Ok(if floating { b.ins().fneg(val) } else { b.ins().ineg(val) }),
                     UnOp::BitNot if !floating => Ok(b.ins().bnot(val)),
                     UnOp::BitNot => Err("bitwise negation requires integer".into()),
-                    UnOp::Not => {
-                        let ty = b.func.dfg.value_type(val);
-                        let cond = if floating {
-                            let zero = if ty == types::F32 {
-                                b.ins().f32const(ir::immediates::Ieee32::with_bits(0))
-                            } else {
-                                b.ins().f64const(ir::immediates::Ieee64::with_bits(0))
-                            };
-                            b.ins().fcmp(FloatCC::Equal, val, zero)
-                        } else {
-                            let zero = b.ins().iconst(ty, 0);
-                            b.ins().icmp(IntCC::Equal, val, zero)
-                        };
-                        Ok(Self::boolean(b, cond))
-                    }
-                    UnOp::Address | UnOp::Deref => unreachable!(),
+                    UnOp::Address | UnOp::Deref | UnOp::Not => unreachable!(),
                 }
             }
             CheckedExprKind::Conditional(condition, yes, no) => {
