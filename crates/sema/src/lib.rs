@@ -3,6 +3,7 @@
 //! never retained in the checker. No filesystem, global state or output side effects.
 pub mod types;
 pub mod const_eval;
+pub mod float_literal;
 pub mod builtins;
 mod warnings;
 #[allow(dead_code)] // generated target ISA tables remain test oracles, not source admission
