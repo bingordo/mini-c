@@ -983,6 +983,7 @@ impl Compiler {
             initializer: Some(CheckedExpr {
                 ty: name_type, category: Category::LValue,
                 kind: CheckedExprKind::StringLiteral(function_bytes),
+                source_span:None, // synthetic compiler-owned __func__ name
             }),
             span: Default::default(),
         })?;
