@@ -46,6 +46,15 @@ pub fn evaluate(expr: &CheckedExpr, target: Target) -> Result<i128, &'static str
         CheckedExprKind::Literal(value) => Ok(i128::from(*value)),
         CheckedExprKind::FloatLiteral(_) => Err("not an integer constant expression"),
         CheckedExprKind::EnumConstant(value) => Ok(i128::from(*value)),
+        CheckedExprKind::BuiltinByteSwap(bits,inner) => {
+            let v=evaluate(inner,target)?;
+            Ok(match bits {
+                16=>i128::from((v as u16).swap_bytes()),
+                32=>i128::from((v as u32).swap_bytes()),
+                64=>i128::from((v as u64).swap_bytes()),
+                _=>return Err("invalid checked byte-swap width"),
+            })
+        }
         CheckedExprKind::Convert(inner) => normalize(evaluate(inner, target)?, &expr.ty, target),
         CheckedExprKind::Unary(op, inner) => {
             let value = evaluate(inner, target)?;
