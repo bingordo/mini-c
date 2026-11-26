@@ -22,41 +22,18 @@ use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
 
-#[derive(Clone)]
-struct Origin {
-    start: usize,
-    file: Arc<str>,
-    line: u32,
-}
+use preprocess::token_origins::{TokenOrigin, TokenOrigins};
+use mini_c_syntax::source::SourceFile;
 
-#[derive(Default)]
-struct OriginLines(Vec<Origin>);
-
-impl OriginLines {
-    fn record(&mut self, start: usize, file: &Arc<str>, line: u32) {
-        if !self.0.last().is_some_and(|previous|
-            previous.line == line && previous.file.as_ref() == file.as_ref())
-        {
-            self.0.push(Origin {
-                start, file: Arc::clone(file), line,
-            });
-        }
-    }
-
-    fn display(&self, offset: usize, fallback: &str) -> String {
-        let n = self.0.partition_point(|entry| entry.start <= offset);
-        match n.checked_sub(1).and_then(|i| self.0.get(i)) {
-            Some(origin) => format!("{}:{}", origin.file, origin.line),
-            None => format!("{fallback}:1"),
-        }
-    }
+fn render(origins: &TokenOrigins, path: &str, error: &Diagnostic, level: &str) -> String {
+    super::render_diagnostic(&SourceFile::new(path, ""), None, origins, error, level, "")
 }
 
 struct CppTokens {
     stream: TokenStream,
     pending: VecDeque<ParserToken<'static>>,
     offset: usize,
-    origins: Rc<RefCell<OriginLines>>,
+    origins: Rc<RefCell<TokenOrigins>>,
 }
 
 impl ParserTokenSource<'static> for CppTokens {
@@ -83,6 +60,12 @@ impl ParserTokenSource<'static> for CppTokens {
             // lexing 'a + + b' as 'a++b'. This is a virtual offset only:
             // no complete text buffer is materialized.
             self.offset = self.offset.saturating_add(pp.spelling.len().saturating_add(1));
+            self.origins.borrow_mut().push(TokenOrigin {
+                output_start: start, output_end: start + pp.spelling.len(),
+                source: pp.site.source.clone(), source_start: pp.site.start,
+                source_end: pp.site.end, file: pp.site.file.clone(), line: pp.site.line,
+                expansion: pp.expansion.clone(),
+            });
             let mut lexer = Scanner::new(&pp.spelling);
             let mut offset_in_spelling = 0usize;
             loop {
@@ -101,7 +84,6 @@ impl ParserTokenSource<'static> for CppTokens {
                 offset_in_spelling = token.span.hi;
                 let begin = start.saturating_add(token.span.lo);
                 let end = start.saturating_add(token.span.hi);
-                self.origins.borrow_mut().record(begin, &pp.file, pp.line);
                 self.pending.push_back(ParserToken {
                     kind: token.kind,
                     text: TokenText::Shared(Arc::from(token.text)),
@@ -117,7 +99,7 @@ pub(super) fn check(
     path: &str, config: &preprocess::Config, max_errors: Option<usize>,
 ) -> Result<(), String> {
     let stream = stream::start(Path::new(path), &config.args)?;
-    let origins = Rc::new(RefCell::new(OriginLines::default()));
+    let origins = Rc::new(RefCell::new(TokenOrigins::default()));
     let source = CppTokens {
         stream,
         pending: VecDeque::new(),
@@ -137,8 +119,7 @@ pub(super) fn check(
             return Ok(());
         }
         return Err(errors.into_iter().map(|error| {
-            let location = origins.borrow().display(error.span.lo, path);
-            format!("{location}: error[{}]: {}", error.code.as_str(), error.message)
+            render(&origins.borrow(), path, &error, &format!("error[{}]", error.code.as_str()))
         }).collect::<Vec<_>>().join("\n"));
     }
     loop {
@@ -148,12 +129,10 @@ pub(super) fn check(
         match checked {
             Ok(Some(_)) => {}
             Ok(None) => return checker.finish_translation_unit().map_err(|error| {
-                let location = origins.borrow().display(error.span.lo, path);
-                format!("{location}: error: {}", error.message)
+                render(&origins.borrow(), path, &error, "error")
             }),
             Err(error) => {
-                let location = origins.borrow().display(error.span.lo, path);
-                return Err(format!("{location}: error: {}", error.message));
+                return Err(render(&origins.borrow(), path, &error, "error"));
             }
         }
     }
