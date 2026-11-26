@@ -4565,7 +4565,7 @@ fn gnu_nan_empty_payload_has_checked_float_and_double_type() {
         ("__builtin_nanf", mini_c_syntax::ast::FloatRank::Float),
         ("__builtin_nan", mini_c_syntax::ast::FloatRank::Double),
     ] {
-        let src = format!("double f(void) {{ return {name}(\\\"\\\"); }}");
+        let src = format!(r#"double f(void) {{ return {name}(""); }}"#);
         let items = check(&src).expect("empty GNU NaN payload");
         let CheckedItem::Function(func) = &items[0] else { panic!("function") };
         let CheckedStmt::Block(body) = &func.body else { panic!("body") };
