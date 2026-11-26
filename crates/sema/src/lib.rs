@@ -193,6 +193,9 @@ impl CheckedExpr {
     }
 }
 
+/// Evaluations owned by one declaration, each paired with a saved extent ID.
+pub type RuntimeBounds = Box<[(u64, CheckedExpr)]>;
+
 /// Private storage name for a saved VLA extent.
 pub fn vla_bound_name(id: u64) -> String { format!(".Lmini_c_vla_bound_{id}") }
 
@@ -202,7 +205,7 @@ pub struct CheckedDecl {
     /// Declaration-time evaluation of each new variable array extent.
     /// Consumers must store these in automatic, scope-local slots before
     /// evaluating the initializer or allocating the declared object.
-    pub runtime_bounds: Box<[(u64, CheckedExpr)]>,
+    pub runtime_bounds: RuntimeBounds,
     pub is_inline: bool,
     pub name: String,
     pub ty: CType,
@@ -874,6 +877,9 @@ impl Checker {
                     };
                     let resolved = self.resolve(declared, member.span)?;
                     let resolved = self.try_complete_tag_type(resolved)?;
+                    if resolved.is_variably_modified() {
+                        return Err(type_error(member.span, "aggregate member cannot have variably modified type"));
+                    }
                     let width = bit_width.map(|width| {
                         self.check_bit_width(width, &resolved, member.name.is_empty(), member.span)
                     }).transpose()?;
@@ -926,6 +932,9 @@ impl Checker {
                 for param in params {
                     let resolved = self.resolve(param, span)?;
                     let ty = self.adjust_parameter(resolved);
+                    if ty.is_variably_modified() {
+                        return Err(type_error(span, "variably modified function parameter types require parameter scope resolution"));
+                    }
                     if !ty.is_object() {
                         return Err(type_error(span, "parameter requires a complete non-void object type"));
                     }
@@ -939,10 +948,11 @@ impl Checker {
             }
             Type::Array(element, bound) => {
                 let element = self.resolve(element, span)?;
-                if self.try_complete_tag_type(element.clone())?.has_flexible_array_member() {
+                let element = self.try_complete_tag_type(element)?;
+                if element.has_flexible_array_member() {
                     return Err(type_error(span, "array element cannot contain a flexible array member"));
                 }
-                if !element.is_object() || matches!(element, CType::Array(_, None)) {
+                if !element.is_object() || (element.size_bytes(self.target).is_none() && !element.is_variable_array()) {
                     return Err(type_error(span, "array element requires a complete object type"));
                 }
                 if let Some(expr) = bound.as_deref() {
@@ -978,7 +988,7 @@ impl Checker {
 
     /// Resolve a local declarator and take ownership of its bound evaluations.
     /// Each occurrence gets a new ID even when the source expressions match.
-    fn resolve_local_type(&mut self, ty: &Type, span: Span) -> Result<(CType, Box<[(u64, CheckedExpr)]>), Diagnostic> {
+    fn resolve_local_type(&mut self, ty: &Type, span: Span) -> Result<(CType, RuntimeBounds), Diagnostic> {
         debug_assert!(self.capturing_vla_bounds.is_none());
         self.capturing_vla_bounds = Some(Vec::new());
         let resolved = self.resolve(ty, span);
@@ -2823,7 +2833,7 @@ impl Checker {
     }
 
     fn sizeof_type_expression_impl(&self, ty: &Type, span: Span, array_element: bool) -> Result<CheckedExpr, Diagnostic> {
-        let size_ty = CType::Integer { rank: IntRank::Long, unsigned: true };
+        let size_ty = self.size_type();
         // A variably modified array type-name needs no object allocation.
         // The size is the product of each evaluated bound and element size,
         // with ordinary checked integer conversions and arithmetic.
