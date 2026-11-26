@@ -2751,7 +2751,7 @@ impl Checker {
         }
         let floating_constant = match &expr.kind {
             CheckedExprKind::FloatLiteral(token) => token
-                .trim_end_matches(|c: char| matches!(c, 'f' | 'F' | 'l' | 'L'))
+                .trim_end_matches(['f', 'F', 'l', 'L'])
                 .parse::<f64>().ok(),
             _ => None,
         };
