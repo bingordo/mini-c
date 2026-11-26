@@ -158,11 +158,12 @@ pub(crate) fn expand_line_bounded(
     expansion_limit: usize,
     synthetic_bytes: &Cell<usize>,
     synthetic_byte_limit: usize,
+    traces: Option<&mut Vec<Option<Arc<ExpansionFrame>>>>,
 ) -> Vec<PpToken> {
     expand_line_impl(source_map, interner, handler, macros, line_map, line,
         gnu_va_args_elision, gnu_permissive_paste, counter,
         Some((expansion_steps, expansion_limit)),
-        Some((synthetic_bytes, synthetic_byte_limit)), None)
+        Some((synthetic_bytes, synthetic_byte_limit)), traces)
 }
 
 #[allow(clippy::too_many_arguments)]
