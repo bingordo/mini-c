@@ -2751,6 +2751,58 @@ impl Checker {
     /// References to existing tags are read-only, but an *explicit* inline
     /// struct/union definition introduces its tag in the current C scope.
     /// Enumerator definitions remain handled by declaration processing.
+    fn sizeof_type_expression(&self, ty: &Type, span: Span) -> Result<CheckedExpr, Diagnostic> {
+        let size_ty = CType::Integer { rank: IntRank::Long, unsigned: true };
+        // A variably modified array type-name needs no object allocation.
+        // The size is the product of each evaluated bound and element size,
+        // with ordinary checked integer conversions and arithmetic.
+        // Fixed bounds are folded; nonconstant bounds retain side effects.
+        if let Type::Array(element, bound) = ty {
+            let bound = bound.as_ref().ok_or_else(||
+                type_error(span, "sizeof requires a complete object type (not void or function)"))?;
+            let count = self.check_expr(bound, span)?.rvalue();
+            if !count.ty.is_integer() {
+                return Err(type_error(span, "array bound requires an integer expression"));
+            }
+            let count = match const_eval::evaluate(&count, self.target) {
+                Ok(n) => {
+                    if n <= 0 { return Err(type_error(span, "array bound must be positive")); }
+                    let n = u64::try_from(n).map_err(|_|
+                        type_error(span, "array bound exceeds the supported range"))?;
+                    CheckedExpr::value(size_ty.clone(), CheckedExprKind::Literal(n))
+                }
+                Err("not an integer constant expression") => {
+                    if count.ty == size_ty { count }
+                    else { CheckedExpr::value(size_ty.clone(), CheckedExprKind::Convert(Box::new(count))) }
+                }
+                Err(reason) => return Err(type_error(span, format!("array bound requires a valid integer expression: {reason}"))),
+            };
+            // Check the ultimate element separately from its runtime extents.
+            let mut base = element.as_ref();
+            while let Type::Array(inner, _) = base { base = inner; }
+            let base = self.complete_tag_type(self.resolve_sizeof_type(base, span)?, span)?;
+            if base.has_flexible_array_member() {
+                return Err(type_error(span, "array element cannot contain a flexible array member"));
+            }
+            let element_size = self.sizeof_type_expression(element, span)?;
+            if let (CheckedExprKind::Literal(a), CheckedExprKind::Literal(b)) =
+                (&count.kind, &element_size.kind)
+            {
+                let size = a.checked_mul(*b).ok_or_else(||
+                    type_error(span, "sizeof array exceeds the supported range"))?;
+                return Ok(CheckedExpr::value(size_ty, CheckedExprKind::Literal(size)));
+            }
+            return Ok(CheckedExpr::value(size_ty,
+                CheckedExprKind::Binary(BinOp::Mul, Box::new(count), Box::new(element_size))));
+        }
+        let operand_ty = self.resolve_sizeof_type(ty, span)?;
+        let operand_ty = self.complete_tag_type(operand_ty, span)?;
+        let size = operand_ty.size_bytes(self.target).ok_or_else(|| type_error(
+            span, "sizeof requires a complete object type (not void or function)"
+        ))?;
+        Ok(CheckedExpr::value(size_ty, CheckedExprKind::Literal(size)))
+    }
+
     fn resolve_sizeof_type(&self, ty: &Type, span: Span) -> Result<CType, Diagnostic> {
         Ok(match ty {
             Type::Void => CType::Void,
@@ -3049,17 +3101,7 @@ impl Checker {
                 let size_ty = CType::Integer { rank: IntRank::Long, unsigned: true };
                 Ok(CheckedExpr::value(size_ty, CheckedExprKind::Literal(size)))
             }
-            Expr::SizeofType(type_name) => {
-                let operand_ty = self.resolve_sizeof_type(type_name, span)?;
-                let operand_ty = self.complete_tag_type(operand_ty, span)?;
-                let size = operand_ty.size_bytes(self.target).ok_or_else(|| type_error(
-                    span, "sizeof requires a complete object type (not void or function)"
-                ))?;
-                // C sizeof has size_t type under the checked target model.
-                // uses unsigned long, not the type of an ordinary decimal literal.
-                let size_ty = CType::Integer { rank: IntRank::Long, unsigned: true };
-                Ok(CheckedExpr::value(size_ty, CheckedExprKind::Literal(size)))
-            }
+            Expr::SizeofType(type_name) => self.sizeof_type_expression(type_name, span),
             Expr::Int(number) => {
                 let ty = self.target.decimal_literal(*number).ok_or_else(|| type_error(span, "decimal literal exceeds supported signed integer types"))?;
                 Ok(CheckedExpr::value(ty, CheckedExprKind::Literal(*number)))
