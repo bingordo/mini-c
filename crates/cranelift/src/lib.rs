@@ -215,6 +215,7 @@ struct KnownData {
     id: DataId,
     ty: CType,
     linkage: Linkage,
+    thread_local: bool,
     initialized: Option<Vec<u8>>,
     address_of: Option<(String, i64)>,
     string_address: Option<DataId>,
@@ -510,6 +511,7 @@ impl Compiler {
         }
         let mut flags = settings::builder();
         flags.set("is_pic", "true").map_err(|e| e.to_string())?;
+        flags.set("tls_model", "elf_gd").map_err(|e| e.to_string())?;
         let isa = cranelift_native::builder()
             .map_err(|e| format!("native Cranelift target: {e}"))?
             .finish(settings::Flags::new(flags))
@@ -697,12 +699,13 @@ impl Compiler {
             Some(bytes[..usize::try_from(size).map_err(|_| "oversized global object")?].to_vec())
             }
         } else { None };
-        let tentative = decl.storage != StorageClass::Extern && initialized.is_none();
+        let thread_local = decl.storage.is_thread_local();
+        let tentative = decl.storage.linkage_storage() != StorageClass::Extern && initialized.is_none();
         if let Some(data) = self.data.get_mut(&name) {
             let Some(composite) = data.ty.composite(&decl.ty) else {
                 return Err(format!("conflicting global object declaration '{name}'"));
             };
-            if data.linkage != decl.linkage {
+            if data.linkage != decl.linkage || data.thread_local != thread_local {
                 return Err(format!("conflicting global object linkage '{name}'"));
             }
             data.ty = composite;
@@ -722,7 +725,7 @@ impl Compiler {
                 } else {
                     ClLinkage::Export
                 };
-                self.module.declare_data(&name, linkage, true, false)
+                self.module.declare_data(&name, linkage, true, thread_local)
                     .map_err(|e| format!("upgrading global '{name}': {e}"))?;
             }
             return Ok(());
@@ -736,10 +739,10 @@ impl Compiler {
         } else {
             ClLinkage::Import
         };
-        let id = self.module.declare_data(&name, linkage, true, false)
+        let id = self.module.declare_data(&name, linkage, true, thread_local)
             .map_err(|e| format!("declaring global '{name}': {e}"))?;
         self.data.insert(name, KnownData {
-            id, ty: decl.ty, linkage: decl.linkage, initialized,
+            id, ty: decl.ty, linkage: decl.linkage, thread_local, initialized,
             address_of, string_address, aggregate_relocations, tentative,
         });
         Ok(())
@@ -772,14 +775,6 @@ impl Compiler {
         // signature. Calls and function-address uses remain checked below;
         // never register an ABI we cannot implement.
         if let CheckedItem::Declaration(decl) = &item {
-            if decl.storage.is_thread_local() {
-                // An unused extern needs no storage. Do not register it as
-                // ordinary data; any evaluated reference fails object lookup.
-                if decl.storage == StorageClass::ExternThreadLocal && decl.initializer.is_none() {
-                    return Ok(());
-                }
-                return Err("thread-local storage requires TLS object lowering".into());
-            }
             if matches!(decl.ty, CType::Function { .. } | CType::VariadicFunction { .. }
                 | CType::UnprototypedFunction { .. }) && item.contains_atomic_type()
             {
@@ -1158,6 +1153,7 @@ impl Compiler {
             desc.set_align(alignment);
             if let Some((symbol, addend)) = &data.address_of {
                 if let Some(target) = self.data.get(symbol) {
+                    if target.thread_local { return Err("static relocation cannot name thread-local storage".into()); }
                     let gv = self.module.declare_data_in_data(target.id, &mut desc);
                     desc.write_data_addr(0, gv, *addend);
                 } else if let Some(target) = self.functions.get(symbol) {
@@ -1177,6 +1173,7 @@ impl Compiler {
                 match target {
                     RelocationTarget::Object(symbol, addend) => {
                         if let Some(target) = self.data.get(symbol) {
+                    if target.thread_local { return Err("static relocation cannot name thread-local storage".into()); }
                             let gv = self.module.declare_data_in_data(target.id, &mut desc);
                             desc.write_data_addr(*offset, gv, *addend);
                         } else if let Some(target) = self.functions.get(symbol) {
@@ -1657,7 +1654,10 @@ impl Lower<'_> {
         }
         let data = self.data.get(name).ok_or_else(|| format!("unresolved variable '{name}'"))?;
         let gv = self.module.declare_data_in_func(data.id, b.func);
-        Ok(b.ins().symbol_value(types::I64, gv))
+        // ELF general-dynamic TLS computes this thread's address at the
+        // access site; a normal symbol_value would address the wrong object.
+        Ok(if data.thread_local { b.ins().tls_value(types::I64, gv) }
+            else { b.ins().symbol_value(types::I64, gv) })
     }
 
     /// Native type matching a checked C bit-field allocation unit.
