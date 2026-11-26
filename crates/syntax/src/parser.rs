@@ -1133,7 +1133,7 @@ impl<'a> Parser<'a> {
             if params.iter().any(|p| p.name == name) {
                 return Err(Diagnostic::new(token.span, "duplicate old-style parameter identifier"));
             }
-            params.push(Decl { storage: StorageClass::Default, name,
+            params.push(Decl { storage: StorageClass::Default, is_inline: false, name,
                 name_span: self.expression_spans.then_some(token.span), ty: Type::Void,
                 asm_label: None, init: None, span: token.span });
             if !self.peek()?.is_some_and(|t| t.text.as_ref() == ",") { break; }
@@ -1179,6 +1179,7 @@ impl<'a> Parser<'a> {
                     "parameter cannot have void type"));
             }
             params.push(Decl {
+                is_inline: false,
                 storage,
                 name,
                 name_span,
@@ -1303,6 +1304,7 @@ impl<'a> Parser<'a> {
                 }
             }
             declarations.push(Decl {
+                is_inline: false,
                 storage, name, name_span, ty, asm_label: None, init,
                 span: Span { lo: start, hi: start },
             });
@@ -1333,6 +1335,7 @@ impl<'a> Parser<'a> {
         } else { None };
         let end = self.expect(";")?.span.hi;
         Ok(Stmt::Decl(Decl {
+            is_inline: false,
             storage: StorageClass::Default, name, name_span, ty, asm_label: None, init,
             span: Span { lo: start, hi: end },
         }))
@@ -1849,6 +1852,7 @@ impl<'a> Parser<'a> {
                             Type::MemberAligned(Box::new(ty), alignment)
                         } else { ty };
                         members.push(Decl {
+                            is_inline: false,
                             storage: StorageClass::Default, name, name_span, ty,
                             asm_label: None, init: None,
                             span: Span { lo: start, hi: start },
@@ -1997,18 +2001,18 @@ impl ItemSource for Parser<'_> {
         // A file-scope comma list has a common base/storage but individual
         // declarators, bindings and optional initializers. Consume one on
         // demand so the parser stays incremental even for long lists.
-        if let Some((base, start, storage, is_typedef, static_inline)) =
+        if let Some((base, start, storage, is_typedef, is_inline)) =
             self.pending_file_group.take()
         {
             let (name, mut ty, _, name_span) =
                 self.parse_declarator_shape(false)?.finish(base.clone());
             let asm_label = self.parse_asm_linkage_label()?;
-            if static_inline &&
+            if is_inline &&
                 !matches!(&ty, Type::Function { .. } | Type::VariadicFunction { .. } | Type::UnprototypedFunction { .. })
             {
                 return Err(Diagnostic::coded(name_span.unwrap_or(Span { lo: start, hi: start }),
                     DiagnosticCode::SyntaxInvalidDeclaration,
-                    "static inline requires a function declarator"));
+                    "inline requires a function declarator"));
             }
             while self.peek()?.is_some_and(|t|
                 matches!(t.text.as_ref(), "__attribute__" | "__attribute"))
@@ -2044,12 +2048,12 @@ impl ItemSource for Parser<'_> {
             }
             let end = if self.peek()?.is_some_and(|t| t.text.as_ref() == ",") {
                 let comma = self.take()?.expect("peeked comma");
-                self.pending_file_group = Some((base, start, storage, is_typedef, static_inline));
+                self.pending_file_group = Some((base, start, storage, is_typedef, is_inline));
                 comma.span.hi
             } else {
                 self.expect(";")?.span.hi
             };
-            let decl = Decl { storage, name, name_span, ty, asm_label, init,
+            let decl = Decl { storage, is_inline, name, name_span, ty, asm_label, init,
                 span: Span { lo: start, hi: end } };
             return Ok(Some(if is_typedef {
                 ExternalItem::Typedef(decl)
@@ -2088,23 +2092,21 @@ impl ItemSource for Parser<'_> {
             return Err(Diagnostic::coded(storage_span, DiagnosticCode::SyntaxInvalidDeclaration,
                 "register storage class is not allowed at file scope"));
         }
-        // Hosted glibc uses "static __inline" for private helper bodies.
-        // Inline is advisory for static linkage; *do not* drop plain or
-        // extern inline where C99/GNU external definition rules differ.
-        let mut static_inline = leading_inline;
+        // Keep the inline specifier for translation-unit linkage selection.
+        let mut is_inline = leading_inline;
         while self.peek()?.is_some_and(|t|
             matches!(t.text.as_ref(), "inline" | "__inline" | "__inline__"))
         {
             self.take()?;
-            static_inline = true;
+            is_inline = true;
         }
-        if static_inline && (storage != StorageClass::Static || is_typedef) {
+        if is_inline && is_typedef {
             return Err(Diagnostic::coded(storage_span, DiagnosticCode::SyntaxInvalidDeclaration,
-                "only static inline functions are currently supported"));
+                "inline cannot be combined with typedef"));
         }
         let Some((base, start)) = self.parse_type()? else {
             // EOF only succeeds when no declaration specifiers were consumed.
-            if is_typedef || storage != StorageClass::Default {
+            if is_typedef || is_inline || storage != StorageClass::Default {
                 return Err(Diagnostic::new(self.eof_span(), "expected type specifier"));
             }
             return Ok(None);
@@ -2114,16 +2116,16 @@ impl ItemSource for Parser<'_> {
             matches!(t.text.as_ref(), "inline" | "__inline" | "__inline__"))
         {
             self.take()?;
-            static_inline = true;
+            is_inline = true;
         }
-        if static_inline && (storage != StorageClass::Static || is_typedef) {
+        if is_inline && is_typedef {
             return Err(Diagnostic::coded(storage_span, DiagnosticCode::SyntaxInvalidDeclaration,
-                "only static inline functions are currently supported"));
+                "inline cannot be combined with typedef"));
         }
         if self.peek()?.is_some_and(|t| t.text.as_ref() == ";") {
-            if static_inline {
+            if is_inline {
                 return Err(Diagnostic::coded(storage_span, DiagnosticCode::SyntaxInvalidDeclaration,
-                    "static inline requires a function declarator"));
+                    "inline requires a function declarator"));
             }
             if !matches!(&base, Type::Struct { .. } | Type::Union { .. } | Type::Enum { .. } | Type::TagRef(..)) {
                 return Err(Diagnostic::coded(self.peek()?.expect("peeked").span,
@@ -2140,10 +2142,10 @@ impl ItemSource for Parser<'_> {
         }
         let (name, mut ty, definition_params, name_span) = self.parse_declarator_shape_impl(false, true)?.finish(base.clone());
         let asm_label = self.parse_asm_linkage_label()?;
-        if static_inline && !matches!(&ty, Type::Function { .. } | Type::VariadicFunction { .. } | Type::UnprototypedFunction { .. }) {
+        if is_inline && !matches!(&ty, Type::Function { .. } | Type::VariadicFunction { .. } | Type::UnprototypedFunction { .. }) {
             return Err(Diagnostic::coded(name_span.unwrap_or(storage_span),
                 DiagnosticCode::SyntaxInvalidDeclaration,
-                "static inline requires a function declarator"));
+                "inline requires a function declarator"));
         }
         // GNU permits advisory function attributes following the asm label.
         while self.peek()?.is_some_and(|t|
@@ -2212,6 +2214,7 @@ impl ItemSource for Parser<'_> {
             let (body, end) = parsed?;
             return Ok(Some(ExternalItem::Function(Function {
                 storage,
+                is_inline,
                 name,
                 name_span,
                 result: *result,
@@ -2236,12 +2239,12 @@ impl ItemSource for Parser<'_> {
         }
         let end = if self.peek()?.is_some_and(|t| t.text.as_ref() == ",") {
             let comma = self.take()?.expect("peeked comma");
-            self.pending_file_group = Some((base, start, storage, is_typedef, static_inline));
+            self.pending_file_group = Some((base, start, storage, is_typedef, is_inline));
             comma.span.hi
         } else {
             self.expect(";")?.span.hi
         };
-        let decl = Decl { storage, name, name_span, ty, asm_label, init, span: Span { lo: start, hi: end } };
+        let decl = Decl { storage, is_inline, name, name_span, ty, asm_label, init, span: Span { lo: start, hi: end } };
         Ok(Some(if is_typedef { ExternalItem::Typedef(decl) } else { ExternalItem::Declaration(decl) }))
     }
 }
@@ -3344,13 +3347,25 @@ mod tests {
         for src in [
             "static inline struct S { int x; };",
             "inline static int global;",
-            "int inline external(void);",
             "static inline int global;",
-            "inline int external(void) { return 1; }",
-            "extern __inline int external(void) { return 1; }",
         ] {
             assert!(Parser::new(src).next_item().is_err(), "{src}");
         }
+    }
+
+    #[test]
+    fn c99_external_inline_specifiers_are_preserved() {
+        let mut parser = Parser::new("inline int f(void), g(void); extern inline int f(void){return 1;} int g(void){return 2;}");
+        for _ in 0..2 {
+            let Some(ExternalItem::Declaration(d)) = parser.next_item().unwrap() else {panic!("declaration")};
+            assert!(d.is_inline);
+            assert_eq!(d.storage, StorageClass::Default);
+        }
+        let Some(ExternalItem::Function(f)) = parser.next_item().unwrap() else {panic!("function")};
+        assert!(f.is_inline);
+        assert_eq!(f.storage, StorageClass::Extern);
+        let Some(ExternalItem::Function(g)) = parser.next_item().unwrap() else {panic!("function")};
+        assert!(!g.is_inline);
     }
 
     #[test]
