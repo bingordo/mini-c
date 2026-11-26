@@ -223,3 +223,87 @@ fn failed_item_discards_conversion_diagnostics() {
     assert!(checker.check_item(parser.next_item().unwrap().unwrap()).is_err());
     assert!(checker.take_warnings().is_empty());
 }
+
+fn signedness_warnings(source: &str, target: Target) -> Vec<ReportedDiagnostic> {
+    let mut parser = Parser::new_with_spans(source);
+    let mut checker = Checker::new(target).unwrap();
+    let mut policy = WarningPolicy::default();
+    policy.apply_flag("-Wsign-conversion").unwrap();
+    checker.set_warning_policy(policy);
+    while let Some(item) = parser.next_item().unwrap() {
+        checker.check_item(item).unwrap();
+    }
+    checker.take_warnings()
+}
+
+#[test]
+fn signed_to_unsigned_variable_conversion_warns() {
+    let reports = signedness_warnings(
+        "unsigned int f(int x) { unsigned int y = x; return y; }",
+        Target::default());
+    assert_eq!(reports.len(), 1, "{reports:?}");
+    assert_eq!(reports[0].warning_group, Some("sign-conversion"));
+}
+
+#[test]
+fn unsigned_to_signed_variable_conversion_warns_at_same_width() {
+    let reports = signedness_warnings(
+        "int f(unsigned int x) { int y = x; return y; }",
+        Target::default());
+    assert_eq!(reports.len(), 1, "{reports:?}");
+}
+
+#[test]
+fn unsigned_to_wider_signed_destination_does_not_warn() {
+    let reports = signedness_warnings(
+        "long f(unsigned int x) { long y = x; return y; }",
+        Target::default());
+    assert!(reports.is_empty(), "{reports:?}");
+}
+
+#[test]
+fn positive_fitting_constant_does_not_warn() {
+    let reports = signedness_warnings(
+        "unsigned int f(void) { unsigned int x = 42; return x; }",
+        Target::default());
+    assert!(reports.is_empty(), "{reports:?}");
+}
+
+#[test]
+fn negative_constant_to_unsigned_warns() {
+    let reports = signedness_warnings(
+        "unsigned int f(void) { unsigned int x = -1; return x; }",
+        Target::default());
+    assert_eq!(reports.len(), 1, "{reports:?}");
+}
+
+#[test]
+fn target_long_width_changes_signedness_safety() {
+    let source = "long f(unsigned int x) { long y = x; return y; }";
+    assert!(signedness_warnings(source, Target::default()).is_empty());
+    assert_eq!(signedness_warnings(source, Target::wasm32()).len(), 1);
+}
+
+#[test]
+fn return_statement_uses_shared_sign_conversion_logic() {
+    let reports = signedness_warnings("unsigned int f(int x) { return x; }",
+        Target::default());
+    assert_eq!(reports.len(), 1, "{reports:?}");
+    assert_eq!(reports[0].warning_group, Some("sign-conversion"));
+}
+
+#[test]
+fn explicit_cast_suppresses_implicit_sign_warning() {
+    let reports = signedness_warnings(
+        "unsigned int f(int x) { return (unsigned int)x; }",
+        Target::default());
+    assert!(reports.is_empty(), "{reports:?}");
+}
+
+#[test]
+fn return_statement_uses_shared_narrowing_conversion_logic() {
+    let reports = narrowing_warnings_with_target(
+        "short f(int x) { return x; }", Target::default());
+    assert_eq!(reports.len(), 1, "{reports:?}");
+    assert_eq!(reports[0].warning_group, Some("conversion"));
+}

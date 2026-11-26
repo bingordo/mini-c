@@ -2602,6 +2602,42 @@ impl Checker {
                 }
             }
         }
+        // A separate opt-in signedness warning. A wider signed
+        // destination can represent every unsigned source value; a
+        // signed-to-unsigned change can still lose a negative sign.
+        if self.warning_policy.enabled("sign-conversion") {
+            if let (CType::Integer { rank: source_rank, unsigned: source_unsigned },
+                    CType::Integer { rank: dest_rank, unsigned: dest_unsigned }) =
+                (expr.ty.unqualified(), value_ty.unqualified())
+            {
+                let source_bits = self.target.bits(*source_rank);
+                let dest_bits = self.target.bits(*dest_rank);
+                let possibly_changes_value = source_unsigned != dest_unsigned
+                    && *dest_rank != IntRank::Bool
+                    && !(!*source_unsigned && *source_rank == IntRank::Bool)
+                    && !(*source_unsigned && !*dest_unsigned && dest_bits > source_bits);
+                if possibly_changes_value {
+                    let fits = const_eval::evaluate(&expr, self.target).ok()
+                        .is_some_and(|value| {
+                            if *dest_unsigned {
+                                value >= 0 && value <= ((1i128 << dest_bits) - 1)
+                            } else {
+                                value >= -(1i128 << (dest_bits - 1))
+                                    && value < (1i128 << (dest_bits - 1))
+                            }
+                        });
+                    if !fits {
+                        self.conversion_warnings.borrow_mut().push(
+                            ReportedDiagnostic::warning(
+                                Diagnostic::semantic(span,
+                                    "implicit integer signedness conversion may change value"),
+                                "sign-conversion",
+                            )
+                        );
+                    }
+                }
+            }
+        }
         Ok(self.convert(expr, &value_ty))
     }
 
