@@ -3426,9 +3426,11 @@ impl Checker {
                 // checked expressions; retain the source binding for lookup
                 // and diagnostics. External asm aliases are still resolved
                 // by the consumer's normal linkage path.
-                let resolved_name = symbol.asm_label.as_deref()
-                    .filter(|label| is_private_block_static_symbol(label))
-                    .unwrap_or(name);
+                let resolved_name = if symbol.linkage == Linkage::None {
+                    symbol.asm_label.as_deref()
+                        .filter(|label| is_private_block_static_symbol(label))
+                        .unwrap_or(name)
+                } else { name };
                 Ok(CheckedExpr { ty: symbol.ty.clone(), category,
                     kind: CheckedExprKind::Name(resolved_name.to_owned()), source_span:None })
             }
