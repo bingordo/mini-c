@@ -4187,11 +4187,11 @@ fn generated_atomic_c(name: &str, integer: &str, operands: &str) -> String {
 
 #[test]
 fn generated_atomic_source_operands_widths_orders_and_builtin_kinds() {
-    use builtins::{BuiltinId as A, REGISTRY, valid_atomic_orders};
+    use builtins::{BuiltinId as A, LoweringClass, REGISTRY, valid_atomic_orders};
     let mut accepted=0usize;
     let mut rejected=0usize;
     for (integer, bytes) in [("char",1_u8),("short",2),("int",4),("long",8)] {
-        for spec in REGISTRY.iter().filter(|s|s.id!=A::Ctz32) {
+        for spec in REGISTRY.iter().filter(|s|s.lowering==LoweringClass::AtomicIrRequired) {
             for order in 0..6_u8 {
                 let (arguments, runtime_args) = match spec.id {
                     A::AtomicThreadFence | A::AtomicSignalFence =>
