@@ -4772,3 +4772,30 @@ fn inline_finalization_does_not_retain_rejected_items() {
     checker.check_item_recovering(parser.next_item().unwrap().unwrap()).unwrap();
     checker.finish_translation_unit().unwrap();
 }
+
+#[test]
+fn c99_runtime_sizeof_array_type_names() {
+    let items = check("unsigned long f(int n,int m){return sizeof(int[n][m]);}").unwrap();
+    let CheckedItem::Function(f) = &items[0] else {panic!("expected function")};
+    let CheckedStmt::Block(stmts) = &f.body else {panic!("expected block")};
+    let CheckedStmt::Return(Some(size)) = &stmts[0] else {panic!("expected return")};
+    assert!(matches!(size.kind, CheckedExprKind::Binary(BinOp::Mul, ..)));
+    assert_eq!(size.ty, CType::Integer { rank: IntRank::Long, unsigned: true });
+    assert!(const_eval::evaluate(size, Target::default()).is_err());
+    for source in [
+        "unsigned long f(int n){return sizeof(int[n++]);}",
+        "int next(void); unsigned long f(void){return sizeof(int[next()]);}",
+        "unsigned long f(int n){return sizeof(char[2][n][3]);}",
+        "typedef int Row[4]; unsigned long f(int n){return sizeof(Row[n]);}",
+    ] { check(source).unwrap_or_else(|e| panic!("{source}: {e:?}")); }
+    for (source, message) in [
+        ("int f(double n){return sizeof(int[n]);}", "integer expression"),
+        ("int f(void){return sizeof(int[0]);}", "positive"),
+        ("int f(void){return sizeof(int[-1]);}", "positive"),
+        ("int f(void){return sizeof(int[1/0]);}", "array bound requires"),
+        ("int f(int n){return sizeof(void[n]);}", "complete object type"),
+        ("int f(int n){return sizeof(int[n][]);}", "complete object type"),
+        ("struct S{int n;int a[];}; int f(int n){return sizeof(struct S[n]);}", "flexible array member"),
+        ("int n; int a[sizeof(int[n])];", "integer constant expression"),
+    ] { reject(source, message); }
+}
