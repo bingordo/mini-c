@@ -10,6 +10,55 @@ use rcc_errors::Level;
 use rcc_lexer::PpTokenKind;
 use rcc_session::{Arch, DataModel, Endianness, Environment, Os, Session, TargetTriple};
 
+// Both adapters snapshot traces while the source map is still live.
+macro_rules! capture_expansion {
+    ($context:expr, $map:expr, $index:expr, $cache:expr) => {{
+        let context = $context;
+        let map = $map;
+        let index = $index;
+        let frame_cache = &mut $cache;
+    let mut frame = context.output_traces().get(index).and_then(Option::as_ref);
+    let mut pending = Vec::new();
+    let mut parent = None;
+    while let Some(current) = frame {
+        let key = Arc::as_ptr(current);
+        if let Some(cached) = frame_cache.get(&key) {
+            parent = Some(Arc::clone(cached));
+            break;
+        }
+        pending.push((key, current));
+        frame = current.parent.as_ref();
+    }
+    let site = |frame: &rcc_preprocess::expand::ExpansionFrame, definition: bool| {
+        let span = if definition { frame.definition } else { frame.invocation };
+        if span.file.0 == u32::MAX { return None; }
+        let physical = map.file(span.file);
+        let logical = context.line_overrides.effective_file(&map, span.file, span.lo);
+        Some(SourceSite {
+            file: Arc::from(map.file(logical).name.to_string_lossy().as_ref()),
+            line: context.line_overrides.effective_line(&map, span.file, span.lo) as usize,
+            source: physical.src.clone(),
+            start: span.lo.0 as usize,
+            end: span.hi.0 as usize,
+        })
+    };
+    for (key, current) in pending.into_iter().rev() {
+        if let Some(invocation) = site(current, false) {
+            let converted = Arc::new(MacroOrigin {
+    name: Arc::from(context.session.interner.get(current.name)),
+    invocation,
+    definition: undefined,
+    parent,
+            });
+            frame_cache.insert(key, Arc::clone(&converted));
+            parent = Some(converted);
+        }
+    }
+    parent
+
+    }};
+}
+
 #[path = "internal_rcc_stream.rs"]
 pub mod stream;
 
@@ -246,44 +295,7 @@ fn run_file(path: &Path, args: &[std::ffi::OsString], track: bool) -> Result<(St
                 output.push(' ');
             }
             let expansion = if track {
-                let mut frame = context.output_traces().get(index).and_then(Option::as_ref);
-                let mut pending = Vec::new();
-                let mut parent = None;
-                while let Some(current) = frame {
-                    let key = Arc::as_ptr(current);
-                    if let Some(cached) = frame_cache.get(&key) {
-                        parent = Some(Arc::clone(cached));
-                        break;
-                    }
-                    pending.push((key, current));
-                    frame = current.parent.as_ref();
-                }
-                let site = |span: rcc_preprocess::expand::ExpansionFrame, definition: bool| {
-                    let span = if definition { span.definition } else { span.invocation };
-                    if span.file.0 == u32::MAX { return None; }
-                    let physical = map.file(span.file);
-                    let logical = context.line_overrides.effective_file(&map, span.file, span.lo);
-                    Some(SourceSite {
-                        file: Arc::from(map.file(logical).name.to_string_lossy().as_ref()),
-                        line: context.line_overrides.effective_line(&map, span.file, span.lo) as usize,
-                        source: physical.src.clone(),
-                        start: span.lo.0 as usize,
-                        end: span.hi.0 as usize,
-                    })
-                };
-                for (key, current) in pending.into_iter().rev() {
-                    if let Some(invocation) = site((**current).clone(), false) {
-                        let converted = Arc::new(MacroOrigin {
-                            name: Arc::from(context.session.interner.get(current.name)),
-                            invocation,
-                            definition: site((**current).clone(), true),
-                            parent,
-                        });
-                        frame_cache.insert(key, Arc::clone(&converted));
-                        parent = Some(converted);
-                    }
-                }
-                parent
+                capture_expansion!(context, &map, index, frame_cache)
             } else { None };
             if track && (original_file || expansion.is_some()) {
                 let logical_file = context.line_overrides.effective_file(
