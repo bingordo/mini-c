@@ -2682,38 +2682,45 @@ impl Checker {
     fn warn_implicit_sign_conversion(
         &self, expr: &CheckedExpr, value_ty: &CType, span: Span,
     ) {
-        if self.warning_policy.enabled("sign-conversion") {
-            if let (CType::Integer { rank: source_rank, unsigned: source_unsigned },
-                    CType::Integer { rank: dest_rank, unsigned: dest_unsigned }) =
-                (expr.ty.unqualified(), value_ty.unqualified())
-            {
-                let source_bits = self.target.bits(*source_rank);
-                let dest_bits = self.target.bits(*dest_rank);
-                let possibly_changes_value = source_unsigned != dest_unsigned
-                    && *dest_rank != IntRank::Bool
-                    && !(!*source_unsigned && *source_rank == IntRank::Bool)
-                    && !(*source_unsigned && !*dest_unsigned && dest_bits > source_bits);
-                if possibly_changes_value {
-                    let fits = const_eval::evaluate(expr, self.target).ok()
-                        .is_some_and(|value| {
-                            if *dest_unsigned {
-                                value >= 0 && value <= ((1i128 << dest_bits) - 1)
-                            } else {
-                                value >= -(1i128 << (dest_bits - 1))
-                                    && value < (1i128 << (dest_bits - 1))
-                            }
-                        });
-                    if !fits {
-                        self.conversion_warnings.borrow_mut().push(
-                            ReportedDiagnostic::warning(
-                                Diagnostic::semantic(span,
-                                    "implicit integer signedness conversion may change value"),
-                                "sign-conversion",
-                            )
-                        );
-                    }
-                }
+        self.warn_implicit_sign_conversion_type(
+            &expr.ty, value_ty, const_eval::evaluate(expr, self.target).ok(), span);
+    }
+
+    /// Shared type-level signedness check. The result of a compound
+    /// assignment is a runtime computation, not an integer constant
+    /// expression, so the compound store supplies None for its value.
+    fn warn_implicit_sign_conversion_type(
+        &self, source_ty: &CType, dest_ty: &CType, known_value: Option<i128>,
+        span: Span,
+    ) {
+        if !self.warning_policy.enabled("sign-conversion") { return; }
+        let (CType::Integer { rank: source_rank, unsigned: source_unsigned },
+             CType::Integer { rank: dest_rank, unsigned: dest_unsigned }) =
+            (source_ty.unqualified(), dest_ty.unqualified())
+        else { return; };
+        let source_bits = self.target.bits(*source_rank);
+        let dest_bits = self.target.bits(*dest_rank);
+        let possibly_changes_value = source_unsigned != dest_unsigned
+            && *dest_rank != IntRank::Bool
+            && !(!*source_unsigned && *source_rank == IntRank::Bool)
+            && !(*source_unsigned && !*dest_unsigned && dest_bits > source_bits);
+        if !possibly_changes_value { return; }
+        let fits = known_value.is_some_and(|value| {
+            if *dest_unsigned {
+                value >= 0 && value <= ((1i128 << dest_bits) - 1)
+            } else {
+                value >= -(1i128 << (dest_bits - 1))
+                    && value < (1i128 << (dest_bits - 1))
             }
+        });
+        if !fits {
+            self.conversion_warnings.borrow_mut().push(
+                ReportedDiagnostic::warning(
+                    Diagnostic::semantic(span,
+                        "implicit integer signedness conversion may change value"),
+                    "sign-conversion",
+                )
+            );
         }
     }
 
@@ -3896,6 +3903,37 @@ impl Checker {
                 } else {
                     computation_ty.clone()
                 };
+                // Compound assignment first converts the RHS for arithmetic,
+                // then converts the computed value back to the LHS type.
+                // Check both implicit conversions without counting the
+                // compound LHS as an unrelated assignment initializer.
+                if !pointer_arithmetic {
+                    self.warn_implicit_sign_conversion(&lhs, &computation_ty, lhs_span);
+                }
+                self.warn_implicit_sign_conversion(&rhs_checked, &rhs_ty, rhs_span);
+                if !pointer_arithmetic {
+                    // GCC classifies a narrowed compound store as
+                    // -Wconversion, not -Wsign-conversion. At equal widths
+                    // the signedness-changing store remains -Wsign-conversion.
+                    match (computation_ty.unqualified(), lhs.ty.unqualified()) {
+                        (CType::Integer { rank: source, .. },
+                         CType::Integer { rank: dest, .. })
+                            if self.target.bits(*dest) < self.target.bits(*source) =>
+                        {
+                            if self.warning_policy.enabled("conversion") {
+                                self.conversion_warnings.borrow_mut().push(
+                                    ReportedDiagnostic::warning(
+                                        Diagnostic::semantic(lhs_span,
+                                            "implicit compound assignment may change value"),
+                                        "conversion",
+                                    )
+                                );
+                            }
+                        }
+                        _ => self.warn_implicit_sign_conversion_type(
+                            &computation_ty, &lhs.ty, None, lhs_span),
+                    }
+                }
                 let rhs_checked = self.convert(rhs_checked, &rhs_ty);
                 let result_ty = if lhs.ty.is_atomic() {
                     lhs.ty.unqualified().clone()
