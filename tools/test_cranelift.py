@@ -34,6 +34,18 @@ PROGRAMS = {
         return p[0]!='l' || p[1]!='a' || p[4]!='l'
             || p[5]!=0;
     }""",
+    "c99_unary_scalar_truth_and_address_cancel": """int a[3]; int count;
+int g(void) { return 7; }
+void *next(void) { ++count; return a; }
+int main(void) {
+    int *p=0;
+    if (!a || !g || !(!p)) return 1;
+    if (&*(void*)0 != (void*)0) return 2;
+    if (&*next() != (void*)a || count != 1) return 3;
+    if (&*g != g) return 4;
+    if (!0.0 != 1 || !(-0.0) != 1 || !2.0 != 0) return 5;
+    return 0;
+}""",
     "c99_func_pointer_to_array": """int check(void) {
         const char (*p)[6]=&__func__;
         return (*p)[0]!='c' || (*p)[4]!='k' || (*p)[5]!=0;
