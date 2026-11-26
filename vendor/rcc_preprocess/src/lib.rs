@@ -167,6 +167,8 @@ pub struct Preprocessor<'a> {
     /// Advisory cancellation from a bounded downstream consumer that exited
     /// before EOF. This is not an error and emits no new diagnostics.
     cancelled: Cell<bool>,
+    track_expansions: bool,
+    output_traces: Vec<Option<Arc<expand::ExpansionFrame>>>,
 }
 
 impl<'a> Preprocessor<'a> {
@@ -207,6 +209,8 @@ impl<'a> Preprocessor<'a> {
             predefined_installed: false,
             halted: false,
             cancelled: Cell::new(false),
+            track_expansions: false,
+            output_traces: Vec::new(),
         }
     }
 
@@ -231,6 +235,17 @@ impl<'a> Preprocessor<'a> {
         self.expansion_step_limit = EXPANSION_STEPS;
         // Synthetic-token allocations are intentionally kept at the
         // existing 16 MiB limit, as are max include/macro recursion limits.
+    }
+
+    /// Enable invocation traces for subsequently emitted chunks.
+    pub fn enable_expansion_traces(&mut self) {
+        self.track_expansions = true;
+    }
+
+    /// Parallel traces for the current ordinary output chunk. Directive
+    /// output has no trace; callers may use get(index) for both cases.
+    pub fn output_traces(&self) -> &[Option<Arc<expand::ExpansionFrame>>] {
+        &self.output_traces
     }
 
     /// Stop preprocessing as soon as control returns to the source walk.
@@ -619,10 +634,15 @@ impl<'a> Preprocessor<'a> {
             return;
         }
         let span = pending_text[0].span;
-        let expanded = self.expand_tokens(std::mem::take(pending_text));
-        let expanded = self.process_pragma_operators(expanded);
-        let expanded = self.apply_pragma_pack(expanded);
+        let mut traces = Vec::new();
+        let track = self.track_expansions;
+        let expanded = self.expand_tokens_impl(std::mem::take(pending_text),
+            track.then_some(&mut traces));
+        let expanded = self.process_pragma_operators(expanded, &mut traces);
+        let expanded = self.apply_pragma_pack(expanded, &mut traces);
+        self.output_traces = traces;
         self.emit_output_bounded(emitted_tokens, expanded, span, sink);
+        self.output_traces.clear();
     }
 
     /// Charge each emitted chunk against the same per-file token limit as
@@ -690,6 +710,10 @@ impl<'a> Preprocessor<'a> {
     /// Prosser's algorithm over it. Returns the rescanned, fully
     /// expanded pp-token vector.
     pub fn expand_tokens(&mut self, line: Vec<PpToken>) -> Vec<PpToken> {
+        self.expand_tokens_impl(line, None)
+    }
+
+    fn expand_tokens_impl(&mut self, line: Vec<PpToken>, traces: Option<&mut Vec<Option<Arc<expand::ExpansionFrame>>>>) -> Vec<PpToken> {
         // Clone the source-map Arc so `source_map` is borrowed
         // independently of `self.session`, leaving `self.session.interner`
         // and `self.session.handler` free to be borrowed mutably
@@ -712,6 +736,7 @@ impl<'a> Preprocessor<'a> {
             self.expansion_step_limit,
             &self.synthetic_bytes,
             self.synthetic_byte_limit,
+            traces,
         )
     }
 
@@ -722,11 +747,13 @@ impl<'a> Preprocessor<'a> {
     /// a lexer concern: a macro body may expand into `_Pragma(...)`.
     /// The destringized literal body is tokenised as a virtual pragma
     /// body and routed through the same dispatcher as `#pragma`.
-    fn process_pragma_operators(&mut self, tokens: Vec<PpToken>) -> Vec<PpToken> {
+    fn process_pragma_operators(&mut self, tokens: Vec<PpToken>, traces: &mut Vec<Option<Arc<expand::ExpansionFrame>>>) -> Vec<PpToken> {
         let mut out = Vec::with_capacity(tokens.len());
         let mut i = 0;
+        let mut retained = Vec::new();
         while i < tokens.len() {
             if !self.is_ident_text(&tokens[i], "_Pragma") {
+                if !traces.is_empty() { retained.push(traces[i].take()); }
                 out.push(tokens[i]);
                 i += 1;
                 continue;
@@ -743,6 +770,7 @@ impl<'a> Preprocessor<'a> {
                 }
             }
         }
+        *traces = retained;
         out
     }
 
@@ -1440,24 +1468,28 @@ impl<'a> Preprocessor<'a> {
         }
     }
 
-    fn apply_pragma_pack(&mut self, tokens: Vec<PpToken>) -> Vec<PpToken> {
+    fn apply_pragma_pack(&mut self, tokens: Vec<PpToken>, traces: &mut Vec<Option<Arc<expand::ExpansionFrame>>>) -> Vec<PpToken> {
         if self.pragma_pack != Some(1) {
             return tokens;
         }
         let packed_attr = self.packed_attribute_tokens();
         let mut out = Vec::with_capacity(tokens.len() + packed_attr.len());
-        for token in tokens {
+        let mut expanded_traces = Vec::new();
+        for (index, token) in tokens.into_iter().enumerate() {
             let inject = if token.kind == PpTokenKind::Ident {
                 let text = self.token_text(&token);
                 matches!(text.as_str(), "struct" | "union")
             } else {
                 false
             };
+            if !traces.is_empty() { expanded_traces.push(traces[index].take()); }
             out.push(token);
             if inject {
                 out.extend_from_slice(&packed_attr);
+                if !traces.is_empty() { expanded_traces.extend((0..packed_attr.len()).map(|_| None)); }
             }
         }
+        *traces = expanded_traces;
         out
     }
 
