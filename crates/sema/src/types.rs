@@ -81,6 +81,11 @@ impl CType {
             _ => false,
         }
     }
+    /// Arrays inherit the const qualification of their element objects.
+    pub fn is_const_object(&self) -> bool {
+        self.is_const() || matches!(self.unqualified(),
+            Self::Array(element, _) if element.is_const_object())
+    }
     pub fn is_volatile(&self) -> bool {
         match self {
             Self::Volatile(_) => true,
