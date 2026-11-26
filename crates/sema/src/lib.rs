@@ -2528,17 +2528,14 @@ impl Checker {
         Ok(typed)
     }
 
-    /// Recognize checked lvalues rooted in a linkable static object or a
-    /// file-scope compound literal, without treating a pointer load as an
-    /// address constant. Resolve names in the actual lexical scope so an
-    /// automatic object shadowing a global cannot acquire static duration.
-    fn static_address_lvalue(&self, expr: &CheckedExpr) -> bool {
+    /// Check storage duration at the resolved address root, not its spelling.
+    fn static_address_root(&self, expr: &CheckedExpr) -> bool {
         match &expr.kind {
             CheckedExprKind::Name(name) => self.lookup(name).is_some_and(|s|
                 matches!(s.kind, SymbolKind::Object | SymbolKind::Function)
                     && s.linkage != Linkage::None && !s.is_thread_local),
-            CheckedExprKind::StaticCompoundLiteral { .. } => true,
-            CheckedExprKind::Member(base, _) => self.static_address_lvalue(base),
+            CheckedExprKind::StaticCompoundLiteral { .. } |
+            CheckedExprKind::StringLiteral(_) => true,
             _ => false,
         }
     }
@@ -2575,20 +2572,15 @@ impl Checker {
             }
             let null = constant.ty.is_integer()
                 && const_eval::evaluate(constant, self.target) == Ok(0);
-            // Check the normalized address expression rather than matching
-            // its original spelling. This admits member addresses and the
-            // equivalent &*(&object) without admitting reads of pointer objects.
-            let address = match &constant.kind {
-                CheckedExprKind::Unary(UnOp::Address, inner) |
-                CheckedExprKind::ArrayDecay(inner) => self.static_address_lvalue(inner),
-                _ if constant.category == Category::Function || constant.ty.is_array() =>
-                    self.static_address_lvalue(constant),
-                _ => false,
-            };
-            let string_address = matches!(original, Expr::StringLiteral(_))
-                && matches!(ty, CType::Pointer(element)
+            let address = const_eval::static_address(expression, self.target)
+                .is_some_and(|(root, _)| self.static_address_root(root));
+            // Keep the existing diagnostic for a directly incompatible
+            // string literal initializer; ordinary assignment checks handle
+            // all other pointer type constraints.
+            let incompatible_string = matches!(original, Expr::StringLiteral(_))
+                && !matches!(ty, CType::Pointer(element)
                     if matches!(element.unqualified(), CType::Integer { rank: IntRank::Char, .. } | CType::Void));
-            if !null && !address && !string_address {
+            if (!null && !address) || incompatible_string {
                 return Err(type_error(span, "pointer initializer requires a null constant or address of global symbol"));
             }
         }
