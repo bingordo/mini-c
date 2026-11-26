@@ -496,8 +496,10 @@ impl<'a> Parser<'a> {
 
     fn parse_unary(&mut self) -> Result<Expr, Diagnostic> {
         if self.peek()?.is_some_and(|t|t.text.as_ref()=="__extension__") {
-            self.take()?;
-            return self.in_extension(|p|p.parse_unary());
+            let marker=self.take()?.expect("peeked extension");
+            let inner=self.in_extension(|p|p.parse_unary())?;
+            let hi=inner.location().map_or(marker.span.hi,|s|s.hi);
+            return Ok(self.located(inner,Span{lo:marker.span.lo,hi}));
         }
         if self.peek()?.is_some_and(|token| token.text.as_ref() == "sizeof") {
             let keyword = self.take()?.expect("peeked sizeof");
@@ -1134,6 +1136,7 @@ impl<'a> Parser<'a> {
             return Ok(None);
         }
         let keyword = self.take()?.expect("peeked asm");
+        self.require_gnu(keyword.span,"asm linker label")?;
         self.expect("(")?;
         let mut bytes = Vec::new();
         let mut fragments = 0usize;
@@ -1892,7 +1895,7 @@ impl<'a> Parser<'a> {
                 while !self.peek()?.is_some_and(|t| t.text.as_ref() == "}") {
                     let marked=self.peek()?.is_some_and(|t|t.text.as_ref()=="__extension__");
                     if marked {self.take()?;}
-                    let parse_member=|p:&mut Self|->Result<(),Diagnostic>{
+                    let mut parse_member=|p:&mut Self|->Result<(),Diagnostic>{
                     let (base, start) = p.parse_type()?.ok_or_else(||
                         Diagnostic::new(p.eof_span(), "unterminated struct definition"))?;
                     // A C struct/union member declaration has a *shared* base
