@@ -3653,7 +3653,8 @@ mod tests {
             assert_eq!(&object[..4], b"\x7fELF");
         }
         assert!(compile_source("long double f(void) { return 1.0L; }").is_err());
-        assert!(compile_source("double f(void) { return 0x1.8p+1; }").is_err());
+        let object = compile_source("double f(void) { return 0x1.8p+1; }").unwrap();
+        assert_eq!(&object[..4], b"\x7fELF");
     }
 
     #[test]
