@@ -3054,6 +3054,29 @@ mod tests {
     }
 
     #[test]
+    fn c99_inline_external_definition_depends_on_all_file_declarations() {
+        use object::{Object, ObjectSymbol};
+        for (source, defined) in [
+            ("inline int f(void){return 1;} int g(void){return f();}", false),
+            ("inline int f(void); inline int f(void){return 1;} int g(void){return f();}", false),
+            ("extern inline int f(void){return 1;}", true),
+            ("int f(void); inline int f(void){return 1;}", true),
+            ("inline int f(void){return 1;} extern inline int f(void);", true),
+            ("inline int f(void){return 1;} int g(void){return f();} int f(void);", true),
+        ] {
+            let bytes = compile_source(source).unwrap_or_else(|e| panic!("{source}: {e}"));
+            let elf = object::File::parse(bytes.as_slice()).unwrap();
+            let symbol = elf.symbols().find(|s| s.name().ok() == Some("f")).expect("f symbol");
+            assert_eq!(!symbol.is_undefined(), defined, "{source}");
+            if defined { assert!(symbol.is_global(), "{source}"); }
+        }
+        let bytes = compile_source("static inline int f(void){return 1;} int g(void){return f();}").unwrap();
+        let elf = object::File::parse(bytes.as_slice()).unwrap();
+        let f = elf.symbols().find(|s| s.name().ok() == Some("f")).unwrap();
+        assert!(!f.is_undefined() && !f.is_global());
+    }
+
+    #[test]
     fn glibc_late_asm_label_precedes_first_elf_import() {
         use object::{Object, ObjectSection, ObjectSymbol};
         let source = concat!(
