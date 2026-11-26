@@ -3809,10 +3809,32 @@ impl Checker {
                 // then converts the computed value back to the LHS type.
                 // Check both implicit conversions without counting the
                 // compound LHS as an unrelated assignment initializer.
+                if !pointer_arithmetic {
+                    self.warn_implicit_sign_conversion(&lhs, &computation_ty, lhs_span);
+                }
                 self.warn_implicit_sign_conversion(&rhs_checked, &rhs_ty, rhs_span);
                 if !pointer_arithmetic {
-                    self.warn_implicit_sign_conversion_type(
-                        &computation_ty, &lhs.ty, None, lhs_span);
+                    // GCC classifies a narrowed compound store as
+                    // -Wconversion, not -Wsign-conversion. At equal widths
+                    // the signedness-changing store remains -Wsign-conversion.
+                    match (computation_ty.unqualified(), lhs.ty.unqualified()) {
+                        (CType::Integer { rank: source, .. },
+                         CType::Integer { rank: dest, .. })
+                            if self.target.bits(*dest) < self.target.bits(*source) =>
+                        {
+                            if self.warning_policy.enabled("conversion") {
+                                self.conversion_warnings.borrow_mut().push(
+                                    ReportedDiagnostic::warning(
+                                        Diagnostic::semantic(lhs_span,
+                                            "implicit compound assignment may change value"),
+                                        "conversion",
+                                    )
+                                );
+                            }
+                        }
+                        _ => self.warn_implicit_sign_conversion_type(
+                            &computation_ty, &lhs.ty, None, lhs_span),
+                    }
                 }
                 let rhs_checked = self.convert(rhs_checked, &rhs_ty);
                 let result_ty = if lhs.ty.is_atomic() {
