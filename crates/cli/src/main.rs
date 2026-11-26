@@ -50,6 +50,20 @@ fn render_diagnostic(
             .expect("writing to String cannot fail");
         output.pop(); // The caller supplies the final newline.
     }
+    let mut frame = origins.lookup(diagnostic.span.lo).and_then(|origin| origin.expansion.as_deref());
+    while let Some(expansion) = frame {
+        use std::fmt::Write;
+        let site = &expansion.invocation;
+        if let Some((excerpt, column, end)) = site.excerpt() {
+            write!(output, "\n{}:{}:{}: note: in expansion of macro '{}'", site.file, site.line, column, expansion.name).unwrap();
+            output.push('\n');
+            write_excerpt(&mut output, excerpt, site.line, Some(column), Some(end)).unwrap();
+            output.pop();
+        } else {
+            write!(output, "\n{}:{}: note: in expansion of macro '{}'", site.file, site.line, expansion.name).unwrap();
+        }
+        frame = expansion.parent.as_deref();
+    }
     output
 }
 
