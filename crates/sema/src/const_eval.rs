@@ -46,6 +46,20 @@ pub fn evaluate(expr: &CheckedExpr, target: Target) -> Result<i128, &'static str
         CheckedExprKind::Literal(value) => Ok(i128::from(*value)),
         CheckedExprKind::FloatLiteral(_) => Err("not an integer constant expression"),
         CheckedExprKind::EnumConstant(value) => Ok(i128::from(*value)),
+        CheckedExprKind::BuiltinBitCount(kind,inner) => {
+            use crate::builtins::BitCountKind::*;
+            let v=evaluate(inner,target)?;
+            let CType::Integer{rank,..}=inner.ty.unqualified() else {return Err("invalid bit count operand");};
+            let bits=target.bits(*rank);
+            if !matches!(bits,32|64) {return Err("unsupported bit count width");}
+            let v=(v as u64) & (u64::MAX >> (64-bits));
+            if v==0 && *kind!=Population {return Err("zero operand in clz/ctz");}
+            Ok(i128::from(match kind {
+                LeadingZero => v.leading_zeros() - (64-u32::from(bits)),
+                TrailingZero => v.trailing_zeros(),
+                Population => v.count_ones(),
+            }))
+        }
         CheckedExprKind::BuiltinByteSwap(bits,inner) => {
             let v=evaluate(inner,target)?;
             Ok(match bits {
