@@ -60,6 +60,9 @@ pub enum CType {
     Pointer(Box<CType>),
     /// Incomplete arrays use None; bound and full object layout are target-dependent.
     Array(Box<CType>, Option<u64>),
+    /// Complete array with a declaration-time saved extent. The identity names
+    /// a hidden automatic integer object, not a source expression to replay.
+    VariableArray(Box<CType>, u64),
     Function { result: Box<CType>, params: Vec<CType> },
     UnprototypedFunction { result: Box<CType> },
     VariadicFunction { result: Box<CType>, params: Vec<CType> },
@@ -84,7 +87,7 @@ impl CType {
     /// Arrays inherit the const qualification of their element objects.
     pub fn is_const_object(&self) -> bool {
         self.is_const() || matches!(self.unqualified(),
-            Self::Array(element, _) if element.is_const_object())
+            Self::Array(element, _) | Self::VariableArray(element, _) if element.is_const_object())
     }
     pub fn is_volatile(&self) -> bool {
         match self {
@@ -97,7 +100,7 @@ impl CType {
         match self {
             Self::Volatile(_) => true,
             Self::Qualified(inner) | Self::Atomic(inner) |
-            Self::Pointer(inner) | Self::Array(inner, _) =>
+            Self::Pointer(inner) | Self::Array(inner, _) | Self::VariableArray(inner, _) =>
                 inner.contains_volatile(),
             Self::UnprototypedFunction { result } => result.contains_volatile(),
             Self::Function { result, params } |
@@ -122,7 +125,7 @@ impl CType {
         match self {
             Self::Atomic(_) => true,
             Self::Qualified(inner) | Self::Volatile(inner) |
-            Self::Pointer(inner) | Self::Array(inner, _) => inner.contains_atomic(),
+            Self::Pointer(inner) | Self::Array(inner, _) | Self::VariableArray(inner, _) => inner.contains_atomic(),
             Self::UnprototypedFunction { result } => result.contains_atomic(),
             Self::Function {result,params} | Self::VariadicFunction {result,params} =>
                 result.contains_atomic() || params.iter().any(Self::contains_atomic),
@@ -138,7 +141,7 @@ impl CType {
             Self::Atomic(inner) => matches!(inner.unqualified(),
                 Self::Struct { .. } | Self::Union { .. }) || inner.contains_atomic_aggregate(),
             Self::Qualified(inner) | Self::Volatile(inner) |
-            Self::Pointer(inner) | Self::Array(inner, _) =>
+            Self::Pointer(inner) | Self::Array(inner, _) | Self::VariableArray(inner, _) =>
                 inner.contains_atomic_aggregate(),
             Self::UnprototypedFunction { result } => result.contains_atomic_aggregate(),
             Self::Function { result, params } | Self::VariadicFunction { result, params } =>
@@ -156,6 +159,8 @@ impl CType {
         match self {
             Self::Array(element, count) =>
                 Self::Array(Box::new((*element).with_const()), count),
+            Self::VariableArray(element, bound) =>
+                Self::VariableArray(Box::new((*element).with_const()), bound),
             Self::Qualified(_) => self,
             other => Self::Qualified(Box::new(other)),
         }
@@ -164,6 +169,8 @@ impl CType {
         match self {
             Self::Array(element, count) =>
                 Self::Array(Box::new((*element).with_volatile()), count),
+            Self::VariableArray(element, bound) =>
+                Self::VariableArray(Box::new((*element).with_volatile()), bound),
             Self::Qualified(inner) =>
                 Self::Qualified(Box::new((*inner).with_volatile())),
             Self::Volatile(_) => self,
@@ -191,7 +198,7 @@ impl CType {
             Self::Qualified(inner) | Self::Volatile(inner) | Self::Atomic(inner) =>
                 inner.align_bytes(target),
             Self::Struct { align, .. } | Self::Union { align, .. } => Some(*align),
-            Self::Array(element, _) => element.align_bytes(target),
+            Self::Array(element, _) | Self::VariableArray(element, _) => element.align_bytes(target),
             Self::Pointer(_) => Some(u64::from(target.pointer_bits / 8)),
             Self::Integer { rank, .. } => Some(u64::from(target.bits(*rank) / 8)),
             Self::Floating(rank) => Some(match rank {
@@ -234,6 +241,8 @@ impl CType {
                 ar.same_type(br) && ap.len() == bp.len()
                 && ap.iter().zip(bp).all(|(a, b)|
                     a.unqualified().same_type(b.unqualified())),
+            (CType::VariableArray(a, _), CType::VariableArray(b, _) | CType::Array(b, _)) |
+            (CType::Array(a, _), CType::VariableArray(b, _)) => a.same_type(b),
             (CType::Array(a, na), CType::Array(b, nb)) =>
                 na == nb && a.same_type(b),
             _ => self == other,
@@ -255,6 +264,9 @@ impl CType {
                 Some(Self::Atomic(Box::new(a.composite(b)?))),
             (Self::Pointer(a), Self::Pointer(b)) =>
                 Some(Self::Pointer(Box::new(a.composite(b)?))),
+            (Self::VariableArray(a, bound), Self::VariableArray(b, _) | Self::Array(b, _)) |
+            (Self::Array(b, _), Self::VariableArray(a, bound)) =>
+                Some(Self::VariableArray(Box::new(a.composite(b)?), *bound)),
             (Self::Array(a, na), Self::Array(b, nb)) => {
                 let count = match (na, nb) {
                     (Some(x), Some(y)) if x != y => return None,
@@ -307,6 +319,24 @@ impl CType {
         }
     }
 
+    /// Runtime-sized array objects, including fixed outer dimensions.
+    pub fn is_variable_array(&self) -> bool {
+        match self.unqualified() {
+            Self::VariableArray(..) => true,
+            Self::Array(element, Some(_)) => element.is_variable_array(),
+            _ => false,
+        }
+    }
+    pub fn is_variably_modified(&self) -> bool {
+        match self.unqualified() {
+            Self::VariableArray(..) => true,
+            Self::Array(element, _) | Self::Pointer(element) => element.is_variably_modified(),
+            _ => false,
+        }
+    }
+    pub fn is_array(&self) -> bool {
+        matches!(self.unqualified(), Self::Array(..) | Self::VariableArray(..))
+    }
     pub fn is_integer(&self) -> bool {
         matches!(self.unqualified(), Self::Integer { .. })
     }
@@ -321,7 +351,7 @@ impl CType {
                 matches!(member.ty.unqualified(), Self::Array(_, None))),
             Self::Union { members, .. } => members.iter().any(|member|
                 member.ty.has_flexible_array_member()),
-            Self::Array(element, _) => element.has_flexible_array_member(),
+            Self::Array(element, _) | Self::VariableArray(element, _) => element.has_flexible_array_member(),
             _ => false,
         }
     }
@@ -346,7 +376,7 @@ impl CType {
             }),
             Self::Pointer(_) => Some(u64::from(target.pointer_bits / 8)),
             Self::Array(element, Some(count)) => element.size_bytes(target)?.checked_mul(*count),
-            Self::Array(_, None) => None,
+            Self::Array(_, None) | Self::VariableArray(..) => None,
         }
     }
 }

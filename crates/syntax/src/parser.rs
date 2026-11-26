@@ -1510,6 +1510,32 @@ impl<'a> Parser<'a> {
                 self.expect(";")?;
                 Ok(Stmt::Goto { target: target.text.to_string(), span: target.span })
             }
+            // Clang-compatible C/C++ statement attribute. C99 has no
+            // standard musttail keyword; parse the explicit qualified
+            // spelling and retain it as an AST obligation.
+            "[" => {
+                let start=self.take()?.expect("attribute bracket was peeked").span;
+                self.expect("[")?;
+                let namespace=self.take()?.ok_or_else(||
+                    Diagnostic::new(start,"musttail attribute requires clang namespace"))?;
+                if namespace.text.as_ref()!="clang" {
+                    return Err(Diagnostic::new(start,
+                        "unsupported statement attribute namespace (expected clang::musttail)"));
+                }
+                self.expect(":")?;
+                self.expect(":")?;
+                self.expect("musttail")?;
+                self.expect("]")?;
+                self.expect("]")?;
+                self.expect("return")?;
+                if self.peek()?.is_some_and(|t|t.text.as_ref()==";") {
+                    return Err(Diagnostic::new(start,
+                        "clang::musttail return requires a direct call expression"));
+                }
+                let value=self.parse_expr()?;
+                self.expect(";")?;
+                Ok(Stmt::MustTailReturn(value))
+            }
             "return" => {
                 self.take()?;
                 let value = if self.peek()?.is_some_and(|t| t.text.as_ref() == ";") { None } else { Some(self.parse_expr()?) };

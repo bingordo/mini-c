@@ -179,6 +179,9 @@ pub enum Stmt {
         span: Span,
     },
     Return(Option<Expr>),
+    /// Explicit clang-compatible guaranteed sibling-tail return. Never
+    /// silently rewrite this into an ordinary C return during lowering.
+    MustTailReturn(Expr),
     If {
         cond: Expr,
         then: Box<Stmt>,

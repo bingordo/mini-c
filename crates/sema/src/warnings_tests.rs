@@ -413,3 +413,87 @@ fn sign_compare_is_not_implicitly_a_sign_conversion_warning() {
         Target::default(), &["-Wsign-conversion"]);
     assert!(reports.is_empty(), "{reports:?}");
 }
+
+#[test]
+fn compound_addition_warns_when_signed_rhs_becomes_unsigned() {
+    let reports = signedness_warnings(
+        "unsigned int f(unsigned int x, int y) { x += y; return x; }",
+        Target::default());
+    assert_eq!(reports.len(), 1, "{reports:?}");
+    assert_eq!(reports[0].warning_group, Some("sign-conversion"));
+}
+
+#[test]
+fn compound_addition_warns_for_both_computation_and_store_signedness() {
+    let reports = signedness_warnings(
+        "int f(int x, unsigned int y) { x += y; return x; }",
+        Target::default());
+    assert_eq!(reports.len(), 2, "{reports:?}");
+    assert!(reports.iter().all(|w| w.warning_group == Some("sign-conversion")));
+}
+
+#[test]
+fn compound_unsigned_narrow_store_is_a_conversion_not_sign_conversion() {
+    let source = "unsigned short f(unsigned short x, int y) { x += y; return x; }";
+    assert!(signedness_warnings(source, Target::default()).is_empty());
+    let reports = warnings(source, &["-Wconversion"]);
+    assert_eq!(reports.len(), 1, "{reports:?}");
+    assert_eq!(reports[0].warning_group, Some("conversion"));
+}
+
+#[test]
+fn compound_signed_narrow_store_is_a_conversion() {
+    let source = "short f(short x, unsigned int y) { x += y; return x; }";
+    let reports = warnings(source, &["-Wsign-conversion", "-Wconversion"]);
+    assert_eq!(reports.len(), 2, "{reports:?}");
+    assert!(reports.iter().any(|w| w.warning_group == Some("conversion")));
+    assert!(reports.iter().any(|w| w.warning_group == Some("sign-conversion")));
+}
+
+#[test]
+fn compound_fitting_positive_constant_does_not_warn() {
+    let reports = signedness_warnings(
+        "unsigned int f(unsigned int x) { x += 1; return x; }",
+        Target::default());
+    assert!(reports.is_empty(), "{reports:?}");
+}
+
+#[test]
+fn compound_negative_constant_warns() {
+    let reports = signedness_warnings(
+        "unsigned int f(unsigned int x) { x += -1; return x; }",
+        Target::default());
+    assert_eq!(reports.len(), 1, "{reports:?}");
+}
+
+#[test]
+fn compound_explicit_cast_suppresses_rhs_sign_conversion() {
+    let reports = signedness_warnings(
+        "unsigned int f(unsigned int x, int y) { x += (unsigned int)y; return x; }",
+        Target::default());
+    assert!(reports.is_empty(), "{reports:?}");
+}
+
+#[test]
+fn compound_safe_widening_remains_warning_free() {
+    let reports = signedness_warnings(
+        "long f(long x, unsigned int y) { x += y; return x; }",
+        Target::default());
+    assert!(reports.is_empty(), "{reports:?}");
+}
+
+#[test]
+fn compound_shift_does_not_invent_a_usual_arithmetic_sign_change() {
+    let reports = signedness_warnings(
+        "unsigned int f(unsigned int x, int y) { x <<= y; return x; }",
+        Target::default());
+    assert!(reports.is_empty(), "{reports:?}");
+}
+
+#[test]
+fn compound_warning_can_be_disabled_without_disabling_other_warnings() {
+    let reports = warnings(
+        "unsigned int f(unsigned int x, int y) { x += y; return x; }",
+        &["-Wsign-conversion", "-Wno-sign-conversion"]);
+    assert!(reports.is_empty(), "{reports:?}");
+}
