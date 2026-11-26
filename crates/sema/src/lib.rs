@@ -2527,6 +2527,75 @@ impl Checker {
         }
     }
 
+    /// Shared implicit signedness conversion diagnostic. Explicit casts use
+    /// convert() directly and do not enter this path.
+    fn warn_implicit_sign_conversion(
+        &self, expr: &CheckedExpr, value_ty: &CType, span: Span,
+    ) {
+        if self.warning_policy.enabled("sign-conversion") {
+            if let (CType::Integer { rank: source_rank, unsigned: source_unsigned },
+                    CType::Integer { rank: dest_rank, unsigned: dest_unsigned }) =
+                (expr.ty.unqualified(), value_ty.unqualified())
+            {
+                let source_bits = self.target.bits(*source_rank);
+                let dest_bits = self.target.bits(*dest_rank);
+                let possibly_changes_value = source_unsigned != dest_unsigned
+                    && *dest_rank != IntRank::Bool
+                    && !(!*source_unsigned && *source_rank == IntRank::Bool)
+                    && !(*source_unsigned && !*dest_unsigned && dest_bits > source_bits);
+                if possibly_changes_value {
+                    let fits = const_eval::evaluate(expr, self.target).ok()
+                        .is_some_and(|value| {
+                            if *dest_unsigned {
+                                value >= 0 && value <= ((1i128 << dest_bits) - 1)
+                            } else {
+                                value >= -(1i128 << (dest_bits - 1))
+                                    && value < (1i128 << (dest_bits - 1))
+                            }
+                        });
+                    if !fits {
+                        self.conversion_warnings.borrow_mut().push(
+                            ReportedDiagnostic::warning(
+                                Diagnostic::semantic(span,
+                                    "implicit integer signedness conversion may change value"),
+                                "sign-conversion",
+                            )
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// GCC-style mixed-sign integer comparison warning. Only report when
+    /// the usual arithmetic conversions make a signed operand unsigned.
+    /// A wider signed common type can represent both operands safely.
+    fn warn_sign_comparison(
+        &self, left: &CheckedExpr, right: &CheckedExpr, common: &CType,
+        span: Span,
+    ) {
+        if !self.warning_policy.enabled("sign-compare") { return; }
+        let CType::Integer { unsigned: true, .. } = common.unqualified()
+            else { return; };
+        let signed_operand = match (left.ty.unqualified(), right.ty.unqualified()) {
+            (CType::Integer { unsigned: false, .. },
+                CType::Integer { unsigned: true, .. }) => left,
+            (CType::Integer { unsigned: true, .. },
+                CType::Integer { unsigned: false, .. }) => right,
+            _ => return,
+        };
+        // GCC ignores nonnegative integer constants in these comparisons.
+        if const_eval::evaluate(signed_operand, self.target)
+            .is_ok_and(|value| value >= 0) {
+            return;
+        }
+        self.conversion_warnings.borrow_mut().push(ReportedDiagnostic::warning(
+            Diagnostic::semantic(span,
+                "comparison between signed and unsigned integer expressions"),
+            "sign-compare",
+        ));
+    }
+
     fn convert_for_assignment(&self, expr: CheckedExpr, ty: &CType, _original: &Expr, span: Span) -> Result<CheckedExpr, Diagnostic> {
         // The source array undergoes the standard array-to-pointer conversion
         // before checking scalar assignment compatibility.
@@ -2604,6 +2673,7 @@ impl Checker {
                 }
             }
         }
+        self.warn_implicit_sign_conversion(&expr, &value_ty, span);
         Ok(self.convert(expr, &value_ty))
     }
 
@@ -3433,6 +3503,17 @@ impl Checker {
                         if has_float { "operator requires compatible arithmetic operands" }
                         else { "operator requires compatible integer operands" })
                 })?;
+                // Usual arithmetic conversions also implicitly change the
+                // operand type. Diagnose sign changes on the operands, not
+                // on the arithmetic result, preserving explicit-cast opt-out.
+                if relation {
+                    self.warn_sign_comparison(&left, &right, &common, span);
+                } else {
+                    self.warn_implicit_sign_conversion(&left, &common,
+                        lhs.location().unwrap_or(span));
+                    self.warn_implicit_sign_conversion(&right, &common,
+                        rhs.location().unwrap_or(span));
+                }
                 let left = self.convert(left, &common);
                 let right = self.convert(right, &common);
                 let result = if relation { CType::int() } else { common };
