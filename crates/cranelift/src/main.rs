@@ -90,6 +90,7 @@ fn collect_semantic_warnings(
     if !policy.enabled("shadow")
         && !policy.enabled("unused-variable")
         && !policy.enabled("unused-parameter")
+        && !policy.enabled("unused-but-set-variable")
     {
         return Ok(Vec::new());
     }

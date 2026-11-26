@@ -87,3 +87,78 @@ fn extern_alias_does_not_mark_shadowed_auto_as_used() {
     assert_eq!(warnings,
         vec![("unused variable 'local'".into(), "unused-variable")]);
 }
+
+#[test]
+fn assigned_but_never_read_reports_distinct_group() {
+    let reports = warning_names(
+        "int f(void) { int x = 0; x = 4; return 0; }", &["-Wall"]);
+    assert_eq!(reports, vec![(
+        "variable 'x' set but not used".into(), "unused-but-set-variable"
+    )]);
+}
+
+#[test]
+fn plain_initializer_without_uses_stays_unused_variable() {
+    let reports = warning_names("int f(void) { int x = 3; return 0; }", &["-Wall"]);
+    assert_eq!(reports, vec![("unused variable 'x'".into(), "unused-variable")]);
+}
+
+#[test]
+fn read_after_write_is_not_write_only() {
+    let reports = warning_names("int f(void) { int x; x = 1; return x; }", &["-Wall"]);
+    assert!(reports.is_empty(), "{reports:?}");
+}
+
+#[test]
+fn assignment_rhs_read_keeps_binding_used() {
+    let reports = warning_names("int f(void) { int x = 1; x = x + 1; return 0; }", &["-Wall"]);
+    assert!(reports.is_empty(), "{reports:?}");
+}
+
+#[test]
+fn shadowed_names_have_independent_write_records() {
+    let reports = warning_names(
+        "int f(void) { int x = 1; { int x = 2; x = 3; } return x; }",
+        &["-Wall"]);
+    assert_eq!(reports, vec![("variable 'x' set but not used".into(),
+        "unused-but-set-variable")]);
+}
+
+#[test]
+fn write_only_warnings_can_be_disabled_without_disabling_unused_variables() {
+    let reports = warning_names(
+        "int f(void) { int x = 1; int y = 2; x = 3; return 0; }",
+        &["-Wall", "-Wno-unused-but-set-variable"]);
+    assert_eq!(reports, vec![("unused variable 'y'".into(), "unused-variable")]);
+}
+
+#[test]
+fn volatile_auto_store_still_warns_like_gcc() {
+    let reports = warning_names(
+        "int f(void) { volatile int x = 0; x = 1; return 0; }",
+        &["-Wall"]);
+    assert_eq!(reports, vec![
+        ("variable 'x' set but not used".into(), "unused-but-set-variable"),
+    ]);
+}
+
+#[test]
+fn compound_assignment_counts_as_read_in_gcc_compatibility_mode() {
+    let reports = warning_names(
+        "int f(void) { int x = 0; x += 1; return 0; }", &["-Wall"]);
+    assert!(reports.is_empty(), "{reports:?}");
+}
+
+#[test]
+fn postfix_increment_counts_as_read_in_gcc_compatibility_mode() {
+    let reports = warning_names(
+        "int f(void) { int x = 0; x++; return 0; }", &["-Wall"]);
+    assert!(reports.is_empty(), "{reports:?}");
+}
+
+#[test]
+fn volatile_unused_declaration_reports_unused_variable() {
+    let reports = warning_names(
+        "int f(void) { volatile int x = 0; return 0; }", &["-Wall"]);
+    assert_eq!(reports, vec![("unused variable 'x'".into(), "unused-variable")]);
+}

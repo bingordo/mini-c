@@ -514,3 +514,27 @@ fn c99_inline_only_body_uses_external_definition_across_translation_units() {
     assert!(Command::new(&executable).status().unwrap().success());
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn native_driver_emits_write_only_warning_with_werror() {
+    let source = "int f(void) { int x = 0; x = 4; return 0; }";
+    let mut policy = WarningPolicy::default();
+    policy.apply_flag("-Wall").unwrap();
+    let (warnings, failed) =
+        format_semantic_warnings("raw.c", source, false, &policy).unwrap();
+    assert!(!failed);
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("[-Wunused-but-set-variable]"), "{warnings:?}");
+
+    policy.apply_flag("-Werror=unused-but-set-variable").unwrap();
+    let (errors, failed) =
+        format_semantic_warnings("raw.c", source, false, &policy).unwrap();
+    assert!(failed);
+    assert!(errors[0].contains(": error:"), "{errors:?}");
+
+    policy.apply_flag("-Wno-unused-but-set-variable").unwrap();
+    let (suppressed, failed) =
+        format_semantic_warnings("raw.c", source, false, &policy).unwrap();
+    assert!(!failed);
+    assert!(suppressed.is_empty());
+}

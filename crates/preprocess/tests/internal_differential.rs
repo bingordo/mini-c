@@ -1,7 +1,10 @@
 //! Candidate-neutral correctness gate: compare expanded preprocessing tokens,
 //! never compiler-specific whitespace or #line marker formatting.
 #![cfg(feature = "internal-rcc")]
-use std::{ffi::OsString, path::Path, time::{SystemTime, UNIX_EPOCH}};
+use std::{ffi::OsString, path::Path, sync::atomic::{AtomicU64, Ordering}, time::{SystemTime, UNIX_EPOCH}};
+
+// Parallel differential cases must never share a temporary source directory.
+static NEXT_FIXTURE_ID: AtomicU64 = AtomicU64::new(0);
 use mini_c_preprocess::{file, Config};
 
 fn tokens(source: &str) -> Vec<String> {
@@ -22,8 +25,9 @@ fn compare(fixture: &str, flags: &[&str]) {
 }
 
 fn compare_mode(fixture: &str, flags: &[&str], mode: ReferenceMode) {
-    let name = format!("mini-c-internal-cpp-{}-{}",
-        std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos());
+    let name = format!("mini-c-internal-cpp-{}-{}-{}",
+        std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos(),
+        NEXT_FIXTURE_ID.fetch_add(1, Ordering::Relaxed));
     let dir = std::env::temp_dir().join(name);
     std::fs::create_dir_all(dir.join("inc folder")).unwrap();
     std::fs::write(dir.join("inc folder").join("data.h"),
