@@ -34,6 +34,12 @@ pub fn implicit_function_name_symbol(name: &str) -> String {
     format!(".Lmini_c_funcname_{name}")
 }
 
+/// Names emitted only by the checker for objects with static storage and
+/// no C linkage; the '.' prefix cannot occur in a source identifier.
+pub fn is_private_block_static_symbol(name: &str) -> bool {
+    name.starts_with(".Lmini_c_block_static_") || name.starts_with(".Lmini_c_funcname_")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Linkage { None, Internal, External }
 
@@ -223,7 +229,8 @@ pub struct CheckedDecl {
     pub name: String,
     pub ty: CType,
     pub linkage: Linkage,
-    /// External ELF linkage symbol, distinct from C source identifier.
+    /// External ELF linkage symbol or private backing symbol for a block-static object,
+    /// distinct from the C source identifier.
     pub asm_label: Option<String>,
     pub initializer: Option<CheckedExpr>,
     pub span: Span,
@@ -451,6 +458,7 @@ pub struct Checker {
     next_tag_identity: Cell<u64>,
     saw_atomic_aggregate: Cell<bool>,
     next_static_compound_identity: Cell<u64>,
+    next_block_static_identity: u64,
     /// Independent tag namespace, parallel to ordinary identifier scopes.
     tags: RefCell<Vec<HashMap<String, TagEntry>>>,
     /// Stable definition lookup independent of currently visible shadowing tags.
@@ -486,7 +494,7 @@ pub struct Checker {
 
 impl Checker {
     pub fn new(target: Target) -> Result<Self, Diagnostic> {
-        Ok(Self { target: target.validate()?, next_tag_identity: Cell::new(1), saw_atomic_aggregate: Cell::new(false), next_static_compound_identity: Cell::new(1), tags: RefCell::new(vec![HashMap::new()]), tag_definitions: RefCell::new(HashMap::new()), globals: HashMap::new(), next_vla_bound: 0, capturing_vla_bounds: None, checking_inline_body: false, inline_body_violation: RefCell::new(None), locals: Vec::new(), result_ty: None, current_signature: None, loop_depth: 0, switches: Vec::new(), function_labels: HashMap::new(), rollback_log: None, statement_undo: Vec::new(),
+        Ok(Self { target: target.validate()?, next_tag_identity: Cell::new(1), saw_atomic_aggregate: Cell::new(false), next_static_compound_identity: Cell::new(1), next_block_static_identity: 1, tags: RefCell::new(vec![HashMap::new()]), tag_definitions: RefCell::new(HashMap::new()), globals: HashMap::new(), next_vla_bound: 0, capturing_vla_bounds: None, checking_inline_body: false, inline_body_violation: RefCell::new(None), locals: Vec::new(), result_ty: None, current_signature: None, loop_depth: 0, switches: Vec::new(), function_labels: HashMap::new(), rollback_log: None, statement_undo: Vec::new(),
             recovery_errors: None, recovery_limit: 0,
             warning_policy: WarningPolicy::default(), emitted_warnings: Vec::new(),
             conversion_warnings: RefCell::new(Vec::new()),
@@ -2078,13 +2086,25 @@ impl Checker {
                 self.define_local(&decl.name, ty.clone(), SymbolKind::Object, linkage,
                     decl.storage == StorageClass::Register,
                     decl.name_span.unwrap_or(decl.span))?;
+                // Static storage duration is independent of C linkage. Assign
+                // a private backing identity before checking the initializer
+                // so a declaration can refer to its own address.
+                let backing = if decl.storage == StorageClass::Static {
+                    let id = self.next_block_static_identity;
+                    self.next_block_static_identity = id.checked_add(1)
+                        .ok_or_else(|| type_error(decl.span, "static object identity overflow"))?;
+                    let symbol = format!(".Lmini_c_block_static_{id}");
+                    self.locals.last_mut().expect("local scope").get_mut(&decl.name)
+                        .expect("registered local").asm_label = Some(symbol.clone());
+                    Some(symbol)
+                } else { None };
                 let initializer = decl.init.as_ref()
                     .map(|value| self.check_object_initializer(value, &ty, decl.span,
                         decl.storage == StorageClass::Static))
                     .transpose()?;
                 CheckedStmt::Decl(CheckedDecl {
                     storage: decl.storage, runtime_bounds, is_inline: false, name: decl.name.clone(), ty,
-                    linkage, asm_label: None,
+                    linkage, asm_label: backing,
                     initializer, span: decl.span,
                 })
             }
@@ -2531,9 +2551,10 @@ impl Checker {
     /// Check storage duration at the resolved address root, not its spelling.
     fn static_address_root(&self, expr: &CheckedExpr) -> bool {
         match &expr.kind {
-            CheckedExprKind::Name(name) => self.lookup(name).is_some_and(|s|
-                matches!(s.kind, SymbolKind::Object | SymbolKind::Function)
-                    && s.linkage != Linkage::None && !s.is_thread_local),
+            CheckedExprKind::Name(name) => is_private_block_static_symbol(name)
+                || self.lookup(name).is_some_and(|s|
+                    matches!(s.kind, SymbolKind::Object | SymbolKind::Function)
+                        && s.linkage != Linkage::None && !s.is_thread_local),
             CheckedExprKind::StaticCompoundLiteral { .. } |
             CheckedExprKind::StringLiteral(_) => true,
             _ => false,
@@ -3401,14 +3422,13 @@ impl Checker {
                         format!("inline-only definition cannot reference internal-linkage identifier '{name}'"));
                 }
                 self.reference_warning_binding(name);
-                // The implicit object is internally named so that a
-                // frontend user cannot collide with it and every use
-                // within this function refers to the same static array.
-                // An ordinary shadowing declaration (if accepted by an
-                // implementation) has no private backing name.
-                let resolved_name = if name == "__func__" {
-                    symbol.asm_label.as_deref().unwrap_or(name)
-                } else { name };
+                // Private static objects use their backing identity in
+                // checked expressions; retain the source binding for lookup
+                // and diagnostics. External asm aliases are still resolved
+                // by the consumer's normal linkage path.
+                let resolved_name = symbol.asm_label.as_deref()
+                    .filter(|label| is_private_block_static_symbol(label))
+                    .unwrap_or(name);
                 Ok(CheckedExpr { ty: symbol.ty.clone(), category,
                     kind: CheckedExprKind::Name(resolved_name.to_owned()), source_span:None })
             }
