@@ -190,7 +190,7 @@ impl WarningPolicy {
     pub fn known_group(group: &str) -> bool {
         // Only claim groups with working diagnostic producers. Other
         // groups must not silently turn into no-op compatibility flags.
-        matches!(group, "shadow" | "unused-variable" | "unused-parameter" | "unused-but-set-variable" | "conversion")
+        matches!(group, "shadow" | "unused-variable" | "unused-parameter" | "unused-but-set-variable" | "conversion" | "sign-conversion")
     }
 
     /// Default enablement is conservative until Mini-C has a tested
