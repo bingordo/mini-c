@@ -177,9 +177,16 @@ struct KnownFunction {
 /// arguments in their ordinary GP/XMM registers and stack slots, but has no
 /// special AL register-value operand on a variadic call. The wrapper sets
 /// AL to the number of vector argument registers used, then tail-jumps.
+enum SysvThunkTarget {
+    Direct(FuncId),
+    /// The extra pointer follows all real arguments in the fixed signature.
+    IndirectRegister(u8),
+    IndirectStack(i32),
+}
+
 struct SysvVarargThunk {
     wrapper: FuncId,
-    target: FuncId,
+    target: SysvThunkTarget,
     sse_count: u8,
 }
 
@@ -1142,7 +1149,10 @@ impl Compiler {
             let text = product.object.section_id(StandardSection::Text);
             for thunk in self.vararg_thunks {
                 let wrapper = product.function_symbol(thunk.wrapper);
-                let destination = product.function_symbol(thunk.target);
+                let destination = match thunk.target {
+                    SysvThunkTarget::Direct(id) => Some(product.function_symbol(id)),
+                    _ => None,
+                };
                 // x86-64: xor eax,eax (0) or mov al,imm8 (1..8), then
                 // jmp rel32. Both prologues take two bytes; preserve GP/XMM
                 // arguments, stack argument area, return address and alignment.
@@ -1155,10 +1165,24 @@ impl Compiler {
                 } else {
                     [0xb0, thunk.sse_count] // mov al, imm8
                 };
-                let start = product.object.add_symbol_data(
-                    wrapper, text, &[prologue[0], prologue[1], 0xe9, 0, 0, 0, 0], 16
-                );
-                product.object.add_relocation(text, Relocation {
+                let mut bytes = prologue.to_vec();
+                match thunk.target {
+                    SysvThunkTarget::Direct(_) => bytes.extend_from_slice(&[0xe9, 0, 0, 0, 0]),
+                    SysvThunkTarget::IndirectRegister(index) => {
+                        // SysV integer argument registers: RDI, RSI, RDX, RCX, R8, R9.
+                        let code = [7, 6, 2, 1, 0, 1][usize::from(index)];
+                        if index >= 4 { bytes.push(0x41); }
+                        bytes.extend_from_slice(&[0xff, 0xe0 | code]);
+                    }
+                    SysvThunkTarget::IndirectStack(offset) => {
+                        // jmp [rsp+disp32]; preserve every actual argument.
+                        bytes.extend_from_slice(&[0xff, 0xa4, 0x24]);
+                        bytes.extend_from_slice(&offset.to_le_bytes());
+                    }
+                }
+                let start = product.object.add_symbol_data(wrapper, text, &bytes, 16);
+                if let Some(destination) = destination {
+                    product.object.add_relocation(text, Relocation {
                     offset: start + 3,
                     symbol: destination,
                     addend: -4,
@@ -1167,7 +1191,8 @@ impl Compiler {
                         encoding: RelocationEncoding::X86Branch,
                         size: 32,
                     },
-                }).map_err(|e| format!("SysV varargs thunk relocation: {e}"))?;
+                    }).map_err(|e| format!("SysV varargs thunk relocation: {e}"))?;
+                }
             }
         }
         product.emit().map_err(|e| e.to_string())
@@ -1957,7 +1982,7 @@ impl Lower<'_> {
             }
             CheckedExprKind::Unary(op, inner) => {
                 if *op == UnOp::Address {
-                    if let (CType::Function { .. }, CheckedExprKind::Name(name)) =
+                    if let (CType::Function { .. } | CType::VariadicFunction { .. } | CType::UnprototypedFunction { .. }, CheckedExprKind::Name(name)) =
                         (&inner.ty, &inner.kind)
                     {
                         let id = self.functions.get(name)
@@ -2262,12 +2287,6 @@ impl Lower<'_> {
                         matches!(inner.as_ref(), CType::VariadicFunction { .. } | CType::UnprototypedFunction { .. }),
                     _ => false,
                 };
-                if variadic && !matches!(
-                    (&callee.kind, &callee.ty),
-                    (CheckedExprKind::Name(_), CType::VariadicFunction { .. } | CType::UnprototypedFunction { .. })
-                ) {
-                    return Err("indirect SysV variadic calls are unsupported".into());
-                }
                 let function_ty = match callee.ty.unqualified() {
                     CType::Function { .. } | CType::VariadicFunction { .. } | CType::UnprototypedFunction { .. } => callee.ty.unqualified(),
                     CType::Pointer(inner) if matches!(inner.unqualified(),
@@ -2329,23 +2348,45 @@ impl Lower<'_> {
                         return Err("internal SysV aggregate argument count mismatch".into());
                     }
                 }
-                let inst = if let (CheckedExprKind::Name(name),
-                    CType::VariadicFunction { result, .. } | CType::UnprototypedFunction { result }) = (&callee.kind, &callee.ty)
-                {
-                    let target = self.functions.get(name)
-                        .map(|known| known.id)
-                        .ok_or_else(|| format!("missing variadic function declaration for '{name}'"))?;
+                let inst = if variadic {
+                    if is_aggregate(result_ty) {
+                        return Err("unsupported aggregate result in SysV variadic or non-prototype call".into());
+                    }
                     let mut sig = self.module.make_signature();
                     let mut sse_count = 0u8;
+                    let mut gp_count = 0u8;
+                    let mut stack_slots = 0i32;
                     for arg in args {
                         let ty = scalar_type(&arg.ty)?;
                         if ty == types::F32 || ty == types::F64 {
-                            sse_count = sse_count.saturating_add(1).min(8);
-                        }
+                            if sse_count == 8 { stack_slots += 1; }
+                            else { sse_count += 1; }
+                        } else if gp_count == 6 { stack_slots += 1; }
+                        else { gp_count += 1; }
                         sig.params.push(AbiParam::new(ty));
                     }
-                    if result.unqualified() != &CType::Void {
-                        sig.returns.push(AbiParam::new(scalar_type(result)?));
+                    let target = if let (CheckedExprKind::Name(name),
+                        CType::VariadicFunction { .. } | CType::UnprototypedFunction { .. }) = (&callee.kind, &callee.ty)
+                    {
+                        SysvThunkTarget::Direct(self.functions.get(name)
+                            .map(|known| known.id)
+                            .ok_or_else(|| format!("missing variadic function declaration for '{name}'"))?)
+                    } else {
+                        // Append the target pointer after every actual C argument.
+                        // It occupies the next free GP register or a new stack
+                        // slot, never shifting the real arguments. Tail-jumping
+                        // leaves the caller responsible for all stack cleanup.
+                        let address = self.expression(b, callee)?;
+                        sig.params.push(AbiParam::new(types::I64));
+                        values.push(address);
+                        if gp_count < 6 { SysvThunkTarget::IndirectRegister(gp_count) }
+                        else {
+                            SysvThunkTarget::IndirectStack(stack_slots.checked_mul(8)
+                                .and_then(|n| n.checked_add(8)).ok_or("too many SysV stack arguments")?)
+                        }
+                    };
+                    if result_ty.unqualified() != &CType::Void {
+                        sig.returns.push(AbiParam::new(scalar_type(result_ty)?));
                     }
                     let wrapper_name = format!("__mini_c_sysv_gpvar_{}", self.vararg_thunks.len());
                     let wrapper = self.module.declare_function(
@@ -2971,17 +3012,15 @@ mod tests {
     }
 
     #[test]
-    fn indirect_sysv_variadic_call_fails_closed() {
+    fn indirect_sysv_variadic_call_emits_tail_thunk() {
         let source = concat!(
             "extern int printf(const char *, ...); ",
             "int main(void) { int (*p)(const char *, ...) = printf; ",
             "return p(\"%s\", \"word\"); }"
         );
-        let err = compile_source(source).unwrap_err();
-        // Until function-designator decay is supported in all initializer
-        // contexts, the front-end may reject the function-pointer assignment.
-        assert!(err.contains("indirect SysV variadic")
-                || err.contains("unresolved variable"), "{err}");
+        let bytes = compile_source(source).expect("indirect SysV variadic call");
+        assert!(bytes.windows(4).any(|w| w == [0x31, 0xc0, 0xff, 0xe2]),
+            "expected xor eax,eax; jmp rdx with target after two GP arguments");
     }
 
     #[test]
