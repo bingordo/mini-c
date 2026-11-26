@@ -34,6 +34,12 @@ PROGRAMS = {
         return p[0]!='l' || p[1]!='a' || p[4]!='l'
             || p[5]!=0;
     }""",
+    "c99_static_compound_pointer_offsets": """int *p=(int[]){1,2,3}+1;
+struct S { int x; }; int *q=&((struct S[]){{4},{5}})[1].x;
+int *table[2]={(int[]){6,7}+1,(int[]){8,9}+1};
+int main(void) {
+    return *p!=2 || *q!=5 || *table[0]!=7 || *table[1]!=9;
+}""",
     "c99_static_pointer_offsets": """int a[5]={1,2,3,4,5};
 int *p=a+2;
 int *q=&a[3];

@@ -610,6 +610,10 @@ impl Compiler {
             CheckedExprKind::Load(inner) |
             CheckedExprKind::Member(inner, _) =>
                 self.register_static_compounds(inner)?,
+            CheckedExprKind::Binary(_, left, right) => {
+                self.register_static_compounds(left)?;
+                self.register_static_compounds(right)?;
+            }
             _ => {}
         }
         Ok(())
@@ -3806,4 +3810,16 @@ mod tests {
         }
     }
 
+}
+
+#[cfg(test)]
+#[test]
+fn static_compound_pointer_arithmetic_materializes_backing_objects() {
+    for source in [
+        "int *p=(int[]){1,2,3}+1; int main(void){return *p!=2;}",
+        "struct S{int x;}; int *p=&((struct S[]){{1},{2}})[1].x; int main(void){return *p!=2;}",
+        "int *p[2]={(int[]){1,2}+1,(int[]){3,4}+1}; int main(void){return *p[0]!=2||*p[1]!=4;}",
+    ] {
+        compile_source(source).unwrap_or_else(|error| panic!("{source}: {error}"));
+    }
 }
