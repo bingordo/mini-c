@@ -409,6 +409,7 @@ struct SwitchContext {
 pub struct Checker {
     target: Target,
     next_tag_identity: Cell<u64>,
+    saw_atomic_aggregate: Cell<bool>,
     next_static_compound_identity: Cell<u64>,
     /// Independent tag namespace, parallel to ordinary identifier scopes.
     tags: RefCell<Vec<HashMap<String, TagEntry>>>,
@@ -437,7 +438,7 @@ pub struct Checker {
 
 impl Checker {
     pub fn new(target: Target) -> Result<Self, Diagnostic> {
-        Ok(Self { target: target.validate()?, next_tag_identity: Cell::new(1), next_static_compound_identity: Cell::new(1), tags: RefCell::new(vec![HashMap::new()]), tag_definitions: RefCell::new(HashMap::new()), globals: HashMap::new(), locals: Vec::new(), result_ty: None, loop_depth: 0, switches: Vec::new(), function_labels: HashMap::new(), rollback_log: None, statement_undo: Vec::new(),
+        Ok(Self { target: target.validate()?, next_tag_identity: Cell::new(1), saw_atomic_aggregate: Cell::new(false), next_static_compound_identity: Cell::new(1), tags: RefCell::new(vec![HashMap::new()]), tag_definitions: RefCell::new(HashMap::new()), globals: HashMap::new(), locals: Vec::new(), result_ty: None, loop_depth: 0, switches: Vec::new(), function_labels: HashMap::new(), rollback_log: None, statement_undo: Vec::new(),
             recovery_errors: None, recovery_limit: 0,
             warning_policy: WarningPolicy::default(), emitted_warnings: Vec::new(),
             warning_scopes: RefCell::new(Vec::new()) })
@@ -599,16 +600,27 @@ impl Checker {
         Ok(())
     }
 
-    /// Classify a C11 atomic-qualified integer storage object without
-    /// allowing ordinary pointer/aggregate atomics or duplicate qualification.
+    /// Preserve atomic qualification on integer storage and layout-checked
+    /// one-byte aggregate declarations. Executable aggregate uses remain gated.
     /// Runtime access lowering is a separate capability gate.
-    fn atomic_integer_type(&self, base:CType, span:Span)->Result<CType,Diagnostic>{
+    fn atomic_object_type(&self, base:CType, span:Span)->Result<CType,Diagnostic>{
         if base.is_atomic() {
             return Err(type_error(span,"duplicate C11 _Atomic qualification"));
         }
-        if !matches!(base.unqualified(),CType::Integer{..}) {
+        if !matches!(base.unqualified(), CType::Integer { .. }) {
+            // A complete one-byte aggregate has no extra alignment or
+            // representation rounding in the current target data models.
+            // Larger atomics need a target-specific atomic layout contract.
+            if matches!(base.unqualified(), CType::Struct { .. } | CType::Union { .. })
+                && base.size_bytes(self.target) == Some(1)
+                && base.align_bytes(self.target) == Some(1)
+                && !base.contains_atomic()
+            {
+                self.saw_atomic_aggregate.set(true);
+                return Ok(base.with_atomic());
+            }
             return Err(type_error(span,
-                "C11 _Atomic currently requires a scalar integer object"));
+                "C11 _Atomic requires supported integer or one-byte aggregate layout"));
         }
         let bytes=base.size_bytes(self.target)
             .ok_or_else(||type_error(span,"C11 _Atomic requires complete integer storage"))?;
@@ -624,7 +636,7 @@ impl Checker {
         Ok(match ty {
             Type::Atomic(inner) => {
                 let base=self.resolve(inner,span)?;
-                self.atomic_integer_type(base,span)?
+                self.atomic_object_type(base,span)?
             }
             Type::Qualified(inner, qualifiers) => {
                 let base = self.resolve(inner, span)?;
@@ -640,7 +652,7 @@ impl Checker {
                         "const/volatile cannot qualify a function type"));
                 }
                 let base = if qualifiers.is_atomic {
-                    self.atomic_integer_type(base,span)?
+                    self.atomic_object_type(base,span)?
                 } else {base};
                 let base = if qualifiers.is_const { base.with_const() } else { base };
                 if qualifiers.is_volatile { base.with_volatile() } else { base }
@@ -1050,7 +1062,27 @@ impl Checker {
     /// stream consumed by subsequent successful items.
     pub fn check_item(&mut self, item: ExternalItem) -> Result<CheckedItem, Diagnostic> {
         let previous = self.emitted_warnings.len();
-        let result = self.check_item_impl(item);
+        let result = self.check_item_impl(item).and_then(|checked| {
+            // No additional tree traversal on units without atomic aggregates.
+            // Type-only declarations and unused prototypes may introduce the
+            // checked type. Do not send unsupported storage/effects to either backend.
+            if self.saw_atomic_aggregate.get() {
+                let declaration_only = match &checked {
+                    CheckedItem::Tag | CheckedItem::Typedef { .. } => true,
+                    CheckedItem::Declaration(d) => matches!(d.ty,
+                        CType::Function { .. } | CType::VariadicFunction { .. } |
+                        CType::UnprototypedFunction { .. }),
+                    _ => false,
+                };
+                if !declaration_only &&
+                    checked.contains_memory_qualifier(CType::contains_atomic_aggregate)
+                {
+                    return Err(type_error(Span::default(),
+                        "atomic aggregate storage or executable use requires backend support"));
+                }
+            }
+            Ok(checked)
+        });
         if result.is_err() {
             self.emitted_warnings.truncate(previous);
         }
@@ -2691,7 +2723,7 @@ impl Checker {
                 self.resolve_sizeof_type(inner, span)?)),
             Type::Atomic(inner) => {
                 let base=self.resolve_sizeof_type(inner,span)?;
-                self.atomic_integer_type(base,span)?
+                self.atomic_object_type(base,span)?
             }
             Type::Qualified(inner, qualifiers) => {
                 let inner = self.resolve_sizeof_type(inner, span)?;
@@ -2708,7 +2740,7 @@ impl Checker {
                     return Err(type_error(span, "volatile cannot qualify a function type"));
                 }
                 let inner = if qualifiers.is_atomic {
-                    self.atomic_integer_type(inner,span)?
+                    self.atomic_object_type(inner,span)?
                 } else {inner};
                 let inner = if qualifiers.is_const { inner.with_const() } else { inner };
                 if qualifiers.is_volatile { inner.with_volatile() } else { inner }
@@ -3023,6 +3055,9 @@ impl Checker {
                 };
                 let mut object = object;
                 object.ty = self.complete_tag_type(object.ty.clone(), span)?;
+                if object.ty.is_atomic() {
+                    return Err(type_error(span, "member access of atomic aggregate is unsupported"));
+                }
                 let members = match object.ty.unqualified() {
                     CType::Struct { members, .. } | CType::Union { members, .. } => members,
                     _ => return Err(Diagnostic::coded(span, DiagnosticCode::SemanticInvalidMemberAccess, "member access requires a struct or union")),
