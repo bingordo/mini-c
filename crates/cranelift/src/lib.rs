@@ -2809,6 +2809,9 @@ impl Lower<'_> {
                 if let Some(expr) = expr { self.expression(b, expr)?; }
                 Ok(true)
             }
+            CheckedStmt::MustTailReturn(_) => Err(
+                "musttail requires a backend with guaranteed physical tail transfer; the Cranelift reference emitter does not prove this ABI contract".into()
+            ),
             CheckedStmt::Return(value) => {
                 if let Some(expr) = value {
                     let v = self.expression(b, expr)?;
