@@ -85,6 +85,8 @@ pub enum CheckedExprKind {
     /// GCC __builtin_ctz(unsigned int): the argument is evaluated exactly once.
     /// As in GCC, a zero operand has undefined behavior; callers must guard it.
     BuiltinCtz(Box<CheckedExpr>),
+    /// Byte-reverse an exact unsigned width after one source conversion.
+    BuiltinByteSwap(u8, Box<CheckedExpr>),
     /// Typed GNU atomic builtin. The operands are evaluated once, and the
     /// memory order/weak flag are checked source constants, not runtime
     /// arguments. Native TypeId lowering must be explicit; Cranelift rejects
@@ -290,7 +292,7 @@ impl CheckedExpr {
             K::DeepInitializer(values) => values.iter()
                 .any(|(_,e)|e.contains_memory_qualifier(has)),
             K::CompoundLiteral(inner) | K::StaticCompoundLiteral {initializer:inner,..} |
-            K::Unary(_,inner) | K::BuiltinCtz(inner) | K::Convert(inner) |
+            K::Unary(_,inner) | K::BuiltinCtz(inner) | K::BuiltinByteSwap(_,inner) | K::Convert(inner) |
             K::Load(inner) | K::ArrayDecay(inner) | K::Member(inner,_) |
             K::BitFieldMember(inner,..) => inner.contains_memory_qualifier(has),
             K::BuiltinAtomic(checked) => checked.operands.iter()
@@ -3409,6 +3411,20 @@ impl Checker {
                                     let argument = self.convert(typed, &uint);
                                     return Ok(CheckedExpr::value(CType::int(),
                                         CheckedExprKind::BuiltinCtz(Box::new(argument))));
+                                }
+                                builtins::BuiltinId::ByteSwap(bits) => {
+                                    let argument = &args[0];
+                                    let at = argument.location().unwrap_or(span);
+                                    let typed = self.check_expr(argument, at)?.rvalue();
+                                    if !typed.ty.is_integer() {
+                                        return Err(type_error(at, format!("{name} requires an integer argument")));
+                                    }
+                                    let rank = [IntRank::Short,IntRank::Int,IntRank::Long,IntRank::LongLong]
+                                        .into_iter().find(|&rank| self.target.bits(rank)==u16::from(bits))
+                                        .ok_or_else(||type_error(at,format!("{name} requires exact unsigned {bits}-bit type")))?;
+                                    let ty=CType::Integer{rank,unsigned:true};
+                                    let argument=self.convert(typed,&ty);
+                                    return Ok(CheckedExpr::value(ty,CheckedExprKind::BuiltinByteSwap(bits,Box::new(argument))));
                                 }
                                 _ => return self.check_atomic_builtin(spec, args, span),
                             }
