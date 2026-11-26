@@ -232,6 +232,9 @@ pub enum CheckedStmt {
         span: Span,
     },
     Return(Option<CheckedExpr>),
+    /// Source-required tail transfer; must never be lowered as an ordinary
+    /// return by a backend that does not guarantee a physical tail branch.
+    MustTailReturn(CheckedExpr),
     If { cond: CheckedExpr, then: Box<CheckedStmt>, otherwise: Option<Box<CheckedStmt>> },
     While { cond: CheckedExpr, body: Box<CheckedStmt> },
     /// Case and default labels remain in source order to preserve fallthrough.
@@ -330,6 +333,7 @@ impl CheckedStmt {
             Self::Typedef {ty,..} => has(ty),
             Self::Expr(expr) | Self::Return(expr) => expr.as_ref()
                 .is_some_and(|e|e.contains_memory_qualifier(has)),
+            Self::MustTailReturn(expr) => expr.contains_memory_qualifier(has),
             Self::ExtendedAsm {outputs,inputs,..} => outputs.iter().chain(inputs)
                 .any(|op|op.expr.contains_memory_qualifier(has)),
             Self::If {cond,then,otherwise} => cond.contains_memory_qualifier(has)
@@ -433,6 +437,9 @@ pub struct Checker {
     inline_body_violation: RefCell<Option<Diagnostic>>,
     locals: Vec<HashMap<String, Symbol>>,
     result_ty: Option<CType>,
+    /// Exact fixed source signature while checking one function body. This
+    /// prevents a musttail return from merely checking its result type.
+    current_signature: Option<CType>,
     loop_depth: usize,
     switches: Vec<SwitchContext>,
     /// Function-scope label namespace, separate from ordinary identifiers/tags.
@@ -454,7 +461,7 @@ pub struct Checker {
 
 impl Checker {
     pub fn new(target: Target) -> Result<Self, Diagnostic> {
-        Ok(Self { target: target.validate()?, next_tag_identity: Cell::new(1), saw_atomic_aggregate: Cell::new(false), next_static_compound_identity: Cell::new(1), tags: RefCell::new(vec![HashMap::new()]), tag_definitions: RefCell::new(HashMap::new()), globals: HashMap::new(), checking_inline_body: false, inline_body_violation: RefCell::new(None), locals: Vec::new(), result_ty: None, loop_depth: 0, switches: Vec::new(), function_labels: HashMap::new(), rollback_log: None, statement_undo: Vec::new(),
+        Ok(Self { target: target.validate()?, next_tag_identity: Cell::new(1), saw_atomic_aggregate: Cell::new(false), next_static_compound_identity: Cell::new(1), tags: RefCell::new(vec![HashMap::new()]), tag_definitions: RefCell::new(HashMap::new()), globals: HashMap::new(), checking_inline_body: false, inline_body_violation: RefCell::new(None), locals: Vec::new(), result_ty: None, current_signature: None, loop_depth: 0, switches: Vec::new(), function_labels: HashMap::new(), rollback_log: None, statement_undo: Vec::new(),
             recovery_errors: None, recovery_limit: 0,
             warning_policy: WarningPolicy::default(), emitted_warnings: Vec::new(),
             conversion_warnings: RefCell::new(Vec::new()),
@@ -1823,6 +1830,7 @@ impl Checker {
         self.tags.borrow_mut().push(HashMap::new());
         self.function_labels = function_labels;
         self.result_ty = Some(result);
+        self.current_signature = (!func.old_style).then_some(signature.clone());
         // C99 6.4.2.2: each function implicitly declares a static const
         // char array `__func__` immediately inside its outermost block.
         // Install it in the same scope as parameters, so nested blocks see
@@ -1849,6 +1857,7 @@ impl Checker {
                 self.pop_warning_scope();
                 self.locals.pop();
                 self.result_ty = None;
+                self.current_signature = None;
                 return Err(err);
             }
         }
@@ -1873,6 +1882,7 @@ impl Checker {
         self.pop_warning_scope();
         self.locals.pop();
         self.result_ty = None;
+        self.current_signature = None;
         self.function_labels.clear();
         self.checking_inline_body = false;
         let violation = self.inline_body_violation.get_mut().take();
@@ -2238,6 +2248,49 @@ impl Checker {
                     clobbers:clobbers.clone(),span:*span,
                 }
             },
+            Stmt::MustTailReturn(value) => {
+                // Clang's musttail is a statement-level semantic promise:
+                // no arithmetic, conditional, cast, indirect designator or
+                // implicit conversion may hide a different call/return ABI.
+                let Expr::Call(callee,_) = value.without_location() else {
+                    return Err(type_error(span,"musttail return requires a direct function call"));
+                };
+                if !matches!(callee.without_location(),Expr::Name(_)) {
+                    return Err(type_error(span,"musttail return requires a named direct function"));
+                }
+                let Some(caller)=self.current_signature.as_ref() else {
+                    return Err(type_error(span,"musttail requires a fixed-prototype caller"));
+                };
+                let caller=caller.clone();
+                let typed=self.check_expr(value,span)?;
+                let CheckedExprKind::Call(callee,_) = &typed.kind else {
+                    return Err(type_error(span,"musttail return must remain an ordinary checked call"));
+                };
+                if !callee.ty.unqualified().same_type(&caller) {
+                    return Err(type_error(span,
+                        "musttail requires identical fixed caller and callee signatures"));
+                }
+                let CType::Function{result,params}=&caller else {
+                    return Err(type_error(span,"musttail requires a nonvariadic C prototype"));
+                };
+                // Target register counts belong to backend ABI admission.
+                // Here reject classes that cannot be faithfully encoded by
+                // the current generic GP-only required-call TypeId opcode.
+                let gp=|ty:&CType,allow_void:bool|match ty.unqualified() {
+                    CType::Void=>allow_void,
+                    CType::Integer{rank,..}=>matches!(self.target.bits(*rank),32|64),
+                    CType::Pointer(_)=>self.target.pointer_bits==64,
+                    _=>false,
+                };
+                if !gp(result,true) || !params.iter().all(|param|gp(param,false)) {
+                    return Err(type_error(span,
+                        "musttail currently supports only 32/64-bit GP arguments and scalar or void results"));
+                }
+                if !typed.ty.unqualified().same_type(result) {
+                    return Err(type_error(span,"musttail return result cannot be implicitly converted"));
+                }
+                CheckedStmt::MustTailReturn(typed)
+            }
             Stmt::Return(value) => {
                 let expected = self.result_ty.clone().expect("return outside function");
                 let checked = match (value, &expected) {
