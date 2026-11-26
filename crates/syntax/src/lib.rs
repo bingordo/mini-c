@@ -2,6 +2,7 @@
 pub mod ast;
 pub mod char_literal;
 pub mod diag;
+pub mod diagnostic_excerpt;
 pub mod expr_lexer;
 pub mod floating_literal;
 pub mod lexer;
