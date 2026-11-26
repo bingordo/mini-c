@@ -979,6 +979,10 @@ impl<'a> Parser<'a> {
     /// Named declarators are required for ordinary definitions and declarations;
     /// parameter declarators may omit their name.
     fn parse_declarator_shape(&mut self, allow_abstract: bool) -> Result<Declarator, Diagnostic> {
+        self.parse_declarator_shape_impl(allow_abstract, false)
+    }
+
+    fn parse_declarator_shape_impl(&mut self, allow_abstract: bool, allow_old_style: bool) -> Result<Declarator, Diagnostic> {
         let mut stars = Vec::new();
         while self.peek()?.is_some_and(|token| token.text.as_ref() == "*") {
             self.take()?;
@@ -1005,7 +1009,7 @@ impl<'a> Parser<'a> {
                 Declarator::Function(Box::new(Declarator::Name(String::new(), None)),
                     params, variadic, unprototyped)
             } else {
-                let inner = self.parse_declarator_shape(allow_abstract)?;
+                let inner = self.parse_declarator_shape_impl(allow_abstract, allow_old_style)?;
                 self.expect(")")?;
                 inner
             }
@@ -1038,8 +1042,16 @@ impl<'a> Parser<'a> {
                 direct = Declarator::Array(Box::new(direct), bound);
             } else if self.peek()?.is_some_and(|token| token.text.as_ref() == "(") {
                 self.take()?;
-                let unprototyped = self.peek()?.is_some_and(|t| t.text.as_ref() == ")");
-                let (params, variadic) = self.parse_parameter_list()?;
+                let identifiers = allow_old_style && matches!(&direct, Declarator::Name(..))
+                    && self.peek()?.is_some_and(|t| t.kind == TokenKind::Identifier
+                        && !matches!(t.text.as_ref(), "void" | "_Bool" | "char" | "short" | "int" | "long"
+                            | "signed" | "unsigned" | "float" | "double" | "_Float128"
+                            | "const" | "volatile" | "restrict" | "__restrict" | "__restrict__"
+                            | "_Atomic" | "struct" | "union" | "enum" | "register" | "__builtin_va_list"));
+                let unprototyped = identifiers || self.peek()?.is_some_and(|t| t.text.as_ref() == ")");
+                let (params, variadic) = if identifiers {
+                    (self.parse_identifier_parameters()?, false)
+                } else { self.parse_parameter_list()? };
                 self.expect(")")?;
                 direct = Declarator::Function(Box::new(direct), params, variadic, unprototyped);
             } else if matches!(&direct, Declarator::Function(_, _, _, _))
@@ -1099,6 +1111,35 @@ impl<'a> Parser<'a> {
             keyword.span, DiagnosticCode::SyntaxInvalidDeclaration,
             "GNU asm linker label must be UTF-8"))?;
         Ok(Some(name))
+    }
+
+    // Identifier-list definitions are parsed only on file-scope declarators.
+    // Void placeholders cannot escape into the semantic checker: the following
+    // declaration list must supply exactly one declaration for each name.
+    fn parse_identifier_parameters(&mut self) -> Result<Vec<Decl>, Diagnostic> {
+        let mut params: Vec<Decl> = Vec::new();
+        loop {
+            let token = self.take()?.ok_or_else(|| Diagnostic::new(self.eof_span(), "expected parameter identifier"))?;
+            if token.kind != TokenKind::Identifier || matches!(token.text.as_ref(),
+                "auto" | "break" | "case" | "char" | "const" | "continue" | "default" | "do"
+                | "double" | "else" | "enum" | "extern" | "float" | "for" | "goto" | "if"
+                | "inline" | "int" | "long" | "register" | "restrict" | "return" | "short"
+                | "signed" | "sizeof" | "static" | "struct" | "switch" | "typedef" | "union"
+                | "unsigned" | "void" | "volatile" | "while" | "_Bool" | "_Complex" | "_Imaginary"
+                | "_Atomic" | "_Float128" | "__builtin_va_list" | "__restrict" | "__restrict__") {
+                return Err(Diagnostic::new(token.span, "expected old-style parameter identifier"));
+            }
+            let name = token.text.to_string();
+            if params.iter().any(|p| p.name == name) {
+                return Err(Diagnostic::new(token.span, "duplicate old-style parameter identifier"));
+            }
+            params.push(Decl { storage: StorageClass::Default, name,
+                name_span: self.expression_spans.then_some(token.span), ty: Type::Void,
+                asm_label: None, init: None, span: token.span });
+            if !self.peek()?.is_some_and(|t| t.text.as_ref() == ",") { break; }
+            self.take()?;
+        }
+        Ok(params)
     }
 
     fn parse_parameter_list(&mut self) -> Result<(Vec<Decl>, bool), Diagnostic> {
@@ -2063,7 +2104,7 @@ impl ItemSource for Parser<'_> {
             self.take()?;
             return Ok(Some(ExternalItem::Tag(base)));
         }
-        let (name, mut ty, definition_params, name_span) = self.parse_declarator_shape(false)?.finish(base.clone());
+        let (name, mut ty, definition_params, name_span) = self.parse_declarator_shape_impl(false, true)?.finish(base.clone());
         let asm_label = self.parse_asm_linkage_label()?;
         if static_inline && !matches!(&ty, Type::Function { .. } | Type::VariadicFunction { .. } | Type::UnprototypedFunction { .. }) {
             return Err(Diagnostic::coded(name_span.unwrap_or(storage_span),
@@ -2091,21 +2132,48 @@ impl ItemSource for Parser<'_> {
         self.pending_file_binding = Some((name.clone(), self.scopes.lookup(&name)));
         self.scopes.declare(&name, if is_typedef { Binding::Typedef } else { Binding::Ordinary });
 
-        if let Some(brace) = self.peek()?.filter(|token| token.text.as_ref() == "{") {
+        let old_style = matches!(&ty, Type::UnprototypedFunction { .. });
+        let identifier_list = old_style && definition_params.as_ref().is_some_and(|p| !p.is_empty());
+        if identifier_list || self.peek()?.is_some_and(|token| token.text.as_ref() == "{") {
             let (Type::Function { result, .. } | Type::UnprototypedFunction { result }) = ty else {
-                return Err(Diagnostic::coded(brace.span, DiagnosticCode::SyntaxInvalidDeclaration,
-                    "function body requires a function declarator"));
+                return Err(Diagnostic::coded(self.peek()?.map_or(self.eof_span(), |t| t.span),
+                    DiagnosticCode::SyntaxInvalidDeclaration, "function body requires a function declarator"));
             };
             if is_typedef {
                 return Err(Diagnostic::new(Span { lo: start, hi: start }, "typedef cannot define a function body"));
             }
-            let params = definition_params.unwrap_or_default();
+            let mut params = definition_params.unwrap_or_default();
             if params.iter().any(|p| p.name.is_empty()) {
                 return Err(Diagnostic::new(Span { lo: start, hi: start }, "function definition requires parameter names"));
             }
             self.scopes.enter();
             for param in &params { self.scopes.declare(&param.name, Binding::Ordinary); }
-            let parsed = self.parse_block();
+            let parsed = (|| {
+                if identifier_list {
+                    let mut declared = std::collections::HashMap::new();
+                    while !self.peek()?.is_some_and(|t| t.text.as_ref() == "{") {
+                        for decl in self.parse_decl_group(false)? {
+                            if !params.iter().any(|p| p.name == decl.name) {
+                                return Err(Diagnostic::new(decl.span, "declaration does not name an old-style parameter"));
+                            }
+                            if decl.init.is_some() || !matches!(decl.storage, StorageClass::Default | StorageClass::Register) {
+                                return Err(Diagnostic::new(decl.span, "invalid old-style parameter declaration"));
+                            }
+                            let span = decl.span;
+                            if declared.insert(decl.name.clone(), decl).is_some() {
+                                return Err(Diagnostic::new(span, "duplicate old-style parameter declaration"));
+                            }
+                        }
+                    }
+                    for param in &mut params {
+                        let mut decl = declared.remove(&param.name).ok_or_else(||
+                            Diagnostic::new(param.span, "old-style parameter requires a declaration"))?;
+                        decl.name_span = param.name_span;
+                        *param = decl;
+                    }
+                }
+                self.parse_block()
+            })();
             self.scopes.leave();
             let (body, end) = parsed?;
             return Ok(Some(ExternalItem::Function(Function {
@@ -2113,6 +2181,7 @@ impl ItemSource for Parser<'_> {
                 name,
                 name_span,
                 result: *result,
+                old_style,
                 params,
                 body,
                 span: Span { lo: start, hi: end },
