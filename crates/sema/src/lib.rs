@@ -127,11 +127,18 @@ pub struct CheckedExpr {
     pub ty: CType,
     pub category: Category,
     pub kind: CheckedExprKind,
+    /// Exact parser-owned byte span, only present for Expr::Located. Generated
+    /// implicit conversions inherit their operand's location, never guess.
+    pub source_span: Option<Span>,
 }
 
 impl CheckedExpr {
     fn value(ty: CType, kind: CheckedExprKind) -> Self {
-        Self { ty, category: Category::Value, kind }
+        Self { ty, category: Category::Value, kind, source_span:None }
+    }
+    fn with_original_span(mut self, source_span:Option<Span>)->Self {
+        self.source_span=source_span;
+        self
     }
     /// Carry the value-width property through C expressions which still
     /// denote the bit-field's value (including assignment and ++/--), but
@@ -172,23 +179,26 @@ impl CheckedExpr {
     }
 
     fn rvalue(self) -> Self {
+        let origin=self.source_span;
         // A function designator converts to a pointer to that function in
         // value contexts, except for the operand of the address-of operator.
         if self.category == Category::Function {
             let ty = CType::Pointer(Box::new(self.ty.clone()));
-            return Self::value(ty, CheckedExprKind::Unary(UnOp::Address, Box::new(self)));
+            return Self::value(ty, CheckedExprKind::Unary(UnOp::Address, Box::new(self)))
+                .with_original_span(origin);
         }
         if self.category == Category::LValue {
             match self.ty.unqualified() {
                 CType::Array(element, _) | CType::VariableArray(element, _) => Self::value(
                     CType::Pointer(element.clone()),
                     CheckedExprKind::ArrayDecay(Box::new(self)),
-                ),
+                ).with_original_span(origin),
                 _ => {
                     // C lvalue conversion removes top-level const but keeps
                     // the pointee qualifier of any pointer value.
                     let ty = self.ty.unqualified().clone();
                     Self::value(ty, CheckedExprKind::Load(Box::new(self)))
+                        .with_original_span(origin)
                 }
             }
         } else {
@@ -1024,7 +1034,7 @@ impl Checker {
         let (element, count) = match ty.unqualified() {
             CType::VariableArray(element, id) => {
                 let lvalue = CheckedExpr { ty: size_ty.clone(), category: Category::LValue,
-                    kind: CheckedExprKind::Name(vla_bound_name(*id)) };
+                    kind: CheckedExprKind::Name(vla_bound_name(*id)), source_span:None };
                 (element, lvalue.rvalue())
             }
             CType::Array(element, Some(count)) =>
@@ -1414,7 +1424,7 @@ impl Checker {
         prefix: Vec<usize>, checked: CheckedExpr,
         out: &mut Vec<(Vec<usize>, CheckedExpr)>,
     ) {
-        let CheckedExpr { ty, category, kind } = checked;
+        let CheckedExpr { ty, category, kind, source_span } = checked;
         match kind {
             CheckedExprKind::Initializer(values) => {
                 for (index, value) in values.into_iter().enumerate() {
@@ -1437,7 +1447,7 @@ impl Checker {
                     Self::initializer_explicit_leaves(path, value, out);
                 }
             }
-            other => out.push((prefix, CheckedExpr { ty, category, kind: other })),
+            other => out.push((prefix, CheckedExpr { ty, category, kind: other, source_span })),
         }
     }
 
@@ -2661,7 +2671,9 @@ impl Checker {
             matches!(ty, CType::Struct { .. } | CType::Union { .. })) {
             return expr;
         }
+        let span=expr.source_span;
         CheckedExpr::value(ty.clone(), CheckedExprKind::Convert(Box::new(expr)))
+            .with_original_span(span)
     }
 
     /// C99 6.3.2.3p3: an integer constant expression evaluating to zero,
@@ -3301,7 +3313,12 @@ impl Checker {
     fn check_expr(&self, expr: &Expr, span: Span) -> Result<CheckedExpr, Diagnostic> {
         match expr {
             Expr::Located(inner, located_span) => {
-                self.check_expr(inner, *located_span).map_err(|mut error| {
+                self.check_expr(inner, *located_span).map(|mut checked| {
+                    // Only an actual parser-owned Expr::Located may create
+                    // source provenance. The checked result is not re-parsed.
+                    checked.source_span=Some(*located_span);
+                    checked
+                }).map_err(|mut error| {
                     // A field lookup has a distinct source token at the end
                     // of the member expression. Prefer that exact token over
                     // the complete base-and-member expression.
@@ -3352,7 +3369,7 @@ impl Checker {
                 } else {
                     CheckedExprKind::CompoundLiteral(Box::new(value))
                 };
-                Ok(CheckedExpr { ty, category: Category::LValue, kind })
+                Ok(CheckedExpr { ty, category: Category::LValue, kind, source_span:None })
             },
             Expr::StringLiteral(bytes) => {
                 let len = u64::try_from(bytes.len())
@@ -3363,6 +3380,7 @@ impl Checker {
                     }), Some(len)),
                     category: Category::LValue,
                     kind: CheckedExprKind::StringLiteral(bytes.clone()),
+                    source_span:None,
                 })
             },
             Expr::SizeofExpr(operand) => {
@@ -3424,7 +3442,7 @@ impl Checker {
                     symbol.asm_label.as_deref().unwrap_or(name)
                 } else { name };
                 Ok(CheckedExpr { ty: symbol.ty.clone(), category,
-                    kind: CheckedExprKind::Name(resolved_name.to_owned()) })
+                    kind: CheckedExprKind::Name(resolved_name.to_owned()), source_span:None })
             }
             Expr::Member(base, name, arrow) => {
                 let base = self.check_expr(base, span)?;
@@ -3441,6 +3459,7 @@ impl Checker {
                         ty: complete,
                         category: Category::LValue,
                         kind: CheckedExprKind::Unary(UnOp::Deref, Box::new(base)),
+                        source_span:None,
                     }
                 } else {
                     if base.category != Category::LValue {
@@ -3476,6 +3495,7 @@ impl Checker {
                     ty: field_ty,
                     category: Category::LValue,
                     kind,
+                    source_span:None,
                 })
             }
             Expr::Index(base, offset) => {
@@ -3496,6 +3516,7 @@ impl Checker {
                     ty: element.as_ref().clone(),
                     category: Category::LValue,
                     kind: CheckedExprKind::Unary(UnOp::Deref, Box::new(added)),
+                    source_span:None,
                 })
             }
             Expr::Unary(op, inner) => {
@@ -3532,7 +3553,7 @@ impl Checker {
                         let category = if matches!(ty, CType::Function { .. } | CType::VariadicFunction { .. } | CType::UnprototypedFunction { .. }) { Category::Function } else if ty == CType::Void {
                             return Err(type_error(span, "cannot dereference void pointer"));
                         } else { Category::LValue };
-                        Ok(CheckedExpr { ty, category, kind: CheckedExprKind::Unary(*op, Box::new(typed)) })
+                        Ok(CheckedExpr { ty, category, kind: CheckedExprKind::Unary(*op, Box::new(typed)), source_span:None })
                     }
                     UnOp::Not => {
                         if !typed.ty.is_scalar() { return Err(Diagnostic::coded(span, DiagnosticCode::SemanticInvalidOperatorOperands, "logical not requires scalar operand")); }

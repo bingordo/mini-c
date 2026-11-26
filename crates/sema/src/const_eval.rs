@@ -171,7 +171,7 @@ mod tests {
     use crate::{Category, CheckedExprKind as K, CheckedExpr as E};
     use crate::types::IntRank;
     fn lit(n: u64) -> E {
-        E { ty: CType::int(), category: Category::Value, kind: K::Literal(n) }
+        E { ty: CType::int(), category: Category::Value, kind: K::Literal(n), source_span:None }
     }
     #[test]
     fn signed_overflow_and_division_by_zero_are_rejected() {
