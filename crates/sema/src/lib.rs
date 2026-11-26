@@ -2752,6 +2752,10 @@ impl Checker {
     /// struct/union definition introduces its tag in the current C scope.
     /// Enumerator definitions remain handled by declaration processing.
     fn sizeof_type_expression(&self, ty: &Type, span: Span) -> Result<CheckedExpr, Diagnostic> {
+        self.sizeof_type_expression_impl(ty, span, false)
+    }
+
+    fn sizeof_type_expression_impl(&self, ty: &Type, span: Span, array_element: bool) -> Result<CheckedExpr, Diagnostic> {
         let size_ty = CType::Integer { rank: IntRank::Long, unsigned: true };
         // A variably modified array type-name needs no object allocation.
         // The size is the product of each evaluated bound and element size,
@@ -2777,14 +2781,7 @@ impl Checker {
                 }
                 Err(reason) => return Err(type_error(span, format!("array bound requires a valid integer expression: {reason}"))),
             };
-            // Check the ultimate element separately from its runtime extents.
-            let mut base = element.as_ref();
-            while let Type::Array(inner, _) = base { base = inner; }
-            let base = self.complete_tag_type(self.resolve_sizeof_type(base, span)?, span)?;
-            if base.has_flexible_array_member() {
-                return Err(type_error(span, "array element cannot contain a flexible array member"));
-            }
-            let element_size = self.sizeof_type_expression(element, span)?;
+            let element_size = self.sizeof_type_expression_impl(element, span, true)?;
             if let (CheckedExprKind::Literal(a), CheckedExprKind::Literal(b)) =
                 (&count.kind, &element_size.kind)
             {
@@ -2797,6 +2794,9 @@ impl Checker {
         }
         let operand_ty = self.resolve_sizeof_type(ty, span)?;
         let operand_ty = self.complete_tag_type(operand_ty, span)?;
+        if array_element && operand_ty.has_flexible_array_member() {
+            return Err(type_error(span, "array element cannot contain a flexible array member"));
+        }
         let size = operand_ty.size_bytes(self.target).ok_or_else(|| type_error(
             span, "sizeof requires a complete object type (not void or function)"
         ))?;
