@@ -346,9 +346,10 @@ fn unsigned_operand_promoted_to_wider_signed_is_safe() {
 }
 
 #[test]
-fn mixed_relational_operators_warn_on_sign_conversions() {
+fn mixed_relational_operators_do_not_emit_sign_conversion() {
+    // GCC reserves this case for -Wsign-compare.
     let reports = signedness_warnings(
         "int f(int a, unsigned int b) { return a < b; }",
         Target::default());
-    assert_eq!(reports.len(), 1, "{reports:?}");
+    assert!(reports.is_empty(), "{reports:?}");
 }
