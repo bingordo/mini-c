@@ -126,7 +126,24 @@ impl CType {
             _ => false,
         }
     }
-    /// Preserve one explicit atomic qualifier on a validated integer object.
+    /// Atomic aggregate declarations may be checked before executable
+    /// aggregate atomic lowering is available. Detect their use recursively.
+    pub fn contains_atomic_aggregate(&self) -> bool {
+        match self {
+            Self::Atomic(inner) => matches!(inner.unqualified(),
+                Self::Struct { .. } | Self::Union { .. }) || inner.contains_atomic_aggregate(),
+            Self::Qualified(inner) | Self::Volatile(inner) |
+            Self::Pointer(inner) | Self::Array(inner, _) =>
+                inner.contains_atomic_aggregate(),
+            Self::UnprototypedFunction { result } => result.contains_atomic_aggregate(),
+            Self::Function { result, params } | Self::VariadicFunction { result, params } =>
+                result.contains_atomic_aggregate() || params.iter().any(Self::contains_atomic_aggregate),
+            Self::Struct { members, .. } | Self::Union { members, .. } =>
+                members.iter().any(|field| field.ty.contains_atomic_aggregate()),
+            _ => false,
+        }
+    }
+    /// Preserve one explicit atomic qualifier on a validated object.
     pub fn with_atomic(self) -> Self {
         Self::Atomic(Box::new(self))
     }

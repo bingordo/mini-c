@@ -4712,3 +4712,21 @@ fn gnu_member_alignment_checks_natural_target_layout() {
     reject("struct X { int a __attribute__((aligned(3))); };", "positive power of two");
     reject("struct X { int a __attribute__((aligned(__alignof__(void)))); };", "complete object type");
 }
+
+#[test]
+fn atomic_single_byte_aggregate_declarations_are_layout_checked() {
+    let items = check("typedef _Atomic struct { _Bool value; } Flag; extern _Bool test(volatile Flag *); int f(void){return sizeof(Flag);}").unwrap();
+    let CheckedItem::Typedef { ty, .. } = &items[0] else { panic!("typedef") };
+    assert!(ty.is_atomic() && ty.contains_atomic_aggregate());
+    assert_eq!(ty.size_bytes(Target::default()), Some(1));
+    assert_eq!(ty.align_bytes(Target::default()), Some(1));
+    for source in [
+        "typedef _Atomic struct { int value; } Flag;",
+        "typedef _Atomic struct { _Bool value; } Flag; Flag object;",
+        "typedef _Atomic struct { _Bool value; } Flag; int f(void){Flag object;return 0;}",
+        "typedef _Atomic struct { _Bool value; } Flag; int f(Flag *p){return p->value;}",
+        "typedef _Atomic struct { _Bool value; } Flag; extern _Bool test(volatile Flag *); int f(void){return test(0);}",
+    ] {
+        assert!(check(source).is_err(), "unsupported atomic aggregate admitted: {source}");
+    }
+}

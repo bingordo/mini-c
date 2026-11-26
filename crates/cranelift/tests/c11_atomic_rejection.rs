@@ -52,3 +52,13 @@ fn typedef_does_not_hide_atomic_or_volatile_access() {
         assert!(compile_source(source).is_err(), "unsupported effect must reject: {source}");
     }
 }
+
+#[test]
+fn atomic_aggregate_type_only_header_and_unused_prototype() {
+    let prefix = "typedef _Atomic struct { _Bool value; } Flag; extern _Bool test(volatile Flag *);";
+    let object = compile_source(&format!("{prefix} int f(void){{return sizeof(Flag);}}")).unwrap();
+    assert_eq!(&object[..4], b"\x7fELF");
+    assert!(compile_source(&format!("{prefix} Flag object;")).is_err());
+    assert!(compile_source(&format!("{prefix} int f(void){{return test(0);}}")).is_err());
+    assert!(compile_source("extern int test(_Atomic int *); int f(void){return test(0);}").is_err());
+}
