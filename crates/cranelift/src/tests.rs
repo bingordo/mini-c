@@ -667,3 +667,36 @@ fn c99_saved_vla_pointer_strides_execute() {
     assert!(status.success(), "saved VLA stride failed: {status}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+fn c99_vla_typedef_bound_capture_executes_at_each_declaration() {
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let dir = std::env::temp_dir().join(format!("mini-c-vla-typedef-{}-{nonce}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("main.c");
+    let object = dir.join("main.o");
+    let executable = dir.join("program");
+    std::fs::write(&source, concat!(
+        "int main(void){int a[3][4];int n=4;typedef int Row[n++];\n",
+        "typedef Row Alias; Alias *p=a; if(n!=5 || sizeof(Row)!=16)return 1;\n",
+        "n=7;p[1][2]=19;if(a[1][2]!=19 || sizeof(Alias)!=16)return 2;\n",
+        "for(int i=1;i<5;i++){typedef char T[n++];if(sizeof(T)!=6+i)return 3;}\n",
+        "if(n!=11 || sizeof(Row)!=16)return 4;\n",
+        "int k=2;L:;typedef char S[k++];if(k<5)goto L;\n",
+        "if(sizeof(S)!=4 || k!=5)return 5;return 0;}\n",
+    )).unwrap();
+    let opts = parse_options([
+        "--cpp=none".to_owned(), "--emit-obj".to_owned(),
+        object.to_string_lossy().into_owned(), source.to_string_lossy().into_owned(),
+    ]).unwrap();
+    assert_eq!(compile_to_object(&opts), ExitCode::SUCCESS);
+    let link = Command::new("cc").arg(&object)
+        .arg("-o").arg(&executable).output().unwrap();
+    assert!(link.status.success(), "link: {}", String::from_utf8_lossy(&link.stderr));
+    let status = Command::new(&executable).status().unwrap();
+    assert!(status.success(), "VLA typedef execution failed: {status}");
+    let _ = std::fs::remove_dir_all(dir);
+}
