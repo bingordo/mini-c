@@ -4695,3 +4695,20 @@ fn c99_identifier_list_definitions_preserve_parameter_types_and_promoted_abi() {
         assert!(check(source).is_err(), "accepted invalid old-style definition: {source}");
     }
 }
+
+#[test]
+fn gnu_member_alignment_checks_natural_target_layout() {
+    let items = check(concat!(
+        "typedef struct { long long a __attribute__((__aligned__(__alignof__(long long))));",
+        "long double b __attribute__((__aligned__(__alignof__(long double)))); } Max;",
+        "Max object;"
+    )).expect("GCC stddef-style natural alignment must be retained and checked");
+    let CheckedItem::Declaration(object) = items.last().unwrap() else { panic!("object"); };
+    assert_eq!(object.ty.size_bytes(Target::default()), Some(32));
+    assert_eq!(object.ty.align_bytes(Target::default()), Some(16));
+    check("struct X { char a; long b __attribute__((aligned(8))); };").unwrap();
+    check("int f(void){return sizeof(struct {long x __attribute__((aligned(__alignof__(long))));});}").unwrap();
+    reject("struct X { char a __attribute__((aligned(16))); };", "over-aligned member");
+    reject("struct X { int a __attribute__((aligned(3))); };", "positive power of two");
+    reject("struct X { int a __attribute__((aligned(__alignof__(void)))); };", "complete object type");
+}
