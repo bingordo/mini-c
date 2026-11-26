@@ -386,8 +386,19 @@ pub struct Symbol {
     pub enum_value: Option<i64>,
     /// C register object: the address of this object cannot be computed.
     pub is_register: bool,
+    /// C thread storage duration, independently of linkage.
+    pub is_thread_local: bool,
     // For old-style definitions, retain the promoted ABI separately from the visible C type.
     old_style_signature: Option<CType>,
+    // Only file-scope function declarations contribute to C99 6.7.4.
+    non_inline_or_extern: bool,
+    inline_declaration: Option<Box<InlineDeclaration>>,
+}
+
+#[derive(Debug, Clone)]
+struct InlineDeclaration {
+    span: Span,
+    body_violation: Option<Diagnostic>,
 }
 
 #[derive(Clone)]
@@ -418,6 +429,8 @@ pub struct Checker {
     /// Stable definition lookup independent of currently visible shadowing tags.
     tag_definitions: RefCell<HashMap<u64, CType>>,
     globals: HashMap<String, Symbol>,
+    checking_inline_body: bool,
+    inline_body_violation: RefCell<Option<Diagnostic>>,
     locals: Vec<HashMap<String, Symbol>>,
     result_ty: Option<CType>,
     loop_depth: usize,
@@ -441,7 +454,7 @@ pub struct Checker {
 
 impl Checker {
     pub fn new(target: Target) -> Result<Self, Diagnostic> {
-        Ok(Self { target: target.validate()?, next_tag_identity: Cell::new(1), saw_atomic_aggregate: Cell::new(false), next_static_compound_identity: Cell::new(1), tags: RefCell::new(vec![HashMap::new()]), tag_definitions: RefCell::new(HashMap::new()), globals: HashMap::new(), locals: Vec::new(), result_ty: None, loop_depth: 0, switches: Vec::new(), function_labels: HashMap::new(), rollback_log: None, statement_undo: Vec::new(),
+        Ok(Self { target: target.validate()?, next_tag_identity: Cell::new(1), saw_atomic_aggregate: Cell::new(false), next_static_compound_identity: Cell::new(1), tags: RefCell::new(vec![HashMap::new()]), tag_definitions: RefCell::new(HashMap::new()), globals: HashMap::new(), checking_inline_body: false, inline_body_violation: RefCell::new(None), locals: Vec::new(), result_ty: None, loop_depth: 0, switches: Vec::new(), function_labels: HashMap::new(), rollback_log: None, statement_undo: Vec::new(),
             recovery_errors: None, recovery_limit: 0,
             warning_policy: WarningPolicy::default(), emitted_warnings: Vec::new(),
             conversion_warnings: RefCell::new(Vec::new()),
@@ -462,6 +475,39 @@ impl Checker {
     }
 
     pub fn global(&self, name: &str) -> Option<&Symbol> { self.globals.get(name) }
+
+    fn record_function_specifier(&mut self, name: &str, is_inline: bool, storage: StorageClass, span: Span) {
+        let symbol = self.globals.get_mut(name).expect("registered function");
+        symbol.non_inline_or_extern |= !is_inline || storage == StorageClass::Extern;
+        if is_inline && symbol.linkage == Linkage::External {
+            symbol.inline_declaration.get_or_insert_with(|| Box::new(InlineDeclaration {
+                span, body_violation: None,
+            }));
+        }
+    }
+
+    fn note_inline_violation(&self, span: Span, message: impl FnOnce() -> String) {
+        if self.checking_inline_body {
+            let mut violation = self.inline_body_violation.borrow_mut();
+            if violation.is_none() {
+                *violation = Some(type_error(span, message()));
+            }
+        }
+    }
+
+    /// Complete constraints whose meaning depends on later file declarations.
+    /// No checked function ASTs need to survive semantic checking.
+    pub fn finish_translation_unit(&self) -> Result<(), Diagnostic> {
+        let error = self.globals.iter().filter_map(|(name, symbol)| {
+            let inline = symbol.inline_declaration.as_ref()?;
+            if !symbol.defined {
+                Some(type_error(inline.span, format!("inline function '{name}' requires a definition in this translation unit")))
+            } else if !symbol.non_inline_or_extern {
+                inline.body_violation.clone()
+            } else { None }
+        }).min_by(|a,b| (a.span.lo, &a.message).cmp(&(b.span.lo, &b.message)));
+        error.map_or(Ok(()), Err)
+    }
 
     /// Query the completed file-scope type after all external declarations.
     /// Incomplete tagged tentative objects may acquire their layout later
@@ -939,7 +985,7 @@ impl Checker {
         // atomic stores are observable; only linked aliases are exempt.
         let warning_exempt = linkage != Linkage::None;
         self.locals.last_mut().expect("local scope").insert(name.to_owned(), Symbol {
-            ty, kind, linkage, defined: true, asm_label: None, enum_value: None, is_register, old_style_signature: None,
+            ty, kind, linkage, defined: true, asm_label: None, enum_value: None, is_register, is_thread_local: false, old_style_signature: None, non_inline_or_extern: false, inline_declaration: None,
         });
         if kind == SymbolKind::Object {
             // Extern aliases are not automatic locals for unused diagnostics.
@@ -953,6 +999,11 @@ impl Checker {
         &mut self, name: &str, ty: CType, kind: SymbolKind,
         defining: bool, storage: StorageClass, span: Span
     ) -> Result<(), Diagnostic> {
+        let is_thread_local = storage.is_thread_local();
+        if is_thread_local && kind != SymbolKind::Object {
+            return Err(type_error(span, "thread storage requires an object declaration"));
+        }
+        let storage = storage.linkage_storage();
         let requested = if matches!(kind, SymbolKind::Typedef | SymbolKind::Enumerator) {
             Linkage::None
         } else if storage == StorageClass::Static {
@@ -973,6 +1024,9 @@ impl Checker {
             }
         }
         if let Some(prior) = self.globals.get_mut(name) {
+            if prior.is_thread_local != is_thread_local {
+                return Err(type_error(span, format!("conflicting thread storage for '{name}'")));
+            }
             if let Some(abi) = &prior.old_style_signature {
                 if !matches!(&ty, CType::UnprototypedFunction { .. }) && abi.composite(&ty).is_none() {
                     return Err(Diagnostic::coded(span, DiagnosticCode::SemanticConflictingDeclaration,
@@ -995,7 +1049,7 @@ impl Checker {
             prior.defined |= defining;
         } else {
             self.globals.insert(name.to_owned(), Symbol {
-                ty, kind, linkage: requested, defined: defining, asm_label: None, enum_value: None, is_register: false, old_style_signature: None,
+                ty, kind, linkage: requested, defined: defining, asm_label: None, enum_value: None, is_register: false, is_thread_local, old_style_signature: None, non_inline_or_extern: false, inline_declaration: None,
             });
         }
         Ok(())
@@ -1623,7 +1677,7 @@ impl Checker {
         // complete type at its declaration, not merely at TU finalization.
         // This differs from external-linkage tentative definitions, which
         // may be completed by a later tag definition.
-        if kind == SymbolKind::Object && decl.storage == StorageClass::Static
+        if kind == SymbolKind::Object && decl.storage.linkage_storage() == StorageClass::Static
             && ty.size_bytes(self.target).is_none()
         {
             return Err(type_error(decl.span,
@@ -1632,6 +1686,9 @@ impl Checker {
         let defining = decl.init.is_some();
         self.declare_global(&decl.name, ty.clone(), kind, defining, decl.storage,
             decl.name_span.unwrap_or(decl.span))?;
+        if kind == SymbolKind::Function {
+            self.record_function_specifier(&decl.name, decl.is_inline, decl.storage, decl.span);
+        }
         if let Some(label) = &decl.asm_label {
             if kind != SymbolKind::Function || decl.storage == StorageClass::Static {
                 return Err(type_error(decl.span,
@@ -1756,6 +1813,7 @@ impl Checker {
         } else { signature.clone() };
         self.declare_global(&func.name, declaration_type, SymbolKind::Function, true, func.storage,
             func.name_span.unwrap_or(func.span))?;
+        self.record_function_specifier(&func.name, func.is_inline, func.storage, func.span);
         if func.old_style {
             self.globals.get_mut(&func.name).expect("registered function")
                 .old_style_signature = Some(signature.clone());
@@ -1780,7 +1838,7 @@ impl Checker {
         self.locals.last_mut().expect("function scope").insert("__func__".into(), Symbol {
             ty: name_type, kind: SymbolKind::Object, linkage: Linkage::None,
             defined: true, asm_label: Some(implicit_function_name_symbol(&func.name)),
-            enum_value: None, is_register: false, old_style_signature: None,
+            enum_value: None, is_register: false, is_thread_local: false, old_style_signature: None, non_inline_or_extern: false, inline_declaration: None,
         });
         for (parsed_param, param) in func.params.iter().zip(&params) {
             if let Err(err) = self.define_local(&param.name, param.ty.clone(),
@@ -1801,6 +1859,11 @@ impl Checker {
                     param.name_span.unwrap_or(param.span), true, false);
             }
         }
+        // Only the first violation is needed; a later extern or non-inline
+        // declaration can turn this body into an ordinary external definition.
+        self.checking_inline_body = self.global(&func.name).is_some_and(|s|
+            s.inline_declaration.is_some() && !s.non_inline_or_extern);
+        debug_assert!(self.inline_body_violation.borrow().is_none());
         // Function parameters and its outermost compound statement share one scope.
         let checked = match &func.body {
             Stmt::Block(stmts) => self.check_statements(stmts, func.span).map(CheckedStmt::Block),
@@ -1811,7 +1874,13 @@ impl Checker {
         self.locals.pop();
         self.result_ty = None;
         self.function_labels.clear();
+        self.checking_inline_body = false;
+        let violation = self.inline_body_violation.get_mut().take();
         let body = checked?;
+        if let Some(inline) = self.globals.get_mut(&func.name)
+            .and_then(|s| s.inline_declaration.as_mut()) {
+            inline.body_violation = violation;
+        }
         let linkage = self.global(&func.name).expect("registered function").linkage;
         Ok(CheckedFunction { linkage,
             inline_only_candidate: func.is_inline && func.storage == StorageClass::Default && linkage == Linkage::External,
@@ -1883,6 +1952,10 @@ impl Checker {
                 }
                 if !ty.is_object() {
                     return Err(type_error(decl.span, "local variable cannot have void or function type"));
+                }
+                if decl.storage == StorageClass::Static && !ty.is_const_object() {
+                    self.note_inline_violation(decl.span, ||
+                        format!("inline-only definition cannot define modifiable static object '{}'", decl.name));
                 }
                 // Register is a storage-duration hint, not permission to take
                 // the address of an object. Until aggregate handling can
@@ -2358,11 +2431,11 @@ impl Checker {
                 && const_eval::evaluate(constant, self.target) == Ok(0);
             let address_of_global = match original {
                 Expr::Unary(UnOp::Address, inner) => match inner.without_location() {
-                    Expr::Name(name) => self.globals.get(name).is_some_and(|s| s.kind != SymbolKind::Typedef),
+                    Expr::Name(name) => self.globals.get(name).is_some_and(|s| !s.is_thread_local && s.kind != SymbolKind::Typedef),
                     _ => false,
                 },
                 Expr::Name(name) => self.globals.get(name).is_some_and(|s|
-                    matches!(&s.ty, CType::Array(..)) ||
+                    (!s.is_thread_local && matches!(&s.ty, CType::Array(..))) ||
                     (s.kind == SymbolKind::Function && matches!(ty, CType::Pointer(inner)
                         if matches!(inner.as_ref(), CType::Function { .. } | CType::VariadicFunction { .. } | CType::UnprototypedFunction { .. })))),
                 Expr::StringLiteral(_) => matches!(ty, CType::Pointer(element)
@@ -2728,6 +2801,58 @@ impl Checker {
     /// References to existing tags are read-only, but an *explicit* inline
     /// struct/union definition introduces its tag in the current C scope.
     /// Enumerator definitions remain handled by declaration processing.
+    fn sizeof_type_expression(&self, ty: &Type, span: Span) -> Result<CheckedExpr, Diagnostic> {
+        self.sizeof_type_expression_impl(ty, span, false)
+    }
+
+    fn sizeof_type_expression_impl(&self, ty: &Type, span: Span, array_element: bool) -> Result<CheckedExpr, Diagnostic> {
+        let size_ty = CType::Integer { rank: IntRank::Long, unsigned: true };
+        // A variably modified array type-name needs no object allocation.
+        // The size is the product of each evaluated bound and element size,
+        // with ordinary checked integer conversions and arithmetic.
+        // Fixed bounds are folded; nonconstant bounds retain side effects.
+        if let Type::Array(element, bound) = ty {
+            let bound = bound.as_ref().ok_or_else(||
+                type_error(span, "sizeof requires a complete object type (not void or function)"))?;
+            let count = self.check_expr(bound, span)?.rvalue();
+            if !count.ty.is_integer() {
+                return Err(type_error(span, "array bound requires an integer expression"));
+            }
+            let count = match const_eval::evaluate(&count, self.target) {
+                Ok(n) => {
+                    if n <= 0 { return Err(type_error(span, "array bound must be positive")); }
+                    let n = u64::try_from(n).map_err(|_|
+                        type_error(span, "array bound exceeds the supported range"))?;
+                    CheckedExpr::value(size_ty.clone(), CheckedExprKind::Literal(n))
+                }
+                Err("not an integer constant expression") => {
+                    if count.ty == size_ty { count }
+                    else { CheckedExpr::value(size_ty.clone(), CheckedExprKind::Convert(Box::new(count))) }
+                }
+                Err(reason) => return Err(type_error(span, format!("array bound requires a valid integer expression: {reason}"))),
+            };
+            let element_size = self.sizeof_type_expression_impl(element, span, true)?;
+            if let (CheckedExprKind::Literal(a), CheckedExprKind::Literal(b)) =
+                (&count.kind, &element_size.kind)
+            {
+                let size = a.checked_mul(*b).ok_or_else(||
+                    type_error(span, "sizeof array exceeds the supported range"))?;
+                return Ok(CheckedExpr::value(size_ty, CheckedExprKind::Literal(size)));
+            }
+            return Ok(CheckedExpr::value(size_ty,
+                CheckedExprKind::Binary(BinOp::Mul, Box::new(count), Box::new(element_size))));
+        }
+        let operand_ty = self.resolve_sizeof_type(ty, span)?;
+        let operand_ty = self.complete_tag_type(operand_ty, span)?;
+        if array_element && operand_ty.has_flexible_array_member() {
+            return Err(type_error(span, "array element cannot contain a flexible array member"));
+        }
+        let size = operand_ty.size_bytes(self.target).ok_or_else(|| type_error(
+            span, "sizeof requires a complete object type (not void or function)"
+        ))?;
+        Ok(CheckedExpr::value(size_ty, CheckedExprKind::Literal(size)))
+    }
+
     fn resolve_sizeof_type(&self, ty: &Type, span: Span) -> Result<CType, Diagnostic> {
         Ok(match ty {
             Type::Void => CType::Void,
@@ -3026,17 +3151,7 @@ impl Checker {
                 let size_ty = CType::Integer { rank: IntRank::Long, unsigned: true };
                 Ok(CheckedExpr::value(size_ty, CheckedExprKind::Literal(size)))
             }
-            Expr::SizeofType(type_name) => {
-                let operand_ty = self.resolve_sizeof_type(type_name, span)?;
-                let operand_ty = self.complete_tag_type(operand_ty, span)?;
-                let size = operand_ty.size_bytes(self.target).ok_or_else(|| type_error(
-                    span, "sizeof requires a complete object type (not void or function)"
-                ))?;
-                // C sizeof has size_t type under the checked target model.
-                // uses unsigned long, not the type of an ordinary decimal literal.
-                let size_ty = CType::Integer { rank: IntRank::Long, unsigned: true };
-                Ok(CheckedExpr::value(size_ty, CheckedExprKind::Literal(size)))
-            }
+            Expr::SizeofType(type_name) => self.sizeof_type_expression(type_name, span),
             Expr::Int(number) => {
                 let ty = self.target.decimal_literal(*number).ok_or_else(|| type_error(span, "decimal literal exceeds supported signed integer types"))?;
                 Ok(CheckedExpr::value(ty, CheckedExprKind::Literal(*number)))
@@ -3064,6 +3179,10 @@ impl Checker {
                     SymbolKind::Function => Category::Function,
                     SymbolKind::Object => Category::LValue,
                 };
+                if symbol.linkage == Linkage::Internal {
+                    self.note_inline_violation(span, ||
+                        format!("inline-only definition cannot reference internal-linkage identifier '{name}'"));
+                }
                 self.reference_warning_binding(name);
                 // The implicit object is internally named so that a
                 // frontend user cannot collide with it and every use
@@ -3717,9 +3836,13 @@ pub fn diagnose_stream_recovering(
     checker: &mut Checker,
     max_errors: usize,
 ) -> Vec<Diagnostic> {
-    parser.for_each_item_collecting(max_errors, |item, remaining| {
+    let mut errors = parser.for_each_item_collecting(max_errors, |item, remaining| {
         checker.check_item_diagnostics(item, remaining)
-    })
+    });
+    if errors.is_empty() && max_errors > 0 {
+        if let Err(error) = checker.finish_translation_unit() { errors.push(error); }
+    }
+    errors
 }
 
 /// Consume one translation unit without collecting its function ASTs.
@@ -3732,7 +3855,7 @@ where
     while let Some(item) = parser.next_item()? {
         receive(checker.check_item(item)?)?;
     }
-    Ok(())
+    checker.finish_translation_unit()
 }
 
 #[cfg(test)]

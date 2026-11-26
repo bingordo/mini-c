@@ -4730,3 +4730,72 @@ fn atomic_single_byte_aggregate_declarations_are_layout_checked() {
         assert!(check(source).is_err(), "unsupported atomic aggregate admitted: {source}");
     }
 }
+
+#[test]
+fn c99_inline_only_constraints_use_final_file_scope_declarations() {
+    for source in [
+        "inline int f(void){return 1;}",
+        "inline int f(void); inline int f(void){return 1;}",
+        "static int x; inline int f(void){return x;} extern inline int f(void);",
+        "static int x; int f(void); inline int f(void){return x;}",
+        "static int x; extern inline int f(void){return x;}",
+        "inline int f(void){static int x;return ++x;} int f(void);",
+        "inline int f(void){static const int x=1;return x;}",
+        "inline int f(void){static const int a[2]={1,2};return a[0];}",
+        "static int x; inline int f(int x){return x;}",
+        "static int x; static inline int f(void){return x;}",
+        "static inline int f(void);",
+        "extern int x; inline int f(void){return x;}",
+    ] {
+        check(source).unwrap_or_else(|e| panic!("{source}: {e:?}"));
+    }
+    for (source, expected) in [
+        ("inline int f(void);", "requires a definition"),
+        ("extern inline int f(void);", "requires a definition"),
+        ("int f(void); inline int f(void);", "requires a definition"),
+        ("static int x; inline int f(void){return x;}", "internal-linkage identifier"),
+        ("static const int x=1; inline int f(void){return x;}", "internal-linkage identifier"),
+        ("static int g(void){return 1;} inline int f(void){return g();}", "internal-linkage identifier"),
+        ("inline int f(void){static int x;return x;}", "modifiable static object"),
+        ("inline int f(void){static int x[2];return x[0];}", "modifiable static object"),
+        ("inline int f(void){static const int *p;return p==0;}", "modifiable static object"),
+    ] {
+        reject(source, expected);
+    }
+}
+
+#[test]
+fn inline_finalization_does_not_retain_rejected_items() {
+    let mut checker = Checker::new(Target::default()).unwrap();
+    let mut parser = Parser::new("inline int f(void){static int x; return missing;} int g(void){return 1;}");
+    assert!(checker.check_item_recovering(parser.next_item().unwrap().unwrap()).is_err());
+    checker.check_item_recovering(parser.next_item().unwrap().unwrap()).unwrap();
+    checker.finish_translation_unit().unwrap();
+}
+
+#[test]
+fn c99_runtime_sizeof_array_type_names() {
+    let items = check("unsigned long f(int n,int m){return sizeof(int[n][m]);}").unwrap();
+    let CheckedItem::Function(f) = &items[0] else {panic!("expected function")};
+    let CheckedStmt::Block(stmts) = &f.body else {panic!("expected block")};
+    let CheckedStmt::Return(Some(size)) = &stmts[0] else {panic!("expected return")};
+    assert!(matches!(size.kind, CheckedExprKind::Binary(BinOp::Mul, ..)));
+    assert_eq!(size.ty, CType::Integer { rank: IntRank::Long, unsigned: true });
+    assert!(const_eval::evaluate(size, Target::default()).is_err());
+    for source in [
+        "unsigned long f(int n){return sizeof(int[n++]);}",
+        "int next(void); unsigned long f(void){return sizeof(int[next()]);}",
+        "unsigned long f(int n){return sizeof(char[2][n][3]);}",
+        "typedef int Row[4]; unsigned long f(int n){return sizeof(Row[n]);}",
+    ] { check(source).unwrap_or_else(|e| panic!("{source}: {e:?}")); }
+    for (source, message) in [
+        ("int f(double n){return sizeof(int[n]);}", "integer expression"),
+        ("int f(void){return sizeof(int[0]);}", "positive"),
+        ("int f(void){return sizeof(int[-1]);}", "positive"),
+        ("int f(void){return sizeof(int[1/0]);}", "array bound requires"),
+        ("int f(int n){return sizeof(void[n]);}", "complete object type"),
+        ("int f(int n){return sizeof(int[n][]);}", "complete object type"),
+        ("struct S{int n;int a[];}; int f(int n){return sizeof(struct S[n]);}", "flexible array member"),
+        ("int n; int a[sizeof(int[n])];", "integer constant expression"),
+    ] { reject(source, message); }
+}

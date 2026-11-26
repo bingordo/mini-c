@@ -772,6 +772,14 @@ impl Compiler {
         // signature. Calls and function-address uses remain checked below;
         // never register an ABI we cannot implement.
         if let CheckedItem::Declaration(decl) = &item {
+            if decl.storage.is_thread_local() {
+                // An unused extern needs no storage. Do not register it as
+                // ordinary data; any evaluated reference fails object lookup.
+                if decl.storage == StorageClass::ExternThreadLocal && decl.initializer.is_none() {
+                    return Ok(());
+                }
+                return Err("thread-local storage requires TLS object lowering".into());
+            }
             if matches!(decl.ty, CType::Function { .. } | CType::VariadicFunction { .. }
                 | CType::UnprototypedFunction { .. }) && item.contains_atomic_type()
             {
@@ -1275,6 +1283,7 @@ pub fn compile_source_diagnostic(source: &str) -> std::result::Result<Vec<u8>, C
         let checked = checker.check_item(item).map_err(CompileError::Diagnostic)?;
         compiler.add(checked).map_err(CompileError::Backend)?;
     }
+    checker.finish_translation_unit().map_err(CompileError::Diagnostic)?;
     compiler.complete_file_object_types(&checker).map_err(CompileError::Backend)?;
     compiler.finish().map_err(CompileError::Backend)
 }
