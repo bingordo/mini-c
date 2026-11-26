@@ -7,6 +7,7 @@ pub mod floating_literal;
 pub mod lexer;
 pub mod integer_literal;
 pub mod parser;
+pub mod provenance;
 pub mod scopes;
 pub mod source;
 pub mod string_literal;
