@@ -162,3 +162,64 @@ fn volatile_unused_declaration_reports_unused_variable() {
         "int f(void) { volatile int x = 0; return 0; }", &["-Wall"]);
     assert_eq!(reports, vec![("unused variable 'x'".into(), "unused-variable")]);
 }
+
+fn narrowing_warnings_with_target(source: &str, target: Target) -> Vec<ReportedDiagnostic> {
+    let mut parser = Parser::new_with_spans(source);
+    let mut checker = Checker::new(target).unwrap();
+    let mut policy = WarningPolicy::default();
+    policy.apply_flag("-Wconversion").unwrap();
+    checker.set_warning_policy(policy);
+    while let Some(item) = parser.next_item().unwrap() {
+        checker.check_item(item).unwrap();
+    }
+    checker.take_warnings()
+}
+
+#[test]
+fn narrowing_variable_assignment_emits_conversion_warning() {
+    let warnings = narrowing_warnings_with_target(
+        "int f(int x) { short y = x; return y; }", Target::default());
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert_eq!(warnings[0].warning_group, Some("conversion"));
+}
+
+#[test]
+fn fitting_constant_does_not_trigger_conversion_warning() {
+    let warnings = narrowing_warnings_with_target(
+        "int f(void) { unsigned char a = 12; return a; }", Target::default());
+    assert!(warnings.is_empty(), "{warnings:?}");
+}
+
+#[test]
+fn out_of_range_constant_triggers_conversion_warning() {
+    let warnings = narrowing_warnings_with_target(
+        "int f(void) { unsigned char a = 300; return a; }", Target::default());
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+}
+
+#[test]
+fn same_width_signedness_conversion_is_not_in_narrowing_group() {
+    let warnings = narrowing_warnings_with_target(
+        "int f(unsigned int x) { int y = x; return y; }", Target::default());
+    assert!(warnings.is_empty(), "{warnings:?}");
+}
+
+#[test]
+fn target_long_width_controls_narrowing() {
+    let source = "int f(long x) { int y = x; return y; }";
+    assert_eq!(narrowing_warnings_with_target(source, Target::default()).len(), 1);
+    assert!(narrowing_warnings_with_target(source, Target::wasm32()).is_empty());
+}
+
+#[test]
+fn failed_item_discards_conversion_diagnostics() {
+    let mut parser = Parser::new_with_spans(
+        "int f(int x) { short a = x; int missing = never_declared; return a; }"
+    );
+    let mut checker = Checker::new(Target::default()).unwrap();
+    let mut policy = WarningPolicy::default();
+    policy.apply_flag("-Wconversion").unwrap();
+    checker.set_warning_policy(policy);
+    assert!(checker.check_item(parser.next_item().unwrap().unwrap()).is_err());
+    assert!(checker.take_warnings().is_empty());
+}

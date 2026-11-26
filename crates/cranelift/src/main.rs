@@ -91,6 +91,7 @@ fn collect_semantic_warnings(
         && !policy.enabled("unused-variable")
         && !policy.enabled("unused-parameter")
         && !policy.enabled("unused-but-set-variable")
+        && !policy.enabled("conversion")
     {
         return Ok(Vec::new());
     }

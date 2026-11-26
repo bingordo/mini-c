@@ -570,3 +570,24 @@ fn c99_runtime_sizeof_evaluates_each_bound_once() {
     assert!(status.success(), "runtime sizeof failed: {status}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn native_conversion_warning_is_opt_in_and_promotable() {
+    let source = "int f(int x) { short y = x; return y; }";
+    let mut policy = WarningPolicy::default();
+    let (initial, failed) =
+        format_semantic_warnings("narrow.c", source, false, &policy).unwrap();
+    assert!(initial.is_empty());
+    assert!(!failed);
+    policy.apply_flag("-Wconversion").unwrap();
+    let (warnings, failed) =
+        format_semantic_warnings("narrow.c", source, false, &policy).unwrap();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("[-Wconversion]"), "{warnings:?}");
+    assert!(!failed);
+    policy.apply_flag("-Werror=conversion").unwrap();
+    let (errors, failed) =
+        format_semantic_warnings("narrow.c", source, false, &policy).unwrap();
+    assert!(failed);
+    assert!(errors[0].contains(": error:"), "{errors:?}");
+}
