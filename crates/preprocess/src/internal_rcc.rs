@@ -151,7 +151,7 @@ fn options_from_args(args: &[std::ffi::OsString]) -> Result<rcc_session::Options
     Ok(opts)
 }
 
-use crate::token_origins::{TokenOrigin, TokenOrigins};
+use crate::token_origins::{MacroOrigin, SourceSite, TokenOrigin, TokenOrigins};
 
 pub fn file(path: &Path, args: &[std::ffi::OsString]) -> Result<String, String> {
     run_file(path, args, false).map(|(text, _)| text)
@@ -185,6 +185,7 @@ fn run_file(path: &Path, args: &[std::ffi::OsString], track: bool) -> Result<(St
         .map_err(|_| "internal source map lock poisoned")?
         .add_file(path.to_path_buf(), Arc::from(source));
     let mut preprocessor = rcc_preprocess::Preprocessor::new(&mut session);
+    if track { preprocessor.enable_expansion_traces(); }
     // Consume each expanded token chunk immediately, instead of retaining
     // a complete pp-token Vec while building a second full output String.
     // The callback receives current #line metadata from the preprocessor.
@@ -205,7 +206,10 @@ fn run_file(path: &Path, args: &[std::ffi::OsString], track: bool) -> Result<(St
                 return;
             }
         };
-        for token in chunk {
+        // Cache conversions only for this chunk, so raw Arc addresses cannot
+        // be reused after the preprocessor releases its frames.
+        let mut frame_cache = std::collections::HashMap::new();
+        for (index, token) in chunk.into_iter().enumerate() {
             match token.kind {
                 PpTokenKind::Whitespace | PpTokenKind::Eof => continue,
                 PpTokenKind::Newline => {
@@ -241,7 +245,47 @@ fn run_file(path: &Path, args: &[std::ffi::OsString], track: bool) -> Result<(St
             if !output.is_empty() && !output.ends_with('\n') {
                 output.push(' ');
             }
-            if track && original_file {
+            let expansion = if track {
+                let mut frame = context.output_traces().get(index).and_then(Option::as_ref);
+                let mut pending = Vec::new();
+                let mut parent = None;
+                while let Some(current) = frame {
+                    let key = Arc::as_ptr(current);
+                    if let Some(cached) = frame_cache.get(&key) {
+                        parent = Some(Arc::clone(cached));
+                        break;
+                    }
+                    pending.push((key, current));
+                    frame = current.parent.as_ref();
+                }
+                let site = |span: rcc_preprocess::expand::ExpansionFrame, definition: bool| {
+                    let span = if definition { span.definition } else { span.invocation };
+                    if span.file.0 == u32::MAX { return None; }
+                    let physical = map.file(span.file);
+                    let logical = context.line_overrides.effective_file(&map, span.file, span.lo);
+                    Some(SourceSite {
+                        file: Arc::from(map.file(logical).name.to_string_lossy().as_ref()),
+                        line: context.line_overrides.effective_line(&map, span.file, span.lo) as usize,
+                        source: physical.src.clone(),
+                        start: span.lo.0 as usize,
+                        end: span.hi.0 as usize,
+                    })
+                };
+                for (key, current) in pending.into_iter().rev() {
+                    if let Some(invocation) = site((**current).clone(), false) {
+                        let converted = Arc::new(MacroOrigin {
+                            name: Arc::from(context.session.interner.get(current.name)),
+                            invocation,
+                            definition: site((**current).clone(), true),
+                            parent,
+                        });
+                        frame_cache.insert(key, Arc::clone(&converted));
+                        parent = Some(converted);
+                    }
+                }
+                parent
+            } else { None };
+            if track && (original_file || expansion.is_some()) {
                 let logical_file = context.line_overrides.effective_file(
                     &map, token.span.file, token.span.lo);
                 let line = context.line_overrides.effective_line(
@@ -250,7 +294,7 @@ fn run_file(path: &Path, args: &[std::ffi::OsString], track: bool) -> Result<(St
                     Arc::from(map.file(logical_file).name.to_string_lossy().as_ref())).clone();
                 origins.push(TokenOrigin {
                     output_start: output.len(), output_end: output.len() + spelling.len(),
-                    source: source.src.clone(), source_start: lo, source_end: hi, file, line,
+                    source: source.src.clone(), source_start: lo, source_end: hi, file, line, expansion,
                 });
             }
             output.push_str(spelling);
