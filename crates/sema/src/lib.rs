@@ -386,6 +386,8 @@ pub struct Symbol {
     pub enum_value: Option<i64>,
     /// C register object: the address of this object cannot be computed.
     pub is_register: bool,
+    /// C thread storage duration, independently of linkage.
+    pub is_thread_local: bool,
     // For old-style definitions, retain the promoted ABI separately from the visible C type.
     old_style_signature: Option<CType>,
     // Only file-scope function declarations contribute to C99 6.7.4.
@@ -978,7 +980,7 @@ impl Checker {
         // atomic stores are observable; only linked aliases are exempt.
         let warning_exempt = linkage != Linkage::None;
         self.locals.last_mut().expect("local scope").insert(name.to_owned(), Symbol {
-            ty, kind, linkage, defined: true, asm_label: None, enum_value: None, is_register, old_style_signature: None, non_inline_or_extern: false, inline_declaration: None,
+            ty, kind, linkage, defined: true, asm_label: None, enum_value: None, is_register, is_thread_local: false, old_style_signature: None, non_inline_or_extern: false, inline_declaration: None,
         });
         if kind == SymbolKind::Object {
             // Extern aliases are not automatic locals for unused diagnostics.
@@ -992,6 +994,11 @@ impl Checker {
         &mut self, name: &str, ty: CType, kind: SymbolKind,
         defining: bool, storage: StorageClass, span: Span
     ) -> Result<(), Diagnostic> {
+        let is_thread_local = storage.is_thread_local();
+        if is_thread_local && kind != SymbolKind::Object {
+            return Err(type_error(span, "thread storage requires an object declaration"));
+        }
+        let storage = storage.linkage_storage();
         let requested = if matches!(kind, SymbolKind::Typedef | SymbolKind::Enumerator) {
             Linkage::None
         } else if storage == StorageClass::Static {
@@ -1012,6 +1019,9 @@ impl Checker {
             }
         }
         if let Some(prior) = self.globals.get_mut(name) {
+            if prior.is_thread_local != is_thread_local {
+                return Err(type_error(span, format!("conflicting thread storage for '{name}'")));
+            }
             if let Some(abi) = &prior.old_style_signature {
                 if !matches!(&ty, CType::UnprototypedFunction { .. }) && abi.composite(&ty).is_none() {
                     return Err(Diagnostic::coded(span, DiagnosticCode::SemanticConflictingDeclaration,
@@ -1034,7 +1044,7 @@ impl Checker {
             prior.defined |= defining;
         } else {
             self.globals.insert(name.to_owned(), Symbol {
-                ty, kind, linkage: requested, defined: defining, asm_label: None, enum_value: None, is_register: false, old_style_signature: None, non_inline_or_extern: false, inline_declaration: None,
+                ty, kind, linkage: requested, defined: defining, asm_label: None, enum_value: None, is_register: false, is_thread_local, old_style_signature: None, non_inline_or_extern: false, inline_declaration: None,
             });
         }
         Ok(())
@@ -1660,7 +1670,7 @@ impl Checker {
         // complete type at its declaration, not merely at TU finalization.
         // This differs from external-linkage tentative definitions, which
         // may be completed by a later tag definition.
-        if kind == SymbolKind::Object && decl.storage == StorageClass::Static
+        if kind == SymbolKind::Object && decl.storage.linkage_storage() == StorageClass::Static
             && ty.size_bytes(self.target).is_none()
         {
             return Err(type_error(decl.span,
@@ -1821,7 +1831,7 @@ impl Checker {
         self.locals.last_mut().expect("function scope").insert("__func__".into(), Symbol {
             ty: name_type, kind: SymbolKind::Object, linkage: Linkage::None,
             defined: true, asm_label: Some(implicit_function_name_symbol(&func.name)),
-            enum_value: None, is_register: false, old_style_signature: None, non_inline_or_extern: false, inline_declaration: None,
+            enum_value: None, is_register: false, is_thread_local: false, old_style_signature: None, non_inline_or_extern: false, inline_declaration: None,
         });
         for (parsed_param, param) in func.params.iter().zip(&params) {
             if let Err(err) = self.define_local(&param.name, param.ty.clone(),
@@ -2414,11 +2424,11 @@ impl Checker {
                 && const_eval::evaluate(constant, self.target) == Ok(0);
             let address_of_global = match original {
                 Expr::Unary(UnOp::Address, inner) => match inner.without_location() {
-                    Expr::Name(name) => self.globals.get(name).is_some_and(|s| s.kind != SymbolKind::Typedef),
+                    Expr::Name(name) => self.globals.get(name).is_some_and(|s| !s.is_thread_local && s.kind != SymbolKind::Typedef),
                     _ => false,
                 },
                 Expr::Name(name) => self.globals.get(name).is_some_and(|s|
-                    matches!(&s.ty, CType::Array(..)) ||
+                    (!s.is_thread_local && matches!(&s.ty, CType::Array(..))) ||
                     (s.kind == SymbolKind::Function && matches!(ty, CType::Pointer(inner)
                         if matches!(inner.as_ref(), CType::Function { .. } | CType::VariadicFunction { .. } | CType::UnprototypedFunction { .. })))),
                 Expr::StringLiteral(_) => matches!(ty, CType::Pointer(element)
