@@ -538,3 +538,35 @@ fn native_driver_emits_write_only_warning_with_werror() {
     assert!(!failed);
     assert!(suppressed.is_empty());
 }
+
+#[test]
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+fn c99_runtime_sizeof_evaluates_each_bound_once() {
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let dir = std::env::temp_dir().join(format!("mini-c-vla-sizeof-{}-{nonce}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("main.c");
+    let object = dir.join("main.o");
+    let executable = dir.join("program");
+    std::fs::write(&source, concat!(
+        "int calls; int next(void){calls++;return 5;}\n",
+        "int main(void){int n=3;int m=4;\n",
+        "if(sizeof(int[n++][m++])!=48 || n!=4 || m!=5)return 1;\n",
+        "if(sizeof(char[2][next()][3])!=30 || calls!=1)return 2;\n",
+        "if(sizeof(int[n*2])!=32)return 3;\n",
+        "if(sizeof(int[2][3])!=24)return 4;return 0;}\n",
+    )).unwrap();
+    let opts = parse_options([
+        "--cpp=none".to_owned(), "--emit-obj".to_owned(),
+        object.to_string_lossy().into_owned(), source.to_string_lossy().into_owned(),
+    ]).unwrap();
+    assert_eq!(compile_to_object(&opts), ExitCode::SUCCESS);
+    let link = Command::new("cc").arg(&object)
+        .arg("-o").arg(&executable).output().unwrap();
+    assert!(link.status.success(), "link: {}", String::from_utf8_lossy(&link.stderr));
+    let status = Command::new(&executable).status().unwrap();
+    assert!(status.success(), "runtime sizeof failed: {status}");
+    let _ = std::fs::remove_dir_all(dir);
+}
