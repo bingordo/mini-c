@@ -4,9 +4,14 @@
 //! of individual expression checking branches. A registered builtin is never
 //! converted into an ordinary external C call merely because its IR lowering
 //! has not been implemented. Frontend adapters may consume the same stable IDs.
+/// Exact unsigned operand bit-count operation; zero is undefined for clz/ctz.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BitCountKind { LeadingZero, TrailingZero, Population }
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuiltinId {
     Ctz32,
+    BitCount(BitCountKind, crate::IntRank),
     ByteSwap(u8),
     AtomicLoadN,
     AtomicStoreN,
@@ -25,6 +30,7 @@ pub enum BuiltinId {
 pub enum LoweringClass {
     /// Checked and implemented in the existing expression/backend path.
     IntegerCtz,
+    IntegerBitCount,
     IntegerByteSwap,
     /// Source contract is recognized, but must not use generic call lowering.
     AtomicIrRequired,
@@ -54,7 +60,7 @@ const fn atomic(id: BuiltinId, name: &'static str, count: usize, order: usize,
 
 /// Fixed spellings and signatures. Unsupported by-address GNU atomic overloads
 /// are intentionally absent; source diagnostics must not infer their ABI.
-pub const REGISTRY: [BuiltinSpec; 15] = [
+pub const REGISTRY: [BuiltinSpec; 23] = [
     BuiltinSpec {
         id: BuiltinId::Ctz32, name: "__builtin_ctz", argument_count: 1,
         memory_order_argument: None, failure_order_argument: None,
@@ -75,6 +81,22 @@ pub const REGISTRY: [BuiltinSpec; 15] = [
         memory_order_argument: None, failure_order_argument: None,
         weak_argument: None, lowering: LoweringClass::IntegerByteSwap,
     },
+    BuiltinSpec { id: BuiltinId::BitCount(BitCountKind::LeadingZero, crate::IntRank::Int), name: "__builtin_clz", argument_count: 1,
+        memory_order_argument: None, failure_order_argument: None, weak_argument: None, lowering: LoweringClass::IntegerBitCount },
+    BuiltinSpec { id: BuiltinId::BitCount(BitCountKind::LeadingZero, crate::IntRank::Long), name: "__builtin_clzl", argument_count: 1,
+        memory_order_argument: None, failure_order_argument: None, weak_argument: None, lowering: LoweringClass::IntegerBitCount },
+    BuiltinSpec { id: BuiltinId::BitCount(BitCountKind::LeadingZero, crate::IntRank::LongLong), name: "__builtin_clzll", argument_count: 1,
+        memory_order_argument: None, failure_order_argument: None, weak_argument: None, lowering: LoweringClass::IntegerBitCount },
+    BuiltinSpec { id: BuiltinId::BitCount(BitCountKind::TrailingZero, crate::IntRank::Long), name: "__builtin_ctzl", argument_count: 1,
+        memory_order_argument: None, failure_order_argument: None, weak_argument: None, lowering: LoweringClass::IntegerBitCount },
+    BuiltinSpec { id: BuiltinId::BitCount(BitCountKind::TrailingZero, crate::IntRank::LongLong), name: "__builtin_ctzll", argument_count: 1,
+        memory_order_argument: None, failure_order_argument: None, weak_argument: None, lowering: LoweringClass::IntegerBitCount },
+    BuiltinSpec { id: BuiltinId::BitCount(BitCountKind::Population, crate::IntRank::Int), name: "__builtin_popcount", argument_count: 1,
+        memory_order_argument: None, failure_order_argument: None, weak_argument: None, lowering: LoweringClass::IntegerBitCount },
+    BuiltinSpec { id: BuiltinId::BitCount(BitCountKind::Population, crate::IntRank::Long), name: "__builtin_popcountl", argument_count: 1,
+        memory_order_argument: None, failure_order_argument: None, weak_argument: None, lowering: LoweringClass::IntegerBitCount },
+    BuiltinSpec { id: BuiltinId::BitCount(BitCountKind::Population, crate::IntRank::LongLong), name: "__builtin_popcountll", argument_count: 1,
+        memory_order_argument: None, failure_order_argument: None, weak_argument: None, lowering: LoweringClass::IntegerBitCount },
     atomic(BuiltinId::AtomicLoadN, "__atomic_load_n", 2, 1, None, None),
     atomic(BuiltinId::AtomicStoreN, "__atomic_store_n", 3, 2, None, None),
     atomic(BuiltinId::AtomicExchangeN, "__atomic_exchange_n", 3, 2, None, None),
@@ -95,7 +117,7 @@ pub const REGISTRY: [BuiltinSpec; 15] = [
 pub fn valid_atomic_orders(id: BuiltinId, success: u8, failure: Option<u8>) -> bool {
     if success > 5 { return false; }
     match id {
-        BuiltinId::Ctz32 | BuiltinId::ByteSwap(_) => false,
+        BuiltinId::Ctz32 | BuiltinId::ByteSwap(_) | BuiltinId::BitCount(..) => false,
         BuiltinId::AtomicLoadN => failure.is_none() && matches!(success, 0|1|2|5),
         BuiltinId::AtomicStoreN => failure.is_none() && matches!(success, 0|3|5),
         BuiltinId::AtomicCompareExchangeN => {
@@ -180,6 +202,9 @@ mod tests {
                 assert_eq!(spec.id, BuiltinId::Ctz32);
                 assert_eq!(spec.argument_count, 1);
                 assert_eq!(spec.memory_order_argument, None);
+            } else if let BuiltinId::BitCount(..)=spec.id {
+                assert_eq!(spec.argument_count,1);
+                assert_eq!(spec.memory_order_argument,None);
             } else if let BuiltinId::ByteSwap(bits)=spec.id {
                 assert!(matches!(bits,16|32|64));
                 assert_eq!(spec.argument_count,1);

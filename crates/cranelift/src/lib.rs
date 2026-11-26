@@ -2028,6 +2028,18 @@ impl Lower<'_> {
                 if ty.bits()!=u32::from(*bits) {return Err("invalid byte-swap width".into());}
                 Ok(b.ins().bswap(value))
             }
+            CheckedExprKind::BuiltinBitCount(kind,inner) => {
+                use mini_c_sema::builtins::BitCountKind::*;
+                let value=self.integer_value(b,inner)?;
+                let ty=b.func.dfg.value_type(value);
+                if !matches!(ty,types::I32|types::I64) {return Err("unsupported bit count width".into());}
+                let count=match kind {
+                    LeadingZero=>b.ins().clz(value),
+                    TrailingZero=>b.ins().ctz(value),
+                    Population=>b.ins().popcnt(value),
+                };
+                Ok(if ty==types::I64 {b.ins().ireduce(types::I32,count)} else {count})
+            }
             CheckedExprKind::BuiltinCtz(inner) => {
                 // GCC defines __builtin_ctz(0) as undefined behavior. The
                 // source must guard zero; CLIF ctz is permitted to produce
