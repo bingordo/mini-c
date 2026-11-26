@@ -369,7 +369,11 @@
             executable: "internal".into(), args: vec!["-E".into(), "-nostdinc".into()],
         };
         let error = check(path.to_str().unwrap(), Some(&config)).unwrap_err();
+        let streamed = check(path.to_str().unwrap(), Some(&preprocess::Config {
+            executable: "internal-stream".into(), args: config.args.clone(),
+        })).unwrap_err();
         std::fs::remove_file(path).unwrap();
+        assert_eq!(error, streamed);
         let inner = error.find("in expansion of macro 'INNER'").expect(&error);
         let outer = error.find("in expansion of macro 'OUTER'").expect(&error);
         assert!(inner < outer, "{error}");
