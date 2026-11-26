@@ -762,6 +762,12 @@ impl Compiler {
 
     /// Register declarations and compile one complete checked function.
     pub fn add(&mut self, item: CheckedItem) -> Result<()> {
+        // Type-only declarations have already been checked and emit no
+        // storage, ABI signature or memory operation. Keep the checker-owned
+        // qualifier intact; any subsequent executable use is checked below.
+        if matches!(&item, CheckedItem::Typedef { .. } | CheckedItem::Tag) {
+            return Ok(());
+        }
         // Volatile reads and writes are observable C side effects.
         // Never emit an ordinary load/store in lieu of a volatile operation.
         // The canonical native TypeId IR support is compiler#1047.
