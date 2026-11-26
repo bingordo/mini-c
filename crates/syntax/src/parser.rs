@@ -1282,6 +1282,26 @@ impl<'a> Parser<'a> {
             return Err(Diagnostic::coded(storage_span, DiagnosticCode::SyntaxInvalidDeclaration,
                 "typedef cannot combine with storage class"));
         }
+        // GNU __auto_type has one bare declarator and an initializer.
+        // Its identifier is not in scope until after that initializer.
+        if self.peek()?.is_some_and(|t| t.text.as_ref()=="__auto_type") {
+            let marker=self.take()?.expect("peeked __auto_type");
+            if is_typedef || !matches!(storage,StorageClass::Default|StorageClass::Register|StorageClass::Static) {
+                return Err(Diagnostic::coded(marker.span,DiagnosticCode::SyntaxInvalidDeclaration,
+                    "invalid storage class for __auto_type"));
+            }
+            let (name,ty,nested,name_span)=self.parse_declarator_shape(false)?.finish(Type::AutoType);
+            if name.is_empty() || ty!=Type::AutoType || nested.is_some() {
+                return Err(Diagnostic::coded(marker.span,DiagnosticCode::SyntaxInvalidDeclaration,
+                    "__auto_type requires a single bare identifier"));
+            }
+            self.expect("=")?;
+            let init=Some(self.parse_initializer()?);
+            let end=self.expect(";")?.span.hi;
+            self.scopes.declare(&name,Binding::Ordinary);
+            return Ok(vec![Decl{storage,is_inline:false,name,name_span,ty,asm_label:None,init,
+                span:Span{lo:marker.span.lo,hi:end}}]);
+        }
         let (base, start) = self.parse_type()?
             .ok_or_else(|| Diagnostic::new(self.eof_span(), "expected type"))?;
         let mut declarations = Vec::new();
@@ -1595,7 +1615,7 @@ impl<'a> Parser<'a> {
                                 Stmt::Typedef(self.parse_decl(true)?)
                             }
                             "struct" | "union" | "enum" => self.parse_tag_or_decl()?,
-                            "static" | "extern" | "register" | "int" | "_Bool" | "char" | "long"
+                            "static" | "extern" | "register" | "__auto_type" | "int" | "_Bool" | "char" | "long"
                                 | "void" | "unsigned" | "signed" | "const" | "volatile" | "restrict" | "__restrict" | "__restrict__" =>
                                 Stmt::Decl(self.parse_decl(false)?),
                             _ if token.kind == TokenKind::TypedefName =>
@@ -1639,7 +1659,7 @@ impl<'a> Parser<'a> {
             "break" => { self.take()?; self.expect(";")?; Ok(Stmt::Break) }
             "continue" => { self.take()?; self.expect(";")?; Ok(Stmt::Continue) }
             "typedef" => { self.take()?; Ok(Stmt::Typedef(self.parse_decl(true)?)) },
-            "static" | "extern" | "register" => Ok(Stmt::Decl(self.parse_decl(false)?)),
+            "static" | "extern" | "register" | "__auto_type" => Ok(Stmt::Decl(self.parse_decl(false)?)),
             "struct" | "union" | "enum" => self.parse_tag_or_decl(),
             "int" | "_Bool" | "char" | "short" | "long" | "_Float128" | "float" | "double" | "void" | "unsigned" | "signed"
                 | "const" | "volatile" | "restrict" | "__restrict" | "__restrict__" => Ok(Stmt::Decl(self.parse_decl(false)?)),
@@ -1693,7 +1713,7 @@ impl<'a> Parser<'a> {
                         self.take()?;
                         Some(true)
                     }
-                    "static" | "extern" | "register" | "int" | "_Bool" | "char" | "short"
+                    "static" | "extern" | "register" | "__auto_type" | "int" | "_Bool" | "char" | "short"
                     | "long" | "_Float128" | "float" | "double" | "void"
                     | "unsigned" | "signed" | "const" | "volatile" | "restrict" | "_Atomic"
                     | "__restrict" | "__restrict__" => Some(false),
