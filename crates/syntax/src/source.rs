@@ -19,6 +19,14 @@ impl<'a> SourceFile<'a> {
             line_starts,
         }
     }
+    /// Return the original physical line, including its newline if present.
+    pub fn line_text(&self, line: usize) -> Option<&'a str> {
+        let index = line.checked_sub(1)?;
+        let start = *self.line_starts.get(index)?;
+        let end = self.line_starts.get(index + 1).copied().unwrap_or(self.text.len());
+        self.text.get(start..end)
+    }
+
     /// Returns 1-based line and UTF-8 character column for a byte offset.
     pub fn location(&self, offset: usize) -> (usize, usize) {
         let offset = offset.min(self.text.len());
