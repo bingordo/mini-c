@@ -34,6 +34,42 @@ PROGRAMS = {
         return p[0]!='l' || p[1]!='a' || p[4]!='l'
             || p[5]!=0;
     }""",
+    "c99_block_static_storage": """int *counter(void) {
+    static int n=3;
+    ++n;
+    return &n;
+}
+int recursive(int n) {
+    static int sum;
+    sum+=n;
+    if(n) return recursive(n-1);
+    return sum;
+}
+int *skipped(void) {
+    goto use;
+    static int a[3]={2,4,6};
+    static int *p=a+1;
+use:
+    return p;
+}
+int distinct(int which) {
+    static int n=10;
+    if(which) { static int n=20; return ++n; }
+    return ++n;
+}
+void *self(void) { static void *p=&p; return p; }
+const char *fname(void) { static const char *p=__func__; return p; }
+int main(void) {
+    int *p=counter();
+    if(*p!=4 || counter()!=p || *p!=5) return 1;
+    if(recursive(3)!=6 || recursive(2)!=9) return 2;
+    if(*skipped()!=4 || skipped()!=skipped()) return 3;
+    *skipped()=9;
+    if(*skipped()!=9) return 4;
+    if(distinct(0)!=11 || distinct(1)!=21 || distinct(0)!=12 || distinct(1)!=22) return 5;
+    if(self()!=self() || *(void**)self()!=self() || fname()[0]!='f') return 6;
+    return 0;
+}""",
     "c99_static_compound_pointer_offsets": """int *p=(int[]){1,2,3}+1;
 struct S { int x; }; int *q=&((struct S[]){{4},{5}})[1].x;
 int *table[2]={(int[]){6,7}+1,(int[]){8,9}+1};
