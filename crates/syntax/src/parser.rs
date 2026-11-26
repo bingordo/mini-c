@@ -1,6 +1,6 @@
 //! Incremental parser for the first supported subset of external declarations.
 //! Each complete function body is returned separately; earlier bodies are not retained.
-use crate::ast::{AsmOperand, BinOp, Decl, Designator, Expr, FloatRank, Function, Qualifiers, Span, Stmt, StorageClass, TagKind, Type, UnOp};
+use crate::ast::{AsmOperand, BinOp, Decl, Designator, Expr, FloatRank, Function, MemberAlignment, Qualifiers, Span, Stmt, StorageClass, TagKind, Type, UnOp};
 use crate::diag::{Diagnostic, DiagnosticCode};
 use crate::lexer::{BorrowedParserTokenSource, ParserToken, ParserTokenSource, Scanner, TokenKind, TokenSource};
 use crate::stream::{ExternalItem, ItemSource};
@@ -1814,6 +1814,40 @@ impl<'a> Parser<'a> {
                         } else {
                             ty
                         };
+                        let ty = if self.peek()?.is_some_and(|t|
+                            matches!(t.text.as_ref(), "__attribute__" | "__attribute")) {
+                            // Field alignment affects layout, so retain the
+                            // request until target-aware semantic checking.
+                            self.take()?;
+                            self.expect("(")?;
+                            self.expect("(")?;
+                            let attr = self.take()?.ok_or_else(||
+                                Diagnostic::new(self.eof_span(), "expected member attribute"))?;
+                            if gnu_attribute_spelling(attr.text.as_ref()) != "aligned" {
+                                return Err(Diagnostic::new(attr.span,
+                                    "unsupported GNU member attribute"));
+                            }
+                            self.expect("(")?;
+                            let alignment = if self.peek()?.is_some_and(|t|
+                                matches!(t.text.as_ref(), "__alignof__" | "__alignof" | "_Alignof")) {
+                                self.take()?;
+                                self.expect("(")?;
+                                let (base, _) = self.parse_type()?.ok_or_else(||
+                                    Diagnostic::new(self.eof_span(), "alignment requires a type name"))?;
+                                let (name, ty, params, _) = self.parse_declarator_shape(true)?.finish(base);
+                                if !name.is_empty() || params.is_some() {
+                                    return Err(Diagnostic::new(attr.span, "alignment requires an abstract type name"));
+                                }
+                                self.expect(")")?;
+                                MemberAlignment::AlignOf(Box::new(ty))
+                            } else {
+                                MemberAlignment::Constant(Box::new(self.parse_assign()?))
+                            };
+                            self.expect(")")?;
+                            self.expect(")")?;
+                            self.expect(")")?;
+                            Type::MemberAligned(Box::new(ty), alignment)
+                        } else { ty };
                         members.push(Decl {
                             storage: StorageClass::Default, name, name_span, ty,
                             asm_label: None, init: None,

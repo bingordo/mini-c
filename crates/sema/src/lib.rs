@@ -787,17 +787,22 @@ impl Checker {
                     // self-referential `struct Node *next` fields do not
                     // require completing the enclosing Node prematurely.
                     // Truly incomplete by-value members still fail below.
-                    let (declared, bit_width) = match &member.ty {
+                    let (written, alignment) = match &member.ty {
+                        Type::MemberAligned(base, alignment) => (base.as_ref(), Some(alignment)),
+                        ty => (ty, None),
+                    };
+                    let (declared, bit_width) = match written {
                         Type::BitField(base, width) => {
                             (base.as_ref(), Some(width.as_ref()))
                         }
-                        _ => (&member.ty, None),
+                        _ => (written, None),
                     };
                     let resolved = self.resolve(declared, member.span)?;
                     let resolved = self.try_complete_tag_type(resolved)?;
                     let width = bit_width.map(|width| {
                         self.check_bit_width(width, &resolved, member.name.is_empty(), member.span)
                     }).transpose()?;
+                    self.check_member_alignment(alignment, &resolved, width.is_some(), member.span)?;
                     fields.push((member.name.clone(), resolved, width));
                 }
                 let mut complete = if kind == TagKind::Union {
@@ -821,6 +826,8 @@ impl Checker {
                 }
                 complete
             }
+            Type::MemberAligned(..) => return Err(type_error(span,
+                "member alignment is only valid inside a struct or union")),
             Type::BitField(..) => return Err(type_error(span,
                 "bit-field declaration is only valid inside a struct or union")),
             Type::Pointer(inner) => CType::Pointer(Box::new(self.resolve(inner, span)?)),
@@ -2475,6 +2482,50 @@ impl Checker {
     /// type; each anonymous definition must have a fresh nominal identity.
     /// Declared member types are recursively resolved and *completed* before
     /// layout, while pointers to the tag under construction stay nominal.
+    /// A GNU aligned member request is a minimum alignment. Accept only
+    /// requests proven not to change the natural layout for now; actual
+    /// over-alignment also needs storage and ABI guarantees in both backends.
+    fn check_member_alignment(
+        &self, alignment: Option<&mini_c_syntax::ast::MemberAlignment>,
+        ty: &CType, bit_field: bool, span: Span,
+    ) -> Result<(), Diagnostic> {
+        use mini_c_syntax::ast::MemberAlignment;
+        let Some(alignment) = alignment else { return Ok(()); };
+        if bit_field {
+            return Err(type_error(span, "aligned bit-fields are unsupported"));
+        }
+        let requested = match alignment {
+            MemberAlignment::AlignOf(source) => {
+                let source = self.resolve_sizeof_type(source, span)?;
+                let source = self.try_complete_tag_type(source)?;
+                if !source.is_object() || source.size_bytes(self.target).is_none() {
+                    return Err(type_error(span, "alignment requires a complete object type"));
+                }
+                source.align_bytes(self.target).ok_or_else(||
+                    type_error(span, "alignment requires a complete object type"))?
+            }
+            MemberAlignment::Constant(expr) => {
+                let typed = self.check_expr(expr, span)?.rvalue();
+                if !typed.ty.is_integer() {
+                    return Err(type_error(span, "member alignment requires an integer constant"));
+                }
+                let value = const_eval::evaluate(&typed, self.target)
+                    .map_err(|_| type_error(span, "member alignment requires an integer constant"))?;
+                u64::try_from(value).map_err(|_|
+                    type_error(span, "member alignment must be positive"))?
+            }
+        };
+        if !requested.is_power_of_two() {
+            return Err(type_error(span, "member alignment must be a positive power of two"));
+        }
+        let natural = ty.align_bytes(self.target).ok_or_else(||
+            type_error(span, "aligned member requires complete layout"))?;
+        if requested > natural {
+            return Err(type_error(span, "over-aligned member requires backend layout support"));
+        }
+        Ok(())
+    }
+
     fn check_bit_width(
         &self, width: &Expr, ty: &CType, unnamed: bool, span: Span,
     ) -> Result<u8, Diagnostic> {
@@ -2550,17 +2601,22 @@ impl Checker {
                 return Err(type_error(member.span,
                     "aggregate members cannot have initializers or storage classes"));
             }
-            let (declared, bit_width) = match &member.ty {
+            let (written, alignment) = match &member.ty {
+                Type::MemberAligned(base, alignment) => (base.as_ref(), Some(alignment)),
+                ty => (ty, None),
+            };
+            let (declared, bit_width) = match written {
                 Type::BitField(base, width) => {
                     (base.as_ref(), Some(width.as_ref()))
                 }
-                _ => (&member.ty, None),
+                _ => (written, None),
             };
             let member_ty = self.resolve_sizeof_type(declared, member.span)?;
             let member_ty = self.try_complete_tag_type(member_ty)?;
             let width = bit_width.map(|width| {
                 self.check_bit_width(width, &member_ty, member.name.is_empty(), member.span)
             }).transpose()?;
+            self.check_member_alignment(alignment, &member_ty, width.is_some(), member.span)?;
             fields.push((member.name.clone(), member_ty, width));
         }
         let mut complete = if kind == TagKind::Struct {
