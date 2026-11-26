@@ -17,6 +17,39 @@ fn check(path: &str, cpp: Option<&preprocess::Config>) -> Result<(), String> {
     check_with_policy(path, cpp, &WarningPolicy::default())
 }
 
+/// Render original source only. Preprocessor line markers do not establish
+/// original columns, so never use expanded-text offsets for their carets.
+fn render_diagnostic(
+    file: &SourceFile<'_>, map: Option<&SourceMap>,
+    diagnostic: &mini_c_syntax::diag::Diagnostic, level: &str, suffix: &str,
+) -> String {
+    use mini_c_syntax::diagnostic_excerpt::write_excerpt;
+    let (name, line, column, end_column, excerpt) = if let Some(map) = map {
+        let origin = map.origin(diagnostic.span.lo);
+        // A logical #line filename may not correspond to a physical file.
+        // Do not read arbitrary paths from preprocessor markers.
+        (origin.file.as_str(), origin.line, None, None, None)
+    } else {
+        let (line, column) = file.location(diagnostic.span.lo);
+        let (end_line, end_column) = file.location(diagnostic.span.hi);
+        (file.name, line, Some(column),
+            (line == end_line).then_some(end_column),
+            file.line_text(line))
+    };
+    let location = match column {
+        Some(column) => format!("{name}:{line}:{column}"),
+        None => format!("{name}:{line}"),
+    };
+    let mut output = format!("{location}: {level}: {}{suffix}", diagnostic.message);
+    if let Some(excerpt) = excerpt {
+        output.push('\n');
+        write_excerpt(&mut output, excerpt, line, column, end_column)
+            .expect("writing to String cannot fail");
+        output.pop(); // The caller supplies the final newline.
+    }
+    output
+}
+
 fn check_with_policy(
     path: &str, cpp: Option<&preprocess::Config>, warnings: &WarningPolicy
 ) -> Result<(), String> {
@@ -51,13 +84,6 @@ fn check_with_policy(
             Ok(Some(_)) => {
                 for warning in checker.take_warnings() {
                     if let Some(severity) = warnings.resolve(&warning) {
-                        let location = if let Some(ref map) = map {
-                            let origin = map.origin(warning.diagnostic.span.lo);
-                            format!("{}:{}", origin.file, origin.line)
-                        } else {
-                            let (line, col) = file.location(warning.diagnostic.span.lo);
-                            format!("{path}:{line}:{col}")
-                        };
                         let level = match severity {
                             DiagnosticSeverity::Error => {
                                 warning_failed = true;
@@ -66,33 +92,18 @@ fn check_with_policy(
                             DiagnosticSeverity::Warning => "warning",
                             DiagnosticSeverity::Note => "note",
                         };
-                        eprintln!("{location}: {level}: {} [-W{}]",
-                            warning.diagnostic.message,
-                            warning.warning_group.unwrap_or("unknown"));
+                        eprintln!("{}", render_diagnostic(&file, map.as_ref(), &warning.diagnostic, level,
+                            &format!(" [-W{}]", warning.warning_group.unwrap_or("unknown"))));
                     }
                 }
             },
             Ok(None) => return if let Err(error) = checker.finish_translation_unit() {
-                let location = if let Some(ref map) = map {
-                    let origin = map.origin(error.span.lo);
-                    format!("{}:{}", origin.file, origin.line)
-                } else {
-                    let (line, col) = file.location(error.span.lo);
-                    format!("{path}:{line}:{col}")
-                };
-                Err(format!("{location}: error: {}", error.message))
+                Err(render_diagnostic(&file, map.as_ref(), &error, "error", ""))
             } else if warning_failed {
                 Err(format!("{path}: warnings treated as errors"))
             } else { Ok(()) },
             Err(error) => {
-                let location = if let Some(ref map) = map {
-                    let origin = map.origin(error.span.lo);
-                    format!("{}:{}", origin.file, origin.line)
-                } else {
-                    let (line, col) = file.location(error.span.lo);
-                    format!("{path}:{line}:{col}")
-                };
-                return Err(format!("{location}: error: {}", error.message));
+                return Err(render_diagnostic(&file, map.as_ref(), &error, "error", ""));
             }
         }
     }
@@ -125,14 +136,7 @@ fn check_recovering(
     );
     if errors.is_empty() { return Ok(()); }
     Err(errors.into_iter().map(|error| {
-        let location = if let Some(ref map) = map {
-            let origin = map.origin(error.span.lo);
-            format!("{}:{}", origin.file, origin.line)
-        } else {
-            let (line, column) = file.location(error.span.lo);
-            format!("{path}:{line}:{column}")
-        };
-        format!("{location}: error[{}]: {}", error.code.as_str(), error.message)
+        render_diagnostic(&file, map.as_ref(), &error, &format!("error[{}]", error.code.as_str()), "")
     }).collect::<Vec<_>>().join("\n"))
 }
 
