@@ -4862,3 +4862,37 @@ fn c99_local_vla_bound_capture_and_runtime_types() {
         ("int f(int n){int a[n][];return 0;}", "complete object type"),
     ] { reject(source, expected); }
 }
+
+#[test]
+fn c99_logical_not_decays_array_and_function_designators() {
+    let items = check("int a[3]; int g(void); int f(void){return !a + !g;}").unwrap();
+    let CheckedItem::Function(fun) = &items[2] else { panic!("function"); };
+    let CheckedStmt::Block(stmts) = &fun.body else { panic!("body"); };
+    let CheckedStmt::Return(Some(expr)) = &stmts[0] else { panic!("return"); };
+    let CheckedExprKind::Binary(_, left, right) = &expr.kind else { panic!("sum"); };
+    for operand in [left, right] {
+        let CheckedExprKind::Unary(UnOp::Not, arg) = &operand.kind else { panic!("not"); };
+        assert!(matches!(arg.ty, CType::Pointer(_)));
+        assert_eq!(operand.ty, CType::int());
+    }
+    reject("struct S{int x;}; int f(struct S s){return !s;}", "logical not requires scalar operand");
+}
+
+#[test]
+fn c99_address_of_dereference_cancels_without_evaluating_indirection() {
+    for source in [
+        "void *f(void *p){return &*p;}",
+        "void *f(void){return &*(void*)0;}",
+        "struct S; struct S *f(struct S *p){return &*p;}",
+        "int *f(int *p){return &*p++;}",
+        "int g(void); int (*f(void))(void){return &*g;}",
+    ] {
+        check(source).unwrap_or_else(|err| panic!("{source}: {err:?}"));
+    }
+    let items = check("void *f(void *g(void)){return &*g();}").unwrap();
+    let CheckedItem::Function(fun) = &items[0] else { panic!("function"); };
+    let CheckedStmt::Block(stmts) = &fun.body else { panic!("body"); };
+    let CheckedStmt::Return(Some(expr)) = &stmts[0] else { panic!("return"); };
+    assert!(matches!(expr.kind, CheckedExprKind::Call(..)));
+    reject("int *f(int x){return &*x;}", "dereference requires a pointer");
+}

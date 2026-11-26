@@ -3501,6 +3501,20 @@ impl Checker {
                 })
             }
             Expr::Unary(op, inner) => {
+                // C99 6.5.3.2p3: &*E is as if both operators were omitted,
+                // including for null and void pointers. Check E once and
+                // require a pointer, but never materialize a dereference.
+                if *op == UnOp::Address {
+                    if let Expr::Unary(UnOp::Deref, pointer) = inner.without_location() {
+                        let value = self.check_expr(pointer, span)?.rvalue();
+                        if !matches!(value.ty, CType::Pointer(_)) {
+                            return Err(Diagnostic::coded(span,
+                                DiagnosticCode::SemanticInvalidOperatorOperands,
+                                "dereference requires a pointer"));
+                        }
+                        return Ok(value);
+                    }
+                }
                 let typed = self.check_expr(inner, span)?;
                 match op {
                     UnOp::Address => {
@@ -3537,8 +3551,11 @@ impl Checker {
                         Ok(CheckedExpr { ty, category, kind: CheckedExprKind::Unary(*op, Box::new(typed)), source_span:None })
                     }
                     UnOp::Not => {
+                        // Logical negation is a value context: array and
+                        // function designators decay before the scalar check.
+                        let typed = typed.rvalue();
                         if !typed.ty.is_scalar() { return Err(Diagnostic::coded(span, DiagnosticCode::SemanticInvalidOperatorOperands, "logical not requires scalar operand")); }
-                        Ok(CheckedExpr::value(CType::int(), CheckedExprKind::Unary(*op, Box::new(typed.rvalue()))))
+                        Ok(CheckedExpr::value(CType::int(), CheckedExprKind::Unary(*op, Box::new(typed))))
                     }
                     UnOp::Plus | UnOp::Neg | UnOp::BitNot => {
                         let floating = matches!(typed.ty.unqualified(), CType::Floating(_));
