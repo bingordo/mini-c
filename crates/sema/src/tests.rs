@@ -3264,7 +3264,8 @@ fn s21_gcc_ctz_builtin_rejects_malformed_uses() {
     reject("int f(void) { return __builtin_ctz(); }", "expects exactly one argument");
     reject("int f(void) { return __builtin_ctz(1, 2); }", "expects exactly one argument");
     reject("int f(void) { int x=7; return __builtin_ctz(&x); }", "requires an integer argument");
-    reject("int f(void) { return __builtin_ctzll(1); }", "unsupported compiler builtin");
+    reject("int f(void) { return __builtin_ctzll(); }", "expects exactly one argument");
+    reject("int f(void) { return __builtin_clz_fake(1); }", "unsupported compiler builtin");
     reject("int __builtin_ctz; int f(void) { return __builtin_ctz(8); }", "not a function");
     // A builtin evaluation is not a C integer constant expression (even if
     // the backend might fold its bits); don't add GNU constant-folding here.
@@ -4798,6 +4799,35 @@ fn c99_runtime_sizeof_array_type_names() {
         ("struct S{int n;int a[];}; int f(int n){return sizeof(struct S[n]);}", "flexible array member"),
         ("int n; int a[sizeof(int[n])];", "integer constant expression"),
     ] { reject(source, message); }
+}
+
+#[test]
+fn gnu_bit_count_families_preserve_unsigned_rank_and_int_result() {
+    use crate::builtins::BitCountKind;
+    for (name,kind,rank) in [
+        ("__builtin_clz",BitCountKind::LeadingZero,IntRank::Int),
+        ("__builtin_clzl",BitCountKind::LeadingZero,IntRank::Long),
+        ("__builtin_clzll",BitCountKind::LeadingZero,IntRank::LongLong),
+        ("__builtin_ctzl",BitCountKind::TrailingZero,IntRank::Long),
+        ("__builtin_ctzll",BitCountKind::TrailingZero,IntRank::LongLong),
+        ("__builtin_popcount",BitCountKind::Population,IntRank::Int),
+        ("__builtin_popcountl",BitCountKind::Population,IntRank::Long),
+        ("__builtin_popcountll",BitCountKind::Population,IntRank::LongLong),
+    ] {
+        let items=check(&format!("int f(int x){{return {name}(x);}}")).unwrap();
+        let CheckedItem::Function(fun)=&items[0] else {panic!("function");};
+        let CheckedStmt::Block(stmts)=&fun.body else {panic!("body");};
+        let CheckedStmt::Return(Some(result))=&stmts[0] else {panic!("return");};
+        assert_eq!(result.ty,CType::int());
+        let CheckedExprKind::BuiltinBitCount(actual,arg)=&result.kind else {panic!("bit count");};
+        assert_eq!(*actual,kind);
+        assert_eq!(arg.ty,CType::Integer{rank,unsigned:true});
+        reject(&format!("int f(void){{return {name}();}}"),"expects exactly one argument");
+        reject(&format!("int f(int *p){{return {name}(p);}}"),"requires an integer argument");
+    }
+    check("int a=__builtin_clz(1); int b=__builtin_ctzll(8); int c=__builtin_popcount(0);").unwrap();
+    reject("int a=__builtin_clz(0);","zero operand");
+    reject("int a=__builtin_ctzll(0);","zero operand");
 }
 
 #[test]
