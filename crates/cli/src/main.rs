@@ -72,7 +72,16 @@ fn check_with_policy(
                     }
                 }
             },
-            Ok(None) => return if warning_failed {
+            Ok(None) => return if let Err(error) = checker.finish_translation_unit() {
+                let location = if let Some(ref map) = map {
+                    let origin = map.origin(error.span.lo);
+                    format!("{}:{}", origin.file, origin.line)
+                } else {
+                    let (line, col) = file.location(error.span.lo);
+                    format!("{path}:{line}:{col}")
+                };
+                Err(format!("{location}: error: {}", error.message))
+            } else if warning_failed {
                 Err(format!("{path}: warnings treated as errors"))
             } else { Ok(()) },
             Err(error) => {
