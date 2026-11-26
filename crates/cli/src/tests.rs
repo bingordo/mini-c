@@ -359,3 +359,20 @@
         assert!(error.contains("int bad = ;"), "{error}");
         assert!(error.contains('^'), "{error}");
     }
+
+    #[cfg(feature = "internal-cpp")]
+    #[test]
+    fn nested_macro_diagnostic_shows_both_invocations() {
+        let path = std::env::temp_dir().join(format!("mini-c-nested-origin-{}.c", std::process::id()));
+        std::fs::write(&path, "#define INNER ;\n#define OUTER INNER\nint x = OUTER;\n").unwrap();
+        let config = preprocess::Config {
+            executable: "internal".into(), args: vec!["-E".into(), "-nostdinc".into()],
+        };
+        let error = check(path.to_str().unwrap(), Some(&config)).unwrap_err();
+        std::fs::remove_file(path).unwrap();
+        let inner = error.find("in expansion of macro 'INNER'").expect(&error);
+        let outer = error.find("in expansion of macro 'OUTER'").expect(&error);
+        assert!(inner < outer, "{error}");
+        assert!(error.contains("#define OUTER INNER"), "{error}");
+        assert!(error.contains("int x = OUTER;"), "{error}");
+    }
