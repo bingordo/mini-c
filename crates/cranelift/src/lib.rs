@@ -496,6 +496,8 @@ pub struct Compiler {
     module: ObjectModule,
     functions: HashMap<String, KnownFunction>,
     pending_functions: HashMap<String, PendingFunction>,
+    external_defining_declarations: std::collections::HashSet<String>,
+    inline_candidates: Vec<CheckedFunction>,
     vararg_thunks: Vec<SysvVarargThunk>,
     data: HashMap<String, KnownData>,
     strings: HashMap<Vec<u8>, DataId>,
@@ -517,6 +519,8 @@ impl Compiler {
         Ok(Self {
             module: ObjectModule::new(object),
             functions: HashMap::new(), pending_functions: HashMap::new(),
+            external_defining_declarations: std::collections::HashSet::new(),
+            inline_candidates: Vec::new(),
             vararg_thunks: Vec::new(),
             data: HashMap::new(), strings: HashMap::new(),
         })
@@ -596,6 +600,7 @@ impl Compiler {
                     self.declare_object(CheckedDecl {
                         name: symbol.clone(),
                         storage: StorageClass::Static,
+                        is_inline: false,
                         ty: expr.ty.clone(),
                         linkage: Linkage::Internal,
                         asm_label: None,
@@ -791,6 +796,9 @@ impl Compiler {
                         Err(reason) => return Err(reason),
                     }
                     let name = decl.name.clone();
+                    if !decl.is_inline || decl.storage == StorageClass::Extern {
+                        self.external_defining_declarations.insert(name.clone());
+                    }
                     let link_name = decl.asm_label.unwrap_or_else(|| name.clone());
                     if self.functions.contains_key(&name) {
                         // Previously used or defined imports cannot be renamed;
@@ -809,6 +817,20 @@ impl Compiler {
                     }
                     Ok(())
                 } else { self.declare_object(decl) }
+            }
+            CheckedItem::Function(function) if function.inline_only_candidate => {
+                // Calls and addresses may refer to the external definition.
+                // Delay only ambiguous inline bodies until all declarations
+                // have been seen; a non-inline or extern declaration makes
+                // this TU responsible for emitting the external definition.
+                self.add(CheckedItem::Declaration(CheckedDecl {
+                    storage: StorageClass::Default, is_inline: true,
+                    name: function.name.clone(), ty: function.signature.clone(),
+                    linkage: function.linkage, asm_label: None,
+                    initializer: None, span: function.span,
+                }))?;
+                self.inline_candidates.push(function);
+                Ok(())
             }
             CheckedItem::Function(function) => self.define(function),
         }
@@ -931,6 +953,7 @@ impl Compiler {
             Some(bytes_len));
         self.declare_object(CheckedDecl {
             storage: StorageClass::Static,
+            is_inline: false,
             name: implicit_function_name_symbol(&function.name),
             ty: name_type.clone(),
             linkage: Linkage::Internal,
@@ -1079,6 +1102,13 @@ impl Compiler {
     }
 
     pub fn finish(mut self) -> Result<Vec<u8>> {
+        for function in std::mem::take(&mut self.inline_candidates) {
+            if self.external_defining_declarations.contains(&function.name) {
+                self.define(function)?;
+            }
+            // Without an external definition, C99 permits using the external
+            // implementation rather than substituting this inline body.
+        }
         self.flush_pending_imports()?;
         for (name, data) in &self.data {
             if data.initialized.is_none() && !data.tentative { continue; }
@@ -3021,6 +3051,29 @@ mod tests {
         let bytes = compile_source(source).expect("indirect SysV variadic call");
         assert!(bytes.windows(4).any(|w| w == [0x31, 0xc0, 0xff, 0xe2]),
             "expected xor eax,eax; jmp rdx with target after two GP arguments");
+    }
+
+    #[test]
+    fn c99_inline_external_definition_depends_on_all_file_declarations() {
+        use object::{Object, ObjectSymbol};
+        for (source, defined) in [
+            ("inline int f(void){return 1;} int g(void){return f();}", false),
+            ("inline int f(void); inline int f(void){return 1;} int g(void){return f();}", false),
+            ("extern inline int f(void){return 1;}", true),
+            ("int f(void); inline int f(void){return 1;}", true),
+            ("inline int f(void){return 1;} extern inline int f(void);", true),
+            ("inline int f(void){return 1;} int g(void){return f();} int f(void);", true),
+        ] {
+            let bytes = compile_source(source).unwrap_or_else(|e| panic!("{source}: {e}"));
+            let elf = object::File::parse(bytes.as_slice()).unwrap();
+            let symbol = elf.symbols().find(|s| s.name().ok() == Some("f")).expect("f symbol");
+            assert_eq!(!symbol.is_undefined(), defined, "{source}");
+            if defined { assert!(symbol.is_global(), "{source}"); }
+        }
+        let bytes = compile_source("static inline int f(void){return 1;} int g(void){return f();}").unwrap();
+        let elf = object::File::parse(bytes.as_slice()).unwrap();
+        let f = elf.symbols().find(|s| s.name().ok() == Some("f")).unwrap();
+        assert!(!f.is_undefined() && !f.is_global());
     }
 
     #[test]

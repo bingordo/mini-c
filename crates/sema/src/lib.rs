@@ -194,6 +194,7 @@ impl CheckedExpr {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CheckedDecl {
     pub storage: StorageClass,
+    pub is_inline: bool,
     pub name: String,
     pub ty: CType,
     pub linkage: Linkage,
@@ -259,6 +260,9 @@ pub struct CheckedFor {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CheckedFunction {
     pub linkage: Linkage,
+    /// A plain inline definition with external linkage supplies an external
+    /// symbol only if another file-scope declaration requires it.
+    pub inline_only_candidate: bool,
     pub name: String,
     pub signature: CType,
     pub params: Vec<CheckedDecl>,
@@ -958,7 +962,8 @@ impl Checker {
             };
             // An extern redeclaration inherits a previous internal linkage.
             // Explicit static cannot follow a prior external declaration.
-            if prior.linkage != requested && storage != StorageClass::Extern {
+            if prior.linkage != requested && storage != StorageClass::Extern
+                && !(kind == SymbolKind::Function && storage == StorageClass::Default) {
                 return Err(type_error(span, format!("conflicting linkage for '{name}'")));
             }
             if defining && prior.defined {
@@ -1606,7 +1611,7 @@ impl Checker {
         let linkage = global.linkage;
         let asm_label = global.asm_label.clone();
         Ok(CheckedDecl {
-            storage: decl.storage, name: decl.name, ty, linkage, asm_label,
+            storage: decl.storage, is_inline: decl.is_inline, name: decl.name, ty, linkage, asm_label,
             initializer, span: decl.span,
         })
     }
@@ -1675,7 +1680,7 @@ impl Checker {
                 return Err(type_error(param.span, "register parameter requires a scalar type"));
             }
             params.push(CheckedDecl {
-                storage: param.storage, name: param.name.clone(), ty,
+                storage: param.storage, is_inline: false, name: param.name.clone(), ty,
                 linkage: Linkage::None, asm_label: None, initializer: None, span: param.span,
             });
         }
@@ -1764,7 +1769,9 @@ impl Checker {
         self.function_labels.clear();
         let body = checked?;
         let linkage = self.global(&func.name).expect("registered function").linkage;
-        Ok(CheckedFunction { linkage, name: func.name, signature, params, body, span: func.span })
+        Ok(CheckedFunction { linkage,
+            inline_only_candidate: func.is_inline && func.storage == StorageClass::Default && linkage == Linkage::External,
+            name: func.name, signature, params, body, span: func.span })
     }
 
     fn check_statements(&mut self, statements: &[Stmt], span: Span) -> Result<Vec<CheckedStmt>, Diagnostic> {
@@ -1859,7 +1866,7 @@ impl Checker {
                         decl.storage == StorageClass::Static))
                     .transpose()?;
                 CheckedStmt::Decl(CheckedDecl {
-                    storage: decl.storage, name: decl.name.clone(), ty,
+                    storage: decl.storage, is_inline: false, name: decl.name.clone(), ty,
                     linkage, asm_label: None,
                     initializer, span: decl.span,
                 })
