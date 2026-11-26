@@ -20,11 +20,14 @@ fn check(path: &str, cpp: Option<&preprocess::Config>) -> Result<(), String> {
 /// Render original source only. Preprocessor line markers do not establish
 /// original columns, so never use expanded-text offsets for their carets.
 fn render_diagnostic(
-    file: &SourceFile<'_>, map: Option<&SourceMap>,
+    file: &SourceFile<'_>, map: Option<&SourceMap>, origins: &preprocess::token_origins::TokenOrigins,
     diagnostic: &mini_c_syntax::diag::Diagnostic, level: &str, suffix: &str,
 ) -> String {
     use mini_c_syntax::diagnostic_excerpt::write_excerpt;
-    let (name, line, column, end_column, excerpt) = if let Some(map) = map {
+    let (name, line, column, end_column, excerpt) = if let Some((origin, (excerpt, column, end))) = origins.lookup(diagnostic.span.lo)
+        .and_then(|origin| origin.excerpt(diagnostic.span.lo, diagnostic.span.hi).map(|excerpt| (origin, excerpt))) {
+        (origin.file.as_ref(), origin.line, Some(column), Some(end), Some(excerpt))
+    } else if let Some(map) = map {
         let origin = map.origin(diagnostic.span.lo);
         // A logical #line filename may not correspond to a physical file.
         // Do not read arbitrary paths from preprocessor markers.
@@ -64,10 +67,10 @@ fn check_with_policy(
             return Err("internal-stream requires --features internal-cpp".into());
         }
     }
-    let source = match cpp {
-        Some(config) => preprocess::file(Path::new(path), config)
+    let (source, origins) = match cpp {
+        Some(config) => preprocess::file_with_origins(Path::new(path), config)
             .map_err(|e| format!("{path}: {e}"))?,
-        None => fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?,
+        None => (fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?, Default::default()),
     };
     let file = SourceFile::new(path, &source);
     let map = cpp.map(|_| SourceMap::from_preprocessed(&source, path));
@@ -92,18 +95,18 @@ fn check_with_policy(
                             DiagnosticSeverity::Warning => "warning",
                             DiagnosticSeverity::Note => "note",
                         };
-                        eprintln!("{}", render_diagnostic(&file, map.as_ref(), &warning.diagnostic, level,
+                        eprintln!("{}", render_diagnostic(&file, map.as_ref(), &origins, &warning.diagnostic, level,
                             &format!(" [-W{}]", warning.warning_group.unwrap_or("unknown"))));
                     }
                 }
             },
             Ok(None) => return if let Err(error) = checker.finish_translation_unit() {
-                Err(render_diagnostic(&file, map.as_ref(), &error, "error", ""))
+                Err(render_diagnostic(&file, map.as_ref(), &origins, &error, "error", ""))
             } else if warning_failed {
                 Err(format!("{path}: warnings treated as errors"))
             } else { Ok(()) },
             Err(error) => {
-                return Err(render_diagnostic(&file, map.as_ref(), &error, "error", ""));
+                return Err(render_diagnostic(&file, map.as_ref(), &origins, &error, "error", ""));
             }
         }
     }
@@ -122,10 +125,10 @@ fn check_recovering(
             return Err("internal-stream requires --features internal-cpp".into());
         }
     }
-    let source = match cpp {
-        Some(config) => preprocess::file(Path::new(path), config)
+    let (source, origins) = match cpp {
+        Some(config) => preprocess::file_with_origins(Path::new(path), config)
             .map_err(|e| format!("{path}: {e}"))?,
-        None => fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?,
+        None => (fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?, Default::default()),
     };
     let file = SourceFile::new(path, &source);
     let map = cpp.map(|_| SourceMap::from_preprocessed(&source, path));
@@ -136,7 +139,7 @@ fn check_recovering(
     );
     if errors.is_empty() { return Ok(()); }
     Err(errors.into_iter().map(|error| {
-        render_diagnostic(&file, map.as_ref(), &error, &format!("error[{}]", error.code.as_str()), "")
+        render_diagnostic(&file, map.as_ref(), &origins, &error, &format!("error[{}]", error.code.as_str()), "")
     }).collect::<Vec<_>>().join("\n"))
 }
 
