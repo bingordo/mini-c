@@ -97,6 +97,8 @@ pub enum Type {
     /// C99 structure/union bit-field declaration. Valid only as a member.
     /// The width remains an expression until semantic constant evaluation.
     BitField(Box<Type>, Box<Expr>),
+    /// GNU member alignment request, checked against target object layout.
+    MemberAligned(Box<Type>, MemberAlignment),
     /// Complete structure definition, initially inlined into its declarator.
     /// Separate tag-only declarations and references are a follow-up.
     Struct { tag: Option<Ident>, members: Vec<Decl> },
@@ -114,6 +116,12 @@ pub enum Type {
         params: Vec<Type>,
     },
 }
+#[derive(Debug, Clone, PartialEq)]
+pub enum MemberAlignment {
+    Constant(Box<Expr>),
+    AlignOf(Box<Type>),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct AsmOperand {
     /// Optional GNU symbolic operand name, resolved by semantic checking.
