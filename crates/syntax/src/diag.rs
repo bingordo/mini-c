@@ -190,7 +190,7 @@ impl WarningPolicy {
     pub fn known_group(group: &str) -> bool {
         // Only claim groups with working diagnostic producers. Other
         // groups must not silently turn into no-op compatibility flags.
-        matches!(group, "shadow" | "unused-variable" | "unused-parameter" | "unused-but-set-variable" | "conversion" | "sign-conversion" | "sign-compare")
+        matches!(group, "shadow" | "unused-variable" | "unused-parameter" | "unused-but-set-variable" | "conversion" | "sign-conversion" | "sign-compare" | "float-conversion")
     }
 
     /// Default enablement is conservative until Mini-C has a tested
@@ -201,6 +201,8 @@ impl WarningPolicy {
         let default = match group {
             "unused-variable" | "unused-but-set-variable" | "sign-compare" => self.wall,
             "unused-parameter" => self.wextra,
+            // GCC enables -Wfloat-conversion as part of -Wconversion.
+            "float-conversion" => self.enabled("conversion"),
             _ => false,
         };
         self.overrides.iter().rev().find(|(name, _)| name == group)
