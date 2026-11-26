@@ -4730,3 +4730,45 @@ fn atomic_single_byte_aggregate_declarations_are_layout_checked() {
         assert!(check(source).is_err(), "unsupported atomic aggregate admitted: {source}");
     }
 }
+
+#[test]
+fn c99_inline_only_constraints_use_final_file_scope_declarations() {
+    for source in [
+        "inline int f(void){return 1;}",
+        "inline int f(void); inline int f(void){return 1;}",
+        "static int x; inline int f(void){return x;} extern inline int f(void);",
+        "static int x; int f(void); inline int f(void){return x;}",
+        "static int x; extern inline int f(void){return x;}",
+        "inline int f(void){static int x;return ++x;} int f(void);",
+        "inline int f(void){static const int x=1;return x;}",
+        "inline int f(void){static const int a[2]={1,2};return a[0];}",
+        "static int x; inline int f(int x){return x;}",
+        "static int x; static inline int f(void){return x;}",
+        "static inline int f(void);",
+        "extern int x; inline int f(void){return x;}",
+    ] {
+        check(source).unwrap_or_else(|e| panic!("{source}: {e:?}"));
+    }
+    for (source, expected) in [
+        ("inline int f(void);", "requires a definition"),
+        ("extern inline int f(void);", "requires a definition"),
+        ("int f(void); inline int f(void);", "requires a definition"),
+        ("static int x; inline int f(void){return x;}", "internal-linkage identifier"),
+        ("static const int x=1; inline int f(void){return x;}", "internal-linkage identifier"),
+        ("static int g(void){return 1;} inline int f(void){return g();}", "internal-linkage identifier"),
+        ("inline int f(void){static int x;return x;}", "modifiable static object"),
+        ("inline int f(void){static int x[2];return x[0];}", "modifiable static object"),
+        ("inline int f(void){static const int *p;return p==0;}", "modifiable static object"),
+    ] {
+        reject(source, expected);
+    }
+}
+
+#[test]
+fn inline_finalization_does_not_retain_rejected_items() {
+    let mut checker = Checker::new(Target::default()).unwrap();
+    let mut parser = Parser::new("inline int f(void){static int x; return missing;} int g(void){return 1;}");
+    assert!(checker.check_item_recovering(parser.next_item().unwrap().unwrap()).is_err());
+    checker.check_item_recovering(parser.next_item().unwrap().unwrap()).unwrap();
+    checker.finish_translation_unit().unwrap();
+}

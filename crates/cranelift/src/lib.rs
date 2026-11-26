@@ -1275,6 +1275,7 @@ pub fn compile_source_diagnostic(source: &str) -> std::result::Result<Vec<u8>, C
         let checked = checker.check_item(item).map_err(CompileError::Diagnostic)?;
         compiler.add(checked).map_err(CompileError::Backend)?;
     }
+    checker.finish_translation_unit().map_err(CompileError::Diagnostic)?;
     compiler.complete_file_object_types(&checker).map_err(CompileError::Backend)?;
     compiler.finish().map_err(CompileError::Backend)
 }

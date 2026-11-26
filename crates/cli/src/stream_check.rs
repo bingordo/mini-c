@@ -147,7 +147,10 @@ pub(super) fn check(
         });
         match checked {
             Ok(Some(_)) => {}
-            Ok(None) => return Ok(()),
+            Ok(None) => return checker.finish_translation_unit().map_err(|error| {
+                let location = origins.borrow().display(error.span.lo, path);
+                format!("{location}: error: {}", error.message)
+            }),
             Err(error) => {
                 let location = origins.borrow().display(error.span.lo, path);
                 return Err(format!("{location}: error: {}", error.message));
