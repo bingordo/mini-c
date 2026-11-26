@@ -4,6 +4,7 @@
 //! owns all rcc session state, while the consumer owns individual spellings;
 //! no source-map borrow or whole expanded output String crosses threads.
 use super::options_from_args;
+use crate::token_origins::{MacroOrigin, SourceSite};
 use rcc_errors::Level;
 use rcc_lexer::PpTokenKind;
 use rcc_session::Session;
@@ -30,6 +31,8 @@ pub struct OwnedPpToken {
     pub file: Arc<str>,
     pub line: u32,
     pub column: usize,
+    pub site: SourceSite,
+    pub expansion: Option<Arc<MacroOrigin>>,
 }
 
 enum Message {
@@ -162,6 +165,7 @@ fn produce(path: &Path, args: &[OsString], sender: &mpsc::SyncSender<Message>)
 
     let mut pp = rcc_preprocess::Preprocessor::new(&mut session);
     pp.enable_large_streaming_inputs();
+    pp.enable_expansion_traces();
     let mut by_file: HashMap<u32, Arc<str>> = HashMap::new();
     let mut buffered = Vec::with_capacity(TOKENS_PER_BATCH);
     let mut emitted_bytes = 0usize;
@@ -181,7 +185,8 @@ fn produce(path: &Path, args: &[OsString], sender: &mpsc::SyncSender<Message>)
                 return;
             }
         };
-        for token in chunk {
+        let mut frame_cache = HashMap::new();
+        for (index, token) in chunk.into_iter().enumerate() {
             if matches!(token.kind,
                 PpTokenKind::Whitespace | PpTokenKind::Newline | PpTokenKind::Eof)
             {
@@ -214,8 +219,13 @@ fn produce(path: &Path, args: &[OsString], sender: &mpsc::SyncSender<Message>)
                 &map, token.span.file, token.span.lo,
             );
             let column = map.lookup_line_col(token.span.file, token.span.lo).col as usize;
+            let expansion = capture_expansion!(context, &map, index, frame_cache);
+            let site = SourceSite {
+                file: file.clone(), line: line as usize, source: physical.src.clone(),
+                start, end,
+            };
             buffered.push(OwnedPpToken {
-                spelling: Arc::from(spelling), file, line, column,
+                spelling: Arc::from(spelling), file, line, column, site, expansion,
             });
             if buffered.len() == TOKENS_PER_BATCH &&
                 sender.send(Message::Tokens(std::mem::take(&mut buffered))).is_err()
