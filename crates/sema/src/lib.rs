@@ -2542,7 +2542,7 @@ impl Checker {
                     && !(!*source_unsigned && *source_rank == IntRank::Bool)
                     && !(*source_unsigned && !*dest_unsigned && dest_bits > source_bits);
                 if possibly_changes_value {
-                    let fits = const_eval::evaluate(&expr, self.target).ok()
+                    let fits = const_eval::evaluate(expr, self.target).ok()
                         .is_some_and(|value| {
                             if *dest_unsigned {
                                 value >= 0 && value <= ((1i128 << dest_bits) - 1)
