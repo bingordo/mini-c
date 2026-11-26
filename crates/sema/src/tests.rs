@@ -1413,7 +1413,7 @@ fn c99_completed_tagged_aggregate_members_have_full_layout_and_type_identity() {
         "structure member has incomplete type");
     reject("struct Self{struct Self member;};", "structure member has incomplete type");
     reject("struct Incomplete; struct Holder{struct Incomplete items[2];};",
-        "structure member has incomplete type");
+        "array element requires a complete object type");
     reject("struct Node{int x;};struct Holder{struct Node node;struct Node node;};",
         "duplicate structure member");
 }
@@ -4798,4 +4798,36 @@ fn c99_runtime_sizeof_array_type_names() {
         ("struct S{int n;int a[];}; int f(int n){return sizeof(struct S[n]);}", "flexible array member"),
         ("int n; int a[sizeof(int[n])];", "integer constant expression"),
     ] { reject(source, message); }
+}
+
+#[test]
+fn c99_local_vla_bound_capture_and_runtime_types() {
+    let items = check("unsigned long f(int n,int m){int a[n++][m]; n=9; m=10; return sizeof a + sizeof a[0];}").unwrap();
+    let CheckedItem::Function(f) = &items[0] else {panic!("function")};
+    let CheckedStmt::Block(stmts) = &f.body else {panic!("block")};
+    let CheckedStmt::Decl(a) = &stmts[0] else {panic!("declaration")};
+    assert!(a.ty.is_variable_array());
+    assert!(a.ty.is_variably_modified());
+    assert_eq!(a.runtime_bounds.len(), 2);
+    assert_ne!(a.runtime_bounds[0].0, a.runtime_bounds[1].0);
+    assert_eq!(a.ty.size_bytes(Target::default()), None);
+    let CheckedStmt::Return(Some(size)) = &stmts[3] else {panic!("return")};
+    assert!(const_eval::evaluate(size, Target::default()).is_err());
+
+    for source in [
+        "int f(int n){int a[n]; a[0]=3;return a[0];}",
+        "int f(int n){int a[2][n];a[1][0]=3;return a[1][0];}",
+        "long f(int n){int a[2][3];int (*p)[n]=a;return (p+1)-p;}",
+        "unsigned long f(int n){int a[2][3];int (*p)[n++]=a;return sizeof *p;}",
+        "int f(int n){int a[n];{int a[n+1];a[0]=1;}return sizeof a;}",
+    ] { check(source).unwrap_or_else(|e| panic!("{source}: {e:?}")); }
+    for (source, expected) in [
+        ("int n; int a[n];", "integer constant expression"),
+        ("int f(int n){static int a[n];return 0;}", "static storage"),
+        ("int f(int n){extern int a[n];return 0;}", "cannot have linkage"),
+        ("int f(int n){int a[n]={1};return 0;}", "cannot have an initializer"),
+        ("int f(int n){struct S {int a[n];};return 0;}", "array bound requires an integer constant expression"),
+        ("int f(int n){struct S {int (*a)[n];} s;return 0;}", "variably modified type"),
+        ("int f(int n){int a[n][];return 0;}", "complete object type"),
+    ] { reject(source, expected); }
 }

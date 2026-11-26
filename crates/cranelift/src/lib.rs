@@ -33,7 +33,7 @@ fn scalar_type(ty: &CType) -> Result<ir::Type> {
         CType::Floating(FloatRank::Float) => Ok(types::F32),
         CType::Floating(FloatRank::Double) => Ok(types::F64),
         CType::Struct { .. } | CType::Union { .. } | CType::TagRef { .. } |
-        CType::Array(..) => Err(format!(
+        CType::Array(..) | CType::VariableArray(..) => Err(format!(
             "unsupported SysV aggregate-by-value ABI for {ty:?}; use pointer parameters/returns"
         )),
         _ => Err(format!("unsupported scalar type {ty:?}")),
@@ -600,6 +600,7 @@ impl Compiler {
             CheckedExprKind::StaticCompoundLiteral { symbol, initializer } => {
                 if !self.data.contains_key(symbol) {
                     self.declare_object(CheckedDecl {
+                        runtime_bounds: Box::default(),
                         name: symbol.clone(),
                         storage: StorageClass::Static,
                         is_inline: false,
@@ -843,6 +844,7 @@ impl Compiler {
                 // have been seen; a non-inline or extern declaration makes
                 // this TU responsible for emitting the external definition.
                 self.add(CheckedItem::Declaration(CheckedDecl {
+                    runtime_bounds: Box::default(),
                     storage: StorageClass::Default, is_inline: true,
                     name: function.name.clone(), ty: function.signature.clone(),
                     linkage: function.linkage, asm_label: None,
@@ -971,6 +973,7 @@ impl Compiler {
                 unsigned: !Target::default().char_is_signed }.with_const()),
             Some(bytes_len));
         self.declare_object(CheckedDecl {
+            runtime_bounds: Box::default(),
             storage: StorageClass::Static,
             is_inline: false,
             name: implicit_function_name_symbol(&function.name),
@@ -1327,7 +1330,7 @@ impl Lower<'_> {
         match ty.unqualified() {
             CType::Struct { align, .. } | CType::Union { align, .. } =>
                 u8::try_from(align.trailing_zeros()).unwrap_or(3),
-            CType::Array(element, _) => Self::alignment(element),
+            CType::Array(element, _) | CType::VariableArray(element, _) => Self::alignment(element),
             CType::Integer { rank: IntRank::Bool | IntRank::Char, .. } => 0,
             CType::Integer { rank: IntRank::Short, .. } => 1,
             CType::Integer { rank: IntRank::Int, .. } => 2,
@@ -1893,12 +1896,9 @@ impl Lower<'_> {
     /// Byte displacement shared by ordinary pointer arithmetic and pointer
     /// compound assignments. Both call sites evaluate their operands once.
     fn pointer_displacement(
-        b: &mut FunctionBuilder<'_>, raw_index: Value,
+        &mut self, b: &mut FunctionBuilder<'_>, raw_index: Value,
         offset_ty: &CType, element: &CType,
     ) -> Result<Value> {
-        let width = element.size_bytes(Target::default())
-            .ok_or("pointer arithmetic requires sized element")?;
-        let width = i64::try_from(width).map_err(|_| "pointer element too large")?;
         let index = if b.func.dfg.value_type(raw_index) == types::I64 {
             raw_index
         } else if matches!(offset_ty, CType::Integer { unsigned: true, .. }) {
@@ -1906,8 +1906,27 @@ impl Lower<'_> {
         } else {
             b.ins().sextend(types::I64, raw_index)
         };
-        let scale = b.ins().iconst(types::I64, width);
+        let scale = self.object_size(b, element)?;
         Ok(b.ins().imul(index, scale))
+    }
+
+    /// Materialize a fixed or declaration-time saved array stride.
+    fn object_size(&mut self, b: &mut FunctionBuilder<'_>, ty: &CType) -> Result<Value> {
+        if let Some(size) = ty.size_bytes(Target::default()) {
+            return Ok(b.ins().iconst(types::I64, size as i64));
+        }
+        let (element, count) = match ty.unqualified() {
+            CType::VariableArray(element, id) => {
+                let address = self.object_address(b, &mini_c_sema::vla_bound_name(*id))?;
+                let count = b.ins().load(types::I64, ir::MemFlagsData::new(), address, 0);
+                (element, count)
+            }
+            CType::Array(element, Some(count)) =>
+                (element, b.ins().iconst(types::I64, *count as i64)),
+            _ => return Err("pointer arithmetic requires sized element".into()),
+        };
+        let stride = self.object_size(b, element)?;
+        Ok(b.ins().imul(count, stride))
     }
 
     fn pointer_offset(
@@ -1919,7 +1938,7 @@ impl Lower<'_> {
         };
         let base = self.expression(b, pointer)?;
         let raw_index = self.integer_value(b, offset)?;
-        let displacement = Self::pointer_displacement(
+        let displacement = self.pointer_displacement(
             b, raw_index, &offset.ty, element.as_ref())?;
         Ok(match op {
             BinOp::Add => b.ins().iadd(base, displacement),
@@ -2147,11 +2166,9 @@ impl Lower<'_> {
                         ir::MemFlagsData::new(), address, 0)
                 };
                 let stored = if let CType::Pointer(element) = computation_ty {
-                    let width = element.size_bytes(Target::default())
-                        .ok_or("increment/decrement requires complete pointer element")?;
-                    let width = i64::try_from(width)
-                        .map_err(|_| "pointer element exceeds supported offset")?;
-                    b.ins().iadd_imm_s(old, if *increment { width } else { -width })
+                    let width = self.object_size(b, element)?;
+                    if *increment { b.ins().iadd(old, width) }
+                    else { b.ins().isub(old, width) }
                 } else {
                     let promoted = Self::convert(b, old, &target.ty, computation_ty)?;
                     let floating = matches!(computation_ty.unqualified(), CType::Floating(_));
@@ -2196,7 +2213,7 @@ impl Lower<'_> {
                     // The lvalue address above and right expression below
                     // are each computed exactly once.
                     let offset = self.integer_value(b, rhs)?;
-                    let displacement = Self::pointer_displacement(
+                    let displacement = self.pointer_displacement(
                         b, offset, &rhs.ty, element.as_ref())?;
                     let result = match op {
                         BinOp::Add => b.ins().iadd(old, displacement),
@@ -2267,17 +2284,13 @@ impl Lower<'_> {
                         // The checker establishes compatible complete object
                         // pointees. Cranelift addresses are byte offsets;
                         // pointer difference is a signed element count.
-                        let width = element.size_bytes(Target::default())
-                            .ok_or("native ptrdiff requires a complete object type")?;
-                        let width = i64::try_from(width)
-                            .map_err(|_| "native ptrdiff element size exceeds i64")?;
                         let left = self.expression(b, lhs)?;
                         let right = self.expression(b, rhs)?;
                         let bytes = b.ins().isub(left, right);
-                        return Ok(if width == 1 {
+                        return Ok(if element.size_bytes(Target::default()) == Some(1) {
                             bytes
                         } else {
-                            let scale = b.ins().iconst(types::I64, width);
+                            let scale = self.object_size(b, element)?;
                             b.ins().sdiv(bytes, scale)
                         });
                     }
@@ -2693,9 +2706,12 @@ impl Lower<'_> {
                 .any(|name| self.referenced_labels.contains(*name));
             if !live && !referenced {
                 match tail {
-                    CheckedStmt::Decl(CheckedDecl { name, ty, storage, .. }) => {
+                    CheckedStmt::Decl(CheckedDecl { name, ty, storage, runtime_bounds, .. }) => {
                         if !matches!(*storage, StorageClass::Default | StorageClass::Register) {
                             return Err(format!("M2.5 does not emit storage-class local '{name}'"));
+                        }
+                        for (id, bound) in runtime_bounds {
+                            self.bind_storage(b, &mini_c_sema::vla_bound_name(*id), &bound.ty)?;
                         }
                         self.bind_storage(b, name, ty)?;
                     }
@@ -2768,9 +2784,16 @@ impl Lower<'_> {
                 b.switch_to_block(target);
                 self.statement(b, body)
             },
-            CheckedStmt::Decl(CheckedDecl { name, ty, storage, initializer, .. }) => {
+            CheckedStmt::Decl(CheckedDecl { name, ty, storage, initializer, runtime_bounds, .. }) => {
                 if !matches!(*storage, StorageClass::Default | StorageClass::Register) {
                     return Err(format!("M2.5 does not emit storage-class local '{name}'"));
+                }
+                if ty.is_variable_array() {
+                    return Err("automatic VLA storage requires dynamic stack allocation".into());
+                }
+                for (id, bound) in runtime_bounds {
+                    let value = self.expression(b, bound)?;
+                    self.bind(b, &mini_c_sema::vla_bound_name(*id), &bound.ty, Some(value))?;
                 }
                 self.bind(b, name, ty, None)?;
                 if let Some(initializer) = initializer {
