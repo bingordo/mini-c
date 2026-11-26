@@ -572,6 +572,70 @@ fn c99_runtime_sizeof_evaluates_each_bound_once() {
 }
 
 #[test]
+fn native_conversion_warning_is_opt_in_and_promotable() {
+    let source = "int f(int x) { short y = x; return y; }";
+    let mut policy = WarningPolicy::default();
+    let (initial, failed) =
+        format_semantic_warnings("narrow.c", source, false, &policy).unwrap();
+    assert!(initial.is_empty());
+    assert!(!failed);
+    policy.apply_flag("-Wconversion").unwrap();
+    let (warnings, failed) =
+        format_semantic_warnings("narrow.c", source, false, &policy).unwrap();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("[-Wconversion]"), "{warnings:?}");
+    assert!(!failed);
+    policy.apply_flag("-Werror=conversion").unwrap();
+    let (errors, failed) =
+        format_semantic_warnings("narrow.c", source, false, &policy).unwrap();
+    assert!(failed);
+    assert!(errors[0].contains(": error:"), "{errors:?}");
+}
+
+#[test]
+fn native_sign_conversion_respects_error_and_suppression() {
+    let source = "unsigned int f(int x) { unsigned int y = x; return y; }";
+    let mut policy = WarningPolicy::default();
+    policy.apply_flag("-Wsign-conversion").unwrap();
+    let (warnings, failed) =
+        format_semantic_warnings("sign.c", source, false, &policy).unwrap();
+    assert!(!failed);
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("[-Wsign-conversion]"));
+    policy.apply_flag("-Werror=sign-conversion").unwrap();
+    let (errors, failed) =
+        format_semantic_warnings("sign.c", source, false, &policy).unwrap();
+    assert!(failed);
+    assert!(errors[0].contains(": error:"), "{errors:?}");
+    policy.apply_flag("-Wno-sign-conversion").unwrap();
+    let (none, failed) =
+        format_semantic_warnings("sign.c", source, false, &policy).unwrap();
+    assert!(none.is_empty());
+    assert!(!failed);
+}
+
+#[test]
+fn native_sign_compare_warning_and_error_promotion() {
+    let source = "int f(int x, unsigned int y) { return x < y; }";
+    let mut policy = WarningPolicy::default();
+    policy.apply_flag("-Wall").unwrap();
+    let (warnings, failed) =
+        format_semantic_warnings("compare.c", source, false, &policy).unwrap();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(!failed);
+    assert!(warnings[0].contains("[-Wsign-compare]"));
+    policy.apply_flag("-Werror=sign-compare").unwrap();
+    let (_, failed) =
+        format_semantic_warnings("compare.c", source, false, &policy).unwrap();
+    assert!(failed);
+    policy.apply_flag("-Wno-sign-compare").unwrap();
+    let (none, failed) =
+        format_semantic_warnings("compare.c", source, false, &policy).unwrap();
+    assert!(none.is_empty());
+    assert!(!failed);
+}
+
+#[test]
 #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
 fn c99_saved_vla_pointer_strides_execute() {
     use std::process::Command;

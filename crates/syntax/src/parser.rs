@@ -2078,12 +2078,31 @@ impl ItemSource for Parser<'_> {
         let leading_inline = self.peek()?.is_some_and(|t|
             matches!(t.text.as_ref(), "inline" | "__inline" | "__inline__"));
         if leading_inline { self.take()?; }
-        let storage = match self.peek()?.map(|t| t.text).as_deref() {
+        let leading_tls = self.peek()?.is_some_and(|t|
+            matches!(t.text.as_ref(), "__thread" | "_Thread_local"));
+        if leading_tls { self.take()?; }
+        let mut storage = match self.peek()?.map(|t| t.text).as_deref() {
             Some("static") => { self.take()?; StorageClass::Static },
             Some("extern") => { self.take()?; StorageClass::Extern },
             Some("register") => { self.take()?; StorageClass::Register },
             _ => StorageClass::Default,
         };
+        let trailing_tls = self.peek()?.is_some_and(|t|
+            matches!(t.text.as_ref(), "__thread" | "_Thread_local"));
+        if trailing_tls { self.take()?; }
+        if leading_tls && trailing_tls {
+            return Err(Diagnostic::coded(storage_span, DiagnosticCode::SyntaxInvalidDeclaration,
+                "duplicate thread storage specifier"));
+        }
+        if leading_tls || trailing_tls {
+            storage = match storage {
+                StorageClass::Default => StorageClass::ThreadLocal,
+                StorageClass::Extern => StorageClass::ExternThreadLocal,
+                StorageClass::Static => StorageClass::StaticThreadLocal,
+                _ => return Err(Diagnostic::coded(storage_span, DiagnosticCode::SyntaxInvalidDeclaration,
+                    "thread storage cannot combine with register")),
+            };
+        }
         if is_typedef && storage != StorageClass::Default {
             return Err(Diagnostic::coded(storage_span, DiagnosticCode::SyntaxInvalidDeclaration,
                 "typedef cannot combine with storage class"));
@@ -2123,6 +2142,10 @@ impl ItemSource for Parser<'_> {
                 "inline cannot be combined with typedef"));
         }
         if self.peek()?.is_some_and(|t| t.text.as_ref() == ";") {
+            if storage.is_thread_local() {
+                return Err(Diagnostic::coded(storage_span, DiagnosticCode::SyntaxInvalidDeclaration,
+                    "thread storage requires an object declarator"));
+            }
             if is_inline {
                 return Err(Diagnostic::coded(storage_span, DiagnosticCode::SyntaxInvalidDeclaration,
                     "inline requires a function declarator"));
@@ -2168,6 +2191,10 @@ impl ItemSource for Parser<'_> {
         self.pending_file_binding = Some((name.clone(), self.scopes.lookup(&name)));
         self.scopes.declare(&name, if is_typedef { Binding::Typedef } else { Binding::Ordinary });
 
+        if storage.is_thread_local() && matches!(&ty, Type::Function { .. } | Type::VariadicFunction { .. } | Type::UnprototypedFunction { .. }) {
+            return Err(Diagnostic::coded(storage_span, DiagnosticCode::SyntaxInvalidDeclaration,
+                "thread storage requires an object declarator"));
+        }
         let old_style = matches!(&ty, Type::UnprototypedFunction { .. });
         let identifier_list = old_style && definition_params.as_ref().is_some_and(|p| !p.is_empty());
         if identifier_list || self.peek()?.is_some_and(|token| token.text.as_ref() == "{") {

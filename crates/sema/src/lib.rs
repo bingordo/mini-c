@@ -396,6 +396,8 @@ pub struct Symbol {
     pub enum_value: Option<i64>,
     /// C register object: the address of this object cannot be computed.
     pub is_register: bool,
+    /// C thread storage duration, independently of linkage.
+    pub is_thread_local: bool,
     // For old-style definitions, retain the promoted ABI separately from the visible C type.
     old_style_signature: Option<CType>,
     // Only file-scope function declarations contribute to C99 6.7.4.
@@ -458,6 +460,7 @@ pub struct Checker {
     recovery_limit: usize,
     warning_policy: WarningPolicy,
     emitted_warnings: Vec<ReportedDiagnostic>,
+    conversion_warnings: RefCell<Vec<ReportedDiagnostic>>,
     warning_scopes: RefCell<Vec<HashMap<String, UsageBinding>>>,
 }
 
@@ -466,6 +469,7 @@ impl Checker {
         Ok(Self { target: target.validate()?, next_tag_identity: Cell::new(1), saw_atomic_aggregate: Cell::new(false), next_static_compound_identity: Cell::new(1), tags: RefCell::new(vec![HashMap::new()]), tag_definitions: RefCell::new(HashMap::new()), globals: HashMap::new(), next_vla_bound: 0, capturing_vla_bounds: None, checking_inline_body: false, inline_body_violation: RefCell::new(None), locals: Vec::new(), result_ty: None, loop_depth: 0, switches: Vec::new(), function_labels: HashMap::new(), rollback_log: None, statement_undo: Vec::new(),
             recovery_errors: None, recovery_limit: 0,
             warning_policy: WarningPolicy::default(), emitted_warnings: Vec::new(),
+            conversion_warnings: RefCell::new(Vec::new()),
             warning_scopes: RefCell::new(Vec::new()) })
     }
 
@@ -476,7 +480,10 @@ impl Checker {
 
     /// Retrieve diagnostics emitted by successfully checked items.
     pub fn take_warnings(&mut self) -> Vec<ReportedDiagnostic> {
-        std::mem::take(&mut self.emitted_warnings)
+        let mut reports = std::mem::take(&mut self.emitted_warnings);
+        reports.extend(std::mem::take(self.conversion_warnings.get_mut()));
+        reports.sort_by_key(|report| report.diagnostic.span.lo);
+        reports
     }
 
     pub fn global(&self, name: &str) -> Option<&Symbol> { self.globals.get(name) }
@@ -1044,7 +1051,7 @@ impl Checker {
         // atomic stores are observable; only linked aliases are exempt.
         let warning_exempt = linkage != Linkage::None;
         self.locals.last_mut().expect("local scope").insert(name.to_owned(), Symbol {
-            ty, kind, linkage, defined: true, asm_label: None, enum_value: None, is_register, old_style_signature: None, non_inline_or_extern: false, inline_declaration: None,
+            ty, kind, linkage, defined: true, asm_label: None, enum_value: None, is_register, is_thread_local: false, old_style_signature: None, non_inline_or_extern: false, inline_declaration: None,
         });
         if kind == SymbolKind::Object {
             // Extern aliases are not automatic locals for unused diagnostics.
@@ -1058,6 +1065,11 @@ impl Checker {
         &mut self, name: &str, ty: CType, kind: SymbolKind,
         defining: bool, storage: StorageClass, span: Span
     ) -> Result<(), Diagnostic> {
+        let is_thread_local = storage.is_thread_local();
+        if is_thread_local && kind != SymbolKind::Object {
+            return Err(type_error(span, "thread storage requires an object declaration"));
+        }
+        let storage = storage.linkage_storage();
         let requested = if matches!(kind, SymbolKind::Typedef | SymbolKind::Enumerator) {
             Linkage::None
         } else if storage == StorageClass::Static {
@@ -1078,6 +1090,9 @@ impl Checker {
             }
         }
         if let Some(prior) = self.globals.get_mut(name) {
+            if prior.is_thread_local != is_thread_local {
+                return Err(type_error(span, format!("conflicting thread storage for '{name}'")));
+            }
             if let Some(abi) = &prior.old_style_signature {
                 if !matches!(&ty, CType::UnprototypedFunction { .. }) && abi.composite(&ty).is_none() {
                     return Err(Diagnostic::coded(span, DiagnosticCode::SemanticConflictingDeclaration,
@@ -1100,7 +1115,7 @@ impl Checker {
             prior.defined |= defining;
         } else {
             self.globals.insert(name.to_owned(), Symbol {
-                ty, kind, linkage: requested, defined: defining, asm_label: None, enum_value: None, is_register: false, old_style_signature: None, non_inline_or_extern: false, inline_declaration: None,
+                ty, kind, linkage: requested, defined: defining, asm_label: None, enum_value: None, is_register: false, is_thread_local, old_style_signature: None, non_inline_or_extern: false, inline_declaration: None,
             });
         }
         Ok(())
@@ -1177,6 +1192,7 @@ impl Checker {
     /// stream consumed by subsequent successful items.
     pub fn check_item(&mut self, item: ExternalItem) -> Result<CheckedItem, Diagnostic> {
         let previous = self.emitted_warnings.len();
+        let previous_conversions = self.conversion_warnings.borrow().len();
         let result = self.check_item_impl(item).and_then(|checked| {
             // No additional tree traversal on units without atomic aggregates.
             // Type-only declarations and unused prototypes may introduce the
@@ -1200,6 +1216,7 @@ impl Checker {
         });
         if result.is_err() {
             self.emitted_warnings.truncate(previous);
+            self.conversion_warnings.get_mut().truncate(previous_conversions);
         }
         result
     }
@@ -1726,7 +1743,7 @@ impl Checker {
         // complete type at its declaration, not merely at TU finalization.
         // This differs from external-linkage tentative definitions, which
         // may be completed by a later tag definition.
-        if kind == SymbolKind::Object && decl.storage == StorageClass::Static
+        if kind == SymbolKind::Object && decl.storage.linkage_storage() == StorageClass::Static
             && ty.size_bytes(self.target).is_none()
         {
             return Err(type_error(decl.span,
@@ -1887,7 +1904,7 @@ impl Checker {
         self.locals.last_mut().expect("function scope").insert("__func__".into(), Symbol {
             ty: name_type, kind: SymbolKind::Object, linkage: Linkage::None,
             defined: true, asm_label: Some(implicit_function_name_symbol(&func.name)),
-            enum_value: None, is_register: false, old_style_signature: None, non_inline_or_extern: false, inline_declaration: None,
+            enum_value: None, is_register: false, is_thread_local: false, old_style_signature: None, non_inline_or_extern: false, inline_declaration: None,
         });
         for (parsed_param, param) in func.params.iter().zip(&params) {
             if let Err(err) = self.define_local(&param.name, param.ty.clone(),
@@ -2491,11 +2508,11 @@ impl Checker {
                 && const_eval::evaluate(constant, self.target) == Ok(0);
             let address_of_global = match original {
                 Expr::Unary(UnOp::Address, inner) => match inner.without_location() {
-                    Expr::Name(name) => self.globals.get(name).is_some_and(|s| s.kind != SymbolKind::Typedef),
+                    Expr::Name(name) => self.globals.get(name).is_some_and(|s| !s.is_thread_local && s.kind != SymbolKind::Typedef),
                     _ => false,
                 },
                 Expr::Name(name) => self.globals.get(name).is_some_and(|s|
-                    matches!(&s.ty, CType::Array(..)) ||
+                    (!s.is_thread_local && matches!(&s.ty, CType::Array(..))) ||
                     (s.kind == SymbolKind::Function && matches!(ty, CType::Pointer(inner)
                         if matches!(inner.as_ref(), CType::Function { .. } | CType::VariadicFunction { .. } | CType::UnprototypedFunction { .. })))),
                 Expr::StringLiteral(_) => matches!(ty, CType::Pointer(element)
@@ -2585,6 +2602,75 @@ impl Checker {
         }
     }
 
+    /// Shared implicit signedness conversion diagnostic. Explicit casts use
+    /// convert() directly and do not enter this path.
+    fn warn_implicit_sign_conversion(
+        &self, expr: &CheckedExpr, value_ty: &CType, span: Span,
+    ) {
+        if self.warning_policy.enabled("sign-conversion") {
+            if let (CType::Integer { rank: source_rank, unsigned: source_unsigned },
+                    CType::Integer { rank: dest_rank, unsigned: dest_unsigned }) =
+                (expr.ty.unqualified(), value_ty.unqualified())
+            {
+                let source_bits = self.target.bits(*source_rank);
+                let dest_bits = self.target.bits(*dest_rank);
+                let possibly_changes_value = source_unsigned != dest_unsigned
+                    && *dest_rank != IntRank::Bool
+                    && !(!*source_unsigned && *source_rank == IntRank::Bool)
+                    && !(*source_unsigned && !*dest_unsigned && dest_bits > source_bits);
+                if possibly_changes_value {
+                    let fits = const_eval::evaluate(expr, self.target).ok()
+                        .is_some_and(|value| {
+                            if *dest_unsigned {
+                                value >= 0 && value <= ((1i128 << dest_bits) - 1)
+                            } else {
+                                value >= -(1i128 << (dest_bits - 1))
+                                    && value < (1i128 << (dest_bits - 1))
+                            }
+                        });
+                    if !fits {
+                        self.conversion_warnings.borrow_mut().push(
+                            ReportedDiagnostic::warning(
+                                Diagnostic::semantic(span,
+                                    "implicit integer signedness conversion may change value"),
+                                "sign-conversion",
+                            )
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// GCC-style mixed-sign integer comparison warning. Only report when
+    /// the usual arithmetic conversions make a signed operand unsigned.
+    /// A wider signed common type can represent both operands safely.
+    fn warn_sign_comparison(
+        &self, left: &CheckedExpr, right: &CheckedExpr, common: &CType,
+        span: Span,
+    ) {
+        if !self.warning_policy.enabled("sign-compare") { return; }
+        let CType::Integer { unsigned: true, .. } = common.unqualified()
+            else { return; };
+        let signed_operand = match (left.ty.unqualified(), right.ty.unqualified()) {
+            (CType::Integer { unsigned: false, .. },
+                CType::Integer { unsigned: true, .. }) => left,
+            (CType::Integer { unsigned: true, .. },
+                CType::Integer { unsigned: false, .. }) => right,
+            _ => return,
+        };
+        // GCC ignores nonnegative integer constants in these comparisons.
+        if const_eval::evaluate(signed_operand, self.target)
+            .is_ok_and(|value| value >= 0) {
+            return;
+        }
+        self.conversion_warnings.borrow_mut().push(ReportedDiagnostic::warning(
+            Diagnostic::semantic(span,
+                "comparison between signed and unsigned integer expressions"),
+            "sign-compare",
+        ));
+    }
+
     fn convert_for_assignment(&self, expr: CheckedExpr, ty: &CType, _original: &Expr, span: Span) -> Result<CheckedExpr, Diagnostic> {
         // The source array undergoes the standard array-to-pointer conversion
         // before checking scalar assignment compatibility.
@@ -2629,6 +2715,40 @@ impl Checker {
         if !compatible {
             return Err(Diagnostic::coded(span, DiagnosticCode::SemanticIncompatibleAssignment, format!("incompatible assignment: {:?} to {:?}", expr.ty, ty)));
         }
+        // Warn only for implicit integer width loss. Signedness-only
+        // conversions belong to a separate -Wsign-conversion analysis.
+        if self.warning_policy.enabled("conversion") {
+            if let (CType::Integer { rank: src, .. },
+                    CType::Integer { rank: dst, unsigned }) =
+                (expr.ty.unqualified(), value_ty.unqualified())
+            {
+                let source_bits = self.target.bits(*src);
+                let dest_bits = self.target.bits(*dst);
+                if dest_bits < source_bits && *dst != IntRank::Bool {
+                    // GCC does not warn for an integer constant whose value
+                    // fits the destination representation.
+                    let fits = const_eval::evaluate(&expr, self.target).ok()
+                        .is_some_and(|value| {
+                            if *unsigned {
+                                value >= 0 && value <= ((1i128 << dest_bits) - 1)
+                            } else {
+                                value >= -(1i128 << (dest_bits - 1))
+                                    && value < (1i128 << (dest_bits - 1))
+                            }
+                        });
+                    if !fits {
+                        self.conversion_warnings.borrow_mut().push(
+                            ReportedDiagnostic::warning(
+                                Diagnostic::semantic(span,
+                                    "implicit integer conversion may change value"),
+                                "conversion",
+                            )
+                        );
+                    }
+                }
+            }
+        }
+        self.warn_implicit_sign_conversion(&expr, &value_ty, span);
         Ok(self.convert(expr, &value_ty))
     }
 
@@ -3460,6 +3580,17 @@ impl Checker {
                         if has_float { "operator requires compatible arithmetic operands" }
                         else { "operator requires compatible integer operands" })
                 })?;
+                // Usual arithmetic conversions also implicitly change the
+                // operand type. Diagnose sign changes on the operands, not
+                // on the arithmetic result, preserving explicit-cast opt-out.
+                if relation {
+                    self.warn_sign_comparison(&left, &right, &common, span);
+                } else {
+                    self.warn_implicit_sign_conversion(&left, &common,
+                        lhs.location().unwrap_or(span));
+                    self.warn_implicit_sign_conversion(&right, &common,
+                        rhs.location().unwrap_or(span));
+                }
                 let left = self.convert(left, &common);
                 let right = self.convert(right, &common);
                 let result = if relation { CType::int() } else { common };
