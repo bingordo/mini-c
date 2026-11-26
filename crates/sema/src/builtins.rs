@@ -7,6 +7,7 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuiltinId {
     Ctz32,
+    ByteSwap(u8),
     AtomicLoadN,
     AtomicStoreN,
     AtomicExchangeN,
@@ -24,6 +25,7 @@ pub enum BuiltinId {
 pub enum LoweringClass {
     /// Checked and implemented in the existing expression/backend path.
     IntegerCtz,
+    IntegerByteSwap,
     /// Source contract is recognized, but must not use generic call lowering.
     AtomicIrRequired,
 }
@@ -52,11 +54,26 @@ const fn atomic(id: BuiltinId, name: &'static str, count: usize, order: usize,
 
 /// Fixed spellings and signatures. Unsupported by-address GNU atomic overloads
 /// are intentionally absent; source diagnostics must not infer their ABI.
-pub const REGISTRY: [BuiltinSpec; 12] = [
+pub const REGISTRY: [BuiltinSpec; 15] = [
     BuiltinSpec {
         id: BuiltinId::Ctz32, name: "__builtin_ctz", argument_count: 1,
         memory_order_argument: None, failure_order_argument: None,
         weak_argument: None, lowering: LoweringClass::IntegerCtz,
+    },
+    BuiltinSpec {
+        id: BuiltinId::ByteSwap(16), name: "__builtin_bswap16", argument_count: 1,
+        memory_order_argument: None, failure_order_argument: None,
+        weak_argument: None, lowering: LoweringClass::IntegerByteSwap,
+    },
+    BuiltinSpec {
+        id: BuiltinId::ByteSwap(32), name: "__builtin_bswap32", argument_count: 1,
+        memory_order_argument: None, failure_order_argument: None,
+        weak_argument: None, lowering: LoweringClass::IntegerByteSwap,
+    },
+    BuiltinSpec {
+        id: BuiltinId::ByteSwap(64), name: "__builtin_bswap64", argument_count: 1,
+        memory_order_argument: None, failure_order_argument: None,
+        weak_argument: None, lowering: LoweringClass::IntegerByteSwap,
     },
     atomic(BuiltinId::AtomicLoadN, "__atomic_load_n", 2, 1, None, None),
     atomic(BuiltinId::AtomicStoreN, "__atomic_store_n", 3, 2, None, None),
@@ -78,7 +95,7 @@ pub const REGISTRY: [BuiltinSpec; 12] = [
 pub fn valid_atomic_orders(id: BuiltinId, success: u8, failure: Option<u8>) -> bool {
     if success > 5 { return false; }
     match id {
-        BuiltinId::Ctz32 => false,
+        BuiltinId::Ctz32 | BuiltinId::ByteSwap(_) => false,
         BuiltinId::AtomicLoadN => failure.is_none() && matches!(success, 0|1|2|5),
         BuiltinId::AtomicStoreN => failure.is_none() && matches!(success, 0|3|5),
         BuiltinId::AtomicCompareExchangeN => {
@@ -118,7 +135,7 @@ mod tests {
         // The source checker must reject invalid order encodings before any
         // target-specific legalization or native code generation is attempted.
         for spec in REGISTRY {
-            if spec.id == BuiltinId::Ctz32 {
+            if spec.lowering != LoweringClass::AtomicIrRequired {
                 continue;
             }
             for success in 0..=u8::MAX {
@@ -163,6 +180,10 @@ mod tests {
                 assert_eq!(spec.id, BuiltinId::Ctz32);
                 assert_eq!(spec.argument_count, 1);
                 assert_eq!(spec.memory_order_argument, None);
+            } else if let BuiltinId::ByteSwap(bits)=spec.id {
+                assert!(matches!(bits,16|32|64));
+                assert_eq!(spec.argument_count,1);
+                assert_eq!(spec.memory_order_argument,None);
             } else {
                 assert!(spec.name.starts_with("__atomic_"));
                 assert!(spec.memory_order_argument.is_some());
