@@ -99,6 +99,7 @@ fn collect_semantic_warnings(
     while let Some(item) = parser.next_item()? {
         checker.check_item(item)?;
     }
+    checker.finish_translation_unit()?;
     Ok(checker.take_warnings())
 }
 
