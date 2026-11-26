@@ -133,9 +133,32 @@ fn write_only_warnings_can_be_disabled_without_disabling_unused_variables() {
 }
 
 #[test]
-fn volatile_stores_do_not_produce_unused_warnings() {
+fn volatile_auto_store_still_warns_like_gcc() {
     let reports = warning_names(
         "int f(void) { volatile int x = 0; x = 1; return 0; }",
         &["-Wall"]);
+    assert_eq!(reports, vec![
+        ("variable 'x' set but not used".into(), "unused-but-set-variable"),
+    ]);
+}
+
+#[test]
+fn compound_assignment_counts_as_read_in_gcc_compatibility_mode() {
+    let reports = warning_names(
+        "int f(void) { int x = 0; x += 1; return 0; }", &["-Wall"]);
     assert!(reports.is_empty(), "{reports:?}");
+}
+
+#[test]
+fn postfix_increment_counts_as_read_in_gcc_compatibility_mode() {
+    let reports = warning_names(
+        "int f(void) { int x = 0; x++; return 0; }", &["-Wall"]);
+    assert!(reports.is_empty(), "{reports:?}");
+}
+
+#[test]
+fn volatile_unused_declaration_reports_unused_variable() {
+    let reports = warning_names(
+        "int f(void) { volatile int x = 0; return 0; }", &["-Wall"]);
+    assert_eq!(reports, vec![("unused variable 'x'".into(), "unused-variable")]);
 }
