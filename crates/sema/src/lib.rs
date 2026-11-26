@@ -930,14 +930,15 @@ impl Checker {
                 "shadow",
             ));
         }
-        let warning_exempt = linkage != Linkage::None
-            || ty.is_volatile() || ty.is_atomic();
+        // GCC diagnoses unused automatic bindings even when volatile or
+        // atomic stores are observable; only linked aliases are exempt.
+        let warning_exempt = linkage != Linkage::None;
         self.locals.last_mut().expect("local scope").insert(name.to_owned(), Symbol {
             ty, kind, linkage, defined: true, asm_label: None, enum_value: None, is_register, old_style_signature: None,
         });
         if kind == SymbolKind::Object {
-            // Extern aliases, volatile and atomic objects are not candidates
-            // for set-but-unused warnings: their operations are observable.
+            // Extern aliases are not automatic locals for unused diagnostics.
+            // Volatile and atomic locals still participate, matching GCC.
             self.register_warning_binding(name, span, false, warning_exempt);
         }
         Ok(())
