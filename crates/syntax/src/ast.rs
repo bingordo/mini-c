@@ -119,7 +119,7 @@ pub enum Type {
     Pointer(Box<Type>),
     Array(Box<Type>, Option<Box<Expr>>),
     /// Unspecified variable length at function prototype scope.
-    StarArray(Box<Type>),
+    StarArray(Box<Type>, Qualifiers),
     /// C99 outermost array parameter bracket contract. Qualifiers apply
     /// to the adjusted pointer, not to the element type.
     ParameterArray {
