@@ -5007,3 +5007,36 @@ fn gnu_atomic_pointer_builtins_keep_checked_value_and_byte_offset_types() {
     reject("void f(int **p,int *v){__atomic_fetch_add(p,v,5);}","integer byte offset");
     reject("void f(int **p,long **e,int *v){__atomic_compare_exchange_n(p,e,v,0,5,2);}","matching writable");
 }
+
+#[test]
+fn gnu_nan_and_isnan_checked_float_results() {
+    use mini_c_syntax::ast::FloatRank;
+    for (name,rank) in [
+        ("__builtin_nanf",FloatRank::Float),
+        ("__builtin_nan",FloatRank::Double),
+    ] {
+        let s=format!(r#"double f(void) {{ return {name}(""); }}"#);
+        check(&s).expect("GNU empty quiet NaN");
+        let s=format!(r#"int f(void) {{ return __builtin_isnan({name}("")); }}"#);
+        check(&s).expect("GNU isnan on quiet NaN");
+        let s=format!(r#"int f({} x) {{ return __builtin_isnan(x); }}"#,
+            if rank==FloatRank::Float {"float"} else {"double"});
+        let items=check(&s).expect("checked isnan function");
+        let CheckedItem::Function(f)=&items[0] else{panic!("function")};
+        let CheckedStmt::Block(body)=&f.body else{panic!("body")};
+        let CheckedStmt::Return(Some(expr))=&body[0] else{panic!("return")};
+        assert_eq!(expr.ty,CType::int());
+        assert!(matches!(&expr.kind,CheckedExprKind::BuiltinIsNan(inner)
+            if inner.ty==CType::Floating(rank)));
+    }
+    for s in [
+        "int f(void){return __builtin_isnan();}",
+        "int f(float x){return __builtin_isnan(x,x);}",
+        "int f(void){return __builtin_isnan(1);}",
+        "int f(void){return __builtin_isnan((void*)0);}",
+        "float f(void){return __builtin_nanf(\"0x10\");}",
+        "double f(void){return __builtin_nan(\"2\");}",
+    ] {
+        assert!(check(s).is_err(),"invalid GNU builtin accepted: {s}");
+    }
+}
