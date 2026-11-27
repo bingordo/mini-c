@@ -1853,6 +1853,64 @@ impl Checker {
         Ok(())
     }
 
+    /// A definition's parameter declarations can reference earlier parameters.
+    /// Use a temporary lookup scope while capturing bounds; the ordinary
+    /// body scope subsequently registers the checked parameters and warnings.
+    fn resolve_definition_parameters(&mut self, func:&Function) -> Result<Vec<CheckedDecl>,Diagnostic> {
+        self.locals.push(HashMap::new());
+        let checked=(|| {
+            let mut params = Vec::new();
+            for param in &func.params {
+                if !matches!(param.storage, StorageClass::Default | StorageClass::Register) {
+                    return Err(type_error(param.span, "function parameter requires automatic or register storage"));
+                }
+                let (resolved,runtime_bounds) = self.resolve_local_type(&param.ty, param.span)?;
+                let ty = self.adjust_parameter(resolved);
+                let ty = self.complete_tag_type(ty, param.span)?;
+                if !ty.is_object() {
+                    return Err(type_error(param.span, "function parameter cannot have void or function type"));
+                }
+                if param.storage == StorageClass::Register && !ty.is_scalar() {
+                    return Err(type_error(param.span, "register parameter requires a scalar type"));
+                }
+                if !param.name.is_empty() {
+                    let prior=self.locals.last_mut().expect("parameter scope").insert(param.name.clone(),Symbol {
+                        ty:ty.clone(),kind:SymbolKind::Object,linkage:Linkage::None,defined:true,
+                        asm_label:None,enum_value:None,is_register:param.storage==StorageClass::Register,
+                        is_thread_local:false,old_style_signature:None,non_inline_or_extern:false,inline_declaration:None,
+                    });
+                    if prior.is_some() {
+                        return Err(Diagnostic::coded(param.name_span.unwrap_or(param.span),DiagnosticCode::SemanticDuplicateDeclaration,
+                            format!("duplicate parameter '{}'",param.name)));
+                    }
+                }
+                params.push(CheckedDecl {
+                    storage: param.storage, runtime_bounds, is_inline: false, name: param.name.clone(), ty,
+                    linkage: Linkage::None, asm_label: None, initializer: None, span: param.span,
+                });
+            }
+            Ok(params)
+        })();
+        self.locals.pop();
+        checked
+    }
+
+    /// Saved extent identities belong to the defining function, never to
+    /// its externally visible signature. At prototype scope variable array
+    /// bounds are unspecified; the checked local parameter retains its IDs.
+    fn parameter_signature_type(ty:&CType)->CType {
+        let recur=|inner:&CType| Box::new(Self::parameter_signature_type(inner));
+        match ty {
+            CType::VariableArray(element,_)=>CType::Array(recur(element),None),
+            CType::Array(element,count)=>CType::Array(recur(element),*count),
+            CType::Pointer(inner)=>CType::Pointer(recur(inner)),
+            CType::Qualified(inner)=>CType::Qualified(recur(inner)),
+            CType::Volatile(inner)=>CType::Volatile(recur(inner)),
+            CType::Atomic(inner)=>CType::Atomic(recur(inner)),
+            _=>ty.clone(),
+        }
+    }
+
     fn check_function(&mut self, func: Function) -> Result<CheckedFunction, Diagnostic> {
         if func.storage == StorageClass::Register {
             return Err(type_error(func.span, "function cannot have register storage class"));
@@ -1865,30 +1923,12 @@ impl Checker {
         if matches!(result.unqualified(), CType::Array(..)) {
             return Err(type_error(func.span, "function cannot return an array"));
         }
-        let mut params = Vec::new();
-        for param in &func.params {
-            if !matches!(param.storage, StorageClass::Default | StorageClass::Register) {
-                return Err(type_error(param.span, "function parameter requires automatic or register storage"));
-            }
-            let resolved = self.resolve(&param.ty, param.span)?;
-            let ty = self.adjust_parameter(resolved);
-            let ty = self.complete_tag_type(ty, param.span)?;
-            if !ty.is_object() {
-                return Err(type_error(param.span, "function parameter cannot have void or function type"));
-            }
-            if param.storage == StorageClass::Register && !ty.is_scalar() {
-                return Err(type_error(param.span, "register parameter requires a scalar type"));
-            }
-            params.push(CheckedDecl {
-                storage: param.storage, runtime_bounds: Box::default(), is_inline: false, name: param.name.clone(), ty,
-                linkage: Linkage::None, asm_label: None, initializer: None, span: param.span,
-            });
-        }
+        let params = self.resolve_definition_parameters(&func)?;
         let signature = CType::Function {
             result: Box::new(result.clone()),
             params: params.iter().map(|p| {
                 let ty = p.ty.unqualified();
-                if !func.old_style { return ty.clone(); }
+                if !func.old_style { return Self::parameter_signature_type(ty); }
                 if matches!(ty, CType::Floating(mini_c_syntax::ast::FloatRank::Float)) {
                     CType::Floating(mini_c_syntax::ast::FloatRank::Double)
                 } else { self.target.promote(ty) }

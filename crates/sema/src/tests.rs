@@ -5101,3 +5101,22 @@ fn c11_header_fetch_scales_pointer_offsets_before_raw_atomic_operation() {
     }
     reject("void f(void **p){__atomic_c11_fetch_add(p,1,5);}","complete fixed-size element");
 }
+
+#[test]
+fn c99_definition_parameter_vla_extent_scope() {
+    for source in [
+        "int f(int n,int a[n]){return a[n-1];}",
+        "int f(int n,int m,int a[n][m]){return a[1][m-1];}",
+        "unsigned long f(int n,int (*a)[n++]){return sizeof(*a);}",
+        "int f(int n,int (*a)[n]){return (*a)[0];} int g(void){int a[4];return f(4,&a);}",
+    ] { check(source).unwrap_or_else(|e|panic!("{source}: {e:?}")); }
+    for source in [
+        "int f(int a[n],int n){return 0;}",
+        "int f(int n,int a[n],int n){return 0;}",
+    ] { assert!(check(source).is_err(),"{source}"); }
+    let items=check("unsigned long f(int n,int (*a)[n++]){return sizeof(*a);}").unwrap();
+    let CheckedItem::Function(f)=&items[0] else{panic!("function")};
+    assert_eq!(f.params[1].runtime_bounds.len(),1);
+    assert!(f.params[1].ty.is_variably_modified());
+    assert!(!f.signature.is_variably_modified());
+}
