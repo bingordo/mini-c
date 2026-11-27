@@ -5146,3 +5146,27 @@ fn gnu_statement_expressions_check_scopes_results_and_unsupported_transfers() {
     assert_eq!(result.as_ref().unwrap().category,Category::Value);
     assert!(const_eval::evaluate(expr,Target::default()).is_err());
 }
+
+#[test]
+fn gnu_declarator_alignment_preserves_only_exact_natural_layout() {
+    for source in [
+        "long a __attribute__((aligned(8)));",
+        "long a __attribute__((__aligned__(__alignof__(long))));",
+        "typedef long Word __attribute__((aligned(8))); Word a;",
+        "struct S {long x;}; struct S a __attribute__((aligned(8)));",
+        "int f(void){long x __attribute__((aligned(8)))=42;return x;}",
+        "int a[4] __attribute__((aligned(4)));",
+    ] {
+        check(source).unwrap_or_else(|e|panic!("{source}: {e:?}"));
+    }
+    for source in [
+        "long a __attribute__((aligned(16)));",
+        "typedef long Word __attribute__((aligned(1))); Word a;",
+        "int a __attribute__((aligned(3)));",
+        "int a __attribute__((aligned(__alignof__(void))));",
+        "int f(void) __attribute__((aligned(16)));",
+        "int a __attribute__((aligned));",
+    ] {
+        assert!(check(source).is_err(), "unsupported alignment admitted: {source}");
+    }
+}
