@@ -19,7 +19,7 @@ mod asm_gp_mov_tests;
 
 use std::collections::{HashMap, HashSet};
 use std::cell::{Cell, RefCell};
-use mini_c_syntax::ast::{BinOp, Decl, Designator, Expr, Function, Span, Stmt, StorageClass, TagKind, Type, UnOp};
+use mini_c_syntax::ast::{BinOp, Decl, Designator, Expr, FloatRank, Function, Span, Stmt, StorageClass, TagKind, Type, UnOp};
 use mini_c_syntax::diag::{Diagnostic, DiagnosticCode, ReportedDiagnostic, WarningPolicy};
 use mini_c_syntax::stream::{ExternalItem, ItemSource};
 
@@ -2754,6 +2754,84 @@ impl Checker {
         ));
     }
 
+    /// Warn only at implicit assignment-like conversions. The expression
+    /// checker retains exact floating types; explicit casts go through
+    /// convert() directly and are intentionally excluded here.
+    fn warn_implicit_float_conversion(
+        &self, expr: &CheckedExpr, target_ty: &CType, span: Span,
+    ) {
+        if !self.warning_policy.enabled("float-conversion")
+            && !self.warning_policy.enabled("conversion") {
+            return;
+        }
+        fn precision(rank: FloatRank) -> u32 {
+            match rank {
+                FloatRank::Float => 24,
+                FloatRank::Double => 53,
+                FloatRank::LongDouble => 64,
+                FloatRank::Float128 => 113,
+            }
+        }
+        let floating_constant = match &expr.kind {
+            CheckedExprKind::FloatLiteral(token) => token
+                .trim_end_matches(['f', 'F', 'l', 'L'])
+                .parse::<f64>().ok(),
+            _ => None,
+        };
+        let group = match (expr.ty.unqualified(), target_ty.unqualified()) {
+            (CType::Floating(source), CType::Floating(dest))
+                if precision(*source) > precision(*dest) =>
+            {
+                // This exactness check is reliable for ordinary double
+                // constants to float. For extended precision, leave values
+                // to the generic narrowing diagnostic.
+                let exact = *source == FloatRank::Double
+                    && *dest == FloatRank::Float
+                    && floating_constant.is_some_and(|v| (v as f32) as f64 == v);
+                (!exact).then_some("float-conversion")
+            }
+            (CType::Floating(_), CType::Integer { rank, unsigned })
+                if *rank != IntRank::Bool =>
+            {
+                let bits = self.target.bits(*rank);
+                let exact = floating_constant.is_some_and(|v| {
+                    v.is_finite() && v.fract() == 0.0
+                        && v.abs() <= (1u64 << 53) as f64
+                        && if *unsigned {
+                            v >= 0.0 && v < (1u128 << bits) as f64
+                        } else {
+                            v >= -(1i128 << (bits - 1)) as f64
+                                && v < (1i128 << (bits - 1)) as f64
+                        }
+                });
+                (!exact).then_some("float-conversion")
+            }
+            (CType::Integer { rank, unsigned }, CType::Floating(dest)) => {
+                let precision = precision(*dest);
+                if let Ok(value) = const_eval::evaluate(expr, self.target) {
+                    let magnitude = value.unsigned_abs();
+                    let exact = magnitude == 0 || {
+                        let significant = 128 - magnitude.leading_zeros()
+                            - magnitude.trailing_zeros();
+                        significant <= precision
+                    };
+                    (!exact).then_some("float-conversion")
+                } else {
+                    let bits = u32::from(self.target.bits(*rank));
+                    (bits.saturating_sub(u32::from(!*unsigned)) > precision)
+                        .then_some("conversion")
+                }
+            }
+            _ => None,
+        };
+        if let Some(group) = group.filter(|group| self.warning_policy.enabled(group)) {
+            self.conversion_warnings.borrow_mut().push(ReportedDiagnostic::warning(
+                Diagnostic::semantic(span, "implicit floating-point conversion may change value"),
+                group,
+            ));
+        }
+    }
+
     fn convert_for_assignment(&self, expr: CheckedExpr, ty: &CType, _original: &Expr, span: Span) -> Result<CheckedExpr, Diagnostic> {
         // The source array undergoes the standard array-to-pointer conversion
         // before checking scalar assignment compatibility.
@@ -2832,6 +2910,7 @@ impl Checker {
             }
         }
         self.warn_implicit_sign_conversion(&expr, &value_ty, span);
+        self.warn_implicit_float_conversion(&expr, &value_ty, span);
         Ok(self.convert(expr, &value_ty))
     }
 

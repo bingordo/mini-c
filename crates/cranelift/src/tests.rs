@@ -667,3 +667,20 @@ fn c99_saved_vla_pointer_strides_execute() {
     assert!(status.success(), "saved VLA stride failed: {status}");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn native_warning_formatter_handles_float_conversion_policy() {
+    // Semantic diagnostic path is independent of native FP codegen support.
+    let source = "int f(double x) { return x; }";
+    let mut policy = WarningPolicy::default();
+    policy.apply_flag("-Wfloat-conversion").unwrap();
+    let (warnings, failed) =
+        format_semantic_warnings("float.c", source, false, &policy).unwrap();
+    assert!(!failed);
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("[-Wfloat-conversion]"), "{warnings:?}");
+    policy.apply_flag("-Werror=float-conversion").unwrap();
+    let (_, failed) =
+        format_semantic_warnings("float.c", source, false, &policy).unwrap();
+    assert!(failed);
+}
