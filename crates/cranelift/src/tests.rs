@@ -1,5 +1,6 @@
 //! Driver tests for option parsing, diagnostics, and compilation behavior.
     use super::*;
+    use mini_c_cranelift::compile_source_diagnostic;
 
     #[test]
     fn native_driver_defaults_to_internal_and_keeps_external_fallback() {
@@ -181,11 +182,11 @@ fn native_warning_promotion_blocks_object_write() {
     let mut policy = WarningPolicy::default();
     assert!(collect_semantic_warnings(source, &policy).unwrap().is_empty());
     policy.apply_flag("-Wall").unwrap();
-    assert!(!emit_semantic_warnings("source.c", source, false, &policy).unwrap());
+    assert!(!emit_semantic_warnings("source.c", source, false, &policy, GnuExtensions::Enabled).unwrap());
     policy.apply_flag("-Werror").unwrap();
-    assert!(emit_semantic_warnings("source.c", source, false, &policy).unwrap());
+    assert!(emit_semantic_warnings("source.c", source, false, &policy, GnuExtensions::Enabled).unwrap());
     policy.apply_flag("-Wno-unused-variable").unwrap();
-    assert!(!emit_semantic_warnings("source.c", source, false, &policy).unwrap());
+    assert!(!emit_semantic_warnings("source.c", source, false, &policy, GnuExtensions::Enabled).unwrap());
 }
 
 #[test]
@@ -666,4 +667,16 @@ fn c99_saved_vla_pointer_strides_execute() {
     let status = Command::new(&executable).status().unwrap();
     assert!(status.success(), "saved VLA stride failed: {status}");
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn driver_gnu_mode_controls_inferred_local_admission() {
+    let source = "int f(void) { __auto_type x = 42; return x; }";
+    for (flag, accepts) in [("-std=c11", false), ("-std=gnu11", true)] {
+        let opts = parse_options([flag, "--cpp=none", "--emit-obj", "out.o", "source.c"]
+            .into_iter().map(str::to_owned)).unwrap();
+        assert_eq!(compile_source_diagnostic_with_mode(source, opts.mode).is_ok(), accepts, "{flag}");
+    }
+    let marked = "int f(void) { __extension__ __auto_type x = 42; return x; }";
+    assert!(compile_source_diagnostic_with_mode(marked, GnuExtensions::Disabled).is_ok());
 }
