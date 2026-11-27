@@ -3262,8 +3262,21 @@ impl Checker {
                                 else {IntRank::LongLong};
                             CType::Integer{rank,unsigned:true}
                         } else {value_ty.clone()};
-                        operands.push(self.convert_for_assignment(
-                            checked, &operand_ty, argument, argument.location().unwrap_or(span))?);
+                        let mut operand=self.convert_for_assignment(
+                            checked, &operand_ty, argument, argument.location().unwrap_or(span))?;
+                        // The standard C11 header supplies element offsets.
+                        // Scale in checked C expression lowering, then use
+                        // exactly the same raw fetch operation as GNU.
+                        if pointer && matches!(spec.name,"__atomic_c11_fetch_add"|"__atomic_c11_fetch_sub") {
+                            let CType::Pointer(element)=value_ty.unqualified() else {unreachable!()};
+                            let element=self.complete_tag_type(element.as_ref().clone(),span)?;
+                            let bytes=element.size_bytes(self.target).filter(|n|*n!=0)
+                                .ok_or_else(||type_error(span,"C11 pointer fetch requires complete fixed-size element type"))?;
+                            let scale=CheckedExpr::value(operand_ty.clone(),CheckedExprKind::Literal(bytes));
+                            operand=CheckedExpr::value(operand_ty.clone(),
+                                CheckedExprKind::Binary(BinOp::Mul,Box::new(operand),Box::new(scale)));
+                        }
+                        operands.push(operand);
                         if spec.id == A::AtomicStoreN { CType::Void } else { value_ty }
                     }
                     A::AtomicCompareExchangeN => {
