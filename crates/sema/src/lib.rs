@@ -470,6 +470,7 @@ pub struct Checker {
     globals: HashMap<String, Symbol>,
     next_vla_bound: u64,
     capturing_vla_bounds: Option<Vec<(u64, CheckedExpr)>>,
+    prototype_parameter_scope: bool,
     vm_scopes: vm_scope::VmScopes,
     checking_inline_body: bool,
     inline_body_violation: RefCell<Option<Diagnostic>>,
@@ -499,7 +500,7 @@ pub struct Checker {
 
 impl Checker {
     pub fn new(target: Target) -> Result<Self, Diagnostic> {
-        Ok(Self { target: target.validate()?, next_tag_identity: Cell::new(1), saw_atomic_aggregate: Cell::new(false), next_static_compound_identity: Cell::new(1), next_block_static_identity: 1, tags: RefCell::new(vec![HashMap::new()]), tag_definitions: RefCell::new(HashMap::new()), globals: HashMap::new(), next_vla_bound: 0, capturing_vla_bounds: None, vm_scopes: vm_scope::VmScopes::default(), checking_inline_body: false, inline_body_violation: RefCell::new(None), locals: Vec::new(), result_ty: None, current_signature: None, loop_depth: 0, switches: Vec::new(), function_labels: HashMap::new(), rollback_log: None, statement_undo: Vec::new(),
+        Ok(Self { target: target.validate()?, next_tag_identity: Cell::new(1), saw_atomic_aggregate: Cell::new(false), next_static_compound_identity: Cell::new(1), next_block_static_identity: 1, tags: RefCell::new(vec![HashMap::new()]), tag_definitions: RefCell::new(HashMap::new()), globals: HashMap::new(), next_vla_bound: 0, capturing_vla_bounds: None, prototype_parameter_scope: false, vm_scopes: vm_scope::VmScopes::default(), checking_inline_body: false, inline_body_violation: RefCell::new(None), locals: Vec::new(), result_ty: None, current_signature: None, loop_depth: 0, switches: Vec::new(), function_labels: HashMap::new(), rollback_log: None, statement_undo: Vec::new(),
             recovery_errors: None, recovery_limit: 0,
             warning_policy: WarningPolicy::default(), emitted_warnings: Vec::new(),
             conversion_warnings: RefCell::new(Vec::new()),
@@ -973,15 +974,35 @@ impl Checker {
                 // A nested prototype must not capture into its enclosing
                 // automatic declaration's extent list.
                 let outer_bounds=self.capturing_vla_bounds.take();
+                let outer_prototype=std::mem::replace(&mut self.prototype_parameter_scope,true);
                 let checked=self.resolve_parameter_declarations(params);
+                self.prototype_parameter_scope=outer_prototype;
                 self.capturing_vla_bounds=outer_bounds;
-                let converted=checked?.iter().map(|p|Self::parameter_signature_type(&p.ty)).collect();
+                let converted=checked?.iter().map(|p|Self::parameter_signature_type(p.ty.unqualified())).collect();
                 if matches!(ty, Type::VariadicFunction { .. }) {
                     CType::VariadicFunction { result: Box::new(result), params: converted }
                 } else {
                     CType::Function { result: Box::new(result), params: converted }
                 }
             }
+            Type::StarArray(element) => {
+                if !self.prototype_parameter_scope {
+                    return Err(type_error(span,"[*] is only permitted in function prototype scope"));
+                }
+                let element=self.resolve(element,span)?;
+                let element=self.try_complete_tag_type(element)?;
+                if element.has_flexible_array_member() || !element.is_object()
+                    || (element.size_bytes(self.target).is_none() && !element.is_variable_array()) {
+                    return Err(type_error(span,"array element requires a complete object type"));
+                }
+                // The identity is only a temporary complete VLA type used
+                // while checking the prototype; it has no runtime extent.
+                let id=self.next_vla_bound;
+                self.next_vla_bound+=1;
+                CType::VariableArray(Box::new(element),id)
+            }
+            Type::ParameterArray {..} => return Err(type_error(span,
+                "static and array bracket qualifiers require the outermost array parameter")),
             Type::Array(element, bound) => {
                 let element = self.resolve(element, span)?;
                 let element = self.try_complete_tag_type(element)?;
@@ -1860,8 +1881,28 @@ impl Checker {
                 if !matches!(param.storage, StorageClass::Default | StorageClass::Register) {
                     return Err(type_error(param.span, "function parameter requires automatic or register storage"));
                 }
-                let (resolved,runtime_bounds) = self.resolve_local_type(&param.ty, param.span)?;
-                let ty = self.adjust_parameter(resolved);
+                let (resolved,runtime_bounds,bracket_qualifiers)=match &param.ty {
+                    Type::ParameterArray{element,bound,qualifiers,minimum}=>{
+                        if *minimum && bound.is_none() {
+                            return Err(type_error(param.span,"static array parameter requires a bound"));
+                        }
+                        if qualifiers.is_atomic {
+                            return Err(type_error(param.span,"atomic array bracket qualification is not supported"));
+                        }
+                        let (ty,bounds)=self.resolve_local_type(
+                            &Type::Array(element.clone(),bound.clone()),param.span)?;
+                        (ty,bounds,*qualifiers)
+                    }
+                    _=>{
+                        let (ty,bounds)=self.resolve_local_type(&param.ty,param.span)?;
+                        (ty,bounds,Default::default())
+                    }
+                };
+                let mut ty = self.adjust_parameter(resolved);
+                if bracket_qualifiers.is_const {ty=ty.with_const();}
+                if bracket_qualifiers.is_volatile {ty=ty.with_volatile();}
+                // Restrict and static minimum are source contracts, not
+                // optimization assumptions in the current checked IR.
                 let ty = self.complete_tag_type(ty, param.span)?;
                 if !ty.is_object() {
                     return Err(type_error(param.span, "function parameter cannot have void or function type"));
