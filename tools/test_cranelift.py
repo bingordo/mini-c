@@ -34,6 +34,86 @@ PROGRAMS = {
         return p[0]!='l' || p[1]!='a' || p[4]!='l'
             || p[5]!=0;
     }""",
+    "c99_block_static_storage": """int *counter(void) {
+    static int n=3;
+    ++n;
+    return &n;
+}
+int recursive(int n) {
+    static int sum;
+    sum+=n;
+    if(n) return recursive(n-1);
+    return sum;
+}
+int *skipped(void) {
+    goto use;
+    static int a[3]={2,4,6};
+    static int *p=a+1;
+use:
+    return p;
+}
+int distinct(int which) {
+    static int n=10;
+    if(which) { static int n=20; return ++n; }
+    return ++n;
+}
+void *self(void) { static void *p=&p; return p; }
+const char *fname(void) { static const char *p=__func__; return p; }
+int main(void) {
+    int *p=counter();
+    if(*p!=4 || counter()!=p || *p!=5) return 1;
+    if(recursive(3)!=6 || recursive(2)!=9) return 2;
+    if(*skipped()!=4 || skipped()!=skipped()) return 3;
+    *skipped()=9;
+    if(*skipped()!=9) return 4;
+    if(distinct(0)!=11 || distinct(1)!=21 || distinct(0)!=12 || distinct(1)!=22) return 5;
+    if(self()!=self() || *(void**)self()!=self() || fname()[0]!='f') return 6;
+    return 0;
+}""",
+    "c99_static_compound_pointer_offsets": """int *p=(int[]){1,2,3}+1;
+struct S { int x; }; int *q=&((struct S[]){{4},{5}})[1].x;
+int *table[2]={(int[]){6,7}+1,(int[]){8,9}+1};
+int main(void) {
+    return *p!=2 || *q!=5 || *table[0]!=7 || *table[1]!=9;
+}""",
+    "c99_static_pointer_offsets": """int a[5]={1,2,3,4,5};
+int *p=a+2;
+int *q=&a[3];
+int *end=a+5;
+int *back=(a+4)-3;
+char *s="abc"+1;
+struct N { int x; }; struct N n[3]={{5},{6},{7}};
+int *member=&n[2].x;
+int *table[2]={a+1,&a[4]};
+char *strings[1]={"xyz"+2};
+int main(void) {
+    return *p!=3 || *q!=4 || end-a!=5 || *back!=2 || *s!='b'
+        || *member!=7 || *table[0]!=2 || *table[1]!=5 || *strings[0]!='z';
+}""",
+    "c99_static_nested_member_relocations": """struct N { int x; };
+struct S { int pad; struct N n; int a[3]; };
+struct S s={1,{7},{2,3,4}};
+int *p=&s.n.x;
+int *q=s.a;
+int *r[2]={&s.pad,&s.n.x};
+int *t=&*(&s.pad);
+int main(void) {
+    if (*p!=7 || q[2]!=4 || *r[0]!=1 || *r[1]!=7 || t!=r[0]) return 1;
+    *p=13;
+    return s.n.x!=13 || *r[1]!=13;
+}""",
+    "c99_unary_scalar_truth_and_address_cancel": """int a[3]; int count;
+int g(void) { return 7; }
+void *next(void) { ++count; return a; }
+int main(void) {
+    int *p=0;
+    if (!a || !g || !(!p)) return 1;
+    if (&*(void*)0 != (void*)0) return 2;
+    if (&*next() != (void*)a || count != 1) return 3;
+    if (&*g != g) return 4;
+    if (!0.0 != 1 || !(-0.0) != 1 || !2.0 != 0) return 5;
+    return 0;
+}""",
     "c99_func_pointer_to_array": """int check(void) {
         const char (*p)[6]=&__func__;
         return (*p)[0]!='c' || (*p)[4]!='k' || (*p)[5]!=0;

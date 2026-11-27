@@ -1,6 +1,6 @@
 use mini_c_preprocess::{self as preprocess, source_map::SourceMap};
 use mini_c_sema::{Checker, Target};
-use mini_c_syntax::parser::Parser;
+use mini_c_syntax::parser::{Parser,GnuExtensions};
 use mini_c_syntax::diag::{DiagnosticSeverity, WarningPolicy};
 use mini_c_syntax::source::SourceFile;
 use mini_c_syntax::stream::ItemSource;
@@ -19,16 +19,21 @@ fn check(path: &str, cpp: Option<&preprocess::Config>) -> Result<(), String> {
 
 use preprocess::diagnostic_render::render_diagnostic;
 
+#[cfg(test)]
 fn check_with_policy(
     path: &str, cpp: Option<&preprocess::Config>, warnings: &WarningPolicy
 ) -> Result<(), String> {
+    check_with_mode(path,cpp,warnings,GnuExtensions::Enabled)
+}
+
+fn check_with_mode(path:&str,cpp:Option<&preprocess::Config>,warnings:&WarningPolicy,mode:GnuExtensions)->Result<(),String>{
     if let Some(config) = cpp {
         if config.executable == std::ffi::OsStr::new("internal-stream") {
             if warnings.wall || warnings.wextra || warnings.overrides.iter().any(|(_, enabled)| *enabled) {
                 return Err("warnings are not yet supported with --cpp=internal-stream".into());
             }
             #[cfg(feature = "internal-cpp")]
-            return stream_check::check(path, config, None);
+            return stream_check::check(path, config, None,mode);
             #[cfg(not(feature = "internal-cpp"))]
             return Err("internal-stream requires --features internal-cpp".into());
         }
@@ -40,7 +45,7 @@ fn check_with_policy(
     };
     let file = SourceFile::new(path, &source);
     let map = cpp.map(|_| SourceMap::from_preprocessed(&source, path));
-    let mut parser = Parser::new_with_spans(&source);
+    let mut parser = Parser::new_with_spans(&source).with_gnu_extensions(mode);
     let mut checker = Checker::new(Target::default()).expect("valid default target");
     checker.set_warning_policy(warnings.clone());
     let mut warning_failed = false;
@@ -80,13 +85,17 @@ fn check_with_policy(
 
 /// Opt-in multi-error checking: each item is checked transactionally and
 /// unsuccessful items do not poison later typedef or semantic symbol state.
+#[cfg(test)]
 fn check_recovering(
     path: &str, cpp: Option<&preprocess::Config>, max_errors: usize
 ) -> Result<(), String> {
+    check_recovering_mode(path,cpp,max_errors,GnuExtensions::Enabled)
+}
+fn check_recovering_mode(path:&str,cpp:Option<&preprocess::Config>,max_errors:usize,mode:GnuExtensions)->Result<(),String>{
     if let Some(config) = cpp {
         if config.executable == std::ffi::OsStr::new("internal-stream") {
             #[cfg(feature = "internal-cpp")]
-            return stream_check::check(path, config, Some(max_errors));
+            return stream_check::check(path, config, Some(max_errors),mode);
             #[cfg(not(feature = "internal-cpp"))]
             return Err("internal-stream requires --features internal-cpp".into());
         }
@@ -98,7 +107,7 @@ fn check_recovering(
     };
     let file = SourceFile::new(path, &source);
     let map = cpp.map(|_| SourceMap::from_preprocessed(&source, path));
-    let mut parser = Parser::new_with_spans(&source);
+    let mut parser = Parser::new_with_spans(&source).with_gnu_extensions(mode);
     let mut checker = Checker::new(Target::default()).expect("valid default target");
     let errors = mini_c_sema::diagnose_stream_recovering(
         &mut parser, &mut checker, max_errors,
@@ -114,7 +123,7 @@ fn usage() {
         "usage: mini-c check [--cpp=internal|--cpp=internal-stream|--cpp=cc|--cpp=none|--cpp=clang|--cpp=<path>] \
          [-I<dir>|-I <dir>] [-D<name>[=<value>]|-D <name>[=<value>]] \
          [-U<name>|-U <name>] [--cpp-arg=<arg>] \
-         [--max-errors=<positive integer>] [-Wall|-Wextra|-Werror|-Wno-*] [--] <file.c> [file.c ...]"
+         [-std=c11|-std=gnu11] [--max-errors=<positive integer>] [-Wall|-Wextra|-Werror|-Wno-*] [--] <file.c> [file.c ...]"
     );
 }
 
@@ -125,6 +134,7 @@ struct Options {
     cpp: Option<preprocess::Config>,
     max_errors: Option<usize>,
     warnings: WarningPolicy,
+    mode:GnuExtensions,
     paths: Vec<String>,
 }
 
@@ -137,6 +147,8 @@ fn parse_options(args: impl IntoIterator<Item = String>) -> Result<Options, Stri
     let mut paths = Vec::new();
     let mut max_errors = None;
     let mut warnings = WarningPolicy::default();
+    let mut mode=GnuExtensions::Disabled;
+    let mut std_flag="-std=c11".to_owned();
     let mut end_options = false;
     while let Some(arg) = args.next() {
         if end_options {
@@ -154,6 +166,9 @@ fn parse_options(args: impl IntoIterator<Item = String>) -> Result<Options, Stri
             warnings.apply_flag(&arg)?;
         } else if cpp.consume(&arg, &mut args)? {
             // Recognized preprocessor option, with any split argument consumed.
+        } else if arg.starts_with("-std=") {
+            mode=GnuExtensions::from_std_flag(&arg)?;
+            std_flag=arg;
         } else if arg.starts_with('-') {
             return Err(format!("unknown option: {arg}"));
         } else {
@@ -161,8 +176,11 @@ fn parse_options(args: impl IntoIterator<Item = String>) -> Result<Options, Stri
         }
     }
     if paths.is_empty() { return Err("no input files provided".into()); }
-    let cpp = cpp.finish()?;
-    Ok(Options { cpp, max_errors, warnings, paths })
+    let mut cpp = cpp.finish()?;
+    if let Some(config)=&mut cpp {
+        if config.executable!="internal" && config.executable!="internal-stream" {config.args.push(std_flag.into());}
+    }
+    Ok(Options { cpp, max_errors, warnings, mode, paths })
 }
 
 fn main() -> ExitCode {
@@ -183,10 +201,10 @@ fn main() -> ExitCode {
                 {
                     Err("warning analyses are not supported with --max-errors yet".into())
                 } else {
-                    check_recovering(&path, options.cpp.as_ref(), limit)
+                    check_recovering_mode(&path, options.cpp.as_ref(), limit,options.mode)
                 }
             },
-            None => check_with_policy(&path, options.cpp.as_ref(), &options.warnings),
+            None => check_with_mode(&path, options.cpp.as_ref(), &options.warnings,options.mode),
         };
         if let Err(error) = result {
             eprintln!("{error}");

@@ -96,6 +96,8 @@ pub enum FloatRank { Float, Double, LongDouble, Float128 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Type {
+    /// GNU inferred declaration type; resolved only from its initializer.
+    AutoType,
     Void,
     /// ISO C99 _Bool, a distinct one-byte integer type.
     Bool,
@@ -179,6 +181,9 @@ pub enum Stmt {
         span: Span,
     },
     Return(Option<Expr>),
+    /// Explicit clang-compatible guaranteed sibling-tail return. Never
+    /// silently rewrite this into an ordinary C return during lowering.
+    MustTailReturn(Expr),
     If {
         cond: Expr,
         then: Box<Stmt>,
@@ -250,6 +255,9 @@ pub enum Expr {
     /// Postfix member selection: true for `->`, false for `.`.
     Member(Box<Expr>, Ident, bool),
     Assign(Box<Expr>, Box<Expr>),
+    /// GNU `({ ... })`: a scoped compound statement used as an expression.
+    /// Preserve every statement, including the final expression statement.
+    StatementExpression(Vec<Stmt>),
     /// C comma operator, evaluated left to right with the value of the right operand.
     Comma(Box<Expr>, Box<Expr>),
     /// C99 compound literal: an addressable object with the named type and

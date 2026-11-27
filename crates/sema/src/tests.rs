@@ -156,8 +156,6 @@ fn c11_atomic_update_and_assignment_results_are_unqualified() {
 #[test]
 fn c11_atomic_unsupported_storage_remains_fail_closed() {
     for source in [
-        "int * _Atomic pointer;",
-        "_Atomic(int*) pointer;",
         "_Atomic float x;",
         "_Atomic(void) x;",
         "_Atomic _Atomic int x;",
@@ -1413,7 +1411,7 @@ fn c99_completed_tagged_aggregate_members_have_full_layout_and_type_identity() {
         "structure member has incomplete type");
     reject("struct Self{struct Self member;};", "structure member has incomplete type");
     reject("struct Incomplete; struct Holder{struct Incomplete items[2];};",
-        "structure member has incomplete type");
+        "array element requires a complete object type");
     reject("struct Node{int x;};struct Holder{struct Node node;struct Node node;};",
         "duplicate structure member");
 }
@@ -1791,6 +1789,7 @@ fn c99_bitfield_integer_promotions_follow_value_width_not_base_rank() {
         let member = CheckedExpr {
             ty, category: Category::LValue,
             kind: CheckedExprKind::BitFieldMember(Box::new(base.clone()), 0, 0, width),
+            source_span: None,
         };
         assert_eq!(member.integer_promotion_type(lp64), expected,
             "promotion of bit-field lvalue of width {width}");
@@ -2062,7 +2061,7 @@ fn function_designators_decay_in_initializer_and_assignment_contexts() {
            int main(void) { int (*local)(int) = identity; \
                local = identity; return local != 0; }").unwrap();
     reject("int identity(int x) { return x; } int *wrong = identity;",
-        "pointer initializer requires");
+        "incompatible assignment");
 }
 
 
@@ -3264,7 +3263,8 @@ fn s21_gcc_ctz_builtin_rejects_malformed_uses() {
     reject("int f(void) { return __builtin_ctz(); }", "expects exactly one argument");
     reject("int f(void) { return __builtin_ctz(1, 2); }", "expects exactly one argument");
     reject("int f(void) { int x=7; return __builtin_ctz(&x); }", "requires an integer argument");
-    reject("int f(void) { return __builtin_ctzll(1); }", "unsupported compiler builtin");
+    reject("int f(void) { return __builtin_ctzll(); }", "expects exactly one argument");
+    reject("int f(void) { return __builtin_clz_fake(1); }", "unsupported compiler builtin");
     reject("int __builtin_ctz; int f(void) { return __builtin_ctz(8); }", "not a function");
     // A builtin evaluation is not a C integer constant expression (even if
     // the backend might fold its bits); don't add GNU constant-folding here.
@@ -4714,6 +4714,22 @@ fn gnu_member_alignment_checks_natural_target_layout() {
 }
 
 #[test]
+fn c11_atomic_pointer_objects_use_ordinary_pointer_semantics() {
+    for source in [
+        "int * _Atomic pointer;",
+        "_Atomic(int*) pointer;",
+        "int *f(_Atomic(int*) *p){return *p;}",
+        "int *f(_Atomic(int*) *p,int *v){return *p=v;}",
+        "int *f(_Atomic(int*) *p,int n){return *p+=n;}",
+        "int *f(_Atomic(int*) *p){return (*p)++;}",
+    ] {
+        let items=check(source).unwrap_or_else(|e|panic!("{source}: {e:?}"));
+        assert!(items.iter().any(CheckedItem::contains_atomic_type));
+    }
+    assert!(check("int *f(_Atomic(int*) *p){return *p*=2;}").is_err());
+}
+
+#[test]
 fn atomic_single_byte_aggregate_declarations_are_layout_checked() {
     let items = check("typedef _Atomic struct { _Bool value; } Flag; extern _Bool test(volatile Flag *); int f(void){return sizeof(Flag);}").unwrap();
     let CheckedItem::Typedef { ty, .. } = &items[0] else { panic!("typedef") };
@@ -4798,4 +4814,335 @@ fn c99_runtime_sizeof_array_type_names() {
         ("struct S{int n;int a[];}; int f(int n){return sizeof(struct S[n]);}", "flexible array member"),
         ("int n; int a[sizeof(int[n])];", "integer constant expression"),
     ] { reject(source, message); }
+}
+
+#[test]
+fn gnu_bit_count_families_preserve_unsigned_rank_and_int_result() {
+    use crate::builtins::BitCountKind;
+    for (name,kind,rank) in [
+        ("__builtin_clz",BitCountKind::LeadingZero,IntRank::Int),
+        ("__builtin_clzl",BitCountKind::LeadingZero,IntRank::Long),
+        ("__builtin_clzll",BitCountKind::LeadingZero,IntRank::LongLong),
+        ("__builtin_ctzl",BitCountKind::TrailingZero,IntRank::Long),
+        ("__builtin_ctzll",BitCountKind::TrailingZero,IntRank::LongLong),
+        ("__builtin_popcount",BitCountKind::Population,IntRank::Int),
+        ("__builtin_popcountl",BitCountKind::Population,IntRank::Long),
+        ("__builtin_popcountll",BitCountKind::Population,IntRank::LongLong),
+    ] {
+        let items=check(&format!("int f(int x){{return {name}(x);}}")).unwrap();
+        let CheckedItem::Function(fun)=&items[0] else {panic!("function");};
+        let CheckedStmt::Block(stmts)=&fun.body else {panic!("body");};
+        let CheckedStmt::Return(Some(result))=&stmts[0] else {panic!("return");};
+        assert_eq!(result.ty,CType::int());
+        let CheckedExprKind::BuiltinBitCount(actual,arg)=&result.kind else {panic!("bit count");};
+        assert_eq!(*actual,kind);
+        assert_eq!(arg.ty,CType::Integer{rank,unsigned:true});
+        reject(&format!("int f(void){{return {name}();}}"),"expects exactly one argument");
+        reject(&format!("int f(int *p){{return {name}(p);}}"),"requires an integer argument");
+    }
+    check("int a=__builtin_clz(1); int b=__builtin_ctzll(8); int c=__builtin_popcount(0);").unwrap();
+    reject("int a=__builtin_clz(0);","zero operand");
+    reject("int a=__builtin_ctzll(0);","zero operand");
+}
+
+#[test]
+fn c99_local_vla_bound_capture_and_runtime_types() {
+    let items = check("unsigned long f(int n,int m){int a[n++][m]; n=9; m=10; return sizeof a + sizeof a[0];}").unwrap();
+    let CheckedItem::Function(f) = &items[0] else {panic!("function")};
+    let CheckedStmt::Block(stmts) = &f.body else {panic!("block")};
+    let CheckedStmt::Decl(a) = &stmts[0] else {panic!("declaration")};
+    assert!(a.ty.is_variable_array());
+    assert!(a.ty.is_variably_modified());
+    assert_eq!(a.runtime_bounds.len(), 2);
+    assert_ne!(a.runtime_bounds[0].0, a.runtime_bounds[1].0);
+    assert_eq!(a.ty.size_bytes(Target::default()), None);
+    let CheckedStmt::Return(Some(size)) = &stmts[3] else {panic!("return")};
+    assert!(const_eval::evaluate(size, Target::default()).is_err());
+
+    for source in [
+        "int f(int n){int a[n]; a[0]=3;return a[0];}",
+        "int f(int n){int a[2][n];a[1][0]=3;return a[1][0];}",
+        "long f(int n){int a[2][3];int (*p)[n]=a;return (p+1)-p;}",
+        "unsigned long f(int n){int a[2][3];int (*p)[n++]=a;return sizeof *p;}",
+        "int f(int n){int a[n];{int a[n+1];a[0]=1;}return sizeof a;}",
+    ] { check(source).unwrap_or_else(|e| panic!("{source}: {e:?}")); }
+    for (source, expected) in [
+        ("int n; int a[n];", "integer constant expression"),
+        ("int f(int n){static int a[n];return 0;}", "static storage"),
+        ("int f(int n){extern int a[n];return 0;}", "cannot have linkage"),
+        ("int f(int n){int a[n]={1};return 0;}", "cannot have an initializer"),
+        ("int f(int n){struct S {int a[n];};return 0;}", "array bound requires an integer constant expression"),
+        ("int f(int n){struct S {int (*a)[n];} s;return 0;}", "variably modified type"),
+        ("int f(int n){int a[n][];return 0;}", "complete object type"),
+    ] { reject(source, expected); }
+}
+
+#[test]
+fn c99_variably_modified_typedefs_and_scope_entry() {
+    for source in [
+        "unsigned long f(int n){typedef int A[n++];n=100;return sizeof(A);}",
+        "int f(int n){typedef int A[n];typedef A B;B a;a[0]=7;return a[0];}",
+        "int f(int n){typedef int A[n];goto L;L:return sizeof(A);}",
+        "int f(int n){L:;typedef int A[n];if(n--)goto L;return sizeof(A);}",
+        "int f(int n){{typedef int A[n];goto L;}L:return 0;}",
+        "int f(int n){switch(n){case 1:{typedef int A[n];return sizeof(A);}default:return 0;}}",
+        "int f(int n){typedef int A[n];switch(n){case 1:return sizeof(A);default:return 0;}}",
+        "int f(int n){goto L;{typedef int A[n];}L:return 0;}",
+    ] { check(source).unwrap_or_else(|e| panic!("{source}: {e:?}")); }
+    for source in [
+        "int f(int n){goto L;typedef int A[n];L:return sizeof(A);}",
+        "int f(int n){goto L;int a[n];L:return 0;}",
+        "int f(int n){goto L;int (*p)[n];L:return 0;}",
+        "int f(int n){typedef int A[n];goto L;typedef A B;L:return 0;}",
+        "int f(int n){{typedef int A[n];goto L;}{typedef int B[n];L:return 0;}}",
+        "int f(int n){switch(n){typedef int A[n];case 1:return 0;}return 0;}",
+        "int f(int n){switch(n){int a[n];default:return 0;}}",
+        "int f(int n){goto L;for(int (*p)[n]=0;n;n--) {L:return 0;}return 1;}",
+    ] { reject(source, "scope of a variably modified identifier"); }
+}
+
+#[test]
+fn c99_logical_not_decays_array_and_function_designators() {
+    let items = check("int a[3]; int g(void); int f(void){return !a + !g;}").unwrap();
+    let CheckedItem::Function(fun) = &items[2] else { panic!("function"); };
+    let CheckedStmt::Block(stmts) = &fun.body else { panic!("body"); };
+    let CheckedStmt::Return(Some(expr)) = &stmts[0] else { panic!("return"); };
+    let CheckedExprKind::Binary(_, left, right) = &expr.kind else { panic!("sum"); };
+    for operand in [left, right] {
+        let CheckedExprKind::Unary(UnOp::Not, arg) = &operand.kind else { panic!("not"); };
+        assert!(matches!(arg.ty, CType::Pointer(_)));
+        assert_eq!(operand.ty, CType::int());
+    }
+    reject("struct S{int x;}; int f(struct S s){return !s;}", "logical not requires scalar operand");
+}
+
+#[test]
+fn c99_address_of_dereference_cancels_without_evaluating_indirection() {
+    for source in [
+        "void *f(void *p){return &*p;}",
+        "void *f(void){return &*(void*)0;}",
+        "struct S; struct S *f(struct S *p){return &*p;}",
+        "int *f(int *p){return &*p++;}",
+        "int g(void); int (*f(void))(void){return &*g;}",
+    ] {
+        check(source).unwrap_or_else(|err| panic!("{source}: {err:?}"));
+    }
+    let items = check("void *f(void *g(void)){return &*g();}").unwrap();
+    let CheckedItem::Function(fun) = &items[0] else { panic!("function"); };
+    let CheckedStmt::Block(stmts) = &fun.body else { panic!("body"); };
+    let CheckedStmt::Return(Some(expr)) = &stmts[0] else { panic!("return"); };
+    assert!(matches!(expr.kind, CheckedExprKind::Call(..)));
+    reject("int *f(int x){return &*x;}", "dereference requires a pointer");
+}
+
+#[test]
+fn c99_static_member_addresses_use_lexically_resolved_static_roots() {
+    for source in [
+        "struct S{int a,b;}; struct S s; int *p=&s.b;",
+        "struct S{int a[3];}; struct S s; int *p=s.a;",
+        "struct N{int x;}; struct S{int pad; struct N n;}; struct S s; int *p=&s.n.x;",
+        "int x; int *p=&*(&x);",
+        "struct S{int a,b;}; struct S s; int *p[2]={&s.a,&s.b};",
+        "int x; int f(void){static int *p=&x; return *p;}",
+    ] {
+        check(source).unwrap_or_else(|err| panic!("{source}: {err:?}"));
+    }
+    for source in [
+        "int x; int f(void){int x; static int *p=&x; return 0;}",
+        "struct S{int a,b;}; struct S s; int f(void){struct S s; static int *p=&s.b; return 0;}",
+        "struct S{int a,b;}; struct S s; struct S *q=&s; int *p=&q->b;",
+        "int x; int *q=&x; int *p=&*q;",
+        "struct S{int *p;}; struct S s; int *p=s.p;",
+    ] {
+        reject(source, "pointer initializer requires");
+    }
+}
+
+#[test]
+fn c99_static_pointer_offsets_share_target_layout() {
+    let items = check(concat!(
+        "int a[5]; int *p=a+2; int *q=&a[3]; int *end=a+5;",
+        "int *back=(a+4)-3; char *s=\"abc\"+1;",
+        "struct N{int x;}; struct N n[3]; int *member=&n[2].x;"
+    )).unwrap();
+    let mut offsets = Vec::new();
+    for item in &items {
+        let CheckedItem::Declaration(decl) = item else { continue; };
+        if let Some(init) = &decl.initializer {
+            let (_, offset) = const_eval::static_address(init, Target::default())
+                .expect("checked address decomposition");
+            offsets.push(offset);
+        }
+    }
+    assert_eq!(offsets, [8,12,20,4,1,8]);
+    for source in [
+        "int a[5]; int i; int *p=a+i;",
+        "int a[5]; int *q=a; int *p=q+1;",
+        "int a[5]; int *p=a+(1/0);",
+        "int a[5]; int f(void){int a[5]; static int *p=a+1;return 0;}",
+    ] {
+        reject(source, "pointer initializer requires");
+    }
+}
+
+#[test]
+fn c99_block_static_identity_and_storage_duration() {
+    let items = check("int f(void){static int a[3]; static int *p=a+1; {static int a; static int *q=&a; return *q+*p;}}").unwrap();
+    let CheckedItem::Function(fun) = &items[0] else { panic!("function"); };
+    let CheckedStmt::Block(stmts) = &fun.body else { panic!("body"); };
+    let CheckedStmt::Decl(a) = &stmts[0] else { panic!("array"); };
+    let CheckedStmt::Decl(p) = &stmts[1] else { panic!("pointer"); };
+    let CheckedStmt::Block(nested) = &stmts[2] else { panic!("nested"); };
+    let CheckedStmt::Decl(inner_a) = &nested[0] else { panic!("shadow"); };
+    let CheckedStmt::Decl(q) = &nested[1] else { panic!("pointer"); };
+    assert_eq!(a.linkage, Linkage::None);
+    assert_eq!(a.name, "a");
+    assert_ne!(a.asm_label, inner_a.asm_label);
+    for (object, pointer, expected) in [(a,p,4), (inner_a,q,0)] {
+        let (root, offset) = const_eval::static_address(pointer.initializer.as_ref().unwrap(), Target::default()).unwrap();
+        assert!(matches!(&root.kind, CheckedExprKind::Name(name) if Some(name) == object.asm_label.as_ref()));
+        assert_eq!(offset, expected);
+    }
+    check("void *f(void){static void *p=&p; return p;}").unwrap();
+    check("const char *f(void){static const char *p=__func__; return p;}").unwrap();
+    reject("int f(void){static int x; {int x; static int *p=&x; return 0;}}",
+        "pointer initializer requires");
+    reject("int f(int x){static int y=x; return y;}", "integer constant expression");
+}
+
+#[test]
+fn gnu_atomic_pointer_builtins_keep_checked_value_and_byte_offset_types() {
+    for source in [
+        "void f(int **p){__atomic_load_n(p,5);}",
+        "void f(int **p,int *v){__atomic_store_n(p,v,5);}",
+        "void f(int **p,int *v){__atomic_exchange_n(p,v,5);}",
+        "void f(int **p,int n){__atomic_fetch_add(p,n,5);}",
+        "void f(int **p,long n){__atomic_fetch_sub(p,n,5);}",
+        "void f(int **p,int **e,int *v){__atomic_compare_exchange_n(p,e,v,0,5,2);}",
+    ] {
+        let checked=checked_atomic_in_generated_c(source);
+        assert_eq!(checked.bytes,8);
+        if matches!(checked.builtin,builtins::BuiltinId::AtomicFetchAdd|builtins::BuiltinId::AtomicFetchSub) {
+            assert!(checked.operands[1].ty.is_integer());
+            assert_eq!(checked.operands[1].ty.size_bytes(Target::default()),Some(8));
+        }
+    }
+    reject("void f(int **p){__atomic_fetch_and(p,1,5);}","requires an integer object");
+    reject("void f(int **p,int *v){__atomic_fetch_add(p,v,5);}","integer byte offset");
+    reject("void f(int **p,long **e,int *v){__atomic_compare_exchange_n(p,e,v,0,5,2);}","matching writable");
+}
+
+#[test]
+fn gnu_nan_and_isnan_checked_float_results() {
+    use mini_c_syntax::ast::FloatRank;
+    for (name,rank) in [
+        ("__builtin_nanf",FloatRank::Float),
+        ("__builtin_nan",FloatRank::Double),
+    ] {
+        let s=format!(r#"double f(void) {{ return {name}(""); }}"#);
+        check(&s).expect("GNU empty quiet NaN");
+        let s=format!(r#"int f(void) {{ return __builtin_isnan({name}("")); }}"#);
+        check(&s).expect("GNU isnan on quiet NaN");
+        let s=format!(r#"int f({} x) {{ return __builtin_isnan(x); }}"#,
+            if rank==FloatRank::Float {"float"} else {"double"});
+        let items=check(&s).expect("checked isnan function");
+        let CheckedItem::Function(f)=&items[0] else{panic!("function")};
+        let CheckedStmt::Block(body)=&f.body else{panic!("body")};
+        let CheckedStmt::Return(Some(expr))=&body[0] else{panic!("return")};
+        assert_eq!(expr.ty,CType::int());
+        assert!(matches!(&expr.kind,CheckedExprKind::BuiltinIsNan(inner)
+            if inner.ty==CType::Floating(rank)));
+    }
+    for s in [
+        "int f(void){return __builtin_isnan();}",
+        "int f(float x){return __builtin_isnan(x,x);}",
+        "int f(void){return __builtin_isnan(1);}",
+        "int f(void){return __builtin_isnan((void*)0);}",
+        "float f(void){return __builtin_nanf(\"0x10\");}",
+        "double f(void){return __builtin_nan(\"2\");}",
+    ] {
+        assert!(check(s).is_err(),"invalid GNU builtin accepted: {s}");
+    }
+}
+
+#[test]
+fn gnu_isinf_sign_is_typed_single_evaluation_and_rejects_invalid_inputs() {
+    for ty in ["float","double"] {
+        let src=format!("int f({ty} x) {{ return __builtin_isinf_sign(x); }}");
+        let items=check(&src).expect("checked GNU signed infinity");
+        let CheckedItem::Function(f)=&items[0] else {panic!("function")};
+        let CheckedStmt::Block(body)=&f.body else {panic!("body")};
+        let CheckedStmt::Return(Some(expr))=&body[0] else {panic!("return")};
+        assert_eq!(expr.ty,CType::int());
+        assert!(matches!(&expr.kind,CheckedExprKind::BuiltinIsInfSign(inner)
+            if inner.ty==CType::Floating(
+                if ty=="float" {mini_c_syntax::ast::FloatRank::Float}
+                else {mini_c_syntax::ast::FloatRank::Double}
+            )));
+    }
+    for s in [
+        "int f(void){return __builtin_isinf_sign();}",
+        "int f(float x){return __builtin_isinf_sign(x,x);}",
+        "int f(void){return __builtin_isinf_sign(1);}",
+        "int f(void){return __builtin_isinf_sign((void*)0);}",
+    ] {
+        assert!(check(s).is_err(),"invalid GNU signed infinity accepted: {s}");
+    }
+}
+
+#[test]
+fn c11_header_fetch_scales_pointer_offsets_before_raw_atomic_operation() {
+    for (name,expected) in [("__atomic_c11_fetch_add",true),("__atomic_c11_fetch_sub",true),("__atomic_fetch_add",false)] {
+        let source=format!("void f(int **p,int n){{{name}(p,n,5);}}");
+        let checked=checked_atomic_in_generated_c(&source);
+        assert_eq!(checked.bytes,8);
+        let scaled=matches!(checked.operands[1].kind,CheckedExprKind::Binary(BinOp::Mul,..));
+        assert_eq!(scaled,expected);
+    }
+    reject("void f(void **p){__atomic_c11_fetch_add(p,1,5);}","complete fixed-size element");
+}
+
+#[test]
+fn c99_definition_parameter_vla_extent_scope() {
+    for source in [
+        "int f(int n,int a[n]){return a[n-1];}",
+        "int f(int n,int m,int a[n][m]){return a[1][m-1];}",
+        "unsigned long f(int n,int (*a)[n++]){return sizeof(*a);}",
+        "int f(int n,int (*a)[n]){return (*a)[0];} int g(void){int a[4];return f(4,&a);}",
+    ] { check(source).unwrap_or_else(|e|panic!("{source}: {e:?}")); }
+    for source in [
+        "int f(int a[n],int n){return 0;}",
+        "int f(int n,int a[n],int n){return 0;}",
+    ] { assert!(check(source).is_err(),"{source}"); }
+    let items=check("unsigned long f(int n,int (*a)[n++]){return sizeof(*a);}").unwrap();
+    let CheckedItem::Function(f)=&items[0] else{panic!("function")};
+    assert_eq!(f.params[1].runtime_bounds.len(),1);
+    assert!(f.params[1].ty.is_variably_modified());
+    assert!(!f.signature.is_variably_modified());
+}
+
+#[test]
+fn gnu_statement_expressions_check_scopes_results_and_unsupported_transfers() {
+    for source in [
+        "int f(void){return ({int x=1; x;});}",
+        "int f(void){return sizeof ({int x=1; x;});}",
+        "int f(void){return 0 && ({1;});}",
+        "void f(void){({});}",
+        "int f(void){int x=1;return ({__auto_type x=x+2;x;});}",
+        "int f(void){return ({int x=1; if(x)x=2; x;});}",
+    ] {
+        check(source).unwrap_or_else(|error| panic!("{source}: {error:?}"));
+    }
+    reject("int f(void){({int x=1;x;}); return x;}", "undeclared identifier");
+    reject("int f(void){return ({return 1;2;});}", "unsupported control transfer");
+    reject("int f(void){return ({static int x=1;x;});}", "unsupported control transfer or storage");
+    reject("int x=({1;});", "requires function scope");
+    let items=check("int f(void){return ({int x=1; x;});}").unwrap();
+    let CheckedItem::Function(f)=&items[0] else {panic!("function")};
+    let CheckedStmt::Block(stmts)=&f.body else {panic!("block")};
+    let CheckedStmt::Return(Some(expr))=&stmts[0] else {panic!("return")};
+    let CheckedExprKind::StatementExpression{statements,result}=&expr.kind else {panic!("statement expression")};
+    assert_eq!(statements.len(),1);
+    assert_eq!(result.as_ref().unwrap().category,Category::Value);
+    assert!(const_eval::evaluate(expr,Target::default()).is_err());
 }

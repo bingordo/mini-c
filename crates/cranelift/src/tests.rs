@@ -1,5 +1,6 @@
 //! Driver tests for option parsing, diagnostics, and compilation behavior.
     use super::*;
+    use mini_c_cranelift::compile_source_diagnostic;
 
     #[test]
     fn native_driver_defaults_to_internal_and_keeps_external_fallback() {
@@ -74,7 +75,7 @@
         assert_eq!(cpp.executable, "clang");
         assert_eq!(
             cpp.args,
-            vec!["-E", "-Ipath with spaces", "-DNAME=17", "-UOLD"]
+            vec!["-E", "-Ipath with spaces", "-DNAME=17", "-UOLD", "-std=c11"]
                 .into_iter().map(std::ffi::OsString::from).collect::<Vec<_>>(),
         );
         let raw = parse_options([
@@ -181,11 +182,11 @@ fn native_warning_promotion_blocks_object_write() {
     let mut policy = WarningPolicy::default();
     assert!(collect_semantic_warnings(source, &policy).unwrap().is_empty());
     policy.apply_flag("-Wall").unwrap();
-    assert!(!emit_semantic_warnings("source.c", source, false, &TokenOrigins::default(), &policy).unwrap());
+    assert!(!emit_semantic_warnings("source.c", source, false, &TokenOrigins::default(), &policy, GnuExtensions::Enabled).unwrap());
     policy.apply_flag("-Werror").unwrap();
-    assert!(emit_semantic_warnings("source.c", source, false, &TokenOrigins::default(), &policy).unwrap());
+    assert!(emit_semantic_warnings("source.c", source, false, &TokenOrigins::default(), &policy, GnuExtensions::Enabled).unwrap());
     policy.apply_flag("-Wno-unused-variable").unwrap();
-    assert!(!emit_semantic_warnings("source.c", source, false, &TokenOrigins::default(), &policy).unwrap());
+    assert!(!emit_semantic_warnings("source.c", source, false, &TokenOrigins::default(), &policy, GnuExtensions::Enabled).unwrap());
 }
 
 #[test]
@@ -194,7 +195,7 @@ fn native_warning_checks_preserve_preprocessed_origins() {
     let mut policy = WarningPolicy::default();
     policy.apply_flag("-Wunused-variable").unwrap();
     let (messages, failed) =
-        format_semantic_warnings("main.c", source, true, &TokenOrigins::default(), &policy).unwrap();
+        format_semantic_warnings("main.c", source, true, &policy).unwrap();
     assert!(!failed);
     assert_eq!(messages.len(), 1, "{messages:?}");
     assert!(messages[0].starts_with("source.h:20: warning:"), "{messages:?}");
@@ -207,21 +208,21 @@ fn native_warning_locations_keep_raw_columns_and_werror_severity() {
     let mut policy = WarningPolicy::default();
     policy.apply_flag("-Wunused-variable").unwrap();
     let (warnings, failed) =
-        format_semantic_warnings("raw.c", source, false, &TokenOrigins::default(), &policy).unwrap();
+        format_semantic_warnings("raw.c", source, false, &policy).unwrap();
     assert!(!failed);
     assert_eq!(warnings.len(), 1, "{warnings:?}");
     assert!(warnings[0].starts_with("raw.c:1:"), "{warnings:?}");
     assert!(warnings[0].contains(": warning:"), "{warnings:?}");
     policy.apply_flag("-Werror").unwrap();
     let (errors, failed) =
-        format_semantic_warnings("raw.c", source, false, &TokenOrigins::default(), &policy).unwrap();
+        format_semantic_warnings("raw.c", source, false, &policy).unwrap();
     assert!(failed);
     assert_eq!(errors.len(), 1, "{errors:?}");
     assert!(errors[0].contains(": error:"), "{errors:?}");
     assert!(errors[0].contains("[-Wunused-variable]"), "{errors:?}");
     policy.apply_flag("-Wno-unused-variable").unwrap();
     let (suppressed, failed) =
-        format_semantic_warnings("raw.c", source, false, &TokenOrigins::default(), &policy).unwrap();
+        format_semantic_warnings("raw.c", source, false, &policy).unwrap();
     assert!(!failed);
     assert!(suppressed.is_empty(), "{suppressed:?}");
 }
@@ -521,20 +522,20 @@ fn native_driver_emits_write_only_warning_with_werror() {
     let mut policy = WarningPolicy::default();
     policy.apply_flag("-Wall").unwrap();
     let (warnings, failed) =
-        format_semantic_warnings("raw.c", source, false, &TokenOrigins::default(), &policy).unwrap();
+        format_semantic_warnings("raw.c", source, false, &policy).unwrap();
     assert!(!failed);
     assert_eq!(warnings.len(), 1, "{warnings:?}");
     assert!(warnings[0].contains("[-Wunused-but-set-variable]"), "{warnings:?}");
 
     policy.apply_flag("-Werror=unused-but-set-variable").unwrap();
     let (errors, failed) =
-        format_semantic_warnings("raw.c", source, false, &TokenOrigins::default(), &policy).unwrap();
+        format_semantic_warnings("raw.c", source, false, &policy).unwrap();
     assert!(failed);
     assert!(errors[0].contains(": error:"), "{errors:?}");
 
     policy.apply_flag("-Wno-unused-but-set-variable").unwrap();
     let (suppressed, failed) =
-        format_semantic_warnings("raw.c", source, false, &TokenOrigins::default(), &policy).unwrap();
+        format_semantic_warnings("raw.c", source, false, &policy).unwrap();
     assert!(!failed);
     assert!(suppressed.is_empty());
 }
@@ -576,18 +577,156 @@ fn native_conversion_warning_is_opt_in_and_promotable() {
     let source = "int f(int x) { short y = x; return y; }";
     let mut policy = WarningPolicy::default();
     let (initial, failed) =
-        format_semantic_warnings("narrow.c", source, false, &TokenOrigins::default(), &policy).unwrap();
+        format_semantic_warnings("narrow.c", source, false, &policy).unwrap();
     assert!(initial.is_empty());
     assert!(!failed);
     policy.apply_flag("-Wconversion").unwrap();
     let (warnings, failed) =
-        format_semantic_warnings("narrow.c", source, false, &TokenOrigins::default(), &policy).unwrap();
+        format_semantic_warnings("narrow.c", source, false, &policy).unwrap();
     assert_eq!(warnings.len(), 1, "{warnings:?}");
     assert!(warnings[0].contains("[-Wconversion]"), "{warnings:?}");
     assert!(!failed);
     policy.apply_flag("-Werror=conversion").unwrap();
     let (errors, failed) =
-        format_semantic_warnings("narrow.c", source, false, &TokenOrigins::default(), &policy).unwrap();
+        format_semantic_warnings("narrow.c", source, false, &policy).unwrap();
     assert!(failed);
     assert!(errors[0].contains(": error:"), "{errors:?}");
+}
+
+#[test]
+fn native_sign_conversion_respects_error_and_suppression() {
+    let source = "unsigned int f(int x) { unsigned int y = x; return y; }";
+    let mut policy = WarningPolicy::default();
+    policy.apply_flag("-Wsign-conversion").unwrap();
+    let (warnings, failed) =
+        format_semantic_warnings("sign.c", source, false, &policy).unwrap();
+    assert!(!failed);
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("[-Wsign-conversion]"));
+    policy.apply_flag("-Werror=sign-conversion").unwrap();
+    let (errors, failed) =
+        format_semantic_warnings("sign.c", source, false, &policy).unwrap();
+    assert!(failed);
+    assert!(errors[0].contains(": error:"), "{errors:?}");
+    policy.apply_flag("-Wno-sign-conversion").unwrap();
+    let (none, failed) =
+        format_semantic_warnings("sign.c", source, false, &policy).unwrap();
+    assert!(none.is_empty());
+    assert!(!failed);
+}
+
+#[test]
+fn native_sign_compare_warning_and_error_promotion() {
+    let source = "int f(int x, unsigned int y) { return x < y; }";
+    let mut policy = WarningPolicy::default();
+    policy.apply_flag("-Wall").unwrap();
+    let (warnings, failed) =
+        format_semantic_warnings("compare.c", source, false, &policy).unwrap();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(!failed);
+    assert!(warnings[0].contains("[-Wsign-compare]"));
+    policy.apply_flag("-Werror=sign-compare").unwrap();
+    let (_, failed) =
+        format_semantic_warnings("compare.c", source, false, &policy).unwrap();
+    assert!(failed);
+    policy.apply_flag("-Wno-sign-compare").unwrap();
+    let (none, failed) =
+        format_semantic_warnings("compare.c", source, false, &policy).unwrap();
+    assert!(none.is_empty());
+    assert!(!failed);
+}
+
+#[test]
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+fn c99_saved_vla_pointer_strides_execute() {
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let dir = std::env::temp_dir().join(format!("mini-c-vla-stride-{}-{nonce}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("main.c");
+    let object = dir.join("main.o");
+    let executable = dir.join("program");
+    std::fs::write(&source, concat!(
+        "int main(void){int a[3][4];int n=4;int (*p)[n++]=a;\n",
+        "if(n!=5 || sizeof *p!=16)return 1; n=9;\n",
+        "p[1][2]=17; if(a[1][2]!=17)return 2;\n",
+        "int (*q)[4]=p; p++; if(p-q!=1)return 3;\n",
+        "p+=1; (*p)[3]=23; if(a[2][3]!=23)return 4;\n",
+        "p-=2; if(p!=q || sizeof *p!=16)return 5;\n",
+        "return 0;}\n",
+    )).unwrap();
+    let opts = parse_options([
+        "--cpp=none".to_owned(), "--emit-obj".to_owned(),
+        object.to_string_lossy().into_owned(), source.to_string_lossy().into_owned(),
+    ]).unwrap();
+    assert_eq!(compile_to_object(&opts), ExitCode::SUCCESS);
+    let link = Command::new("cc").arg(&object)
+        .arg("-o").arg(&executable).output().unwrap();
+    assert!(link.status.success(), "link: {}", String::from_utf8_lossy(&link.stderr));
+    let status = Command::new(&executable).status().unwrap();
+    assert!(status.success(), "saved VLA stride failed: {status}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+fn c99_vla_typedef_bound_capture_executes_at_each_declaration() {
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let dir = std::env::temp_dir().join(format!("mini-c-vla-typedef-{}-{nonce}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("main.c");
+    let object = dir.join("main.o");
+    let executable = dir.join("program");
+    std::fs::write(&source, concat!(
+        "int main(void){int a[3][4];int n=4;typedef int Row[n++];\n",
+        "typedef Row Alias; Alias *p=a; if(n!=5 || sizeof(Row)!=16)return 1;\n",
+        "n=7;p[1][2]=19;if(a[1][2]!=19 || sizeof(Alias)!=16)return 2;\n",
+        "for(int i=1;i<5;i++){typedef char T[n++];if(sizeof(T)!=6+i)return 3;}\n",
+        "if(n!=11 || sizeof(Row)!=16)return 4;\n",
+        "int k=2;L:;typedef char S[k++];if(k<5)goto L;\n",
+        "if(sizeof(S)!=4 || k!=5)return 5;return 0;}\n",
+    )).unwrap();
+    let opts = parse_options([
+        "--cpp=none".to_owned(), "--emit-obj".to_owned(),
+        object.to_string_lossy().into_owned(), source.to_string_lossy().into_owned(),
+    ]).unwrap();
+    assert_eq!(compile_to_object(&opts), ExitCode::SUCCESS);
+    let link = Command::new("cc").arg(&object)
+        .arg("-o").arg(&executable).output().unwrap();
+    assert!(link.status.success(), "link: {}", String::from_utf8_lossy(&link.stderr));
+    let status = Command::new(&executable).status().unwrap();
+    assert!(status.success(), "VLA typedef execution failed: {status}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn native_warning_formatter_handles_float_conversion_policy() {
+    // Semantic diagnostic path is independent of native FP codegen support.
+    let source = "int f(double x) { return x; }";
+    let mut policy = WarningPolicy::default();
+    policy.apply_flag("-Wfloat-conversion").unwrap();
+    let (warnings, failed) =
+        format_semantic_warnings("float.c", source, false, &policy).unwrap();
+    assert!(!failed);
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("[-Wfloat-conversion]"), "{warnings:?}");
+    policy.apply_flag("-Werror=float-conversion").unwrap();
+    let (_, failed) =
+        format_semantic_warnings("float.c", source, false, &policy).unwrap();
+    assert!(failed);
+}
+
+#[test]
+fn driver_gnu_mode_controls_inferred_local_admission() {
+    let source = "int f(void) { __auto_type x = 42; return x; }";
+    for (flag, accepts) in [("-std=c11", false), ("-std=gnu11", true)] {
+        let opts = parse_options([flag, "--cpp=none", "--emit-obj", "out.o", "source.c"]
+            .into_iter().map(str::to_owned)).unwrap();
+        assert_eq!(compile_source_diagnostic_with_mode(source, opts.mode).is_ok(), accepts, "{flag}");
+    }
+    let marked = "int f(void) { __extension__ __auto_type x = 42; return x; }";
+    assert!(compile_source_diagnostic_with_mode(marked, GnuExtensions::Disabled).is_ok());
 }
