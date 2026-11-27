@@ -4985,3 +4985,25 @@ fn c99_block_static_identity_and_storage_duration() {
         "pointer initializer requires");
     reject("int f(int x){static int y=x; return y;}", "integer constant expression");
 }
+
+#[test]
+fn gnu_atomic_pointer_builtins_keep_checked_value_and_byte_offset_types() {
+    for source in [
+        "void f(int **p){__atomic_load_n(p,5);}",
+        "void f(int **p,int *v){__atomic_store_n(p,v,5);}",
+        "void f(int **p,int *v){__atomic_exchange_n(p,v,5);}",
+        "void f(int **p,int n){__atomic_fetch_add(p,n,5);}",
+        "void f(int **p,long n){__atomic_fetch_sub(p,n,5);}",
+        "void f(int **p,int **e,int *v){__atomic_compare_exchange_n(p,e,v,0,5,2);}",
+    ] {
+        let checked=checked_atomic_in_generated_c(source);
+        assert_eq!(checked.bytes,8);
+        if matches!(checked.builtin,builtins::BuiltinId::AtomicFetchAdd|builtins::BuiltinId::AtomicFetchSub) {
+            assert!(checked.operands[1].ty.is_integer());
+            assert_eq!(checked.operands[1].ty.size_bytes(Target::default()),Some(8));
+        }
+    }
+    reject("void f(int **p){__atomic_fetch_and(p,1,5);}","requires an integer object");
+    reject("void f(int **p,int *v){__atomic_fetch_add(p,v,5);}","integer byte offset");
+    reject("void f(int **p,long **e,int *v){__atomic_compare_exchange_n(p,e,v,0,5,2);}","matching writable");
+}
