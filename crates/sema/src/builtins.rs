@@ -10,6 +10,8 @@ pub enum BuiltinId {
     ByteSwap(u8),
     /// Empty-payload GNU quiet NaN constant with exact FP result width.
     Nan(u8),
+    /// Floating-point classification returning C int, not a libcall.
+    IsNan,
     AtomicLoadN,
     AtomicStoreN,
     AtomicExchangeN,
@@ -29,6 +31,7 @@ pub enum LoweringClass {
     IntegerCtz,
     IntegerByteSwap,
     FloatNan,
+    FloatClassify,
     /// Source contract is recognized, but must not use generic call lowering.
     AtomicIrRequired,
 }
@@ -57,7 +60,7 @@ const fn atomic(id: BuiltinId, name: &'static str, count: usize, order: usize,
 
 /// Fixed spellings and signatures. Unsupported by-address GNU atomic overloads
 /// are intentionally absent; source diagnostics must not infer their ABI.
-pub const REGISTRY: [BuiltinSpec; 17] = [
+pub const REGISTRY: [BuiltinSpec; 18] = [
     BuiltinSpec {
         id: BuiltinId::Ctz32, name: "__builtin_ctz", argument_count: 1,
         memory_order_argument: None, failure_order_argument: None,
@@ -88,6 +91,11 @@ pub const REGISTRY: [BuiltinSpec; 17] = [
         memory_order_argument: None, failure_order_argument: None,
         weak_argument: None, lowering: LoweringClass::FloatNan,
     },
+    BuiltinSpec {
+        id: BuiltinId::IsNan, name: "__builtin_isnan", argument_count: 1,
+        memory_order_argument: None, failure_order_argument: None,
+        weak_argument: None, lowering: LoweringClass::FloatClassify,
+    },
     atomic(BuiltinId::AtomicLoadN, "__atomic_load_n", 2, 1, None, None),
     atomic(BuiltinId::AtomicStoreN, "__atomic_store_n", 3, 2, None, None),
     atomic(BuiltinId::AtomicExchangeN, "__atomic_exchange_n", 3, 2, None, None),
@@ -108,7 +116,7 @@ pub const REGISTRY: [BuiltinSpec; 17] = [
 pub fn valid_atomic_orders(id: BuiltinId, success: u8, failure: Option<u8>) -> bool {
     if success > 5 { return false; }
     match id {
-        BuiltinId::Ctz32 | BuiltinId::ByteSwap(_) | BuiltinId::Nan(_) => false,
+        BuiltinId::Ctz32 | BuiltinId::ByteSwap(_) | BuiltinId::Nan(_) | BuiltinId::IsNan => false,
         BuiltinId::AtomicLoadN => failure.is_none() && matches!(success, 0|1|2|5),
         BuiltinId::AtomicStoreN => failure.is_none() && matches!(success, 0|3|5),
         BuiltinId::AtomicCompareExchangeN => {
