@@ -4588,3 +4588,34 @@ fn gnu_nan_empty_payload_has_checked_float_and_double_type() {
         assert!(check(source).is_err(), "invalid GNU NaN accepted: {source}");
     }
 }
+
+#[test]
+fn gnu_isnan_requires_one_checked_float_argument_and_returns_int() {
+    for (ty, expr) in [
+        ("float", "__builtin_nanf(\"\")"),
+        ("double", "__builtin_nan(\"\")"),
+    ] {
+        let src=format!("int f({ty} x) {{ return __builtin_isnan(x); }}");
+        let items=check(&src).expect("isnan float/double");
+        let CheckedItem::Function(func)=&items[0] else { panic!("function") };
+        let CheckedStmt::Block(body)=&func.body else { panic!("block") };
+        let CheckedStmt::Return(Some(value))=&body[0] else { panic!("return") };
+        assert_eq!(value.ty,CType::int());
+        assert!(matches!(&value.kind,CheckedExprKind::BuiltinIsNan(inner)
+            if inner.ty==CType::Floating(if ty=="float" {
+                mini_c_syntax::ast::FloatRank::Float
+            } else {
+                mini_c_syntax::ast::FloatRank::Double
+            })));
+        let literal=format!("int g(void) {{ return __builtin_isnan({expr}); }}");
+        check(&literal).expect("checked NaN literal argument");
+    }
+    for source in [
+        "int f(void) { return __builtin_isnan(); }",
+        "int f(float x) { return __builtin_isnan(x,x); }",
+        "int f(void) { return __builtin_isnan(1); }",
+        "int f(void) { return __builtin_isnan((void*)0); }",
+    ] {
+        assert!(check(source).is_err(), "invalid isnan accepted: {source}");
+    }
+}
