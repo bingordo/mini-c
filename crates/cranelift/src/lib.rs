@@ -1930,6 +1930,7 @@ impl Lower<'_> {
                 if ty.bits()!=u32::from(*bits) {return Err("invalid byte-swap width".into());}
                 Ok(b.ins().bswap(value))
             }
+            CheckedExprKind::BuiltinIsNan(_) => Err("GNU isnan needs native TypeId FP lowering on this backend".into()),
             CheckedExprKind::BuiltinCtz(inner) => {
                 // GCC defines __builtin_ctz(0) as undefined behavior. The
                 // source must guard zero; CLIF ctz is permitted to produce
