@@ -7,9 +7,20 @@ fn parses_clang_musttail_for_nested_direct_and_void_returns() {
     for src in [
         "int f(int x){ [[clang::musttail]] return f(x); }",
         "void f(int x){ { [[clang::musttail]] return f(x); } }",
+        "int (*fn)(int); int wrap(int x){ [[clang::musttail]] return fn(x); }",
+        "int fn(int x); int wrap(int x){ int (*ptr)(int)=fn; [[clang::musttail]] return (*ptr)(x); }",
     ] {
-        let Some(ExternalItem::Function(f))=Parser::new(src).next_item().unwrap()
-        else {panic!("function expected")};
+        // Source may declare a function-pointer variable or a callee
+        // before the wrapper. Inspect the function definition, not the
+        // first external declaration in the translation unit.
+        let mut parser=Parser::new(src);
+        let f=loop {
+            match parser.next_item().unwrap() {
+                Some(ExternalItem::Function(f))=>break f,
+                Some(_)=>continue,
+                None=>panic!("function expected"),
+            }
+        };
         let Stmt::Block(mut stmts)=f.body else {panic!("body expected")};
         let node=stmts.pop().unwrap();
         let annotated=match node {

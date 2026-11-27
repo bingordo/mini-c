@@ -2458,14 +2458,14 @@ impl Checker {
             },
             Stmt::MustTailReturn(value) => {
                 // Clang's musttail is a statement-level semantic promise:
-                // no arithmetic, conditional, cast, indirect designator or
-                // implicit conversion may hide a different call/return ABI.
-                let Expr::Call(callee,_) = value.without_location() else {
-                    return Err(type_error(span,"musttail return requires a direct function call"));
+                // no arithmetic, conditional or cast may hide a different
+                // call/return ABI. Direct and indirect function designators
+                // are both valid if the *checked* callee has precisely the
+                // caller's fixed C prototype. The target pointer and its
+                // operands are evaluated by ordinary checked call semantics.
+                let Expr::Call(_,_) = value.without_location() else {
+                    return Err(type_error(span,"musttail return requires a function call"));
                 };
-                if !matches!(callee.without_location(),Expr::Name(_)) {
-                    return Err(type_error(span,"musttail return requires a named direct function"));
-                }
                 let Some(caller)=self.current_signature.as_ref() else {
                     return Err(type_error(span,"musttail requires a fixed-prototype caller"));
                 };
@@ -2474,7 +2474,14 @@ impl Checker {
                 let CheckedExprKind::Call(callee,_) = &typed.kind else {
                     return Err(type_error(span,"musttail return must remain an ordinary checked call"));
                 };
-                if !callee.ty.unqualified().same_type(&caller) {
+                let callee_signature=match callee.ty.unqualified() {
+                    CType::Function {..} => callee.ty.unqualified(),
+                    CType::Pointer(inner) if matches!(inner.unqualified(),CType::Function{..}) =>
+                        inner.unqualified(),
+                    _=>return Err(type_error(span,
+                        "musttail requires a fixed nonvariadic C function-pointer or direct callee")),
+                };
+                if !callee_signature.same_type(&caller) {
                     return Err(type_error(span,
                         "musttail requires identical fixed caller and callee signatures"));
                 }
