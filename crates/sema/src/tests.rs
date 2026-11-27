@@ -5147,6 +5147,8 @@ fn c99_prototype_parameter_scope_and_no_runtime_bounds() {
 fn c99_parameter_array_bracket_contracts() {
     for source in [
         "int f(int a[*]); int f(int *a){return a[0];}",
+        "int f(int a[const *]); int f(int *a){return a[0];}",
+        "int f(int n,int a[restrict *][*]); int f(int n,int a[n][n]){return a[0][0];}",
         "int f(int n,int a[*][*]); int f(int n,int a[n][n]){return a[0][0];}",
         "int f(int n,int a[static n]); int f(int n,int a[static n]){return a[n-1];}",
         "int f(int n,int a[restrict static n]); int f(int n,int a[static restrict n]){return a[0];}",
