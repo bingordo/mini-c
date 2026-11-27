@@ -2,7 +2,7 @@
 //! never a parser side effect. The internal CPP is the default; --cpp=cc
 //! selects the external compatibility fallback.
 use mini_c_cranelift::{compile_source_diagnostic, CompileError};
-use mini_c_preprocess::source_map::SourceMap;
+use mini_c_preprocess::{source_map::SourceMap, token_origins::TokenOrigins, diagnostic_render::render_diagnostic};
 use mini_c_syntax::source::SourceFile;
 use mini_c_syntax::diag::{Diagnostic, DiagnosticSeverity, ReportedDiagnostic, WarningPolicy};
 use mini_c_syntax::parser::Parser;
@@ -61,20 +61,13 @@ fn parse_options(args: impl IntoIterator<Item = String>) -> Result<Options, Stri
 }
 
 fn format_compiler_error(
-    filename: &str, source: &str, preprocessed: bool, error: CompileError,
+    filename: &str, source: &str, preprocessed: bool, origins: &TokenOrigins, error: CompileError,
 ) -> String {
     match error {
         CompileError::Diagnostic(d) => {
-            let location = if preprocessed {
-                let map = SourceMap::from_preprocessed(source, filename);
-                let origin = map.origin(d.span.lo);
-                format!("{}:{}", origin.file, origin.line)
-            } else {
-                let file = SourceFile::new(filename, source);
-                let (line, col) = file.location(d.span.lo);
-                format!("{filename}:{line}:{col}")
-            };
-            format!("{location}: error[{}]: {}", d.code.as_str(), d.message)
+            let map = preprocessed.then(|| SourceMap::from_preprocessed(source, filename));
+            let file = SourceFile::new(filename, source);
+            render_diagnostic(&file, map.as_ref(), origins, &d, &format!("error[{}]", d.code.as_str()), "")
         }
         CompileError::Backend(message) => format!("{filename}: error: {message}"),
     }
@@ -109,7 +102,7 @@ fn collect_semantic_warnings(
 /// prevents writing an object file. Keep formatting independently testable
 /// so header-origin and raw-column regressions do not depend on stderr.
 fn format_semantic_warnings(
-    filename: &str, source: &str, preprocessed: bool, policy: &WarningPolicy,
+    filename: &str, source: &str, preprocessed: bool, origins: &TokenOrigins, policy: &WarningPolicy,
 ) -> Result<(Vec<String>, bool), Diagnostic> {
     let reports = collect_semantic_warnings(source, policy)?;
     // No source map or location index is needed for the common no-warning case.
@@ -122,29 +115,22 @@ fn format_semantic_warnings(
     let mut messages = Vec::new();
     for report in reports {
         let Some(severity) = policy.resolve(&report) else { continue; };
-        let position = if let Some(ref map) = map {
-            let origin = map.origin(report.diagnostic.span.lo);
-            format!("{}:{}", origin.file, origin.line)
-        } else {
-            let (line, col) = source_file.location(report.diagnostic.span.lo);
-            format!("{filename}:{line}:{col}")
-        };
         let label = match severity {
             DiagnosticSeverity::Warning => "warning",
             DiagnosticSeverity::Error => { failed = true; "error" },
             DiagnosticSeverity::Note => "note",
         };
-        messages.push(format!("{position}: {label}: {} [-W{}]",
-            report.diagnostic.message, report.warning_group.unwrap_or("unknown")));
+        messages.push(render_diagnostic(&source_file, map.as_ref(), origins, &report.diagnostic, label,
+            &format!(" [-W{}]", report.warning_group.unwrap_or("unknown"))));
     }
     Ok((messages, failed))
 }
 
 /// Print semantic warnings, retaining the fast path when none are enabled.
 fn emit_semantic_warnings(
-    filename: &str, source: &str, preprocessed: bool, policy: &WarningPolicy
+    filename: &str, source: &str, preprocessed: bool, origins: &TokenOrigins, policy: &WarningPolicy
 ) -> Result<bool, Diagnostic> {
-    let (messages, failed) = format_semantic_warnings(filename, source, preprocessed, policy)?;
+    let (messages, failed) = format_semantic_warnings(filename, source, preprocessed, origins, policy)?;
     for message in messages {
         eprintln!("{message}");
     }
@@ -196,11 +182,11 @@ fn compile_to_object(opts: &Options) -> ExitCode {
         return ExitCode::FAILURE;
     }
     let source = match &opts.cpp {
-        Some(config) => preprocess::file(Path::new(&opts.source), config)
+        Some(config) => preprocess::file_with_origins(Path::new(&opts.source), config)
             .map_err(|e| e.to_string()),
-        None => fs::read_to_string(&opts.source).map_err(|e| e.to_string()),
+        None => fs::read_to_string(&opts.source).map(|text| (text, TokenOrigins::default())).map_err(|e| e.to_string()),
     };
-    let source = match source {
+    let (source, origins) = match source {
         Ok(source) => source,
         Err(e) => {
             eprintln!("{}: {e}", opts.source);
@@ -211,7 +197,7 @@ fn compile_to_object(opts: &Options) -> ExitCode {
     // code generation. Without enabled semantic groups, this is a no-op and
     // preserves the ordinary fast compilation path.
     match emit_semantic_warnings(
-        &opts.source, &source, opts.cpp.is_some(), &opts.warnings,
+        &opts.source, &source, opts.cpp.is_some(), &origins, &opts.warnings,
     ) {
         Ok(true) => return ExitCode::FAILURE,
         Ok(false) => {}
@@ -219,7 +205,7 @@ fn compile_to_object(opts: &Options) -> ExitCode {
             // The warning checker reads the same preprocessed input as
             // codegen, so its failures need the same #line origin mapping.
             eprintln!("{}", format_compiler_error(
-                &opts.source, &source, opts.cpp.is_some(),
+                &opts.source, &source, opts.cpp.is_some(), &origins,
                 CompileError::Diagnostic(error),
             ));
             return ExitCode::FAILURE;
@@ -233,7 +219,7 @@ fn compile_to_object(opts: &Options) -> ExitCode {
         },
         Err(error) => {
             eprintln!("{}", format_compiler_error(
-                &opts.source, &source, opts.cpp.is_some(), error,
+                &opts.source, &source, opts.cpp.is_some(), &origins, error,
             ));
             ExitCode::FAILURE
         }
