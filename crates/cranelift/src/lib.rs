@@ -2051,6 +2051,8 @@ impl Lower<'_> {
             }
             CheckedExprKind::BuiltinAtomic(_) => Err(
                 "GNU atomic builtin requires native TypeId atomic legalization; Cranelift cannot emit an ordinary memory access or external call".into()),
+            CheckedExprKind::BuiltinIsInfSign(_) =>
+                Err("GNU isinf_sign requires native TypeId FP predicate lowering".into()),
             CheckedExprKind::BuiltinIsNan(_) =>
                 Err("GNU isnan requires native TypeId FP predicate lowering".into()),
             CheckedExprKind::BuiltinByteSwap(bits,inner) => {
