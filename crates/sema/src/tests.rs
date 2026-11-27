@@ -5007,3 +5007,15 @@ fn gnu_atomic_pointer_builtins_keep_checked_value_and_byte_offset_types() {
     reject("void f(int **p,int *v){__atomic_fetch_add(p,v,5);}","integer byte offset");
     reject("void f(int **p,long **e,int *v){__atomic_compare_exchange_n(p,e,v,0,5,2);}","matching writable");
 }
+
+#[test]
+fn c11_header_fetch_scales_pointer_offsets_before_raw_atomic_operation() {
+    for (name,expected) in [("__atomic_c11_fetch_add",true),("__atomic_c11_fetch_sub",true),("__atomic_fetch_add",false)] {
+        let source=format!("void f(int **p,int n){{{name}(p,n,5);}}");
+        let checked=checked_atomic_in_generated_c(&source);
+        assert_eq!(checked.bytes,8);
+        let scaled=matches!(checked.operands[1].kind,CheckedExprKind::Binary(BinOp::Mul,..));
+        assert_eq!(scaled,expected);
+    }
+    reject("void f(void **p){__atomic_c11_fetch_add(p,1,5);}","complete fixed-size element");
+}

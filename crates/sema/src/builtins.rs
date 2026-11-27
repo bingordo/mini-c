@@ -60,7 +60,7 @@ const fn atomic(id: BuiltinId, name: &'static str, count: usize, order: usize,
 
 /// Fixed spellings and signatures. Unsupported by-address GNU atomic overloads
 /// are intentionally absent; source diagnostics must not infer their ABI.
-pub const REGISTRY: [BuiltinSpec; 23] = [
+pub const REGISTRY: [BuiltinSpec; 25] = [
     BuiltinSpec {
         id: BuiltinId::Ctz32, name: "__builtin_ctz", argument_count: 1,
         memory_order_argument: None, failure_order_argument: None,
@@ -109,6 +109,9 @@ pub const REGISTRY: [BuiltinSpec; 23] = [
         6, 4, Some(5), Some(3)),
     atomic(BuiltinId::AtomicThreadFence, "__atomic_thread_fence", 1, 0, None, None),
     atomic(BuiltinId::AtomicSignalFence, "__atomic_signal_fence", 1, 0, None, None),
+    // C11 header aliases are canonicalized to the same checked raw operation.
+    atomic(BuiltinId::AtomicFetchAdd, "__atomic_c11_fetch_add", 3, 2, None, None),
+    atomic(BuiltinId::AtomicFetchSub, "__atomic_c11_fetch_sub", 3, 2, None, None),
 ];
 
 /// Independent source C11 order oracle used before backend IR construction.
