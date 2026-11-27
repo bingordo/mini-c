@@ -5040,3 +5040,28 @@ fn gnu_nan_and_isnan_checked_float_results() {
         assert!(check(s).is_err(),"invalid GNU builtin accepted: {s}");
     }
 }
+
+#[test]
+fn gnu_isinf_sign_is_typed_single_evaluation_and_rejects_invalid_inputs() {
+    for ty in ["float","double"] {
+        let src=format!("int f({ty} x) {{ return __builtin_isinf_sign(x); }}");
+        let items=check(&src).expect("checked GNU signed infinity");
+        let CheckedItem::Function(f)=&items[0] else {panic!("function")};
+        let CheckedStmt::Block(body)=&f.body else {panic!("body")};
+        let CheckedStmt::Return(Some(expr))=&body[0] else {panic!("return")};
+        assert_eq!(expr.ty,CType::int());
+        assert!(matches!(&expr.kind,CheckedExprKind::BuiltinIsInfSign(inner)
+            if inner.ty==CType::Floating(
+                if ty=="float" {mini_c_syntax::ast::FloatRank::Float}
+                else {mini_c_syntax::ast::FloatRank::Double}
+            )));
+    }
+    for s in [
+        "int f(void){return __builtin_isinf_sign();}",
+        "int f(float x){return __builtin_isinf_sign(x,x);}",
+        "int f(void){return __builtin_isinf_sign(1);}",
+        "int f(void){return __builtin_isinf_sign((void*)0);}",
+    ] {
+        assert!(check(s).is_err(),"invalid GNU signed infinity accepted: {s}");
+    }
+}
