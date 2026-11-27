@@ -22,7 +22,7 @@ enum Declarator {
     Name(String, Option<Span>),
     Pointer(Box<Self>, Qualifiers),
     Array(Box<Self>, Option<Expr>),
-    StarArray(Box<Self>),
+    StarArray(Box<Self>, Qualifiers),
     ParameterArray(Box<Self>, Option<Expr>, Qualifiers, bool),
     Function(Box<Self>, Vec<Decl>, bool, bool),
 }
@@ -40,7 +40,7 @@ impl Declarator {
                 })
             },
             Self::Array(inner, bound) => inner.finish(Type::Array(Box::new(base), bound.map(Box::new))),
-            Self::StarArray(inner) => inner.finish(Type::StarArray(Box::new(base))),
+            Self::StarArray(inner,qualifiers) => inner.finish(Type::StarArray(Box::new(base),qualifiers)),
             Self::ParameterArray(inner,bound,qualifiers,minimum) => inner.finish(Type::ParameterArray {
                 element:Box::new(base),bound:bound.map(Box::new),qualifiers,minimum,
             }),
@@ -1058,12 +1058,12 @@ impl<'a> Parser<'a> {
                         .is_some_and(|t|t.text.as_ref()=="]")
                 } else {false};
                 if star {
-                    if minimum || qualifiers.any() {
-                        return Err(Diagnostic::new(self.eof_span(),"qualified or static star array is not supported"));
+                    if minimum {
+                        return Err(Diagnostic::new(self.eof_span(),"static array parameter requires an explicit bound"));
                     }
                     self.take()?;
                     self.expect("]")?;
-                    direct=Declarator::StarArray(Box::new(direct));
+                    direct=Declarator::StarArray(Box::new(direct),qualifiers);
                     continue;
                 }
                 let bound = if self.peek()?.is_some_and(|token| token.text.as_ref() == "]") {
