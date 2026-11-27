@@ -133,13 +133,13 @@ pub enum Type {
     TagRef(TagKind, Ident),
     Function {
         result: Box<Type>,
-        params: Vec<Type>,
+        params: Vec<Decl>,
     },
     /// C99 empty parameter list in a declaration: no prototype, not (void).
     UnprototypedFunction { result: Box<Type> },
     VariadicFunction {
         result: Box<Type>,
-        params: Vec<Type>,
+        params: Vec<Decl>,
     },
 }
 #[derive(Debug, Clone, PartialEq)]
