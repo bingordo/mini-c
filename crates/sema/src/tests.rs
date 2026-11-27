@@ -5065,3 +5065,15 @@ fn gnu_isinf_sign_is_typed_single_evaluation_and_rejects_invalid_inputs() {
         assert!(check(s).is_err(),"invalid GNU signed infinity accepted: {s}");
     }
 }
+
+#[test]
+fn c11_header_fetch_scales_pointer_offsets_before_raw_atomic_operation() {
+    for (name,expected) in [("__atomic_c11_fetch_add",true),("__atomic_c11_fetch_sub",true),("__atomic_fetch_add",false)] {
+        let source=format!("void f(int **p,int n){{{name}(p,n,5);}}");
+        let checked=checked_atomic_in_generated_c(&source);
+        assert_eq!(checked.bytes,8);
+        let scaled=matches!(checked.operands[1].kind,CheckedExprKind::Binary(BinOp::Mul,..));
+        assert_eq!(scaled,expected);
+    }
+    reject("void f(void **p){__atomic_c11_fetch_add(p,1,5);}","complete fixed-size element");
+}
