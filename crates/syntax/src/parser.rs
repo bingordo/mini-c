@@ -742,6 +742,28 @@ impl<'a> Parser<'a> {
     /// Only annotations that are safe to *not* exploit for optimization or
     /// diagnostics are accepted. Layout, ABI, control-flow and unknown
     /// attributes fail closed; they must not disappear silently.
+    /// Preserve an explicit GNU minimum alignment for target-aware checking.
+    fn parse_gnu_alignment(&mut self, span:Span)->Result<MemberAlignment,Diagnostic> {
+        self.expect("(")?;
+        let alignment = if self.peek()?.is_some_and(|t|
+            matches!(t.text.as_ref(), "__alignof__" | "__alignof" | "_Alignof")) {
+            self.take()?;
+            self.expect("(")?;
+            let (base, _) = self.parse_type()?.ok_or_else(||
+                Diagnostic::new(self.eof_span(), "alignment requires a type name"))?;
+            let (name, ty, params, _) = self.parse_declarator_shape(true)?.finish(base);
+            if !name.is_empty() || params.is_some() {
+                return Err(Diagnostic::new(span, "alignment requires an abstract type name"));
+            }
+            self.expect(")")?;
+            MemberAlignment::AlignOf(Box::new(ty))
+        } else {
+            MemberAlignment::Constant(Box::new(self.parse_assign()?))
+        };
+        self.expect(")")?;
+        Ok(alignment)
+    }
+
     fn parse_gnu_declarator_attributes(&mut self, function_params: Option<(usize, bool)>, mut decl_type: Option<&mut Type>)
         -> Result<(), Diagnostic>
     {
@@ -981,6 +1003,15 @@ impl<'a> Parser<'a> {
                     }
                     self.expect(")")?;
                 }
+                "aligned" => {
+                    if function {
+                        return Err(Diagnostic::coded(token.span,DiagnosticCode::SyntaxInvalidDeclaration,"unsupported GNU attribute: function alignment requires backend support"));
+                    }
+                    let alignment=self.parse_gnu_alignment(token.span)?;
+                    let declared=decl_type.as_deref_mut().ok_or_else(||
+                        Diagnostic::new(token.span,"GNU alignment requires an object declarator"))?;
+                    *declared=Type::MemberAligned(Box::new(declared.clone()),alignment);
+                }
                 "mode" => {
                     // GCC's __mode__(__word__) on a signed/unsigned int
                     // declaration chooses the target's signed/unsigned word
@@ -1014,17 +1045,17 @@ impl<'a> Parser<'a> {
                             "GNU word mode requires a signed or unsigned int base type")),
                     }
                 }
-                // Keep returns_twice, packed/aligned/vector_size, mode/section
+                // Keep returns_twice, packed/vector_size, section
                 // and calling-convention annotations fail-closed: unlike
                 // noreturn, these may change observable semantics or ABI.
-                // 'packed', 'aligned', 'vector_size', 'mode', 'section',
+                // 'packed', 'vector_size', 'section',
                 // 'ms_abi', 'sysv_abi' or unknown ABI-affecting extensions.
                 _ => return Err(Diagnostic::coded(token.span,
                     DiagnosticCode::SyntaxInvalidDeclaration,
                     format!("unsupported GNU attribute '{}' (possible ABI or semantic effect)",
                         token.text.as_ref()))),
             }
-            if !function && name != "mode" {
+            if !function && !matches!(name,"mode"|"aligned") {
                 return Err(Diagnostic::coded(token.span,
                     DiagnosticCode::SyntaxInvalidDeclaration,
                     "GNU function attribute requires a function declarator"));
@@ -1325,6 +1356,21 @@ impl<'a> Parser<'a> {
             Span { lo: open.span.lo, hi: close.span.hi }))
     }
 
+    /// Apply trailing declarator attributes consistently for block objects,
+    /// including tag-based declarations and each comma-separated declarator.
+    fn parse_local_declarator_attributes(&mut self, ty:&mut Type)->Result<(),Diagnostic> {
+        while self.peek()?.is_some_and(|t|
+            matches!(t.text.as_ref(),"__attribute__"|"__attribute")) {
+            let signature=match ty {
+                Type::Function{params,..}=>Some((params.len(),false)),
+                Type::VariadicFunction{params,..}=>Some((params.len(),true)),
+                _=>None,
+            };
+            self.parse_gnu_declarator_attributes(signature,Some(ty))?;
+        }
+        Ok(())
+    }
+
     fn parse_decl(&mut self, is_typedef: bool) -> Result<Decl, Diagnostic> {
         let mut declarations = self.parse_decl_group(is_typedef)?;
         if declarations.len() != 1 {
@@ -1379,8 +1425,9 @@ impl<'a> Parser<'a> {
             .ok_or_else(|| Diagnostic::new(self.eof_span(), "expected type"))?;
         let mut declarations = Vec::new();
         loop {
-            let (name, ty, _, name_span) =
+            let (name, mut ty, _, name_span) =
                 self.parse_declarator_shape(false)?.finish(base.clone());
+            self.parse_local_declarator_attributes(&mut ty)?;
             self.scopes.declare(&name,
                 if is_typedef { Binding::Typedef } else { Binding::Ordinary });
             let initializer_operator = self.peek()?.filter(|t| t.text.as_ref() == "=").map(|t| t.span);
@@ -1420,7 +1467,8 @@ impl<'a> Parser<'a> {
             self.take()?;
             return Ok(Stmt::Tag(base));
         }
-        let (name, ty, _, name_span) = self.parse_declarator_shape(false)?.finish(base.clone());
+        let (name, mut ty, _, name_span) = self.parse_declarator_shape(false)?.finish(base.clone());
+        self.parse_local_declarator_attributes(&mut ty)?;
         self.scopes.declare(&name, Binding::Ordinary);
         let init = if self.peek()?.is_some_and(|t| t.text.as_ref() == "=") {
             self.take()?;
@@ -1958,23 +2006,7 @@ impl<'a> Parser<'a> {
                                 return Err(Diagnostic::new(attr.span,
                                     "unsupported GNU member attribute"));
                             }
-                            p.expect("(")?;
-                            let alignment = if p.peek()?.is_some_and(|t|
-                                matches!(t.text.as_ref(), "__alignof__" | "__alignof" | "_Alignof")) {
-                                p.take()?;
-                                p.expect("(")?;
-                                let (base, _) = p.parse_type()?.ok_or_else(||
-                                    Diagnostic::new(p.eof_span(), "alignment requires a type name"))?;
-                                let (name, ty, params, _) = p.parse_declarator_shape(true)?.finish(base);
-                                if !name.is_empty() || params.is_some() {
-                                    return Err(Diagnostic::new(attr.span, "alignment requires an abstract type name"));
-                                }
-                                p.expect(")")?;
-                                MemberAlignment::AlignOf(Box::new(ty))
-                            } else {
-                                MemberAlignment::Constant(Box::new(p.parse_assign()?))
-                            };
-                            p.expect(")")?;
+                            let alignment=p.parse_gnu_alignment(attr.span)?;
                             p.expect(")")?;
                             p.expect(")")?;
                             Type::MemberAligned(Box::new(ty), alignment)
