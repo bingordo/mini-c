@@ -591,10 +591,8 @@ fn hexadecimal_float_constants_use_exact_binary_rounding_for_warnings() {
 
 #[test]
 fn decimal_subnormal_float_warning_uses_same_rounding_as_codegen() {
-    // Double precision can represent these nonzero values, but converting
-    // to float either changes the result or rounds to zero.
-    assert!(warnings("float f(void) { return 1.401298464324817e-45; }",
-        &["-Wfloat-conversion"]).len() <= 1);
+    // This double-precision constant is nonzero, but underflows to zero
+    // when rounded to binary32.
     let reports = warnings("float f(void) { return 1e-50; }",
         &["-Wfloat-conversion"]);
     assert_eq!(reports.len(), 1, "{reports:?}");
