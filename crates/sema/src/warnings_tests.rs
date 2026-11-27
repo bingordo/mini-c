@@ -497,3 +497,103 @@ fn compound_warning_can_be_disabled_without_disabling_other_warnings() {
         &["-Wsign-conversion", "-Wno-sign-conversion"]);
     assert!(reports.is_empty(), "{reports:?}");
 }
+
+#[test]
+fn floating_variable_to_integer_uses_float_conversion() {
+    let reports = warnings("int f(double x) { int y = x; return y; }",
+        &["-Wfloat-conversion"]);
+    assert_eq!(reports.len(), 1, "{reports:?}");
+    assert_eq!(reports[0].warning_group, Some("float-conversion"));
+}
+
+#[test]
+fn double_to_float_variable_warns_but_float_to_double_is_safe() {
+    let narrowing = warnings("float f(double x) { return x; }",
+        &["-Wfloat-conversion"]);
+    assert_eq!(narrowing.len(), 1, "{narrowing:?}");
+    assert!(warnings("double f(float x) { return x; }",
+        &["-Wfloat-conversion"]).is_empty());
+}
+
+#[test]
+fn exactly_representable_float_constants_are_suppressed() {
+    assert!(warnings("float f(void) { return 1.0; }",
+        &["-Wfloat-conversion"]).is_empty());
+    assert!(warnings("int f(void) { return 1.0; }",
+        &["-Wfloat-conversion"]).is_empty());
+}
+
+#[test]
+fn inexact_float_constants_warn() {
+    assert_eq!(warnings("float f(void) { return 1.1; }",
+        &["-Wfloat-conversion"]).len(), 1);
+    assert_eq!(warnings("int f(void) { return 1.5; }",
+        &["-Wfloat-conversion"]).len(), 1);
+}
+
+#[test]
+fn integer_to_float_dynamic_precision_loss_uses_conversion_group() {
+    let reports = warnings("float f(int x) { return x; }", &["-Wconversion"]);
+    assert_eq!(reports.len(), 1, "{reports:?}");
+    assert_eq!(reports[0].warning_group, Some("conversion"));
+    assert!(warnings("double f(int x) { return x; }",
+        &["-Wconversion"]).is_empty());
+}
+
+#[test]
+fn integer_to_float_constant_exactness_uses_float_conversion_group() {
+    assert!(warnings("float f(void) { return 16777216; }",
+        &["-Wfloat-conversion"]).is_empty());
+    let reports = warnings("float f(void) { return 16777217; }",
+        &["-Wfloat-conversion"]);
+    assert_eq!(reports.len(), 1, "{reports:?}");
+    assert_eq!(reports[0].warning_group, Some("float-conversion"));
+}
+
+#[test]
+fn floating_warnings_are_not_enabled_by_wall() {
+    assert!(warnings("int f(double x) { return x; }",
+        &["-Wall"]).is_empty());
+}
+
+#[test]
+fn explicit_float_cast_suppresses_implicit_warning() {
+    assert!(warnings("int f(double x) { return (int)x; }",
+        &["-Wconversion"]).is_empty());
+}
+
+#[test]
+fn float_conversion_can_be_suppressed_independently() {
+    assert!(warnings("float f(double x) { return x; }",
+        &["-Wconversion", "-Wno-float-conversion"]).is_empty());
+}
+
+#[test]
+fn hexadecimal_float_constants_use_exact_binary_rounding_for_warnings() {
+    for source in [
+        "float f(void) { return 0x1p-149; }",
+        "float f(void) { return 0x1.000002p0; }",
+        "int f(void) { return 0x1.8p1; }",
+    ] {
+        let reports = warnings(source, &["-Wfloat-conversion"]);
+        assert!(reports.is_empty(), "{source}: {reports:?}");
+    }
+    for source in [
+        "float f(void) { return 0x1p-150; }",
+        "float f(void) { return 0x1.000001p0; }",
+        "int f(void) { return 0x1.8p0; }",
+    ] {
+        let reports = warnings(source, &["-Wfloat-conversion"]);
+        assert_eq!(reports.len(), 1, "{source}: {reports:?}");
+        assert_eq!(reports[0].warning_group, Some("float-conversion"));
+    }
+}
+
+#[test]
+fn decimal_subnormal_float_warning_uses_same_rounding_as_codegen() {
+    // This double-precision constant is nonzero, but underflows to zero
+    // when rounded to binary32.
+    let reports = warnings("float f(void) { return 1e-50; }",
+        &["-Wfloat-conversion"]);
+    assert_eq!(reports.len(), 1, "{reports:?}");
+}

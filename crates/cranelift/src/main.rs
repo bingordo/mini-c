@@ -94,6 +94,7 @@ fn collect_semantic_warnings(
         && !policy.enabled("conversion")
         && !policy.enabled("sign-conversion")
         && !policy.enabled("sign-compare")
+        && !policy.enabled("float-conversion")
     {
         return Ok(Vec::new());
     }

@@ -68,7 +68,7 @@ fn per_group_werror_enables_and_promotes_only_selected_warning() {
 #[test]
 fn per_group_warning_error_controls_do_not_claim_unsupported_groups() {
     let mut policy = WarningPolicy::default();
-    for flag in ["-Werror=float-conversion", "-Wno-error=float-conversion",
+    for flag in ["-Werror=format", "-Wno-error=format",
                  "-Werror=", "-Wno-error="] {
         assert!(policy.apply_flag(flag).is_err(), "{flag}");
     }
@@ -93,4 +93,21 @@ fn sign_conversion_can_be_promoted_without_enabling_conversion() {
     assert_eq!(policy.resolve(&report), Some(DiagnosticSeverity::Error));
     policy.apply_flag("-Wno-error=sign-conversion").unwrap();
     assert_eq!(policy.resolve(&report), Some(DiagnosticSeverity::Warning));
+}
+
+#[test]
+fn float_conversion_is_implied_by_conversion_but_overridable() {
+    let mut policy = WarningPolicy::default();
+    assert!(!policy.enabled("float-conversion"));
+    policy.apply_flag("-Wconversion").unwrap();
+    assert!(policy.enabled("float-conversion"));
+    policy.apply_flag("-Wno-float-conversion").unwrap();
+    assert!(!policy.enabled("float-conversion"));
+    policy.apply_flag("-Wfloat-conversion").unwrap();
+    assert!(policy.enabled("float-conversion"));
+    policy.apply_flag("-Werror=float-conversion").unwrap();
+    let report = ReportedDiagnostic::warning(
+        Diagnostic::semantic(Span { lo: 0, hi: 1 }, "float narrowing"),
+        "float-conversion");
+    assert_eq!(policy.resolve(&report), Some(DiagnosticSeverity::Error));
 }
