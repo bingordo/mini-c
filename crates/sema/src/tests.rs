@@ -5142,3 +5142,31 @@ fn c99_prototype_parameter_scope_and_no_runtime_bounds() {
     assert!(d.runtime_bounds.is_empty());
     assert!(!d.ty.is_variably_modified());
 }
+
+#[test]
+fn c99_parameter_array_bracket_contracts() {
+    for source in [
+        "int f(int a[*]); int f(int *a){return a[0];}",
+        "int f(int n,int a[*][*]); int f(int n,int a[n][n]){return a[0][0];}",
+        "int f(int n,int a[static n]); int f(int n,int a[static n]){return a[n-1];}",
+        "int f(int n,int a[restrict static n]); int f(int n,int a[static restrict n]){return a[0];}",
+        "int f(int a[const 4]); int f(int *a){return *a;}",
+        "int f(int n,int a[const n]){return a[0];}",
+        "int f(int *n,int a[*n]){return a[0];}",
+    ] {check(source).unwrap_or_else(|e|panic!("{source}: {e:?}"));}
+    for source in [
+        "int a[*];",
+        "int f(int a[*]){return 0;}",
+        "int a[static 4];",
+        "int f(int a[2][static 3]);",
+        "int f(int a[static]);",
+        "int f(int a[static 0]);",
+        "int f(int a[const 4]){a=0;return 0;}",
+    ] {assert!(check(source).is_err(),"{source}");}
+    let items=check("int f(int n,int a[static const n]){return a[0];}").unwrap();
+    let CheckedItem::Function(f)=&items[0] else{panic!("function")};
+    assert!(f.params[1].ty.is_const_object());
+    assert_eq!(f.params[1].runtime_bounds.len(),1);
+    let CType::Function{params,..}=&f.signature else{panic!("signature")};
+    assert!(!params[1].is_const_object());
+}
