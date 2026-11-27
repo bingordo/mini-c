@@ -1091,6 +1091,14 @@ impl Compiler {
             if next != params.len() {
                 return Err(format!("ABI parameter mismatch for '{}'", function.name));
             }
+            // Parameter objects are initialized before evaluating their saved
+            // extents. A later bound can observe an earlier parameter update.
+            for param in &function.params {
+                for (id,bound) in &param.runtime_bounds {
+                    let value=lower.expression(&mut builder,bound)?;
+                    lower.bind(&mut builder,&mini_c_sema::vla_bound_name(*id),&bound.ty,Some(value))?;
+                }
+            }
             let live = lower.statement(&mut builder, &function.body)?;
             if live {
                 let end = builder.current_block()
