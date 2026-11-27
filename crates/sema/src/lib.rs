@@ -3360,6 +3360,8 @@ impl Checker {
                     error
                 })
             },
+            Expr::StatementExpression(_) => Err(type_error(span,
+                "GNU statement expression requires scoped checked-statement lowering")),
             Expr::Initializer(_) | Expr::Designated { .. } => Err(type_error(span,
                 "brace initializer is only valid in an object declaration")),
             Expr::CompoundLiteral(type_name, initializer) => {
