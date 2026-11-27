@@ -957,8 +957,22 @@ impl Checker {
                 }
                 complete
             }
-            Type::MemberAligned(..) => return Err(type_error(span,
-                "member alignment is only valid inside a struct or union")),
+            // Outside a member declaration the wrapper describes a GNU
+            // declarator alignment. An exact natural alignment changes
+            // neither an object layout nor a typedef's effective alignment.
+            // Do not erase a request for a different alignment: it needs
+            // explicit type and backend storage representation.
+            Type::MemberAligned(base, alignment) => {
+                let resolved = self.resolve(base, span)?;
+                let resolved = self.try_complete_tag_type(resolved)?;
+                let requested = self.requested_alignment(alignment, span)?;
+                let natural = resolved.align_bytes(self.target).ok_or_else(||
+                    type_error(span, "aligned declarator requires complete layout"))?;
+                if !resolved.is_object() || requested != natural {
+                    return Err(type_error(span, "non-natural declarator alignment requires backend layout support"));
+                }
+                resolved
+            }
             Type::BitField(..) => return Err(type_error(span,
                 "bit-field declaration is only valid inside a struct or union")),
             Type::Pointer(inner) => CType::Pointer(Box::new(self.resolve(inner, span)?)),
@@ -3078,11 +3092,25 @@ impl Checker {
         &mut self, alignment: Option<&mini_c_syntax::ast::MemberAlignment>,
         ty: &CType, bit_field: bool, span: Span,
     ) -> Result<(), Diagnostic> {
-        use mini_c_syntax::ast::MemberAlignment;
         let Some(alignment) = alignment else { return Ok(()); };
         if bit_field {
             return Err(type_error(span, "aligned bit-fields are unsupported"));
         }
+        let requested = self.requested_alignment(alignment, span)?;
+        let natural = ty.align_bytes(self.target).ok_or_else(||
+            type_error(span, "aligned member requires complete layout"))?;
+        if requested > natural {
+            return Err(type_error(span, "over-aligned member requires backend layout support"));
+        }
+        Ok(())
+    }
+
+    /// Evaluate alignment once, using the checked target layout and
+    /// integer-constant evaluator shared by members and declarators.
+    fn requested_alignment(
+        &mut self, alignment: &mini_c_syntax::ast::MemberAlignment, span: Span,
+    ) -> Result<u64, Diagnostic> {
+        use mini_c_syntax::ast::MemberAlignment;
         let requested = match alignment {
             MemberAlignment::AlignOf(source) => {
                 let source = self.resolve_sizeof_type(source, span)?;
@@ -3107,12 +3135,7 @@ impl Checker {
         if !requested.is_power_of_two() {
             return Err(type_error(span, "member alignment must be a positive power of two"));
         }
-        let natural = ty.align_bytes(self.target).ok_or_else(||
-            type_error(span, "aligned member requires complete layout"))?;
-        if requested > natural {
-            return Err(type_error(span, "over-aligned member requires backend layout support"));
-        }
-        Ok(())
+        Ok(requested)
     }
 
     fn check_bit_width(
