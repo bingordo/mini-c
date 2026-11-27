@@ -4862,3 +4862,15 @@ fn c99_local_vla_bound_capture_and_runtime_types() {
         ("int f(int n){int a[n][];return 0;}", "complete object type"),
     ] { reject(source, expected); }
 }
+
+#[test]
+fn gnu_statement_expressions_fail_closed_until_checked_lowering() {
+    for source in [
+        "int f(void){return ({int x=1; x;});}",
+        "int f(void){return sizeof ({int x=1; x;});}",
+        "int f(void){return 0 && ({1;});}",
+        "void f(void){({});}",
+    ] {
+        reject(source, "GNU statement expression requires scoped checked-statement lowering");
+    }
+}
