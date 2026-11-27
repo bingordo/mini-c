@@ -1880,7 +1880,7 @@ impl Checker {
                         is_thread_local:false,old_style_signature:None,non_inline_or_extern:false,inline_declaration:None,
                     });
                     if prior.is_some() {
-                        return Err(Diagnostic::coded(param.span,DiagnosticCode::SemanticDuplicateDeclaration,
+                        return Err(Diagnostic::coded(param.name_span.unwrap_or(param.span),DiagnosticCode::SemanticDuplicateDeclaration,
                             format!("duplicate parameter '{}'",param.name)));
                     }
                 }
