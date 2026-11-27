@@ -200,7 +200,7 @@ pub fn evaluate(expr: &CheckedExpr, target: Target) -> Result<i128, &'static str
         CheckedExprKind::ArrayDecay(_) | CheckedExprKind::Comma(..) |
         CheckedExprKind::Assign(..) |
         CheckedExprKind::CompoundAssign(..) | CheckedExprKind::Update { .. } |
-        CheckedExprKind::Call(..) | CheckedExprKind::BuiltinCtz(_) |
+        CheckedExprKind::Call(..) | CheckedExprKind::BuiltinCtz(_) | CheckedExprKind::BuiltinIsNan(_) | CheckedExprKind::BuiltinIsInfSign(_) |
         CheckedExprKind::BuiltinAtomic(_) =>
             Err("not an integer constant expression"),
     }
