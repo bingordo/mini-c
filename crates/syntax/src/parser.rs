@@ -1005,7 +1005,7 @@ impl<'a> Parser<'a> {
                 }
                 "aligned" => {
                     if function {
-                        return Err(Diagnostic::new(token.span,"GNU function alignment requires backend support"));
+                        return Err(Diagnostic::coded(token.span,DiagnosticCode::SyntaxInvalidDeclaration,"GNU function alignment requires backend support"));
                     }
                     let alignment=self.parse_gnu_alignment(token.span)?;
                     let declared=decl_type.as_deref_mut().ok_or_else(||
