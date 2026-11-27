@@ -3053,7 +3053,7 @@ mod tests {
     }
 
     #[test]
-    fn m10_gnu_extension_prefix_only_on_valid_external_declarations() {
+    fn m10_gnu_extension_prefix_preserves_declaration_checks() {
         let mut p = Parser::new(concat!(
             "__extension__\n",
             "extern long long int llrint (double x) ",
@@ -3075,10 +3075,12 @@ mod tests {
             assert!(Parser::new(invalid).next_item().is_err(),
                 "must not erase malformed declarations: {invalid}");
         }
-        // This slice explicitly does not enable statement or expression
-        // extensions, nor suppress semantic checks on declared C types.
+        // Lexical __extension__ now applies to local declarations too.
         assert!(Parser::new(
             "int main(void){__extension__ int x=2;return x;}"
+        ).next_item().is_ok());
+        assert!(Parser::new(
+            "int main(void){__extension__ int x=;return x;}"
         ).next_item().is_err());
     }
 
