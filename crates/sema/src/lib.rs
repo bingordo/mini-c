@@ -6,6 +6,7 @@ pub mod const_eval;
 pub mod float_literal;
 pub mod builtins;
 mod warnings;
+mod vm_scope;
 #[allow(dead_code)] // generated target ISA tables remain test oracles, not source admission
 mod asm_gp_rmw;
 #[allow(dead_code)] // source checker does not decode assembler mnemonics
@@ -245,7 +246,7 @@ pub struct CheckedAsmOperand {
 pub enum CheckedStmt {
     Block(Vec<CheckedStmt>),
     Decl(CheckedDecl),
-    Typedef { name: String, ty: CType },
+    Typedef { name: String, ty: CType, runtime_bounds: RuntimeBounds },
     Tag,
     Expr(Option<CheckedExpr>),
     /// Executable opaque basic asm: never treat it as a pure expression or
@@ -360,7 +361,7 @@ impl CheckedStmt {
         match self {
             Self::Block(stmts) => stmts.iter().any(|s|s.contains_memory_qualifier(has)),
             Self::Decl(decl) => decl.contains_memory_qualifier(has),
-            Self::Typedef {ty,..} => has(ty),
+            Self::Typedef {ty,runtime_bounds,..} => has(ty) || runtime_bounds.iter().any(|(_, e)| e.contains_memory_qualifier(has)),
             Self::Expr(expr) | Self::Return(expr) => expr.as_ref()
                 .is_some_and(|e|e.contains_memory_qualifier(has)),
             Self::MustTailReturn(expr) => expr.contains_memory_qualifier(has),
@@ -449,6 +450,7 @@ struct SwitchContext {
     control_type: CType,
     seen_cases: HashSet<i128>,
     seen_default: bool,
+    vm_region: usize,
 }
 
 /// Checked expressions carry their converted value types and lvalue category.
@@ -466,6 +468,7 @@ pub struct Checker {
     globals: HashMap<String, Symbol>,
     next_vla_bound: u64,
     capturing_vla_bounds: Option<Vec<(u64, CheckedExpr)>>,
+    vm_scopes: vm_scope::VmScopes,
     checking_inline_body: bool,
     inline_body_violation: RefCell<Option<Diagnostic>>,
     locals: Vec<HashMap<String, Symbol>>,
@@ -494,7 +497,7 @@ pub struct Checker {
 
 impl Checker {
     pub fn new(target: Target) -> Result<Self, Diagnostic> {
-        Ok(Self { target: target.validate()?, next_tag_identity: Cell::new(1), saw_atomic_aggregate: Cell::new(false), next_static_compound_identity: Cell::new(1), next_block_static_identity: 1, tags: RefCell::new(vec![HashMap::new()]), tag_definitions: RefCell::new(HashMap::new()), globals: HashMap::new(), next_vla_bound: 0, capturing_vla_bounds: None, checking_inline_body: false, inline_body_violation: RefCell::new(None), locals: Vec::new(), result_ty: None, current_signature: None, loop_depth: 0, switches: Vec::new(), function_labels: HashMap::new(), rollback_log: None, statement_undo: Vec::new(),
+        Ok(Self { target: target.validate()?, next_tag_identity: Cell::new(1), saw_atomic_aggregate: Cell::new(false), next_static_compound_identity: Cell::new(1), next_block_static_identity: 1, tags: RefCell::new(vec![HashMap::new()]), tag_definitions: RefCell::new(HashMap::new()), globals: HashMap::new(), next_vla_bound: 0, capturing_vla_bounds: None, vm_scopes: vm_scope::VmScopes::default(), checking_inline_body: false, inline_body_violation: RefCell::new(None), locals: Vec::new(), result_ty: None, current_signature: None, loop_depth: 0, switches: Vec::new(), function_labels: HashMap::new(), rollback_log: None, statement_undo: Vec::new(),
             recovery_errors: None, recovery_limit: 0,
             warning_policy: WarningPolicy::default(), emitted_warnings: Vec::new(),
             conversion_warnings: RefCell::new(Vec::new()),
@@ -1973,7 +1976,9 @@ impl Checker {
         self.function_labels.clear();
         self.checking_inline_body = false;
         let violation = self.inline_body_violation.get_mut().take();
+        let scope_result = std::mem::take(&mut self.vm_scopes).finish();
         let body = checked?;
+        scope_result?;
         if let Some(inline) = self.globals.get_mut(&func.name)
             .and_then(|s| s.inline_declaration.as_mut()) {
             inline.body_violation = violation;
@@ -2004,6 +2009,7 @@ impl Checker {
             let definitions_snapshot = self.tag_definitions.borrow().clone();
             let loop_depth = self.loop_depth;
             let switches = self.switches.clone();
+            let vm_scopes = self.vm_scopes.clone();
             self.statement_undo.push(HashMap::new());
             let result = self.check_stmt(statement, span);
             let changed = self.statement_undo.pop().expect("statement transaction");
@@ -2015,6 +2021,7 @@ impl Checker {
                     *self.tag_definitions.borrow_mut() = definitions_snapshot;
                     self.loop_depth = loop_depth;
                     self.switches = switches;
+                    self.vm_scopes = vm_scopes;
                     self.restore_symbols(changed);
                     self.recovery_errors.as_mut().expect("diagnostic collection").push(error);
                 }
@@ -2026,6 +2033,7 @@ impl Checker {
     fn check_stmt(&mut self, stmt: &Stmt, span: Span) -> Result<CheckedStmt, Diagnostic> {
         Ok(match stmt {
             Stmt::Block(stmts) => {
+                let vm_region = self.vm_scopes.current();
                 self.locals.push(HashMap::new());
                 self.push_warning_scope();
                 self.tags.borrow_mut().push(HashMap::new());
@@ -2033,6 +2041,7 @@ impl Checker {
                 self.pop_tag_scope();
                 self.pop_warning_scope();
                 self.locals.pop();
+                self.vm_scopes.leave_scope(vm_region);
                 CheckedStmt::Block(inner?)
             }
             Stmt::Tag(ty) => {
@@ -2102,6 +2111,7 @@ impl Checker {
                     .map(|value| self.check_object_initializer(value, &ty, decl.span,
                         decl.storage == StorageClass::Static))
                     .transpose()?;
+                if ty.is_variably_modified() { self.vm_scopes.enter_declaration(); }
                 CheckedStmt::Decl(CheckedDecl {
                     storage: decl.storage, runtime_bounds, is_inline: false, name: decl.name.clone(), ty,
                     linkage, asm_label: backing,
@@ -2109,10 +2119,11 @@ impl Checker {
                 })
             }
             Stmt::Typedef(decl) => {
-                let ty = self.resolve(&decl.ty, decl.span)?;
+                let (ty, runtime_bounds) = self.resolve_local_type(&decl.ty, decl.span)?;
                 self.define_local(&decl.name, ty.clone(), SymbolKind::Typedef, Linkage::None,
                     false, decl.name_span.unwrap_or(decl.span))?;
-                CheckedStmt::Typedef { name: decl.name.clone(), ty }
+                if ty.is_variably_modified() { self.vm_scopes.enter_declaration(); }
+                CheckedStmt::Typedef { name: decl.name.clone(), ty, runtime_bounds }
             }
             Stmt::Expr(expr) => {
                 CheckedStmt::Expr(expr.as_ref().map(|e| self.check_expr(e, span)).transpose()?)
@@ -2439,6 +2450,7 @@ impl Checker {
             Stmt::For { init, cond, step, body } => {
                 // The initializer's identifiers and tags remain visible in
                 // the condition, increment and body, but not after the loop.
+                let vm_region = self.vm_scopes.current();
                 self.locals.push(HashMap::new());
                 self.push_warning_scope();
                 self.tags.borrow_mut().push(HashMap::new());
@@ -2462,6 +2474,7 @@ impl Checker {
                 self.pop_tag_scope();
                 self.pop_warning_scope();
                 self.locals.pop();
+                self.vm_scopes.leave_scope(vm_region);
                 checked?
             }
             Stmt::Switch { control, body } => {
@@ -2477,6 +2490,7 @@ impl Checker {
                     control_type: promoted,
                     seen_cases: HashSet::new(),
                     seen_default: false,
+                    vm_region: self.vm_scopes.current(),
                 });
                 // Always pop the active switch even after a body error.
                 let checked = self.check_stmt(body, span);
@@ -2485,9 +2499,12 @@ impl Checker {
             }
             Stmt::Case { value, body } => {
                 let case_span = value.location().unwrap_or(span);
-                let promoted = self.switches.last().ok_or_else(||
-                    type_error(case_span, "case label outside switch"))?
-                    .control_type.clone();
+                let context = self.switches.last().ok_or_else(||
+                    type_error(case_span, "case label outside switch"))?;
+                if context.vm_region != self.vm_scopes.current() {
+                    return Err(type_error(case_span, "case label enters the scope of a variably modified identifier"));
+                }
+                let promoted = context.control_type.clone();
                 let value = self.check_expr(value, case_span)?.rvalue();
                 if !value.ty.is_integer() {
                     return Err(type_error(case_span,
@@ -2507,6 +2524,9 @@ impl Checker {
             Stmt::Default(body) => {
                 let context = self.switches.last_mut().ok_or_else(||
                     type_error(span, "default label outside switch"))?;
+                if context.vm_region != self.vm_scopes.current() {
+                    return Err(type_error(span, "default label enters the scope of a variably modified identifier"));
+                }
                 if context.seen_default {
                     return Err(type_error(span, "duplicate default label in switch"));
                 }
@@ -2514,6 +2534,7 @@ impl Checker {
                 CheckedStmt::Default(Box::new(self.check_stmt(body, span)?))
             }
             Stmt::Label { name, body, .. } => {
+                self.vm_scopes.label(name);
                 CheckedStmt::Label {
                     name: name.clone(),
                     body: Box::new(self.check_stmt(body, span)?),
@@ -2523,6 +2544,7 @@ impl Checker {
                 if !self.function_labels.contains_key(target) {
                     return Err(type_error(*span, format!("goto to undefined label '{target}'")));
                 }
+                self.vm_scopes.jump(target, *span);
                 CheckedStmt::Goto { target: target.clone() }
             }
             Stmt::Break => {
@@ -3163,10 +3185,7 @@ impl Checker {
         if array_element && operand_ty.has_flexible_array_member() {
             return Err(type_error(span, "array element cannot contain a flexible array member"));
         }
-        let size = operand_ty.size_bytes(self.target).ok_or_else(|| type_error(
-            span, "sizeof requires a complete object type (not void or function)"
-        ))?;
-        Ok(CheckedExpr::value(size_ty, CheckedExprKind::Literal(size)))
+        self.object_size_expression(&operand_ty, span)
     }
 
     fn resolve_sizeof_type(&self, ty: &Type, span: Span) -> Result<CType, Diagnostic> {
