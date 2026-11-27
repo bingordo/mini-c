@@ -985,7 +985,10 @@ impl Checker {
                     CType::Function { result: Box::new(result), params: converted }
                 }
             }
-            Type::StarArray(element) => {
+            Type::StarArray(element,qualifiers) => {
+                if qualifiers.any() {
+                    return Err(type_error(span,"array bracket qualifiers require the outermost array parameter"));
+                }
                 if !self.prototype_parameter_scope {
                     return Err(type_error(span,"[*] is only permitted in function prototype scope"));
                 }
@@ -1882,6 +1885,14 @@ impl Checker {
                     return Err(type_error(param.span, "function parameter requires automatic or register storage"));
                 }
                 let (resolved,runtime_bounds,bracket_qualifiers)=match &param.ty {
+                    Type::StarArray(element,qualifiers)=>{
+                        if qualifiers.is_atomic {
+                            return Err(type_error(param.span,"atomic array bracket qualification is not supported"));
+                        }
+                        let (ty,bounds)=self.resolve_local_type(
+                            &Type::StarArray(element.clone(),Default::default()),param.span)?;
+                        (ty,bounds,*qualifiers)
+                    }
                     Type::ParameterArray{element,bound,qualifiers,minimum}=>{
                         if *minimum && bound.is_none() {
                             return Err(type_error(param.span,"static array parameter requires a bound"));
