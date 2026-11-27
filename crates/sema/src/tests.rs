@@ -4864,13 +4864,27 @@ fn c99_local_vla_bound_capture_and_runtime_types() {
 }
 
 #[test]
-fn gnu_statement_expressions_fail_closed_until_checked_lowering() {
+fn gnu_statement_expressions_check_scopes_results_and_unsupported_transfers() {
     for source in [
         "int f(void){return ({int x=1; x;});}",
         "int f(void){return sizeof ({int x=1; x;});}",
         "int f(void){return 0 && ({1;});}",
         "void f(void){({});}",
+        "int f(void){int x=1;return ({__auto_type x=x+2;x;});}",
+        "int f(void){return ({int x=1; if(x)x=2; x;});}",
     ] {
-        reject(source, "GNU statement expression requires scoped checked-statement lowering");
+        check(source).unwrap_or_else(|error| panic!("{source}: {error:?}"));
     }
+    reject("int f(void){({int x=1;x;}); return x;}", "undeclared identifier");
+    reject("int f(void){return ({return 1;2;});}", "unsupported control transfer");
+    reject("int f(void){return ({static int x=1;x;});}", "unsupported control transfer or storage");
+    reject("int x=({1;});", "requires function scope");
+    let items=check("int f(void){return ({int x=1; x;});}").unwrap();
+    let CheckedItem::Function(f)=&items[0] else {panic!("function")};
+    let CheckedStmt::Block(stmts)=&f.body else {panic!("block")};
+    let CheckedStmt::Return(Some(expr))=&stmts[0] else {panic!("return")};
+    let CheckedExprKind::StatementExpression{statements,result}=&expr.kind else {panic!("statement expression")};
+    assert_eq!(statements.len(),1);
+    assert_eq!(result.as_ref().unwrap().category,Category::Value);
+    assert!(const_eval::evaluate(expr,Target::default()).is_err());
 }
