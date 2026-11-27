@@ -72,6 +72,9 @@ pub enum CheckedExprKind {
     Name(String),
     Unary(UnOp, Box<CheckedExpr>),
     Binary(BinOp, Box<CheckedExpr>, Box<CheckedExpr>),
+    /// Scoped GNU statement expression. The final expression is evaluated once
+    /// before the lexical scope is left; None denotes a void result.
+    StatementExpression { statements: Vec<CheckedStmt>, result: Option<Box<CheckedExpr>> },
     /// Sequenced left-to-right comma; result is always a non-lvalue.
     Comma(Box<CheckedExpr>, Box<CheckedExpr>),
     /// Lazy, non-lvalue C conditional; both arms are coerced to one result type.
@@ -316,6 +319,9 @@ impl CheckedExpr {
         if has(&self.ty) {return true;}
         use CheckedExprKind as K;
         match &self.kind {
+            K::StatementExpression { statements, result } =>
+                statements.iter().any(|s| s.contains_memory_qualifier(has))
+                || result.as_ref().is_some_and(|e| e.contains_memory_qualifier(has)),
             K::Initializer(values) => values.iter().any(|e|e.contains_memory_qualifier(has)),
             K::SparseInitializer(values) => values.iter()
                 .any(|(_,e)|e.contains_memory_qualifier(has)),
@@ -1266,7 +1272,7 @@ impl Checker {
     /// For an incomplete array the NUL is included in the inferred bound;
     /// an explicitly sized array may omit the final NUL, as required by C.
     fn complete_string_array(
-        &self, ty: CType, initializer: Option<&Expr>, span: Span
+        &mut self, ty: CType, initializer: Option<&Expr>, span: Span
     ) -> Result<CType, Diagnostic> {
         if let (CType::Array(element, bound), Some(Expr::StringLiteral(bytes))) =
             (&ty, initializer.map(Expr::without_location)) {
@@ -1315,7 +1321,7 @@ impl Checker {
     /// Evaluate a C99 designator index as an integer constant expression.
     /// Negative indices and enormous sparse arrays are diagnosed before
     /// converting to host indexes or allocating initializer vectors.
-    fn initializer_index(&self, expr: &Expr, span: Span) -> Result<u64, Diagnostic> {
+    fn initializer_index(&mut self, expr: &Expr, span: Span) -> Result<u64, Diagnostic> {
         let typed = self.check_expr(expr, expr.location().unwrap_or(span))?;
         if !typed.ty.is_integer() {
             return Err(type_error(span, "array designator requires integer constant expression"));
@@ -1332,7 +1338,7 @@ impl Checker {
     /// Resolve one C99 designator path through the current aggregate, with
     /// strict bounds and member-name constraints at *every* level.
     fn initializer_path(
-        &self, ty: &CType, path: &[Designator], span: Span,
+        &mut self, ty: &CType, path: &[Designator], span: Span,
     ) -> Result<(Vec<usize>, CType), Diagnostic> {
         let mut current = ty;
         let mut slots = Vec::with_capacity(path.len());
@@ -1495,7 +1501,7 @@ impl Checker {
     /// The current-object cursor tracks the next nested subobject across
     /// aggregate boundaries, not merely the next top-level member.
     fn check_deep_initializer(
-        &self, values: &[Expr], ty: &CType, span: Span, is_static: bool,
+        &mut self, values: &[Expr], ty: &CType, span: Span, is_static: bool,
     ) -> Result<CheckedExpr, Diagnostic> {
         let mut checked_paths: Vec<(Vec<usize>, CheckedExpr)> = Vec::new();
         // None means the initializer exhausted the enclosing object.
@@ -1600,7 +1606,7 @@ impl Checker {
     }
 
     fn check_object_initializer(
-        &self, original: &Expr, ty: &CType, span: Span, is_static: bool
+        &mut self, original: &Expr, ty: &CType, span: Span, is_static: bool
     ) -> Result<CheckedExpr, Diagnostic> {
         let span = original.location().unwrap_or(span);
         let original = original.without_location();
@@ -2561,7 +2567,7 @@ impl Checker {
         })
     }
 
-    fn check_condition(&self, cond: &Expr, span: Span) -> Result<CheckedExpr, Diagnostic> {
+    fn check_condition(&mut self, cond: &Expr, span: Span) -> Result<CheckedExpr, Diagnostic> {
         let span = cond.location().unwrap_or(span);
         let typed = self.check_expr(cond, span)?.rvalue();
         if !typed.ty.is_scalar() {
@@ -2644,7 +2650,7 @@ impl Checker {
     }
 
     /// Resolve the integer subset of C cast type-names without mutating tags
-    /// or scopes; expression checking only holds an immutable checker borrow.
+    /// or scopes.
     fn cast_integer_type(&self, ty: &Type, span: Span) -> Result<CType, Diagnostic> {
         let resolved = match ty {
             Type::Bool => CType::Integer { rank: IntRank::Bool, unsigned: true },
@@ -2908,7 +2914,7 @@ impl Checker {
     /// requests proven not to change the natural layout for now; actual
     /// over-alignment also needs storage and ABI guarantees in both backends.
     fn check_member_alignment(
-        &self, alignment: Option<&mini_c_syntax::ast::MemberAlignment>,
+        &mut self, alignment: Option<&mini_c_syntax::ast::MemberAlignment>,
         ty: &CType, bit_field: bool, span: Span,
     ) -> Result<(), Diagnostic> {
         use mini_c_syntax::ast::MemberAlignment;
@@ -2949,7 +2955,7 @@ impl Checker {
     }
 
     fn check_bit_width(
-        &self, width: &Expr, ty: &CType, unnamed: bool, span: Span,
+        &mut self, width: &Expr, ty: &CType, unnamed: bool, span: Span,
     ) -> Result<u8, Diagnostic> {
         let max_width = match ty.unqualified() {
             CType::Integer { rank: IntRank::Bool, .. } => 1i128,
@@ -2985,7 +2991,7 @@ impl Checker {
     }
 
     fn resolve_typename_aggregate(
-        &self, ty: &Type, span: Span,
+        &mut self, ty: &Type, span: Span,
     ) -> Result<CType, Diagnostic> {
         let (kind, tag, members) = match ty {
             Type::Struct { tag, members } => (TagKind::Struct, tag, members),
@@ -3066,11 +3072,11 @@ impl Checker {
     /// References to existing tags are read-only, but an *explicit* inline
     /// struct/union definition introduces its tag in the current C scope.
     /// Enumerator definitions remain handled by declaration processing.
-    fn sizeof_type_expression(&self, ty: &Type, span: Span) -> Result<CheckedExpr, Diagnostic> {
+    fn sizeof_type_expression(&mut self, ty: &Type, span: Span) -> Result<CheckedExpr, Diagnostic> {
         self.sizeof_type_expression_impl(ty, span, false)
     }
 
-    fn sizeof_type_expression_impl(&self, ty: &Type, span: Span, array_element: bool) -> Result<CheckedExpr, Diagnostic> {
+    fn sizeof_type_expression_impl(&mut self, ty: &Type, span: Span, array_element: bool) -> Result<CheckedExpr, Diagnostic> {
         let size_ty = self.size_type();
         // A variably modified array type-name needs no object allocation.
         // The size is the product of each evaluated bound and element size,
@@ -3118,7 +3124,7 @@ impl Checker {
         Ok(CheckedExpr::value(size_ty, CheckedExprKind::Literal(size)))
     }
 
-    fn resolve_sizeof_type(&self, ty: &Type, span: Span) -> Result<CType, Diagnostic> {
+    fn resolve_sizeof_type(&mut self, ty: &Type, span: Span) -> Result<CType, Diagnostic> {
         Ok(match ty {
             Type::AutoType => return Err(type_error(span,"__auto_type is not a type name")),
             Type::Void => CType::Void,
@@ -3220,7 +3226,7 @@ impl Checker {
     /// This produces a typed operation plan but never a generic C Call. Target
     /// code generation remains gated until true atomic lowering is available.
     fn check_atomic_builtin(
-        &self, spec: &builtins::BuiltinSpec, args: &[Expr], span: Span,
+        &mut self, spec: &builtins::BuiltinSpec, args: &[Expr], span: Span,
     ) -> Result<CheckedExpr, Diagnostic> {
         use builtins::BuiltinId as A;
         let success = self.atomic_builtin_constant_arg(
@@ -3320,7 +3326,7 @@ impl Checker {
     }
 
     fn atomic_builtin_constant_arg(
-        &self, expr: &Expr, span: Span, label: &str,
+        &mut self, expr: &Expr, span: Span, label: &str,
     ) -> Result<u8, Diagnostic> {
         let actual_span = expr.location().unwrap_or(span);
         let checked = self.check_expr(expr, actual_span)?.rvalue();
@@ -3335,7 +3341,66 @@ impl Checker {
             format!("atomic {label} is outside the supported constant range")))
     }
 
-    fn check_expr(&self, expr: &Expr, span: Span) -> Result<CheckedExpr, Diagnostic> {
+    /// Only structured, fall-through statements are admitted in the first
+    /// executable slice. The function-label prepass does not traverse
+    /// expressions, so never admit a label or nonlocal transfer here.
+    fn statement_expression_structured(stmt: &Stmt) -> bool {
+        match stmt {
+            Stmt::Block(stmts) => stmts.iter().all(Self::statement_expression_structured),
+            Stmt::Decl(decl) => matches!(decl.storage, StorageClass::Default | StorageClass::Register),
+            Stmt::Typedef(_) | Stmt::Tag(_) | Stmt::Expr(_) => true,
+            Stmt::If { then, otherwise, .. } => Self::statement_expression_structured(then)
+                && otherwise.as_ref().is_none_or(|s| Self::statement_expression_structured(s)),
+            Stmt::While { body, .. } | Stmt::DoWhile { body, .. } =>
+                Self::statement_expression_structured(body),
+            Stmt::For { init, body, .. } =>
+                init.as_ref().is_none_or(|s| Self::statement_expression_structured(s))
+                && Self::statement_expression_structured(body),
+            _ => false,
+        }
+    }
+
+    fn check_statement_expression(&mut self, statements: &[Stmt], span: Span) -> Result<CheckedExpr, Diagnostic> {
+        if self.result_ty.is_none() {
+            return Err(type_error(span, "GNU statement expression requires function scope"));
+        }
+        if self.capturing_vla_bounds.is_some() {
+            return Err(type_error(span, "GNU statement expression inside a declarator bound is unsupported"));
+        }
+        if !statements.iter().all(Self::statement_expression_structured) {
+            return Err(type_error(span, "GNU statement expression contains unsupported control transfer or storage"));
+        }
+        // Reuse ordinary declaration checking, tags, identifier and warning
+        // scopes. The result is checked before these scopes are popped.
+        self.locals.push(HashMap::new());
+        self.push_warning_scope();
+        self.tags.borrow_mut().push(HashMap::new());
+        let checked = (|| {
+            let (prefix, result) = match statements.split_last() {
+                Some((Stmt::Expr(Some(expr)), prefix)) => (prefix, Some(expr)),
+                _ => (statements, None),
+            };
+            let mut checked = Vec::with_capacity(prefix.len());
+            for stmt in prefix {
+                checked.push(self.check_stmt(stmt, span)?);
+            }
+            let result = result.map(|expr| self.check_expr(expr, span).map(CheckedExpr::rvalue))
+                .transpose()?;
+            let ty = result.as_ref().map_or(CType::Void, |e| e.ty.clone());
+            if ty != CType::Void && !ty.is_scalar() {
+                return Err(type_error(span, "GNU statement expression aggregate result is unsupported"));
+            }
+            Ok(CheckedExpr::value(ty, CheckedExprKind::StatementExpression {
+                statements: checked, result: result.map(Box::new),
+            }))
+        })();
+        self.pop_tag_scope();
+        self.pop_warning_scope();
+        self.locals.pop();
+        checked
+    }
+
+    fn check_expr(&mut self, expr: &Expr, span: Span) -> Result<CheckedExpr, Diagnostic> {
         match expr {
             Expr::Located(inner, located_span) => {
                 self.check_expr(inner, *located_span).map(|mut checked| {
@@ -3360,8 +3425,7 @@ impl Checker {
                     error
                 })
             },
-            Expr::StatementExpression(_) => Err(type_error(span,
-                "GNU statement expression requires scoped checked-statement lowering")),
+            Expr::StatementExpression(statements) => self.check_statement_expression(statements, span),
             Expr::Initializer(_) | Expr::Designated { .. } => Err(type_error(span,
                 "brace initializer is only valid in an object declaration")),
             Expr::CompoundLiteral(type_name, initializer) => {
@@ -3382,9 +3446,8 @@ impl Checker {
                 let static_storage = self.result_ty.is_none();
                 let value = self.check_object_initializer(initializer, &ty, span, static_storage)?;
                 let kind = if static_storage {
-                    // Checker::check_expr is read-only by design, so allocate
-                    // per-occurrence IDs using the same Cell pattern as tag
-                    // identities. The prefix contains '.' and cannot collide
+                    // Allocate per-occurrence IDs independently of lexical
+                    // scope. The prefix contains '.' and cannot collide
                     // with a valid C source identifier.
                     let id = self.next_static_compound_identity.get();
                     self.next_static_compound_identity.set(id.checked_add(1)
