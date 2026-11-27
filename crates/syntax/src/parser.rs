@@ -39,7 +39,7 @@ impl Declarator {
             },
             Self::Array(inner, bound) => inner.finish(Type::Array(Box::new(base), bound.map(Box::new))),
             Self::Function(inner, params, variadic, unprototyped) => {
-                let param_types = params.iter().map(|param| param.ty.clone()).collect();
+                let param_types = params.clone();
                 let function_ty = if unprototyped {
                     Type::UnprototypedFunction { result: Box::new(base) }
                 } else if variadic {
@@ -1143,6 +1143,13 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_parameter_list(&mut self) -> Result<(Vec<Decl>, bool), Diagnostic> {
+        self.scopes.enter();
+        let parsed=self.parse_parameter_list_in_scope();
+        self.scopes.leave();
+        parsed
+    }
+
+    fn parse_parameter_list_in_scope(&mut self) -> Result<(Vec<Decl>, bool), Diagnostic> {
         let mut params = Vec::new();
         if self.peek()?.is_some_and(|token| token.text.as_ref() == ")") {
             return Ok((params, false));
@@ -1178,6 +1185,7 @@ impl<'a> Parser<'a> {
                 return Err(Diagnostic::coded(token_span, DiagnosticCode::SyntaxExpectedParameter,
                     "parameter cannot have void type"));
             }
+            if !name.is_empty() { self.scopes.declare(&name,Binding::Ordinary); }
             params.push(Decl {
                 is_inline: false,
                 storage,
@@ -2307,6 +2315,25 @@ mod tests {
     use super::*;
     use crate::stream::{consume, ItemSink};
 
+    // Ignore declaration locations and names only in tests comparing the
+    // recursive declarator shape. Dedicated scope tests check names directly.
+    fn parameter(ty:Type)->Decl {
+        Decl {storage:StorageClass::Default,is_inline:false,name:String::new(),
+              name_span:None,ty,asm_label:None,init:None,span:Span::default()}
+    }
+    fn shape(ty:Type)->Type {
+        match ty {
+            Type::Function{result,params}=>Type::Function{
+                result:Box::new(shape(*result)),params:params.into_iter().map(|p|parameter(shape(p.ty))).collect()},
+            Type::VariadicFunction{result,params}=>Type::VariadicFunction{
+                result:Box::new(shape(*result)),params:params.into_iter().map(|p|parameter(shape(p.ty))).collect()},
+            Type::Pointer(inner)=>Type::Pointer(Box::new(shape(*inner))),
+            Type::Array(inner,bound)=>Type::Array(Box::new(shape(*inner)),bound),
+            other=>other,
+        }
+    }
+
+
     #[derive(Default)]
     struct Collector(Vec<Decl>);
     impl ItemSink for Collector {
@@ -2711,14 +2738,14 @@ mod tests {
             _ => panic!("expected prototype"),
         }
         match parser.next_item().unwrap().unwrap() {
-            ExternalItem::Declaration(d) => assert_eq!(d.ty, Type::Function {
+            ExternalItem::Declaration(d) => assert_eq!(shape(d.ty), Type::Function {
                 result: Box::new(Type::Long),
-                params: vec![Type::Int, Type::Pointer(Box::new(Type::Char))],
+                params: vec![parameter(Type::Int), parameter(Type::Pointer(Box::new(Type::Char)))],
             }),
             _ => panic!("expected prototype"),
         }
         match parser.next_item().unwrap().unwrap() {
-            ExternalItem::Declaration(d) => assert_eq!(d.ty, Type::Function {
+            ExternalItem::Declaration(d) => assert_eq!(shape(d.ty), Type::Function {
                 result: Box::new(Type::Int), params: vec![],
             }),
             _ => panic!("expected explicit void prototype"),
@@ -2772,10 +2799,10 @@ mod tests {
         assert_eq!(b.ty, Type::Pointer(Box::new(Type::Array(Box::new(Type::Int),
             Some(Box::new(Expr::Int(3)))))));
         let fptr = Type::Pointer(Box::new(Type::Function {
-            result: Box::new(Type::Int), params: vec![Type::Int],
+            result: Box::new(Type::Int), params: vec![parameter(Type::Int)],
         }));
         match p.next_item().unwrap().unwrap() {
-            ExternalItem::Typedef(d) => { assert_eq!(d.name, "Fn"); assert_eq!(d.ty, fptr); },
+            ExternalItem::Typedef(d) => { assert_eq!(d.name, "Fn"); assert_eq!(shape(d.ty), fptr); },
             other => panic!("unexpected item: {other:?}"),
         }
         match p.next_item().unwrap().unwrap() {
@@ -2785,11 +2812,11 @@ mod tests {
         match p.next_item().unwrap().unwrap() {
             ExternalItem::Declaration(d) => {
                 assert_eq!(d.name, "get");
-                assert_eq!(d.ty, Type::Function {
+                assert_eq!(shape(d.ty), Type::Function {
                     result: Box::new(Type::Pointer(Box::new(Type::Function {
-                        result: Box::new(Type::Int), params: vec![Type::Long],
+                        result: Box::new(Type::Int), params: vec![parameter(Type::Long)],
                     }))),
-                    params: vec![Type::Int],
+                    params: vec![parameter(Type::Int)],
                 });
             }
             other => panic!("unexpected item: {other:?}"),
@@ -2811,14 +2838,14 @@ mod tests {
             ExternalItem::Declaration(d) => d,
             other => panic!("unexpected item: {other:?}"),
         };
-        assert_eq!(decl.ty, Type::Function {
+        assert_eq!(shape(decl.ty), Type::Function {
             result: Box::new(Type::Int),
             params: vec![
-                Type::Pointer(Box::new(Type::Function {
-                    result: Box::new(Type::Int), params: vec![Type::Long],
-                })),
-                Type::Array(Box::new(Type::Int), None),
-                Type::Pointer(Box::new(Type::Pointer(Box::new(Type::Char)))),
+                parameter(Type::Pointer(Box::new(Type::Function {
+                    result: Box::new(Type::Int), params: vec![parameter(Type::Long)],
+                }))),
+                parameter(Type::Array(Box::new(Type::Int), None)),
+                parameter(Type::Pointer(Box::new(Type::Pointer(Box::new(Type::Char))))),
             ],
         });
         for source in ["int (*bad)(int;", "int a[1;", "int *;", "int f(int,);"] {
@@ -2832,13 +2859,13 @@ mod tests {
         p.next_item().unwrap().unwrap();
         let Some(ExternalItem::Declaration(decl)) = p.next_item().unwrap()
             else { panic!("expected prototype") };
-        assert_eq!(decl.ty, Type::Function {
+        assert_eq!(shape(decl.ty), Type::Function {
             result: Box::new(Type::Int),
             params: vec![
-                Type::Function { result: Box::new(Type::Int), params: vec![Type::Int] },
-                Type::Function { result: Box::new(Type::Int), params: vec![Type::Alias("T".into())] },
-                Type::Function { result: Box::new(Type::Int), params: vec![] },
-                Type::VariadicFunction { result: Box::new(Type::Int), params: vec![Type::Int] },
+                parameter(Type::Function { result: Box::new(Type::Int), params: vec![parameter(Type::Int)] }),
+                parameter(Type::Function { result: Box::new(Type::Int), params: vec![parameter(Type::Alias("T".into()))] }),
+                parameter(Type::Function { result: Box::new(Type::Int), params: vec![] }),
+                parameter(Type::VariadicFunction { result: Box::new(Type::Int), params: vec![parameter(Type::Int)] }),
             ],
         });
         assert!(Parser::new("int h(int (int,));").next_item().is_err());
@@ -2997,7 +3024,7 @@ mod tests {
             panic!("expected function prototype");
         };
         assert_eq!(*result, Type::Int);
-        assert_eq!(params, vec![Type::Floating(FloatRank::Float128)]);
+        assert_eq!(params.into_iter().map(|p|p.ty).collect::<Vec<_>>(), vec![Type::Floating(FloatRank::Float128)]);
         assert!(parser.next_item().unwrap().is_none());
         for invalid in ["typedef unsigned _Float128 T;", "typedef _Float128 long T;",
                         "typedef double _Float128 T;"] {
