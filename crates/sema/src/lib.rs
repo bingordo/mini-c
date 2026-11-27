@@ -697,14 +697,14 @@ impl Checker {
         Ok(())
     }
 
-    /// Preserve atomic qualification on integer storage and layout-checked
+    /// Preserve atomic qualification on scalar storage and layout-checked
     /// one-byte aggregate declarations. Executable aggregate uses remain gated.
     /// Runtime access lowering is a separate capability gate.
     fn atomic_object_type(&self, base:CType, span:Span)->Result<CType,Diagnostic>{
         if base.is_atomic() {
             return Err(type_error(span,"duplicate C11 _Atomic qualification"));
         }
-        if !matches!(base.unqualified(), CType::Integer { .. }) {
+        if !matches!(base.unqualified(), CType::Integer { .. } | CType::Pointer(_)) {
             // A complete one-byte aggregate has no extra alignment or
             // representation rounding in the current target data models.
             // Larger atomics need a target-specific atomic layout contract.
@@ -717,10 +717,10 @@ impl Checker {
                 return Ok(base.with_atomic());
             }
             return Err(type_error(span,
-                "C11 _Atomic requires supported integer or one-byte aggregate layout"));
+                "C11 _Atomic requires supported scalar or one-byte aggregate layout"));
         }
         let bytes=base.size_bytes(self.target)
-            .ok_or_else(||type_error(span,"C11 _Atomic requires complete integer storage"))?;
+            .ok_or_else(||type_error(span,"C11 _Atomic requires complete scalar storage"))?;
         let align=base.align_bytes(self.target)
             .ok_or_else(||type_error(span,"C11 _Atomic requires naturally aligned storage"))?;
         if !matches!(bytes,1|2|4|8) || align<bytes || !align.is_power_of_two() {
@@ -3870,7 +3870,7 @@ impl Checker {
                 let arithmetic = matches!(op,
                     BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod);
                 let pointer_arithmetic = matches!(op, BinOp::Add | BinOp::Sub)
-                    && matches!(&lhs.ty, CType::Pointer(_));
+                    && matches!(lhs.ty.unqualified(), CType::Pointer(_));
                 if lhs.category != Category::LValue || lhs.ty.is_const()
                     || !(lhs.ty.is_integer()
                         || matches!(lhs.ty.unqualified(), CType::Floating(_))
@@ -3902,7 +3902,7 @@ impl Checker {
                 let computation_ty = if pointer_arithmetic {
                     // C only permits +/- a scalar integer offset for pointers
                     // to complete object types, with element-sized scaling.
-                    let CType::Pointer(element) = &lhs.ty else { unreachable!() };
+                    let CType::Pointer(element) = lhs.ty.unqualified() else { unreachable!() };
                     let complete = self.complete_tag_type(element.as_ref().clone(), lhs_span)?;
                     if complete.size_bytes(self.target).is_none() && !complete.is_variable_array() {
                         return Err(type_error(lhs_span,
@@ -3983,7 +3983,7 @@ impl Checker {
                         DiagnosticCode::SemanticInvalidAssignmentTarget,
                         "increment/decrement requires a modifiable scalar lvalue"));
                 }
-                let computation_ty = if let CType::Pointer(pointee) = &checked.ty {
+                let computation_ty = if let CType::Pointer(pointee) = checked.ty.unqualified() {
                     let complete = self.complete_tag_type(pointee.as_ref().clone(), target_span)?;
                     if complete.size_bytes(self.target).is_none() && !complete.is_variable_array() {
                         return Err(type_error(target_span,

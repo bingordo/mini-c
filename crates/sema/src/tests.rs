@@ -156,8 +156,6 @@ fn c11_atomic_update_and_assignment_results_are_unqualified() {
 #[test]
 fn c11_atomic_unsupported_storage_remains_fail_closed() {
     for source in [
-        "int * _Atomic pointer;",
-        "_Atomic(int*) pointer;",
         "_Atomic float x;",
         "_Atomic(void) x;",
         "_Atomic _Atomic int x;",
@@ -4713,6 +4711,22 @@ fn gnu_member_alignment_checks_natural_target_layout() {
     reject("struct X { char a __attribute__((aligned(16))); };", "over-aligned member");
     reject("struct X { int a __attribute__((aligned(3))); };", "positive power of two");
     reject("struct X { int a __attribute__((aligned(__alignof__(void)))); };", "complete object type");
+}
+
+#[test]
+fn c11_atomic_pointer_objects_use_ordinary_pointer_semantics() {
+    for source in [
+        "int * _Atomic pointer;",
+        "_Atomic(int*) pointer;",
+        "int *f(_Atomic(int*) *p){return *p;}",
+        "int *f(_Atomic(int*) *p,int *v){return *p=v;}",
+        "int *f(_Atomic(int*) *p,int n){return *p+=n;}",
+        "int *f(_Atomic(int*) *p){return (*p)++;}",
+    ] {
+        let items=check(source).unwrap_or_else(|e|panic!("{source}: {e:?}"));
+        assert!(items.iter().any(CheckedItem::contains_atomic_type));
+    }
+    assert!(check("int *f(_Atomic(int*) *p){return *p*=2;}").is_err());
 }
 
 #[test]
