@@ -47,7 +47,7 @@ macro_rules! capture_expansion {
             let converted = Arc::new(MacroOrigin {
     name: Arc::from(context.session.interner.get(current.name)),
     invocation,
-    definition: undefined,
+    definition: site(current, true),
     parent,
             });
             frame_cache.insert(key, Arc::clone(&converted));
