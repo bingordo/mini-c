@@ -44,10 +44,11 @@ fn harmless_optimization_hints_do_not_change_c_function_signature() {
     let Some(ExternalItem::Declaration(decl)) = parser.next_item().unwrap() else {
         panic!("function declaration expected");
     };
-    assert_eq!(decl.ty, Type::Function {
-        result: Box::new(Type::Int),
-        params: vec![Type::Int],
-    });
+    let Type::Function { result, params } = decl.ty else { panic!("function type"); };
+    assert_eq!(*result, Type::Int);
+    assert_eq!(params.len(), 1);
+    assert_eq!(params[0].ty, Type::Int);
+    assert_eq!(params[0].name, "x");
     assert!(parser.next_item().unwrap().is_none());
 }
 
