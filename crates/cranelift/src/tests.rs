@@ -372,3 +372,298 @@ fn cmake_abi_adjacent_literals_parse_emit_link_and_execute() {
         "adjacent string fragment content or NUL termination is wrong");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+fn c99_nonprototype_call_links_to_typed_external_definition() {
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let dir = std::env::temp_dir().join(format!("mini-c-no-prototype-{}-{nonce}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("caller.c");
+    let helper = dir.join("helper.c");
+    let object = dir.join("caller.o");
+    let executable = dir.join("program");
+    std::fs::write(&source, concat!(
+        "int mix();\n",
+        "int main(void) { char a=7; short b=9; return mix(a,b,2.0)!=18; }\n",
+    )).unwrap();
+    std::fs::write(&helper,
+        "int mix(int a, int b, double c) { return a+b+(int)c; }\n").unwrap();
+    let opts = parse_options([
+        "--cpp=none".to_owned(), "--emit-obj".to_owned(),
+        object.to_string_lossy().into_owned(), source.to_string_lossy().into_owned(),
+    ]).unwrap();
+    assert_eq!(compile_to_object(&opts), ExitCode::SUCCESS);
+    let link = Command::new("cc").arg(&object).arg(&helper)
+        .arg("-o").arg(&executable).output().unwrap();
+    assert!(link.status.success(), "link: {}", String::from_utf8_lossy(&link.stderr));
+    assert!(Command::new(&executable).status().unwrap().success(),
+        "non-prototype call did not pass promoted arguments correctly");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+fn c99_identifier_list_definition_receives_promoted_arguments() {
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let dir = std::env::temp_dir().join(format!("mini-c-kr-{}-{nonce}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("definition.c");
+    let helper = dir.join("caller.c");
+    let object = dir.join("definition.o");
+    let executable = dir.join("program");
+    std::fs::write(&source, concat!(
+        "int mix();\n",
+        "int mix(a,b,c) float c; signed char a; short b; {\n",
+        "  return sizeof(a)==1 && sizeof(b)==2 && sizeof(c)==4 && a==-7 && b==9 && c==2.5;\n",
+        "}\n",
+    )).unwrap();
+    std::fs::write(&helper,
+        "int mix(int, int, double); int main(void) { return !mix(-7,9,2.5); }\n").unwrap();
+    let opts = parse_options([
+        "--cpp=none".to_owned(), "--emit-obj".to_owned(),
+        object.to_string_lossy().into_owned(), source.to_string_lossy().into_owned(),
+    ]).unwrap();
+    assert_eq!(compile_to_object(&opts), ExitCode::SUCCESS);
+    let link = Command::new("cc").arg(&object).arg(&helper)
+        .arg("-o").arg(&executable).output().unwrap();
+    assert!(link.status.success(), "link: {}", String::from_utf8_lossy(&link.stderr));
+    assert!(Command::new(&executable).status().unwrap().success(),
+        "old-style definition did not receive promoted arguments correctly");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+fn c99_indirect_nonprototype_and_variadic_calls_preserve_registers_and_stack() {
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let dir = std::env::temp_dir().join(format!("mini-c-indirect-varargs-{}-{nonce}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("caller.c");
+    let helper = dir.join("helper.c");
+    let object = dir.join("caller.o");
+    let executable = dir.join("program");
+    std::fs::write(&source, concat!(
+        "int small(); int large(); int vari(int,...);\n",
+        "int main(void) {\n",
+        "  int (*p)()=small; int (*q)()=large; int (*v)(int,...)=vari;\n",
+        "  char a=3; float b=2.5f;\n",
+        "  if(p(a,b)!=1 || (*p)(a,b)!=1) return 1;\n",
+        "  if(q(1,2,3,4,5,6,7,1.0,2.0,3.0,4.0,5.0,6.0,7.0,8.0,9.0)!=1) return 2;\n",
+        "  if(v(1,2,3,4,5,6,7,1.0,2.0,3.0,4.0,5.0,6.0,7.0,8.0,9.0)!=1) return 3;\n",
+        "  return 0;\n",
+        "}\n",
+    )).unwrap();
+    std::fs::write(&helper, concat!(
+        "#include <stdarg.h>\n",
+        "int small(int a,double b) {return a==3 && b==2.5;}\n",
+        "int large(int a,int b,int c,int d,int e,int f,int g,",
+        "double h,double i,double j,double k,double l,double m,double n,double o,double p) {",
+        "return a==1&&b==2&&c==3&&d==4&&e==5&&f==6&&g==7&&h==1&&i==2&&j==3&&k==4&&l==5&&m==6&&n==7&&o==8&&p==9;}\n",
+        "int vari(int a,...) { va_list ap; va_start(ap,a); int ok=a==1; ",
+        "for(int i=2;i<=7;i++) if(va_arg(ap,int)!=i) ok=0; ",
+        "for(int i=1;i<=9;i++) if(va_arg(ap,double)!=i) ok=0; ",
+        "va_end(ap);return ok;}\n",
+    )).unwrap();
+    let opts = parse_options([
+        "--cpp=none".to_owned(), "--emit-obj".to_owned(),
+        object.to_string_lossy().into_owned(), source.to_string_lossy().into_owned(),
+    ]).unwrap();
+    assert_eq!(compile_to_object(&opts), ExitCode::SUCCESS);
+    let link = Command::new("cc").arg(&object).arg(&helper)
+        .arg("-o").arg(&executable).output().unwrap();
+    assert!(link.status.success(), "link: {}", String::from_utf8_lossy(&link.stderr));
+    let status = Command::new(&executable).status().unwrap();
+    assert!(status.success(), "indirect argument forwarding failed: {status}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+fn c99_inline_only_body_uses_external_definition_across_translation_units() {
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let dir = std::env::temp_dir().join(format!("mini-c-inline-{}-{nonce}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("caller.c");
+    let helper = dir.join("definition.c");
+    let object = dir.join("caller.o");
+    let executable = dir.join("program");
+    std::fs::write(&source, concat!(
+        "inline int f(void){return 1;}\n",
+        "inline int g(void){return 3;}\n",
+        "int main(void){int (*p)(void)=f; return p()!=2 || g()!=3;}\n",
+        "extern inline int g(void);\n",
+    )).unwrap();
+    std::fs::write(&helper, "int f(void){return 2;}\n").unwrap();
+    let opts = parse_options([
+        "--cpp=none".to_owned(), "--emit-obj".to_owned(),
+        object.to_string_lossy().into_owned(), source.to_string_lossy().into_owned(),
+    ]).unwrap();
+    assert_eq!(compile_to_object(&opts), ExitCode::SUCCESS);
+    let link = Command::new("cc").arg(&object).arg(&helper)
+        .arg("-o").arg(&executable).output().unwrap();
+    assert!(link.status.success(), "link: {}", String::from_utf8_lossy(&link.stderr));
+    assert!(Command::new(&executable).status().unwrap().success());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn native_driver_emits_write_only_warning_with_werror() {
+    let source = "int f(void) { int x = 0; x = 4; return 0; }";
+    let mut policy = WarningPolicy::default();
+    policy.apply_flag("-Wall").unwrap();
+    let (warnings, failed) =
+        format_semantic_warnings("raw.c", source, false, &policy).unwrap();
+    assert!(!failed);
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("[-Wunused-but-set-variable]"), "{warnings:?}");
+
+    policy.apply_flag("-Werror=unused-but-set-variable").unwrap();
+    let (errors, failed) =
+        format_semantic_warnings("raw.c", source, false, &policy).unwrap();
+    assert!(failed);
+    assert!(errors[0].contains(": error:"), "{errors:?}");
+
+    policy.apply_flag("-Wno-unused-but-set-variable").unwrap();
+    let (suppressed, failed) =
+        format_semantic_warnings("raw.c", source, false, &policy).unwrap();
+    assert!(!failed);
+    assert!(suppressed.is_empty());
+}
+
+#[test]
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+fn c99_runtime_sizeof_evaluates_each_bound_once() {
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let dir = std::env::temp_dir().join(format!("mini-c-vla-sizeof-{}-{nonce}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("main.c");
+    let object = dir.join("main.o");
+    let executable = dir.join("program");
+    std::fs::write(&source, concat!(
+        "int calls; int next(void){calls++;return 5;}\n",
+        "int main(void){int n=3;int m=4;\n",
+        "if(sizeof(int[n++][m++])!=48 || n!=4 || m!=5)return 1;\n",
+        "if(sizeof(char[2][next()][3])!=30 || calls!=1)return 2;\n",
+        "if(sizeof(int[n*2])!=32)return 3;\n",
+        "if(sizeof(int[2][3])!=24)return 4;return 0;}\n",
+    )).unwrap();
+    let opts = parse_options([
+        "--cpp=none".to_owned(), "--emit-obj".to_owned(),
+        object.to_string_lossy().into_owned(), source.to_string_lossy().into_owned(),
+    ]).unwrap();
+    assert_eq!(compile_to_object(&opts), ExitCode::SUCCESS);
+    let link = Command::new("cc").arg(&object)
+        .arg("-o").arg(&executable).output().unwrap();
+    assert!(link.status.success(), "link: {}", String::from_utf8_lossy(&link.stderr));
+    let status = Command::new(&executable).status().unwrap();
+    assert!(status.success(), "runtime sizeof failed: {status}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn native_conversion_warning_is_opt_in_and_promotable() {
+    let source = "int f(int x) { short y = x; return y; }";
+    let mut policy = WarningPolicy::default();
+    let (initial, failed) =
+        format_semantic_warnings("narrow.c", source, false, &policy).unwrap();
+    assert!(initial.is_empty());
+    assert!(!failed);
+    policy.apply_flag("-Wconversion").unwrap();
+    let (warnings, failed) =
+        format_semantic_warnings("narrow.c", source, false, &policy).unwrap();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("[-Wconversion]"), "{warnings:?}");
+    assert!(!failed);
+    policy.apply_flag("-Werror=conversion").unwrap();
+    let (errors, failed) =
+        format_semantic_warnings("narrow.c", source, false, &policy).unwrap();
+    assert!(failed);
+    assert!(errors[0].contains(": error:"), "{errors:?}");
+}
+
+#[test]
+fn native_sign_conversion_respects_error_and_suppression() {
+    let source = "unsigned int f(int x) { unsigned int y = x; return y; }";
+    let mut policy = WarningPolicy::default();
+    policy.apply_flag("-Wsign-conversion").unwrap();
+    let (warnings, failed) =
+        format_semantic_warnings("sign.c", source, false, &policy).unwrap();
+    assert!(!failed);
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("[-Wsign-conversion]"));
+    policy.apply_flag("-Werror=sign-conversion").unwrap();
+    let (errors, failed) =
+        format_semantic_warnings("sign.c", source, false, &policy).unwrap();
+    assert!(failed);
+    assert!(errors[0].contains(": error:"), "{errors:?}");
+    policy.apply_flag("-Wno-sign-conversion").unwrap();
+    let (none, failed) =
+        format_semantic_warnings("sign.c", source, false, &policy).unwrap();
+    assert!(none.is_empty());
+    assert!(!failed);
+}
+
+#[test]
+fn native_sign_compare_warning_and_error_promotion() {
+    let source = "int f(int x, unsigned int y) { return x < y; }";
+    let mut policy = WarningPolicy::default();
+    policy.apply_flag("-Wall").unwrap();
+    let (warnings, failed) =
+        format_semantic_warnings("compare.c", source, false, &policy).unwrap();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(!failed);
+    assert!(warnings[0].contains("[-Wsign-compare]"));
+    policy.apply_flag("-Werror=sign-compare").unwrap();
+    let (_, failed) =
+        format_semantic_warnings("compare.c", source, false, &policy).unwrap();
+    assert!(failed);
+    policy.apply_flag("-Wno-sign-compare").unwrap();
+    let (none, failed) =
+        format_semantic_warnings("compare.c", source, false, &policy).unwrap();
+    assert!(none.is_empty());
+    assert!(!failed);
+}
+
+#[test]
+#[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+fn c99_saved_vla_pointer_strides_execute() {
+    use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let dir = std::env::temp_dir().join(format!("mini-c-vla-stride-{}-{nonce}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("main.c");
+    let object = dir.join("main.o");
+    let executable = dir.join("program");
+    std::fs::write(&source, concat!(
+        "int main(void){int a[3][4];int n=4;int (*p)[n++]=a;\n",
+        "if(n!=5 || sizeof *p!=16)return 1; n=9;\n",
+        "p[1][2]=17; if(a[1][2]!=17)return 2;\n",
+        "int (*q)[4]=p; p++; if(p-q!=1)return 3;\n",
+        "p+=1; (*p)[3]=23; if(a[2][3]!=23)return 4;\n",
+        "p-=2; if(p!=q || sizeof *p!=16)return 5;\n",
+        "return 0;}\n",
+    )).unwrap();
+    let opts = parse_options([
+        "--cpp=none".to_owned(), "--emit-obj".to_owned(),
+        object.to_string_lossy().into_owned(), source.to_string_lossy().into_owned(),
+    ]).unwrap();
+    assert_eq!(compile_to_object(&opts), ExitCode::SUCCESS);
+    let link = Command::new("cc").arg(&object)
+        .arg("-o").arg(&executable).output().unwrap();
+    assert!(link.status.success(), "link: {}", String::from_utf8_lossy(&link.stderr));
+    let status = Command::new(&executable).status().unwrap();
+    assert!(status.success(), "saved VLA stride failed: {status}");
+    let _ = std::fs::remove_dir_all(dir);
+}

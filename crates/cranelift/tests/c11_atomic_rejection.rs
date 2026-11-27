@@ -29,3 +29,36 @@ fn non_atomic_scalar_objects_still_emit_elf() {
     let object=compile_source("int f(int *p){*p=9; return *p;}").unwrap();
     assert_eq!(&object[..4],b"\x7fELF");
 }
+
+#[test]
+fn atomic_and_volatile_typedefs_without_storage_or_access_emit_elf() {
+    for source in [
+        "typedef _Atomic(int) AI; int f(void){return 42;}",
+        "typedef volatile int VI; int f(void){return 42;}",
+        "typedef struct { _Atomic int state; } S; int f(void){return 42;}",
+    ] {
+        let object = compile_source(source).expect("type-only declaration has no runtime effect");
+        assert_eq!(&object[..4], b"\x7fELF");
+    }
+}
+
+#[test]
+fn typedef_does_not_hide_atomic_or_volatile_access() {
+    for source in [
+        "typedef _Atomic(int) AI; int f(AI *p){return *p;}",
+        "typedef _Atomic(int) AI; void f(AI *p){*p=3;}",
+        "typedef volatile int VI; int f(VI *p){return *p;}",
+    ] {
+        assert!(compile_source(source).is_err(), "unsupported effect must reject: {source}");
+    }
+}
+
+#[test]
+fn atomic_aggregate_type_only_header_and_unused_prototype() {
+    let prefix = "typedef _Atomic struct { _Bool value; } Flag; extern _Bool test(volatile Flag *);";
+    let object = compile_source(&format!("{prefix} int f(void){{return sizeof(Flag);}}")).unwrap();
+    assert_eq!(&object[..4], b"\x7fELF");
+    assert!(compile_source(&format!("{prefix} Flag object;")).is_err());
+    assert!(compile_source(&format!("{prefix} int f(void){{return test(0);}}")).is_err());
+    assert!(compile_source("extern int test(_Atomic int *); int f(void){return test(0);}").is_err());
+}

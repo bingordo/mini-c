@@ -22,7 +22,7 @@ enum Declarator {
     Name(String, Option<Span>),
     Pointer(Box<Self>, Qualifiers),
     Array(Box<Self>, Option<Expr>),
-    Function(Box<Self>, Vec<Decl>, bool),
+    Function(Box<Self>, Vec<Decl>, bool, bool),
 }
 
 impl Declarator {
@@ -38,9 +38,11 @@ impl Declarator {
                 })
             },
             Self::Array(inner, bound) => inner.finish(Type::Array(Box::new(base), bound.map(Box::new))),
-            Self::Function(inner, params, variadic) => {
+            Self::Function(inner, params, variadic, unprototyped) => {
                 let param_types = params.iter().map(|param| param.ty.clone()).collect();
-                let function_ty = if variadic {
+                let function_ty = if unprototyped {
+                    Type::UnprototypedFunction { result: Box::new(base) }
+                } else if variadic {
                     Type::VariadicFunction { result: Box::new(base), params: param_types }
                 } else {
                     Type::Function { result: Box::new(base), params: param_types }
@@ -58,7 +60,7 @@ impl Declarator {
                 // function pointer. Never overwrite the inner definition
                 // parameters with those of the returned function.
                 let definition_params = if matches!(&ty,
-                    Type::Function { .. } | Type::VariadicFunction { .. })
+                    Type::Function { .. } | Type::VariadicFunction { .. } | Type::UnprototypedFunction { .. })
                 {
                     inner_params.or(Some(params))
                 } else {
@@ -977,6 +979,10 @@ impl<'a> Parser<'a> {
     /// Named declarators are required for ordinary definitions and declarations;
     /// parameter declarators may omit their name.
     fn parse_declarator_shape(&mut self, allow_abstract: bool) -> Result<Declarator, Diagnostic> {
+        self.parse_declarator_shape_impl(allow_abstract, false)
+    }
+
+    fn parse_declarator_shape_impl(&mut self, allow_abstract: bool, allow_old_style: bool) -> Result<Declarator, Diagnostic> {
         let mut stars = Vec::new();
         while self.peek()?.is_some_and(|token| token.text.as_ref() == "*") {
             self.take()?;
@@ -984,9 +990,29 @@ impl<'a> Parser<'a> {
         }
         let mut direct = if self.peek()?.is_some_and(|token| token.text.as_ref() == "(") {
             self.take()?;
-            let inner = self.parse_declarator_shape(allow_abstract)?;
-            self.expect(")")?;
-            inner
+            // In an abstract declarator, '(' followed by a type specifier
+            // begins a function parameter list, not a grouped declarator.
+            // A typedef name in this ambiguous parameter context denotes
+            // a type (C99 6.7.5.3). '*' or '[' still starts grouping.
+            let parameter_list = allow_abstract && self.peek()?.is_some_and(|token|
+                token.kind == TokenKind::TypedefName
+                || matches!(token.text.as_ref(),
+                    ")" | "void" | "_Bool" | "char" | "short" | "int" | "long"
+                    | "signed" | "unsigned" | "float" | "double" | "_Float128"
+                    | "const" | "volatile" | "restrict" | "__restrict" | "__restrict__"
+                    | "_Atomic" | "struct" | "union" | "enum" | "register"
+                    | "__builtin_va_list"));
+            if parameter_list {
+                let unprototyped = self.peek()?.is_some_and(|t| t.text.as_ref() == ")");
+                let (params, variadic) = self.parse_parameter_list()?;
+                self.expect(")")?;
+                Declarator::Function(Box::new(Declarator::Name(String::new(), None)),
+                    params, variadic, unprototyped)
+            } else {
+                let inner = self.parse_declarator_shape_impl(allow_abstract, allow_old_style)?;
+                self.expect(")")?;
+                inner
+            }
         } else if let Some(token) = self.peek()?.filter(|token| {
             matches!(token.kind, TokenKind::Identifier | TokenKind::TypedefName)
                 && !matches!(token.text.as_ref(), "int" | "_Bool" | "char" | "short" | "long" | "_Float128" | "float" | "double" | "void"
@@ -1016,16 +1042,25 @@ impl<'a> Parser<'a> {
                 direct = Declarator::Array(Box::new(direct), bound);
             } else if self.peek()?.is_some_and(|token| token.text.as_ref() == "(") {
                 self.take()?;
-                let (params, variadic) = self.parse_parameter_list()?;
+                let identifiers = allow_old_style && matches!(&direct, Declarator::Name(..))
+                    && self.peek()?.is_some_and(|t| t.kind == TokenKind::Identifier
+                        && !matches!(t.text.as_ref(), "void" | "_Bool" | "char" | "short" | "int" | "long"
+                            | "signed" | "unsigned" | "float" | "double" | "_Float128"
+                            | "const" | "volatile" | "restrict" | "__restrict" | "__restrict__"
+                            | "_Atomic" | "struct" | "union" | "enum" | "register" | "__builtin_va_list"));
+                let unprototyped = identifiers || self.peek()?.is_some_and(|t| t.text.as_ref() == ")");
+                let (params, variadic) = if identifiers {
+                    (self.parse_identifier_parameters()?, false)
+                } else { self.parse_parameter_list()? };
                 self.expect(")")?;
-                direct = Declarator::Function(Box::new(direct), params, variadic);
-            } else if matches!(&direct, Declarator::Function(_, _, _))
+                direct = Declarator::Function(Box::new(direct), params, variadic, unprototyped);
+            } else if matches!(&direct, Declarator::Function(_, _, _, _))
                 && self.peek()?.is_some_and(|token|
                     token.text.as_ref() == "__attribute__" || token.text.as_ref() == "__attribute")
             {
                 self.parse_gnu_declarator_attributes(
                     match &direct {
-                        Declarator::Function(_, params, variadic) => Some((params.len(), *variadic)),
+                        Declarator::Function(_, params, variadic, _) => Some((params.len(), *variadic)),
                         _ => None,
                     }, None
                 )?;
@@ -1078,6 +1113,35 @@ impl<'a> Parser<'a> {
         Ok(Some(name))
     }
 
+    // Identifier-list definitions are parsed only on file-scope declarators.
+    // Void placeholders cannot escape into the semantic checker: the following
+    // declaration list must supply exactly one declaration for each name.
+    fn parse_identifier_parameters(&mut self) -> Result<Vec<Decl>, Diagnostic> {
+        let mut params: Vec<Decl> = Vec::new();
+        loop {
+            let token = self.take()?.ok_or_else(|| Diagnostic::new(self.eof_span(), "expected parameter identifier"))?;
+            if token.kind != TokenKind::Identifier || matches!(token.text.as_ref(),
+                "auto" | "break" | "case" | "char" | "const" | "continue" | "default" | "do"
+                | "double" | "else" | "enum" | "extern" | "float" | "for" | "goto" | "if"
+                | "inline" | "int" | "long" | "register" | "restrict" | "return" | "short"
+                | "signed" | "sizeof" | "static" | "struct" | "switch" | "typedef" | "union"
+                | "unsigned" | "void" | "volatile" | "while" | "_Bool" | "_Complex" | "_Imaginary"
+                | "_Atomic" | "_Float128" | "__builtin_va_list" | "__restrict" | "__restrict__") {
+                return Err(Diagnostic::new(token.span, "expected old-style parameter identifier"));
+            }
+            let name = token.text.to_string();
+            if params.iter().any(|p| p.name == name) {
+                return Err(Diagnostic::new(token.span, "duplicate old-style parameter identifier"));
+            }
+            params.push(Decl { storage: StorageClass::Default, is_inline: false, name,
+                name_span: self.expression_spans.then_some(token.span), ty: Type::Void,
+                asm_label: None, init: None, span: token.span });
+            if !self.peek()?.is_some_and(|t| t.text.as_ref() == ",") { break; }
+            self.take()?;
+        }
+        Ok(params)
+    }
+
     fn parse_parameter_list(&mut self) -> Result<(Vec<Decl>, bool), Diagnostic> {
         let mut params = Vec::new();
         if self.peek()?.is_some_and(|token| token.text.as_ref() == ")") {
@@ -1115,6 +1179,7 @@ impl<'a> Parser<'a> {
                     "parameter cannot have void type"));
             }
             params.push(Decl {
+                is_inline: false,
                 storage,
                 name,
                 name_span,
@@ -1239,6 +1304,7 @@ impl<'a> Parser<'a> {
                 }
             }
             declarations.push(Decl {
+                is_inline: false,
                 storage, name, name_span, ty, asm_label: None, init,
                 span: Span { lo: start, hi: start },
             });
@@ -1269,6 +1335,7 @@ impl<'a> Parser<'a> {
         } else { None };
         let end = self.expect(";")?.span.hi;
         Ok(Stmt::Decl(Decl {
+            is_inline: false,
             storage: StorageClass::Default, name, name_span, ty, asm_label: None, init,
             span: Span { lo: start, hi: end },
         }))
@@ -1442,6 +1509,32 @@ impl<'a> Parser<'a> {
                 }
                 self.expect(";")?;
                 Ok(Stmt::Goto { target: target.text.to_string(), span: target.span })
+            }
+            // Clang-compatible C/C++ statement attribute. C99 has no
+            // standard musttail keyword; parse the explicit qualified
+            // spelling and retain it as an AST obligation.
+            "[" => {
+                let start=self.take()?.expect("attribute bracket was peeked").span;
+                self.expect("[")?;
+                let namespace=self.take()?.ok_or_else(||
+                    Diagnostic::new(start,"musttail attribute requires clang namespace"))?;
+                if namespace.text.as_ref()!="clang" {
+                    return Err(Diagnostic::new(start,
+                        "unsupported statement attribute namespace (expected clang::musttail)"));
+                }
+                self.expect(":")?;
+                self.expect(":")?;
+                self.expect("musttail")?;
+                self.expect("]")?;
+                self.expect("]")?;
+                self.expect("return")?;
+                if self.peek()?.is_some_and(|t|t.text.as_ref()==";") {
+                    return Err(Diagnostic::new(start,
+                        "clang::musttail return requires a direct call expression"));
+                }
+                let value=self.parse_expr()?;
+                self.expect(";")?;
+                Ok(Stmt::MustTailReturn(value))
             }
             "return" => {
                 self.take()?;
@@ -1739,7 +1832,7 @@ impl<'a> Parser<'a> {
                             } else {
                                 self.parse_declarator_shape(false)?.finish(base.clone())
                             };
-                        if params.is_some() || matches!(ty, Type::Function { .. } | Type::VariadicFunction { .. }) {
+                        if params.is_some() || matches!(ty, Type::Function { .. } | Type::VariadicFunction { .. } | Type::UnprototypedFunction { .. }) {
                             return Err(Diagnostic::new(Span { lo: start, hi: start },
                                 "struct member cannot have function type"));
                         }
@@ -1785,6 +1878,7 @@ impl<'a> Parser<'a> {
                             Type::MemberAligned(Box::new(ty), alignment)
                         } else { ty };
                         members.push(Decl {
+                            is_inline: false,
                             storage: StorageClass::Default, name, name_span, ty,
                             asm_label: None, init: None,
                             span: Span { lo: start, hi: start },
@@ -1933,18 +2027,18 @@ impl ItemSource for Parser<'_> {
         // A file-scope comma list has a common base/storage but individual
         // declarators, bindings and optional initializers. Consume one on
         // demand so the parser stays incremental even for long lists.
-        if let Some((base, start, storage, is_typedef, static_inline)) =
+        if let Some((base, start, storage, is_typedef, is_inline)) =
             self.pending_file_group.take()
         {
             let (name, mut ty, _, name_span) =
                 self.parse_declarator_shape(false)?.finish(base.clone());
             let asm_label = self.parse_asm_linkage_label()?;
-            if static_inline &&
-                !matches!(&ty, Type::Function { .. } | Type::VariadicFunction { .. })
+            if is_inline &&
+                !matches!(&ty, Type::Function { .. } | Type::VariadicFunction { .. } | Type::UnprototypedFunction { .. })
             {
                 return Err(Diagnostic::coded(name_span.unwrap_or(Span { lo: start, hi: start }),
                     DiagnosticCode::SyntaxInvalidDeclaration,
-                    "static inline requires a function declarator"));
+                    "inline requires a function declarator"));
             }
             while self.peek()?.is_some_and(|t|
                 matches!(t.text.as_ref(), "__attribute__" | "__attribute"))
@@ -1957,7 +2051,7 @@ impl ItemSource for Parser<'_> {
                 self.parse_gnu_declarator_attributes(signature, Some(&mut ty))?;
             }
             if asm_label.is_some() &&
-                (!matches!(ty, Type::Function { .. } | Type::VariadicFunction { .. }) || is_typedef)
+                (!matches!(ty, Type::Function { .. } | Type::VariadicFunction { .. } | Type::UnprototypedFunction { .. }) || is_typedef)
             {
                 return Err(Diagnostic::coded(name_span.unwrap_or(Span { lo: start, hi: start }),
                     DiagnosticCode::SyntaxInvalidDeclaration,
@@ -1980,12 +2074,12 @@ impl ItemSource for Parser<'_> {
             }
             let end = if self.peek()?.is_some_and(|t| t.text.as_ref() == ",") {
                 let comma = self.take()?.expect("peeked comma");
-                self.pending_file_group = Some((base, start, storage, is_typedef, static_inline));
+                self.pending_file_group = Some((base, start, storage, is_typedef, is_inline));
                 comma.span.hi
             } else {
                 self.expect(";")?.span.hi
             };
-            let decl = Decl { storage, name, name_span, ty, asm_label, init,
+            let decl = Decl { storage, is_inline, name, name_span, ty, asm_label, init,
                 span: Span { lo: start, hi: end } };
             return Ok(Some(if is_typedef {
                 ExternalItem::Typedef(decl)
@@ -2006,12 +2100,35 @@ impl ItemSource for Parser<'_> {
         let is_typedef = self.peek()?.is_some_and(|t| t.text.as_ref() == "typedef");
         if is_typedef { self.take()?; }
         let storage_span = self.peek()?.map_or(self.eof_span(), |t| t.span);
-        let storage = match self.peek()?.map(|t| t.text).as_deref() {
+        // Inline and storage-class specifiers may appear in either order.
+        let leading_inline = self.peek()?.is_some_and(|t|
+            matches!(t.text.as_ref(), "inline" | "__inline" | "__inline__"));
+        if leading_inline { self.take()?; }
+        let leading_tls = self.peek()?.is_some_and(|t|
+            matches!(t.text.as_ref(), "__thread" | "_Thread_local"));
+        if leading_tls { self.take()?; }
+        let mut storage = match self.peek()?.map(|t| t.text).as_deref() {
             Some("static") => { self.take()?; StorageClass::Static },
             Some("extern") => { self.take()?; StorageClass::Extern },
             Some("register") => { self.take()?; StorageClass::Register },
             _ => StorageClass::Default,
         };
+        let trailing_tls = self.peek()?.is_some_and(|t|
+            matches!(t.text.as_ref(), "__thread" | "_Thread_local"));
+        if trailing_tls { self.take()?; }
+        if leading_tls && trailing_tls {
+            return Err(Diagnostic::coded(storage_span, DiagnosticCode::SyntaxInvalidDeclaration,
+                "duplicate thread storage specifier"));
+        }
+        if leading_tls || trailing_tls {
+            storage = match storage {
+                StorageClass::Default => StorageClass::ThreadLocal,
+                StorageClass::Extern => StorageClass::ExternThreadLocal,
+                StorageClass::Static => StorageClass::StaticThreadLocal,
+                _ => return Err(Diagnostic::coded(storage_span, DiagnosticCode::SyntaxInvalidDeclaration,
+                    "thread storage cannot combine with register")),
+            };
+        }
         if is_typedef && storage != StorageClass::Default {
             return Err(Diagnostic::coded(storage_span, DiagnosticCode::SyntaxInvalidDeclaration,
                 "typedef cannot combine with storage class"));
@@ -2020,21 +2137,45 @@ impl ItemSource for Parser<'_> {
             return Err(Diagnostic::coded(storage_span, DiagnosticCode::SyntaxInvalidDeclaration,
                 "register storage class is not allowed at file scope"));
         }
-        // Hosted glibc uses "static __inline" for private helper bodies.
-        // Inline is advisory for static linkage; *do not* drop plain or
-        // extern inline where C99/GNU external definition rules differ.
-        let static_inline = storage == StorageClass::Static
-            && self.peek()?.is_some_and(|t|
-                matches!(t.text.as_ref(), "inline" | "__inline" | "__inline__"));
-        if static_inline { self.take()?; }
+        // Keep the inline specifier for translation-unit linkage selection.
+        let mut is_inline = leading_inline;
+        while self.peek()?.is_some_and(|t|
+            matches!(t.text.as_ref(), "inline" | "__inline" | "__inline__"))
+        {
+            self.take()?;
+            is_inline = true;
+        }
+        if is_inline && is_typedef {
+            return Err(Diagnostic::coded(storage_span, DiagnosticCode::SyntaxInvalidDeclaration,
+                "inline cannot be combined with typedef"));
+        }
         let Some((base, start)) = self.parse_type()? else {
             // EOF only succeeds when no declaration specifiers were consumed.
-            if is_typedef || storage != StorageClass::Default {
+            if is_typedef || is_inline || storage != StorageClass::Default {
                 return Err(Diagnostic::new(self.eof_span(), "expected type specifier"));
             }
             return Ok(None);
         };
+        // Also accept inline after the complete return type, before the declarator.
+        while self.peek()?.is_some_and(|t|
+            matches!(t.text.as_ref(), "inline" | "__inline" | "__inline__"))
+        {
+            self.take()?;
+            is_inline = true;
+        }
+        if is_inline && is_typedef {
+            return Err(Diagnostic::coded(storage_span, DiagnosticCode::SyntaxInvalidDeclaration,
+                "inline cannot be combined with typedef"));
+        }
         if self.peek()?.is_some_and(|t| t.text.as_ref() == ";") {
+            if storage.is_thread_local() {
+                return Err(Diagnostic::coded(storage_span, DiagnosticCode::SyntaxInvalidDeclaration,
+                    "thread storage requires an object declarator"));
+            }
+            if is_inline {
+                return Err(Diagnostic::coded(storage_span, DiagnosticCode::SyntaxInvalidDeclaration,
+                    "inline requires a function declarator"));
+            }
             if !matches!(&base, Type::Struct { .. } | Type::Union { .. } | Type::Enum { .. } | Type::TagRef(..)) {
                 return Err(Diagnostic::coded(self.peek()?.expect("peeked").span,
                     DiagnosticCode::SyntaxExpectedDeclarator,
@@ -2048,12 +2189,12 @@ impl ItemSource for Parser<'_> {
             self.take()?;
             return Ok(Some(ExternalItem::Tag(base)));
         }
-        let (name, mut ty, definition_params, name_span) = self.parse_declarator_shape(false)?.finish(base.clone());
+        let (name, mut ty, definition_params, name_span) = self.parse_declarator_shape_impl(false, true)?.finish(base.clone());
         let asm_label = self.parse_asm_linkage_label()?;
-        if static_inline && !matches!(&ty, Type::Function { .. } | Type::VariadicFunction { .. }) {
+        if is_inline && !matches!(&ty, Type::Function { .. } | Type::VariadicFunction { .. } | Type::UnprototypedFunction { .. }) {
             return Err(Diagnostic::coded(name_span.unwrap_or(storage_span),
                 DiagnosticCode::SyntaxInvalidDeclaration,
-                "static inline requires a function declarator"));
+                "inline requires a function declarator"));
         }
         // GNU permits advisory function attributes following the asm label.
         while self.peek()?.is_some_and(|t|
@@ -2067,7 +2208,7 @@ impl ItemSource for Parser<'_> {
             self.parse_gnu_declarator_attributes(signature, Some(&mut ty))?;
         }
         if asm_label.is_some() &&
-            (!matches!(ty, Type::Function { .. } | Type::VariadicFunction { .. }) || is_typedef)
+            (!matches!(ty, Type::Function { .. } | Type::VariadicFunction { .. } | Type::UnprototypedFunction { .. }) || is_typedef)
         {
             return Err(Diagnostic::coded(name_span.unwrap_or(Span { lo: start, hi: start }),
                 DiagnosticCode::SyntaxInvalidDeclaration,
@@ -2076,28 +2217,61 @@ impl ItemSource for Parser<'_> {
         self.pending_file_binding = Some((name.clone(), self.scopes.lookup(&name)));
         self.scopes.declare(&name, if is_typedef { Binding::Typedef } else { Binding::Ordinary });
 
-        if let Some(brace) = self.peek()?.filter(|token| token.text.as_ref() == "{") {
-            let Type::Function { result, .. } = ty else {
-                return Err(Diagnostic::coded(brace.span, DiagnosticCode::SyntaxInvalidDeclaration,
-                    "function body requires a function declarator"));
+        if storage.is_thread_local() && matches!(&ty, Type::Function { .. } | Type::VariadicFunction { .. } | Type::UnprototypedFunction { .. }) {
+            return Err(Diagnostic::coded(storage_span, DiagnosticCode::SyntaxInvalidDeclaration,
+                "thread storage requires an object declarator"));
+        }
+        let old_style = matches!(&ty, Type::UnprototypedFunction { .. });
+        let identifier_list = old_style && definition_params.as_ref().is_some_and(|p| !p.is_empty());
+        if identifier_list || self.peek()?.is_some_and(|token| token.text.as_ref() == "{") {
+            let (Type::Function { result, .. } | Type::UnprototypedFunction { result }) = ty else {
+                return Err(Diagnostic::coded(self.peek()?.map_or(self.eof_span(), |t| t.span),
+                    DiagnosticCode::SyntaxInvalidDeclaration, "function body requires a function declarator"));
             };
             if is_typedef {
                 return Err(Diagnostic::new(Span { lo: start, hi: start }, "typedef cannot define a function body"));
             }
-            let params = definition_params.unwrap_or_default();
+            let mut params = definition_params.unwrap_or_default();
             if params.iter().any(|p| p.name.is_empty()) {
                 return Err(Diagnostic::new(Span { lo: start, hi: start }, "function definition requires parameter names"));
             }
             self.scopes.enter();
             for param in &params { self.scopes.declare(&param.name, Binding::Ordinary); }
-            let parsed = self.parse_block();
+            let parsed = (|| {
+                if identifier_list {
+                    let mut declared = std::collections::HashMap::new();
+                    while !self.peek()?.is_some_and(|t| t.text.as_ref() == "{") {
+                        for decl in self.parse_decl_group(false)? {
+                            if !params.iter().any(|p| p.name == decl.name) {
+                                return Err(Diagnostic::new(decl.span, "declaration does not name an old-style parameter"));
+                            }
+                            if decl.init.is_some() || !matches!(decl.storage, StorageClass::Default | StorageClass::Register) {
+                                return Err(Diagnostic::new(decl.span, "invalid old-style parameter declaration"));
+                            }
+                            let span = decl.span;
+                            if declared.insert(decl.name.clone(), decl).is_some() {
+                                return Err(Diagnostic::new(span, "duplicate old-style parameter declaration"));
+                            }
+                        }
+                    }
+                    for param in &mut params {
+                        let mut decl = declared.remove(&param.name).ok_or_else(||
+                            Diagnostic::new(param.span, "old-style parameter requires a declaration"))?;
+                        decl.name_span = param.name_span;
+                        *param = decl;
+                    }
+                }
+                self.parse_block()
+            })();
             self.scopes.leave();
             let (body, end) = parsed?;
             return Ok(Some(ExternalItem::Function(Function {
                 storage,
+                is_inline,
                 name,
                 name_span,
                 result: *result,
+                old_style,
                 params,
                 body,
                 span: Span { lo: start, hi: end },
@@ -2118,12 +2292,12 @@ impl ItemSource for Parser<'_> {
         }
         let end = if self.peek()?.is_some_and(|t| t.text.as_ref() == ",") {
             let comma = self.take()?.expect("peeked comma");
-            self.pending_file_group = Some((base, start, storage, is_typedef, static_inline));
+            self.pending_file_group = Some((base, start, storage, is_typedef, is_inline));
             comma.span.hi
         } else {
             self.expect(";")?.span.hi
         };
-        let decl = Decl { storage, name, name_span, ty, asm_label, init, span: Span { lo: start, hi: end } };
+        let decl = Decl { storage, is_inline, name, name_span, ty, asm_label, init, span: Span { lo: start, hi: end } };
         Ok(Some(if is_typedef { ExternalItem::Typedef(decl) } else { ExternalItem::Declaration(decl) }))
     }
 }
@@ -2531,8 +2705,8 @@ mod tests {
     fn parses_function_prototypes() {
         let mut parser = Parser::new("int f(); long g(int a, char *p); int h(void);");
         match parser.next_item().unwrap().unwrap() {
-            ExternalItem::Declaration(d) => assert_eq!(d.ty, Type::Function {
-                result: Box::new(Type::Int), params: vec![],
+            ExternalItem::Declaration(d) => assert_eq!(d.ty, Type::UnprototypedFunction {
+                result: Box::new(Type::Int),
             }),
             _ => panic!("expected prototype"),
         }
@@ -2543,7 +2717,12 @@ mod tests {
             }),
             _ => panic!("expected prototype"),
         }
-        assert!(matches!(parser.next_item().unwrap(), Some(ExternalItem::Declaration(_))));
+        match parser.next_item().unwrap().unwrap() {
+            ExternalItem::Declaration(d) => assert_eq!(d.ty, Type::Function {
+                result: Box::new(Type::Int), params: vec![],
+            }),
+            _ => panic!("expected explicit void prototype"),
+        }
         assert!(parser.next_item().unwrap().is_none());
     }
 
@@ -2645,6 +2824,24 @@ mod tests {
         for source in ["int (*bad)(int;", "int a[1;", "int *;", "int f(int,);"] {
             assert!(Parser::new(source).next_item().is_err(), "accepted {source:?}");
         }
+    }
+
+    #[test]
+    fn c99_abstract_function_parameter_declarators() {
+        let mut p = Parser::new("typedef long T; int h(int (int), int (T), int (void), int (int,...));");
+        p.next_item().unwrap().unwrap();
+        let Some(ExternalItem::Declaration(decl)) = p.next_item().unwrap()
+            else { panic!("expected prototype") };
+        assert_eq!(decl.ty, Type::Function {
+            result: Box::new(Type::Int),
+            params: vec![
+                Type::Function { result: Box::new(Type::Int), params: vec![Type::Int] },
+                Type::Function { result: Box::new(Type::Int), params: vec![Type::Alias("T".into())] },
+                Type::Function { result: Box::new(Type::Int), params: vec![] },
+                Type::VariadicFunction { result: Box::new(Type::Int), params: vec![Type::Int] },
+            ],
+        });
+        assert!(Parser::new("int h(int (int,));").next_item().is_err());
     }
 
     #[test]
@@ -3192,12 +3389,36 @@ mod tests {
             assert_eq!(func.storage, StorageClass::Static);
         }
         for src in [
+            "inline static int helper(int x) { return x; }",
+            "static int inline helper(int x) { return x; }",
+            "static inline inline int helper(int x) { return x; }",
+        ] {
+            let Some(ExternalItem::Function(func)) = Parser::new(src).next_item().unwrap()
+                else { panic!("expected static inline function: {src}") };
+            assert_eq!(func.storage, StorageClass::Static);
+        }
+        for src in [
+            "static inline struct S { int x; };",
+            "inline static int global;",
             "static inline int global;",
-            "inline int external(void) { return 1; }",
-            "extern __inline int external(void) { return 1; }",
         ] {
             assert!(Parser::new(src).next_item().is_err(), "{src}");
         }
+    }
+
+    #[test]
+    fn c99_external_inline_specifiers_are_preserved() {
+        let mut parser = Parser::new("inline int f(void), g(void); extern inline int f(void){return 1;} int g(void){return 2;}");
+        for _ in 0..2 {
+            let Some(ExternalItem::Declaration(d)) = parser.next_item().unwrap() else {panic!("declaration")};
+            assert!(d.is_inline);
+            assert_eq!(d.storage, StorageClass::Default);
+        }
+        let Some(ExternalItem::Function(f)) = parser.next_item().unwrap() else {panic!("function")};
+        assert!(f.is_inline);
+        assert_eq!(f.storage, StorageClass::Extern);
+        let Some(ExternalItem::Function(g)) = parser.next_item().unwrap() else {panic!("function")};
+        assert!(!g.is_inline);
     }
 
     #[test]

@@ -3,6 +3,7 @@
 //! never retained in the checker. No filesystem, global state or output side effects.
 pub mod types;
 pub mod const_eval;
+pub mod float_literal;
 pub mod builtins;
 mod warnings;
 #[allow(dead_code)] // generated target ISA tables remain test oracles, not source admission
@@ -31,6 +32,12 @@ use warnings::UsageBinding;
 /// cannot contain '.', so this name never collides with a C declaration.
 pub fn implicit_function_name_symbol(name: &str) -> String {
     format!(".Lmini_c_funcname_{name}")
+}
+
+/// Names emitted only by the checker for objects with static storage and
+/// no C linkage; the '.' prefix cannot occur in a source identifier.
+pub fn is_private_block_static_symbol(name: &str) -> bool {
+    name.starts_with(".Lmini_c_block_static_") || name.starts_with(".Lmini_c_funcname_")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,6 +92,8 @@ pub enum CheckedExprKind {
     /// GCC __builtin_ctz(unsigned int): the argument is evaluated exactly once.
     /// As in GCC, a zero operand has undefined behavior; callers must guard it.
     BuiltinCtz(Box<CheckedExpr>),
+    /// Count bits of the converted unsigned operand; result is C int.
+    BuiltinBitCount(builtins::BitCountKind, Box<CheckedExpr>),
     /// Byte-reverse an exact unsigned width after one source conversion.
     BuiltinByteSwap(u8, Box<CheckedExpr>),
     /// Typed GNU atomic builtin. The operands are evaluated once, and the
@@ -123,11 +132,18 @@ pub struct CheckedExpr {
     pub ty: CType,
     pub category: Category,
     pub kind: CheckedExprKind,
+    /// Exact parser-owned byte span, only present for Expr::Located. Generated
+    /// implicit conversions inherit their operand's location, never guess.
+    pub source_span: Option<Span>,
 }
 
 impl CheckedExpr {
     fn value(ty: CType, kind: CheckedExprKind) -> Self {
-        Self { ty, category: Category::Value, kind }
+        Self { ty, category: Category::Value, kind, source_span:None }
+    }
+    fn with_original_span(mut self, source_span:Option<Span>)->Self {
+        self.source_span=source_span;
+        self
     }
     /// Carry the value-width property through C expressions which still
     /// denote the bit-field's value (including assignment and ++/--), but
@@ -168,23 +184,26 @@ impl CheckedExpr {
     }
 
     fn rvalue(self) -> Self {
+        let origin=self.source_span;
         // A function designator converts to a pointer to that function in
         // value contexts, except for the operand of the address-of operator.
         if self.category == Category::Function {
             let ty = CType::Pointer(Box::new(self.ty.clone()));
-            return Self::value(ty, CheckedExprKind::Unary(UnOp::Address, Box::new(self)));
+            return Self::value(ty, CheckedExprKind::Unary(UnOp::Address, Box::new(self)))
+                .with_original_span(origin);
         }
         if self.category == Category::LValue {
             match self.ty.unqualified() {
-                CType::Array(element, _) => Self::value(
+                CType::Array(element, _) | CType::VariableArray(element, _) => Self::value(
                     CType::Pointer(element.clone()),
                     CheckedExprKind::ArrayDecay(Box::new(self)),
-                ),
+                ).with_original_span(origin),
                 _ => {
                     // C lvalue conversion removes top-level const but keeps
                     // the pointee qualifier of any pointer value.
                     let ty = self.ty.unqualified().clone();
                     Self::value(ty, CheckedExprKind::Load(Box::new(self)))
+                        .with_original_span(origin)
                 }
             }
         } else {
@@ -193,13 +212,25 @@ impl CheckedExpr {
     }
 }
 
+/// Evaluations owned by one declaration, each paired with a saved extent ID.
+pub type RuntimeBounds = Box<[(u64, CheckedExpr)]>;
+
+/// Private storage name for a saved VLA extent.
+pub fn vla_bound_name(id: u64) -> String { format!(".Lmini_c_vla_bound_{id}") }
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct CheckedDecl {
     pub storage: StorageClass,
+    /// Declaration-time evaluation of each new variable array extent.
+    /// Consumers must store these in automatic, scope-local slots before
+    /// evaluating the initializer or allocating the declared object.
+    pub runtime_bounds: RuntimeBounds,
+    pub is_inline: bool,
     pub name: String,
     pub ty: CType,
     pub linkage: Linkage,
-    /// External ELF linkage symbol, distinct from C source identifier.
+    /// External ELF linkage symbol or private backing symbol for a block-static object,
+    /// distinct from the C source identifier.
     pub asm_label: Option<String>,
     pub initializer: Option<CheckedExpr>,
     pub span: Span,
@@ -231,6 +262,9 @@ pub enum CheckedStmt {
         span: Span,
     },
     Return(Option<CheckedExpr>),
+    /// Source-required tail transfer; must never be lowered as an ordinary
+    /// return by a backend that does not guarantee a physical tail branch.
+    MustTailReturn(CheckedExpr),
     If { cond: CheckedExpr, then: Box<CheckedStmt>, otherwise: Option<Box<CheckedStmt>> },
     While { cond: CheckedExpr, body: Box<CheckedStmt> },
     /// Case and default labels remain in source order to preserve fallthrough.
@@ -261,6 +295,9 @@ pub struct CheckedFor {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CheckedFunction {
     pub linkage: Linkage,
+    /// A plain inline definition with external linkage supplies an external
+    /// symbol only if another file-scope declaration requires it.
+    pub inline_only_candidate: bool,
     pub name: String,
     pub signature: CType,
     pub params: Vec<CheckedDecl>,
@@ -292,7 +329,7 @@ impl CheckedExpr {
             K::DeepInitializer(values) => values.iter()
                 .any(|(_,e)|e.contains_memory_qualifier(has)),
             K::CompoundLiteral(inner) | K::StaticCompoundLiteral {initializer:inner,..} |
-            K::Unary(_,inner) | K::BuiltinCtz(inner) | K::BuiltinByteSwap(_,inner) | K::Convert(inner) |
+            K::Unary(_,inner) | K::BuiltinCtz(inner) | K::BuiltinBitCount(_,inner) | K::BuiltinByteSwap(_,inner) | K::Convert(inner) |
             K::Load(inner) | K::ArrayDecay(inner) | K::Member(inner,_) |
             K::BitFieldMember(inner,..) => inner.contains_memory_qualifier(has),
             K::BuiltinAtomic(checked) => checked.operands.iter()
@@ -314,7 +351,7 @@ impl CheckedExpr {
 }
 impl CheckedDecl {
     fn contains_memory_qualifier(&self,has:fn(&CType)->bool)->bool {
-        has(&self.ty) || self.initializer.as_ref()
+        has(&self.ty) || self.runtime_bounds.iter().any(|(_, e)| e.contains_memory_qualifier(has)) || self.initializer.as_ref()
             .is_some_and(|e|e.contains_memory_qualifier(has))
     }
 }
@@ -326,6 +363,7 @@ impl CheckedStmt {
             Self::Typedef {ty,..} => has(ty),
             Self::Expr(expr) | Self::Return(expr) => expr.as_ref()
                 .is_some_and(|e|e.contains_memory_qualifier(has)),
+            Self::MustTailReturn(expr) => expr.contains_memory_qualifier(has),
             Self::ExtendedAsm {outputs,inputs,..} => outputs.iter().chain(inputs)
                 .any(|op|op.expr.contains_memory_qualifier(has)),
             Self::If {cond,then,otherwise} => cond.contains_memory_qualifier(has)
@@ -382,6 +420,19 @@ pub struct Symbol {
     pub enum_value: Option<i64>,
     /// C register object: the address of this object cannot be computed.
     pub is_register: bool,
+    /// C thread storage duration, independently of linkage.
+    pub is_thread_local: bool,
+    // For old-style definitions, retain the promoted ABI separately from the visible C type.
+    old_style_signature: Option<CType>,
+    // Only file-scope function declarations contribute to C99 6.7.4.
+    non_inline_or_extern: bool,
+    inline_declaration: Option<Box<InlineDeclaration>>,
+}
+
+#[derive(Debug, Clone)]
+struct InlineDeclaration {
+    span: Span,
+    body_violation: Option<Diagnostic>,
 }
 
 #[derive(Clone)]
@@ -405,14 +456,23 @@ struct SwitchContext {
 pub struct Checker {
     target: Target,
     next_tag_identity: Cell<u64>,
+    saw_atomic_aggregate: Cell<bool>,
     next_static_compound_identity: Cell<u64>,
+    next_block_static_identity: u64,
     /// Independent tag namespace, parallel to ordinary identifier scopes.
     tags: RefCell<Vec<HashMap<String, TagEntry>>>,
     /// Stable definition lookup independent of currently visible shadowing tags.
     tag_definitions: RefCell<HashMap<u64, CType>>,
     globals: HashMap<String, Symbol>,
+    next_vla_bound: u64,
+    capturing_vla_bounds: Option<Vec<(u64, CheckedExpr)>>,
+    checking_inline_body: bool,
+    inline_body_violation: RefCell<Option<Diagnostic>>,
     locals: Vec<HashMap<String, Symbol>>,
     result_ty: Option<CType>,
+    /// Exact fixed source signature while checking one function body. This
+    /// prevents a musttail return from merely checking its result type.
+    current_signature: Option<CType>,
     loop_depth: usize,
     switches: Vec<SwitchContext>,
     /// Function-scope label namespace, separate from ordinary identifiers/tags.
@@ -428,14 +488,16 @@ pub struct Checker {
     recovery_limit: usize,
     warning_policy: WarningPolicy,
     emitted_warnings: Vec<ReportedDiagnostic>,
+    conversion_warnings: RefCell<Vec<ReportedDiagnostic>>,
     warning_scopes: RefCell<Vec<HashMap<String, UsageBinding>>>,
 }
 
 impl Checker {
     pub fn new(target: Target) -> Result<Self, Diagnostic> {
-        Ok(Self { target: target.validate()?, next_tag_identity: Cell::new(1), next_static_compound_identity: Cell::new(1), tags: RefCell::new(vec![HashMap::new()]), tag_definitions: RefCell::new(HashMap::new()), globals: HashMap::new(), locals: Vec::new(), result_ty: None, loop_depth: 0, switches: Vec::new(), function_labels: HashMap::new(), rollback_log: None, statement_undo: Vec::new(),
+        Ok(Self { target: target.validate()?, next_tag_identity: Cell::new(1), saw_atomic_aggregate: Cell::new(false), next_static_compound_identity: Cell::new(1), next_block_static_identity: 1, tags: RefCell::new(vec![HashMap::new()]), tag_definitions: RefCell::new(HashMap::new()), globals: HashMap::new(), next_vla_bound: 0, capturing_vla_bounds: None, checking_inline_body: false, inline_body_violation: RefCell::new(None), locals: Vec::new(), result_ty: None, current_signature: None, loop_depth: 0, switches: Vec::new(), function_labels: HashMap::new(), rollback_log: None, statement_undo: Vec::new(),
             recovery_errors: None, recovery_limit: 0,
             warning_policy: WarningPolicy::default(), emitted_warnings: Vec::new(),
+            conversion_warnings: RefCell::new(Vec::new()),
             warning_scopes: RefCell::new(Vec::new()) })
     }
 
@@ -446,10 +508,46 @@ impl Checker {
 
     /// Retrieve diagnostics emitted by successfully checked items.
     pub fn take_warnings(&mut self) -> Vec<ReportedDiagnostic> {
-        std::mem::take(&mut self.emitted_warnings)
+        let mut reports = std::mem::take(&mut self.emitted_warnings);
+        reports.extend(std::mem::take(self.conversion_warnings.get_mut()));
+        reports.sort_by_key(|report| report.diagnostic.span.lo);
+        reports
     }
 
     pub fn global(&self, name: &str) -> Option<&Symbol> { self.globals.get(name) }
+
+    fn record_function_specifier(&mut self, name: &str, is_inline: bool, storage: StorageClass, span: Span) {
+        let symbol = self.globals.get_mut(name).expect("registered function");
+        symbol.non_inline_or_extern |= !is_inline || storage == StorageClass::Extern;
+        if is_inline && symbol.linkage == Linkage::External {
+            symbol.inline_declaration.get_or_insert_with(|| Box::new(InlineDeclaration {
+                span, body_violation: None,
+            }));
+        }
+    }
+
+    fn note_inline_violation(&self, span: Span, message: impl FnOnce() -> String) {
+        if self.checking_inline_body {
+            let mut violation = self.inline_body_violation.borrow_mut();
+            if violation.is_none() {
+                *violation = Some(type_error(span, message()));
+            }
+        }
+    }
+
+    /// Complete constraints whose meaning depends on later file declarations.
+    /// No checked function ASTs need to survive semantic checking.
+    pub fn finish_translation_unit(&self) -> Result<(), Diagnostic> {
+        let error = self.globals.iter().filter_map(|(name, symbol)| {
+            let inline = symbol.inline_declaration.as_ref()?;
+            if !symbol.defined {
+                Some(type_error(inline.span, format!("inline function '{name}' requires a definition in this translation unit")))
+            } else if !symbol.non_inline_or_extern {
+                inline.body_violation.clone()
+            } else { None }
+        }).min_by(|a,b| (a.span.lo, &a.message).cmp(&(b.span.lo, &b.message)));
+        error.map_or(Ok(()), Err)
+    }
 
     /// Query the completed file-scope type after all external declarations.
     /// Incomplete tagged tentative objects may acquire their layout later
@@ -546,6 +644,8 @@ impl Checker {
                     format!("incomplete struct, union or enum tag '{name}'"))),
             CType::Array(element, count) => Ok(CType::Array(
                 Box::new(self.complete_tag_type(*element, span)?), count)),
+            CType::VariableArray(element, id) => Ok(CType::VariableArray(
+                Box::new(self.complete_tag_type(*element, span)?), id)),
             other => Ok(other),
         }
     }
@@ -560,6 +660,11 @@ impl Checker {
                 .unwrap_or(CType::TagRef { kind, name, identity })),
             CType::Array(element, count) => Ok(CType::Array(
                 Box::new(self.try_complete_tag_type(*element)?), count)),
+            CType::VariableArray(element, id) => Ok(CType::VariableArray(
+                Box::new(self.try_complete_tag_type(*element)?), id)),
+            CType::UnprototypedFunction { result } => Ok(CType::UnprototypedFunction {
+                result: Box::new(self.try_complete_tag_type(*result)?),
+            }),
             CType::Function { result, params } => Ok(CType::Function {
                 result: Box::new(self.try_complete_tag_type(*result)?),
                 params: params.into_iter()
@@ -592,16 +697,27 @@ impl Checker {
         Ok(())
     }
 
-    /// Classify supported C11 atomic-qualified scalar storage, preserving
-    /// source type identity and rejecting duplicate qualification.
+    /// Preserve atomic qualification on scalar storage and layout-checked
+    /// one-byte aggregate declarations. Executable aggregate uses remain gated.
     /// Runtime access lowering is a separate capability gate.
-    fn atomic_scalar_type(&self, base:CType, span:Span)->Result<CType,Diagnostic>{
+    fn atomic_object_type(&self, base:CType, span:Span)->Result<CType,Diagnostic>{
         if base.is_atomic() {
             return Err(type_error(span,"duplicate C11 _Atomic qualification"));
         }
-        if !matches!(base.unqualified(),CType::Integer{..}|CType::Pointer(_)) {
+        if !matches!(base.unqualified(), CType::Integer { .. } | CType::Pointer(_)) {
+            // A complete one-byte aggregate has no extra alignment or
+            // representation rounding in the current target data models.
+            // Larger atomics need a target-specific atomic layout contract.
+            if matches!(base.unqualified(), CType::Struct { .. } | CType::Union { .. })
+                && base.size_bytes(self.target) == Some(1)
+                && base.align_bytes(self.target) == Some(1)
+                && !base.contains_atomic()
+            {
+                self.saw_atomic_aggregate.set(true);
+                return Ok(base.with_atomic());
+            }
             return Err(type_error(span,
-                "C11 _Atomic currently requires integer or pointer storage"));
+                "C11 _Atomic requires supported scalar or one-byte aggregate layout"));
         }
         let bytes=base.size_bytes(self.target)
             .ok_or_else(||type_error(span,"C11 _Atomic requires complete scalar storage"))?;
@@ -617,22 +733,23 @@ impl Checker {
         Ok(match ty {
             Type::Atomic(inner) => {
                 let base=self.resolve(inner,span)?;
-                self.atomic_scalar_type(base,span)?
+                self.atomic_object_type(base,span)?
             }
             Type::Qualified(inner, qualifiers) => {
                 let base = self.resolve(inner, span)?;
-                if qualifiers.is_restrict && !matches!(base.unqualified(), CType::Pointer(_)) {
+                if qualifiers.is_restrict && !matches!(base.unqualified(), CType::Pointer(pointee)
+                    if !matches!(pointee.unqualified(), CType::Function { .. } | CType::VariadicFunction { .. } | CType::UnprototypedFunction { .. })) {
                     return Err(type_error(span, "restrict requires a pointer object type"));
                 }
                 if (qualifiers.is_const || qualifiers.is_volatile)
                     && matches!(base.unqualified(),
-                        CType::Function { .. } | CType::VariadicFunction { .. })
+                        CType::Function { .. } | CType::VariadicFunction { .. } | CType::UnprototypedFunction { .. })
                 {
                     return Err(type_error(span,
                         "const/volatile cannot qualify a function type"));
                 }
                 let base = if qualifiers.is_atomic {
-                    self.atomic_scalar_type(base,span)?
+                    self.atomic_object_type(base,span)?
                 } else {base};
                 let base = if qualifiers.is_const { base.with_const() } else { base };
                 if qualifiers.is_volatile { base.with_volatile() } else { base }
@@ -795,6 +912,9 @@ impl Checker {
                     };
                     let resolved = self.resolve(declared, member.span)?;
                     let resolved = self.try_complete_tag_type(resolved)?;
+                    if resolved.is_variably_modified() {
+                        return Err(type_error(member.span, "aggregate member cannot have variably modified type"));
+                    }
                     let width = bit_width.map(|width| {
                         self.check_bit_width(width, &resolved, member.name.is_empty(), member.span)
                     }).transpose()?;
@@ -827,15 +947,29 @@ impl Checker {
             Type::BitField(..) => return Err(type_error(span,
                 "bit-field declaration is only valid inside a struct or union")),
             Type::Pointer(inner) => CType::Pointer(Box::new(self.resolve(inner, span)?)),
+            Type::UnprototypedFunction { result } => {
+                let result = self.resolve(result, span)?;
+                if matches!(result.unqualified(), CType::Array(..) | CType::Function { .. }
+                    | CType::VariadicFunction { .. } | CType::UnprototypedFunction { .. }) {
+                    return Err(type_error(span, "invalid function result type"));
+                }
+                CType::UnprototypedFunction { result: Box::new(result) }
+            }
             Type::Function { result, params } | Type::VariadicFunction { result, params } => {
                 let result = self.resolve(result, span)?;
-                if matches!(result, CType::Function { .. } | CType::VariadicFunction { .. }) {
+                if matches!(result.unqualified(), CType::Function { .. } | CType::VariadicFunction { .. } | CType::UnprototypedFunction { .. }) {
                     return Err(type_error(span, "function cannot return a function"));
+                }
+                if matches!(result.unqualified(), CType::Array(..)) {
+                    return Err(type_error(span, "function cannot return an array"));
                 }
                 let mut converted = Vec::with_capacity(params.len());
                 for param in params {
                     let resolved = self.resolve(param, span)?;
                     let ty = self.adjust_parameter(resolved);
+                    if ty.is_variably_modified() {
+                        return Err(type_error(span, "variably modified function parameter types require parameter scope resolution"));
+                    }
                     if !ty.is_object() {
                         return Err(type_error(span, "parameter requires a complete non-void object type"));
                     }
@@ -849,32 +983,79 @@ impl Checker {
             }
             Type::Array(element, bound) => {
                 let element = self.resolve(element, span)?;
-                if !element.is_object() || matches!(element, CType::Array(_, None)) {
+                let element = self.try_complete_tag_type(element)?;
+                if element.has_flexible_array_member() {
+                    return Err(type_error(span, "array element cannot contain a flexible array member"));
+                }
+                if !element.is_object() || (element.size_bytes(self.target).is_none() && !element.is_variable_array()) {
                     return Err(type_error(span, "array element requires a complete object type"));
                 }
-                let bound = bound.as_deref().map(|expr| -> Result<u64, Diagnostic> {
+                if let Some(expr) = bound.as_deref() {
                     let typed = self.check_expr(expr, span)?.rvalue();
                     if !typed.ty.is_integer() {
-                        return Err(type_error(span, "array bound requires an integer constant expression"));
+                        return Err(type_error(span, "array bound requires an integer expression"));
                     }
-                    let value = const_eval::evaluate(&typed, self.target)
-                        .map_err(|reason| type_error(span, format!("array bound requires an integer constant expression: {reason}")))?;
-                    if value <= 0 {
-                        return Err(type_error(span, "array bound must be positive"));
+                    match const_eval::evaluate(&typed, self.target) {
+                        Ok(value) => {
+                            if value <= 0 { return Err(type_error(span, "array bound must be positive")); }
+                            let count = u64::try_from(value).map_err(|_|
+                                type_error(span, "array bound exceeds the supported range"))?;
+                            CType::Array(Box::new(element), Some(count))
+                        }
+                        Err("not an integer constant expression") if self.capturing_vla_bounds.is_some() => {
+                            let id = self.next_vla_bound;
+                            self.next_vla_bound += 1;
+                            let count = self.convert(typed, &self.size_type());
+                            self.capturing_vla_bounds.as_mut().expect("bound capture").push((id, count));
+                            CType::VariableArray(Box::new(element), id)
+                        }
+                        Err(reason) => return Err(type_error(span, format!(
+                            "array bound requires an integer constant expression: {reason}"))),
                     }
-                    u64::try_from(value).map_err(|_| type_error(span, "array bound exceeds the supported range"))
-                }).transpose()?;
-                CType::Array(Box::new(element), bound)
+                } else { CType::Array(Box::new(element), None) }
             },
         })
+    }
+
+    fn size_type(&self) -> CType {
+        CType::Integer { rank: IntRank::Long, unsigned: true }
+    }
+
+    /// Resolve a local declarator and take ownership of its bound evaluations.
+    /// Each occurrence gets a new ID even when the source expressions match.
+    fn resolve_local_type(&mut self, ty: &Type, span: Span) -> Result<(CType, RuntimeBounds), Diagnostic> {
+        debug_assert!(self.capturing_vla_bounds.is_none());
+        self.capturing_vla_bounds = Some(Vec::new());
+        let resolved = self.resolve(ty, span);
+        let bounds = self.capturing_vla_bounds.take().expect("local capture");
+        Ok((resolved?, bounds.into_boxed_slice()))
+    }
+
+    fn object_size_expression(&self, ty: &CType, span: Span) -> Result<CheckedExpr, Diagnostic> {
+        let size_ty = self.size_type();
+        if let Some(size) = ty.size_bytes(self.target) {
+            return Ok(CheckedExpr::value(size_ty, CheckedExprKind::Literal(size)));
+        }
+        let (element, count) = match ty.unqualified() {
+            CType::VariableArray(element, id) => {
+                let lvalue = CheckedExpr { ty: size_ty.clone(), category: Category::LValue,
+                    kind: CheckedExprKind::Name(vla_bound_name(*id)), source_span:None };
+                (element, lvalue.rvalue())
+            }
+            CType::Array(element, Some(count)) =>
+                (element, CheckedExpr::value(size_ty.clone(), CheckedExprKind::Literal(*count))),
+            _ => return Err(type_error(span, "sizeof requires a complete object type (not void or function)")),
+        };
+        let size = self.object_size_expression(element, span)?;
+        Ok(CheckedExpr::value(size_ty, CheckedExprKind::Binary(BinOp::Mul, Box::new(count), Box::new(size))))
     }
 
     /// C adjusts array and function parameter declarations to pointers.
     /// Do this at both prototype resolution and definition checking.
     fn adjust_parameter(&self, ty: CType) -> CType {
         match ty {
-            CType::Array(element, _) => CType::Pointer(element),
-            CType::Function { .. } | CType::VariadicFunction { .. } => CType::Pointer(Box::new(ty)),
+            CType::Array(element, _) | CType::VariableArray(element, _) => CType::Pointer(element),
+            CType::Function { .. } | CType::VariadicFunction { .. } | CType::UnprototypedFunction { .. } => CType::Pointer(Box::new(ty)),
             other => other,
         }
     }
@@ -894,13 +1075,16 @@ impl Checker {
                 "shadow",
             ));
         }
+        // GCC diagnoses unused automatic bindings even when volatile or
+        // atomic stores are observable; only linked aliases are exempt.
+        let warning_exempt = linkage != Linkage::None;
         self.locals.last_mut().expect("local scope").insert(name.to_owned(), Symbol {
-            ty, kind, linkage, defined: true, asm_label: None, enum_value: None, is_register,
+            ty, kind, linkage, defined: true, asm_label: None, enum_value: None, is_register, is_thread_local: false, old_style_signature: None, non_inline_or_extern: false, inline_declaration: None,
         });
         if kind == SymbolKind::Object {
-            // Extern aliases hide an outer automatic binding but are not
-            // themselves candidates for unused-local diagnostics.
-            self.register_warning_binding(name, span, false, linkage != Linkage::None);
+            // Extern aliases are not automatic locals for unused diagnostics.
+            // Volatile and atomic locals still participate, matching GCC.
+            self.register_warning_binding(name, span, false, warning_exempt);
         }
         Ok(())
     }
@@ -909,6 +1093,11 @@ impl Checker {
         &mut self, name: &str, ty: CType, kind: SymbolKind,
         defining: bool, storage: StorageClass, span: Span
     ) -> Result<(), Diagnostic> {
+        let is_thread_local = storage.is_thread_local();
+        if is_thread_local && kind != SymbolKind::Object {
+            return Err(type_error(span, "thread storage requires an object declaration"));
+        }
+        let storage = storage.linkage_storage();
         let requested = if matches!(kind, SymbolKind::Typedef | SymbolKind::Enumerator) {
             Linkage::None
         } else if storage == StorageClass::Static {
@@ -929,12 +1118,22 @@ impl Checker {
             }
         }
         if let Some(prior) = self.globals.get_mut(name) {
+            if prior.is_thread_local != is_thread_local {
+                return Err(type_error(span, format!("conflicting thread storage for '{name}'")));
+            }
+            if let Some(abi) = &prior.old_style_signature {
+                if !matches!(&ty, CType::UnprototypedFunction { .. }) && abi.composite(&ty).is_none() {
+                    return Err(Diagnostic::coded(span, DiagnosticCode::SemanticConflictingDeclaration,
+                        format!("conflicting declaration of '{name}'")));
+                }
+            }
             let Some(composite) = prior.ty.composite(&ty).filter(|_| prior.kind == kind) else {
                 return Err(Diagnostic::coded(span, DiagnosticCode::SemanticConflictingDeclaration, format!("conflicting declaration of '{name}'")));
             };
             // An extern redeclaration inherits a previous internal linkage.
             // Explicit static cannot follow a prior external declaration.
-            if prior.linkage != requested && storage != StorageClass::Extern {
+            if prior.linkage != requested && storage != StorageClass::Extern
+                && !(kind == SymbolKind::Function && storage == StorageClass::Default) {
                 return Err(type_error(span, format!("conflicting linkage for '{name}'")));
             }
             if defining && prior.defined {
@@ -944,7 +1143,7 @@ impl Checker {
             prior.defined |= defining;
         } else {
             self.globals.insert(name.to_owned(), Symbol {
-                ty, kind, linkage: requested, defined: defining, asm_label: None, enum_value: None, is_register: false,
+                ty, kind, linkage: requested, defined: defining, asm_label: None, enum_value: None, is_register: false, is_thread_local, old_style_signature: None, non_inline_or_extern: false, inline_declaration: None,
             });
         }
         Ok(())
@@ -1021,9 +1220,31 @@ impl Checker {
     /// stream consumed by subsequent successful items.
     pub fn check_item(&mut self, item: ExternalItem) -> Result<CheckedItem, Diagnostic> {
         let previous = self.emitted_warnings.len();
-        let result = self.check_item_impl(item);
+        let previous_conversions = self.conversion_warnings.borrow().len();
+        let result = self.check_item_impl(item).and_then(|checked| {
+            // No additional tree traversal on units without atomic aggregates.
+            // Type-only declarations and unused prototypes may introduce the
+            // checked type. Do not send unsupported storage/effects to either backend.
+            if self.saw_atomic_aggregate.get() {
+                let declaration_only = match &checked {
+                    CheckedItem::Tag | CheckedItem::Typedef { .. } => true,
+                    CheckedItem::Declaration(d) => matches!(d.ty,
+                        CType::Function { .. } | CType::VariadicFunction { .. } |
+                        CType::UnprototypedFunction { .. }),
+                    _ => false,
+                };
+                if !declaration_only &&
+                    checked.contains_memory_qualifier(CType::contains_atomic_aggregate)
+                {
+                    return Err(type_error(Span::default(),
+                        "atomic aggregate storage or executable use requires backend support"));
+                }
+            }
+            Ok(checked)
+        });
         if result.is_err() {
             self.emitted_warnings.truncate(previous);
+            self.conversion_warnings.get_mut().truncate(previous_conversions);
         }
         result
     }
@@ -1208,7 +1429,7 @@ impl Checker {
         prefix: Vec<usize>, checked: CheckedExpr,
         out: &mut Vec<(Vec<usize>, CheckedExpr)>,
     ) {
-        let CheckedExpr { ty, category, kind } = checked;
+        let CheckedExpr { ty, category, kind, source_span } = checked;
         match kind {
             CheckedExprKind::Initializer(values) => {
                 for (index, value) in values.into_iter().enumerate() {
@@ -1231,7 +1452,7 @@ impl Checker {
                     Self::initializer_explicit_leaves(path, value, out);
                 }
             }
-            other => out.push((prefix, CheckedExpr { ty, category, kind: other })),
+            other => out.push((prefix, CheckedExpr { ty, category, kind: other, source_span })),
         }
     }
 
@@ -1387,6 +1608,11 @@ impl Checker {
     ) -> Result<CheckedExpr, Diagnostic> {
         let span = original.location().unwrap_or(span);
         let original = original.without_location();
+        // Top-level incomplete arrays are completed before reaching this
+        // checker; a remaining incomplete array is not an initializer target.
+        if matches!(ty.unqualified(), CType::Array(_, None)) {
+            return Err(type_error(span, "incomplete array initializer"));
+        }
         // Bit-fields use the ordinary typed integer initializer checker.
         // The checked aggregate retains member indices; native automatic and
         // static object emitters pack only each selected bit range and leave
@@ -1534,7 +1760,7 @@ impl Checker {
         let raw = self.resolve(&decl.ty, decl.span)?;
         let raw = self.try_complete_tag_type(raw)?;
         let ty = self.complete_string_array(raw, decl.init.as_ref(), decl.span)?;
-        let kind = if matches!(ty, CType::Function { .. } | CType::VariadicFunction { .. }) { SymbolKind::Function } else { SymbolKind::Object };
+        let kind = if matches!(ty, CType::Function { .. } | CType::VariadicFunction { .. } | CType::UnprototypedFunction { .. }) { SymbolKind::Function } else { SymbolKind::Object };
         if kind == SymbolKind::Object && !ty.is_object() {
             return Err(type_error(decl.span, "object cannot have void or function type"));
         }
@@ -1545,7 +1771,7 @@ impl Checker {
         // complete type at its declaration, not merely at TU finalization.
         // This differs from external-linkage tentative definitions, which
         // may be completed by a later tag definition.
-        if kind == SymbolKind::Object && decl.storage == StorageClass::Static
+        if kind == SymbolKind::Object && decl.storage.linkage_storage() == StorageClass::Static
             && ty.size_bytes(self.target).is_none()
         {
             return Err(type_error(decl.span,
@@ -1554,6 +1780,9 @@ impl Checker {
         let defining = decl.init.is_some();
         self.declare_global(&decl.name, ty.clone(), kind, defining, decl.storage,
             decl.name_span.unwrap_or(decl.span))?;
+        if kind == SymbolKind::Function {
+            self.record_function_specifier(&decl.name, decl.is_inline, decl.storage, decl.span);
+        }
         if let Some(label) = &decl.asm_label {
             if kind != SymbolKind::Function || decl.storage == StorageClass::Static {
                 return Err(type_error(decl.span,
@@ -1577,7 +1806,7 @@ impl Checker {
         let linkage = global.linkage;
         let asm_label = global.asm_label.clone();
         Ok(CheckedDecl {
-            storage: decl.storage, name: decl.name, ty, linkage, asm_label,
+            storage: decl.storage, runtime_bounds: Box::default(), is_inline: decl.is_inline, name: decl.name, ty, linkage, asm_label,
             initializer, span: decl.span,
         })
     }
@@ -1625,8 +1854,11 @@ impl Checker {
         }
         let result = self.resolve(&func.result, func.span)?;
         let result = self.complete_tag_type(result, func.span)?;
-        if matches!(result, CType::Function { .. } | CType::VariadicFunction { .. }) {
+        if matches!(result.unqualified(), CType::Function { .. } | CType::VariadicFunction { .. } | CType::UnprototypedFunction { .. }) {
             return Err(type_error(func.span, "function cannot return a function"));
+        }
+        if matches!(result.unqualified(), CType::Array(..)) {
+            return Err(type_error(func.span, "function cannot return an array"));
         }
         let mut params = Vec::new();
         for param in &func.params {
@@ -1643,26 +1875,49 @@ impl Checker {
                 return Err(type_error(param.span, "register parameter requires a scalar type"));
             }
             params.push(CheckedDecl {
-                storage: param.storage, name: param.name.clone(), ty,
+                storage: param.storage, runtime_bounds: Box::default(), is_inline: false, name: param.name.clone(), ty,
                 linkage: Linkage::None, asm_label: None, initializer: None, span: param.span,
             });
         }
         let signature = CType::Function {
             result: Box::new(result.clone()),
-            params: params.iter().map(|p| p.ty.unqualified().clone()).collect(),
+            params: params.iter().map(|p| {
+                let ty = p.ty.unqualified();
+                if !func.old_style { return ty.clone(); }
+                if matches!(ty, CType::Floating(mini_c_syntax::ast::FloatRank::Float)) {
+                    CType::Floating(mini_c_syntax::ast::FloatRank::Double)
+                } else { self.target.promote(ty) }
+            }).collect(),
         };
         // Resolve labels independently of ordinary lexical identifier scopes.
         // A jump may target a label declared later in the same function.
         let mut function_labels = HashMap::new();
         Self::collect_function_labels(&func.body, &mut function_labels)?;
         // Register before checking the body: recursive calls are legal.
-        self.declare_global(&func.name, signature.clone(), SymbolKind::Function, true, func.storage,
+        let declaration_type = if func.old_style {
+            if let Some(prior) = self.global(&func.name) {
+                if !matches!(&prior.ty, CType::UnprototypedFunction { .. })
+                    && signature.composite(&prior.ty).is_none()
+                {
+                    return Err(Diagnostic::coded(func.span, DiagnosticCode::SemanticConflictingDeclaration,
+                        format!("conflicting declaration of '{}'", func.name)));
+                }
+            }
+            CType::UnprototypedFunction { result: Box::new(result.clone()) }
+        } else { signature.clone() };
+        self.declare_global(&func.name, declaration_type, SymbolKind::Function, true, func.storage,
             func.name_span.unwrap_or(func.span))?;
+        self.record_function_specifier(&func.name, func.is_inline, func.storage, func.span);
+        if func.old_style {
+            self.globals.get_mut(&func.name).expect("registered function")
+                .old_style_signature = Some(signature.clone());
+        }
         self.locals.push(HashMap::new());
         self.push_warning_scope();
         self.tags.borrow_mut().push(HashMap::new());
         self.function_labels = function_labels;
         self.result_ty = Some(result);
+        self.current_signature = (!func.old_style).then_some(signature.clone());
         // C99 6.4.2.2: each function implicitly declares a static const
         // char array `__func__` immediately inside its outermost block.
         // Install it in the same scope as parameters, so nested blocks see
@@ -1678,7 +1933,7 @@ impl Checker {
         self.locals.last_mut().expect("function scope").insert("__func__".into(), Symbol {
             ty: name_type, kind: SymbolKind::Object, linkage: Linkage::None,
             defined: true, asm_label: Some(implicit_function_name_symbol(&func.name)),
-            enum_value: None, is_register: false,
+            enum_value: None, is_register: false, is_thread_local: false, old_style_signature: None, non_inline_or_extern: false, inline_declaration: None,
         });
         for (parsed_param, param) in func.params.iter().zip(&params) {
             if let Err(err) = self.define_local(&param.name, param.ty.clone(),
@@ -1689,6 +1944,7 @@ impl Checker {
                 self.pop_warning_scope();
                 self.locals.pop();
                 self.result_ty = None;
+                self.current_signature = None;
                 return Err(err);
             }
         }
@@ -1699,6 +1955,11 @@ impl Checker {
                     param.name_span.unwrap_or(param.span), true, false);
             }
         }
+        // Only the first violation is needed; a later extern or non-inline
+        // declaration can turn this body into an ordinary external definition.
+        self.checking_inline_body = self.global(&func.name).is_some_and(|s|
+            s.inline_declaration.is_some() && !s.non_inline_or_extern);
+        debug_assert!(self.inline_body_violation.borrow().is_none());
         // Function parameters and its outermost compound statement share one scope.
         let checked = match &func.body {
             Stmt::Block(stmts) => self.check_statements(stmts, func.span).map(CheckedStmt::Block),
@@ -1708,10 +1969,19 @@ impl Checker {
         self.pop_warning_scope();
         self.locals.pop();
         self.result_ty = None;
+        self.current_signature = None;
         self.function_labels.clear();
+        self.checking_inline_body = false;
+        let violation = self.inline_body_violation.get_mut().take();
         let body = checked?;
+        if let Some(inline) = self.globals.get_mut(&func.name)
+            .and_then(|s| s.inline_declaration.as_mut()) {
+            inline.body_violation = violation;
+        }
         let linkage = self.global(&func.name).expect("registered function").linkage;
-        Ok(CheckedFunction { linkage, name: func.name, signature, params, body, span: func.span })
+        Ok(CheckedFunction { linkage,
+            inline_only_candidate: func.is_inline && func.storage == StorageClass::Default && linkage == Linkage::External,
+            name: func.name, signature, params, body, span: func.span })
     }
 
     fn check_statements(&mut self, statements: &[Stmt], span: Span) -> Result<Vec<CheckedStmt>, Diagnostic> {
@@ -1770,15 +2040,30 @@ impl Checker {
                 CheckedStmt::Tag
             }
             Stmt::Decl(decl) => {
-                let resolved = self.resolve(&decl.ty, decl.span)?;
+                let (resolved, runtime_bounds) = self.resolve_local_type(&decl.ty, decl.span)?;
                 let ty = self.complete_string_array(
                     self.try_complete_tag_type(resolved)?,
                     decl.init.as_ref(), decl.span)?;
-                if decl.storage != StorageClass::Extern && ty.size_bytes(self.target).is_none() {
+                if ty.is_variably_modified() {
+                    if decl.storage == StorageClass::Extern {
+                        return Err(type_error(decl.span, "variably modified object cannot have linkage"));
+                    }
+                    if ty.is_variable_array() && decl.storage == StorageClass::Static {
+                        return Err(type_error(decl.span, "variable length array cannot have static storage duration"));
+                    }
+                    if ty.is_variable_array() && decl.init.is_some() {
+                        return Err(type_error(decl.span, "variable length array cannot have an initializer"));
+                    }
+                }
+                if decl.storage != StorageClass::Extern && ty.size_bytes(self.target).is_none() && !ty.is_variable_array() {
                     return Err(type_error(decl.span, "incomplete local object type"));
                 }
                 if !ty.is_object() {
                     return Err(type_error(decl.span, "local variable cannot have void or function type"));
+                }
+                if decl.storage == StorageClass::Static && !ty.is_const_object() {
+                    self.note_inline_violation(decl.span, ||
+                        format!("inline-only definition cannot define modifiable static object '{}'", decl.name));
                 }
                 // Register is a storage-duration hint, not permission to take
                 // the address of an object. Until aggregate handling can
@@ -1801,13 +2086,25 @@ impl Checker {
                 self.define_local(&decl.name, ty.clone(), SymbolKind::Object, linkage,
                     decl.storage == StorageClass::Register,
                     decl.name_span.unwrap_or(decl.span))?;
+                // Static storage duration is independent of C linkage. Assign
+                // a private backing identity before checking the initializer
+                // so a declaration can refer to its own address.
+                let backing = if decl.storage == StorageClass::Static {
+                    let id = self.next_block_static_identity;
+                    self.next_block_static_identity = id.checked_add(1)
+                        .ok_or_else(|| type_error(decl.span, "static object identity overflow"))?;
+                    let symbol = format!(".Lmini_c_block_static_{id}");
+                    self.locals.last_mut().expect("local scope").get_mut(&decl.name)
+                        .expect("registered local").asm_label = Some(symbol.clone());
+                    Some(symbol)
+                } else { None };
                 let initializer = decl.init.as_ref()
                     .map(|value| self.check_object_initializer(value, &ty, decl.span,
                         decl.storage == StorageClass::Static))
                     .transpose()?;
                 CheckedStmt::Decl(CheckedDecl {
-                    storage: decl.storage, name: decl.name.clone(), ty,
-                    linkage, asm_label: None,
+                    storage: decl.storage, runtime_bounds, is_inline: false, name: decl.name.clone(), ty,
+                    linkage, asm_label: backing,
                     initializer, span: decl.span,
                 })
             }
@@ -2061,6 +2358,49 @@ impl Checker {
                     clobbers:clobbers.clone(),span:*span,
                 }
             },
+            Stmt::MustTailReturn(value) => {
+                // Clang's musttail is a statement-level semantic promise:
+                // no arithmetic, conditional, cast, indirect designator or
+                // implicit conversion may hide a different call/return ABI.
+                let Expr::Call(callee,_) = value.without_location() else {
+                    return Err(type_error(span,"musttail return requires a direct function call"));
+                };
+                if !matches!(callee.without_location(),Expr::Name(_)) {
+                    return Err(type_error(span,"musttail return requires a named direct function"));
+                }
+                let Some(caller)=self.current_signature.as_ref() else {
+                    return Err(type_error(span,"musttail requires a fixed-prototype caller"));
+                };
+                let caller=caller.clone();
+                let typed=self.check_expr(value,span)?;
+                let CheckedExprKind::Call(callee,_) = &typed.kind else {
+                    return Err(type_error(span,"musttail return must remain an ordinary checked call"));
+                };
+                if !callee.ty.unqualified().same_type(&caller) {
+                    return Err(type_error(span,
+                        "musttail requires identical fixed caller and callee signatures"));
+                }
+                let CType::Function{result,params}=&caller else {
+                    return Err(type_error(span,"musttail requires a nonvariadic C prototype"));
+                };
+                // Target register counts belong to backend ABI admission.
+                // Here reject classes that cannot be faithfully encoded by
+                // the current generic GP-only required-call TypeId opcode.
+                let gp=|ty:&CType,allow_void:bool|match ty.unqualified() {
+                    CType::Void=>allow_void,
+                    CType::Integer{rank,..}=>matches!(self.target.bits(*rank),32|64),
+                    CType::Pointer(_)=>self.target.pointer_bits==64,
+                    _=>false,
+                };
+                if !gp(result,true) || !params.iter().all(|param|gp(param,false)) {
+                    return Err(type_error(span,
+                        "musttail currently supports only 32/64-bit GP arguments and scalar or void results"));
+                }
+                if !typed.ty.unqualified().same_type(result) {
+                    return Err(type_error(span,"musttail return result cannot be implicitly converted"));
+                }
+                CheckedStmt::MustTailReturn(typed)
+            }
             Stmt::Return(value) => {
                 let expected = self.result_ty.clone().expect("return outside function");
                 let checked = match (value, &expected) {
@@ -2208,14 +2548,15 @@ impl Checker {
         Ok(typed)
     }
 
-    /// Only file-scope compound literal objects can contribute static
-    /// object addresses to another file-scope pointer initializer. A block
-    /// compound literal is automatic even inside a block-scope static
-    /// declaration; its address cannot be a static initializer.
-    fn static_compound_lvalue(expr: &CheckedExpr) -> bool {
+    /// Check storage duration at the resolved address root, not its spelling.
+    fn static_address_root(&self, expr: &CheckedExpr) -> bool {
         match &expr.kind {
-            CheckedExprKind::StaticCompoundLiteral { .. } => true,
-            CheckedExprKind::Member(base, _) => Self::static_compound_lvalue(base),
+            CheckedExprKind::Name(name) => is_private_block_static_symbol(name)
+                || self.lookup(name).is_some_and(|s|
+                    matches!(s.kind, SymbolKind::Object | SymbolKind::Function)
+                        && s.linkage != Linkage::None && !s.is_thread_local),
+            CheckedExprKind::StaticCompoundLiteral { .. } |
+            CheckedExprKind::StringLiteral(_) => true,
             _ => false,
         }
     }
@@ -2252,28 +2593,15 @@ impl Checker {
             }
             let null = constant.ty.is_integer()
                 && const_eval::evaluate(constant, self.target) == Ok(0);
-            let address_of_global = match original {
-                Expr::Unary(UnOp::Address, inner) => match inner.without_location() {
-                    Expr::Name(name) => self.globals.get(name).is_some_and(|s| s.kind != SymbolKind::Typedef),
-                    _ => false,
-                },
-                Expr::Name(name) => self.globals.get(name).is_some_and(|s|
-                    matches!(&s.ty, CType::Array(..)) ||
-                    (s.kind == SymbolKind::Function && matches!(ty, CType::Pointer(inner)
-                        if matches!(inner.as_ref(), CType::Function { .. } | CType::VariadicFunction { .. })))),
-                Expr::StringLiteral(_) => matches!(ty, CType::Pointer(element)
-                    if matches!(element.as_ref(), CType::Integer { rank: IntRank::Char, .. } | CType::Void)),
-                _ => false,
-            };
-            let static_compound_address = match &constant.kind {
-                CheckedExprKind::Unary(UnOp::Address, inner) |
-                CheckedExprKind::ArrayDecay(inner) =>
-                    Self::static_compound_lvalue(inner),
-                // Static array compound literals decay only after this
-                // validator; the raw checked expression is still an lvalue.
-                _ => Self::static_compound_lvalue(constant),
-            };
-            if !null && !address_of_global && !static_compound_address {
+            let address = const_eval::static_address(expression, self.target)
+                .is_some_and(|(root, _)| self.static_address_root(root));
+            // Keep the existing diagnostic for a directly incompatible
+            // string literal initializer; ordinary assignment checks handle
+            // all other pointer type constraints.
+            let incompatible_string = matches!(original, Expr::StringLiteral(_))
+                && !matches!(ty, CType::Pointer(element)
+                    if matches!(element.unqualified(), CType::Integer { rank: IntRank::Char, .. } | CType::Void));
+            if (!null && !address) || incompatible_string {
                 return Err(type_error(span, "pointer initializer requires a null constant or address of global symbol"));
             }
         }
@@ -2329,7 +2657,9 @@ impl Checker {
             matches!(ty, CType::Struct { .. } | CType::Union { .. })) {
             return expr;
         }
+        let span=expr.source_span;
         CheckedExpr::value(ty.clone(), CheckedExprKind::Convert(Box::new(expr)))
+            .with_original_span(span)
     }
 
     /// C99 6.3.2.3p3: an integer constant expression evaluating to zero,
@@ -2346,6 +2676,82 @@ impl Checker {
                 const_eval::evaluate(inner, target) == Ok(0),
             _ => false,
         }
+    }
+
+    /// Shared implicit signedness conversion diagnostic. Explicit casts use
+    /// convert() directly and do not enter this path.
+    fn warn_implicit_sign_conversion(
+        &self, expr: &CheckedExpr, value_ty: &CType, span: Span,
+    ) {
+        self.warn_implicit_sign_conversion_type(
+            &expr.ty, value_ty, const_eval::evaluate(expr, self.target).ok(), span);
+    }
+
+    /// Shared type-level signedness check. The result of a compound
+    /// assignment is a runtime computation, not an integer constant
+    /// expression, so the compound store supplies None for its value.
+    fn warn_implicit_sign_conversion_type(
+        &self, source_ty: &CType, dest_ty: &CType, known_value: Option<i128>,
+        span: Span,
+    ) {
+        if !self.warning_policy.enabled("sign-conversion") { return; }
+        let (CType::Integer { rank: source_rank, unsigned: source_unsigned },
+             CType::Integer { rank: dest_rank, unsigned: dest_unsigned }) =
+            (source_ty.unqualified(), dest_ty.unqualified())
+        else { return; };
+        let source_bits = self.target.bits(*source_rank);
+        let dest_bits = self.target.bits(*dest_rank);
+        let possibly_changes_value = source_unsigned != dest_unsigned
+            && *dest_rank != IntRank::Bool
+            && !(!*source_unsigned && *source_rank == IntRank::Bool)
+            && !(*source_unsigned && !*dest_unsigned && dest_bits > source_bits);
+        if !possibly_changes_value { return; }
+        let fits = known_value.is_some_and(|value| {
+            if *dest_unsigned {
+                value >= 0 && value <= ((1i128 << dest_bits) - 1)
+            } else {
+                value >= -(1i128 << (dest_bits - 1))
+                    && value < (1i128 << (dest_bits - 1))
+            }
+        });
+        if !fits {
+            self.conversion_warnings.borrow_mut().push(
+                ReportedDiagnostic::warning(
+                    Diagnostic::semantic(span,
+                        "implicit integer signedness conversion may change value"),
+                    "sign-conversion",
+                )
+            );
+        }
+    }
+
+    /// GCC-style mixed-sign integer comparison warning. Only report when
+    /// the usual arithmetic conversions make a signed operand unsigned.
+    /// A wider signed common type can represent both operands safely.
+    fn warn_sign_comparison(
+        &self, left: &CheckedExpr, right: &CheckedExpr, common: &CType,
+        span: Span,
+    ) {
+        if !self.warning_policy.enabled("sign-compare") { return; }
+        let CType::Integer { unsigned: true, .. } = common.unqualified()
+            else { return; };
+        let signed_operand = match (left.ty.unqualified(), right.ty.unqualified()) {
+            (CType::Integer { unsigned: false, .. },
+                CType::Integer { unsigned: true, .. }) => left,
+            (CType::Integer { unsigned: true, .. },
+                CType::Integer { unsigned: false, .. }) => right,
+            _ => return,
+        };
+        // GCC ignores nonnegative integer constants in these comparisons.
+        if const_eval::evaluate(signed_operand, self.target)
+            .is_ok_and(|value| value >= 0) {
+            return;
+        }
+        self.conversion_warnings.borrow_mut().push(ReportedDiagnostic::warning(
+            Diagnostic::semantic(span,
+                "comparison between signed and unsigned integer expressions"),
+            "sign-compare",
+        ));
     }
 
     fn convert_for_assignment(&self, expr: CheckedExpr, ty: &CType, _original: &Expr, span: Span) -> Result<CheckedExpr, Diagnostic> {
@@ -2392,6 +2798,40 @@ impl Checker {
         if !compatible {
             return Err(Diagnostic::coded(span, DiagnosticCode::SemanticIncompatibleAssignment, format!("incompatible assignment: {:?} to {:?}", expr.ty, ty)));
         }
+        // Warn only for implicit integer width loss. Signedness-only
+        // conversions belong to a separate -Wsign-conversion analysis.
+        if self.warning_policy.enabled("conversion") {
+            if let (CType::Integer { rank: src, .. },
+                    CType::Integer { rank: dst, unsigned }) =
+                (expr.ty.unqualified(), value_ty.unqualified())
+            {
+                let source_bits = self.target.bits(*src);
+                let dest_bits = self.target.bits(*dst);
+                if dest_bits < source_bits && *dst != IntRank::Bool {
+                    // GCC does not warn for an integer constant whose value
+                    // fits the destination representation.
+                    let fits = const_eval::evaluate(&expr, self.target).ok()
+                        .is_some_and(|value| {
+                            if *unsigned {
+                                value >= 0 && value <= ((1i128 << dest_bits) - 1)
+                            } else {
+                                value >= -(1i128 << (dest_bits - 1))
+                                    && value < (1i128 << (dest_bits - 1))
+                            }
+                        });
+                    if !fits {
+                        self.conversion_warnings.borrow_mut().push(
+                            ReportedDiagnostic::warning(
+                                Diagnostic::semantic(span,
+                                    "implicit integer conversion may change value"),
+                                "conversion",
+                            )
+                        );
+                    }
+                }
+            }
+        }
+        self.warn_implicit_sign_conversion(&expr, &value_ty, span);
         Ok(self.convert(expr, &value_ty))
     }
 
@@ -2404,7 +2844,7 @@ impl Checker {
             return Err(type_error(span, "pointer arithmetic requires a pointer"));
         };
         let complete = self.complete_tag_type(element.as_ref().clone(), span)?;
-        if complete.size_bytes(self.target).is_none() {
+        if complete.size_bytes(self.target).is_none() && !complete.is_variable_array() {
             return Err(type_error(span, "pointer arithmetic requires a complete object type"));
         }
         let converted_pointer = CType::Pointer(Box::new(complete));
@@ -2591,6 +3031,58 @@ impl Checker {
     /// References to existing tags are read-only, but an *explicit* inline
     /// struct/union definition introduces its tag in the current C scope.
     /// Enumerator definitions remain handled by declaration processing.
+    fn sizeof_type_expression(&self, ty: &Type, span: Span) -> Result<CheckedExpr, Diagnostic> {
+        self.sizeof_type_expression_impl(ty, span, false)
+    }
+
+    fn sizeof_type_expression_impl(&self, ty: &Type, span: Span, array_element: bool) -> Result<CheckedExpr, Diagnostic> {
+        let size_ty = self.size_type();
+        // A variably modified array type-name needs no object allocation.
+        // The size is the product of each evaluated bound and element size,
+        // with ordinary checked integer conversions and arithmetic.
+        // Fixed bounds are folded; nonconstant bounds retain side effects.
+        if let Type::Array(element, bound) = ty {
+            let bound = bound.as_ref().ok_or_else(||
+                type_error(span, "sizeof requires a complete object type (not void or function)"))?;
+            let count = self.check_expr(bound, span)?.rvalue();
+            if !count.ty.is_integer() {
+                return Err(type_error(span, "array bound requires an integer expression"));
+            }
+            let count = match const_eval::evaluate(&count, self.target) {
+                Ok(n) => {
+                    if n <= 0 { return Err(type_error(span, "array bound must be positive")); }
+                    let n = u64::try_from(n).map_err(|_|
+                        type_error(span, "array bound exceeds the supported range"))?;
+                    CheckedExpr::value(size_ty.clone(), CheckedExprKind::Literal(n))
+                }
+                Err("not an integer constant expression") => {
+                    if count.ty == size_ty { count }
+                    else { CheckedExpr::value(size_ty.clone(), CheckedExprKind::Convert(Box::new(count))) }
+                }
+                Err(reason) => return Err(type_error(span, format!("array bound requires a valid integer expression: {reason}"))),
+            };
+            let element_size = self.sizeof_type_expression_impl(element, span, true)?;
+            if let (CheckedExprKind::Literal(a), CheckedExprKind::Literal(b)) =
+                (&count.kind, &element_size.kind)
+            {
+                let size = a.checked_mul(*b).ok_or_else(||
+                    type_error(span, "sizeof array exceeds the supported range"))?;
+                return Ok(CheckedExpr::value(size_ty, CheckedExprKind::Literal(size)));
+            }
+            return Ok(CheckedExpr::value(size_ty,
+                CheckedExprKind::Binary(BinOp::Mul, Box::new(count), Box::new(element_size))));
+        }
+        let operand_ty = self.resolve_sizeof_type(ty, span)?;
+        let operand_ty = self.complete_tag_type(operand_ty, span)?;
+        if array_element && operand_ty.has_flexible_array_member() {
+            return Err(type_error(span, "array element cannot contain a flexible array member"));
+        }
+        let size = operand_ty.size_bytes(self.target).ok_or_else(|| type_error(
+            span, "sizeof requires a complete object type (not void or function)"
+        ))?;
+        Ok(CheckedExpr::value(size_ty, CheckedExprKind::Literal(size)))
+    }
+
     fn resolve_sizeof_type(&self, ty: &Type, span: Span) -> Result<CType, Diagnostic> {
         Ok(match ty {
             Type::Void => CType::Void,
@@ -2631,23 +3123,24 @@ impl Checker {
                 self.resolve_sizeof_type(inner, span)?)),
             Type::Atomic(inner) => {
                 let base=self.resolve_sizeof_type(inner,span)?;
-                self.atomic_scalar_type(base,span)?
+                self.atomic_object_type(base,span)?
             }
             Type::Qualified(inner, qualifiers) => {
                 let inner = self.resolve_sizeof_type(inner, span)?;
-                if qualifiers.is_restrict && !matches!(inner.unqualified(), CType::Pointer(_)) {
+                if qualifiers.is_restrict && !matches!(inner.unqualified(), CType::Pointer(pointee)
+                    if !matches!(pointee.unqualified(), CType::Function { .. } | CType::VariadicFunction { .. } | CType::UnprototypedFunction { .. })) {
                     return Err(type_error(span, "restrict requires pointer type"));
                 }
                 if qualifiers.is_const && matches!(inner.unqualified(),
-                    CType::Function { .. } | CType::VariadicFunction { .. }) {
+                    CType::Function { .. } | CType::VariadicFunction { .. } | CType::UnprototypedFunction { .. }) {
                     return Err(type_error(span, "const cannot qualify a function type"));
                 }
                 if qualifiers.is_volatile && matches!(inner.unqualified(),
-                    CType::Function { .. } | CType::VariadicFunction { .. }) {
+                    CType::Function { .. } | CType::VariadicFunction { .. } | CType::UnprototypedFunction { .. }) {
                     return Err(type_error(span, "volatile cannot qualify a function type"));
                 }
                 let inner = if qualifiers.is_atomic {
-                    self.atomic_scalar_type(inner,span)?
+                    self.atomic_object_type(inner,span)?
                 } else {inner};
                 let inner = if qualifiers.is_const { inner.with_const() } else { inner };
                 if qualifiers.is_volatile { inner.with_volatile() } else { inner }
@@ -2661,6 +3154,10 @@ impl Checker {
             }
             Type::Array(inner, bound) => {
                 let element = self.resolve_sizeof_type(inner, span)?;
+                let element = self.try_complete_tag_type(element)?;
+                if element.has_flexible_array_member() {
+                    return Err(type_error(span, "array element cannot contain a flexible array member"));
+                }
                 let count = bound.as_ref().map(|expr| {
                     let typed = self.check_expr(expr, span)?;
                     if !typed.ty.is_integer() {
@@ -2805,7 +3302,12 @@ impl Checker {
     fn check_expr(&self, expr: &Expr, span: Span) -> Result<CheckedExpr, Diagnostic> {
         match expr {
             Expr::Located(inner, located_span) => {
-                self.check_expr(inner, *located_span).map_err(|mut error| {
+                self.check_expr(inner, *located_span).map(|mut checked| {
+                    // Only an actual parser-owned Expr::Located may create
+                    // source provenance. The checked result is not re-parsed.
+                    checked.source_span=Some(*located_span);
+                    checked
+                }).map_err(|mut error| {
                     // A field lookup has a distinct source token at the end
                     // of the member expression. Prefer that exact token over
                     // the complete base-and-member expression.
@@ -2856,7 +3358,7 @@ impl Checker {
                 } else {
                     CheckedExprKind::CompoundLiteral(Box::new(value))
                 };
-                Ok(CheckedExpr { ty, category: Category::LValue, kind })
+                Ok(CheckedExpr { ty, category: Category::LValue, kind, source_span:None })
             },
             Expr::StringLiteral(bytes) => {
                 let len = u64::try_from(bytes.len())
@@ -2867,6 +3369,7 @@ impl Checker {
                     }), Some(len)),
                     category: Category::LValue,
                     kind: CheckedExprKind::StringLiteral(bytes.clone()),
+                    source_span:None,
                 })
             },
             Expr::SizeofExpr(operand) => {
@@ -2877,24 +3380,16 @@ impl Checker {
                 if matches!(typed.kind, CheckedExprKind::BitFieldMember(..)) {
                     return Err(type_error(span, "sizeof cannot be applied to a bit-field"));
                 }
-                let ty = self.complete_tag_type(typed.ty, span)?;
-                let size = ty.size_bytes(self.target).ok_or_else(|| type_error(
-                    span, "sizeof requires a complete object type (not void or function)"
-                ))?;
-                let size_ty = CType::Integer { rank: IntRank::Long, unsigned: true };
-                Ok(CheckedExpr::value(size_ty, CheckedExprKind::Literal(size)))
+                let ty = self.complete_tag_type(typed.ty.clone(), span)?;
+                let size = self.object_size_expression(&ty, span)?;
+                if ty.is_variable_array() {
+                    // A VLA operand is evaluated, unlike fixed-size sizeof.
+                    // Array decay evaluates its address without loading its contents.
+                    Ok(CheckedExpr::value(size.ty.clone(), CheckedExprKind::Comma(
+                        Box::new(typed.rvalue()), Box::new(size))))
+                } else { Ok(size) }
             }
-            Expr::SizeofType(type_name) => {
-                let operand_ty = self.resolve_sizeof_type(type_name, span)?;
-                let operand_ty = self.complete_tag_type(operand_ty, span)?;
-                let size = operand_ty.size_bytes(self.target).ok_or_else(|| type_error(
-                    span, "sizeof requires a complete object type (not void or function)"
-                ))?;
-                // C sizeof has size_t type under the checked target model.
-                // uses unsigned long, not the type of an ordinary decimal literal.
-                let size_ty = CType::Integer { rank: IntRank::Long, unsigned: true };
-                Ok(CheckedExpr::value(size_ty, CheckedExprKind::Literal(size)))
-            }
+            Expr::SizeofType(type_name) => self.sizeof_type_expression(type_name, span),
             Expr::Int(number) => {
                 let ty = self.target.decimal_literal(*number).ok_or_else(|| type_error(span, "decimal literal exceeds supported signed integer types"))?;
                 Ok(CheckedExpr::value(ty, CheckedExprKind::Literal(*number)))
@@ -2922,17 +3417,22 @@ impl Checker {
                     SymbolKind::Function => Category::Function,
                     SymbolKind::Object => Category::LValue,
                 };
+                if symbol.linkage == Linkage::Internal {
+                    self.note_inline_violation(span, ||
+                        format!("inline-only definition cannot reference internal-linkage identifier '{name}'"));
+                }
                 self.reference_warning_binding(name);
-                // The implicit object is internally named so that a
-                // frontend user cannot collide with it and every use
-                // within this function refers to the same static array.
-                // An ordinary shadowing declaration (if accepted by an
-                // implementation) has no private backing name.
-                let resolved_name = if name == "__func__" {
-                    symbol.asm_label.as_deref().unwrap_or(name)
+                // Private static objects use their backing identity in
+                // checked expressions; retain the source binding for lookup
+                // and diagnostics. External asm aliases are still resolved
+                // by the consumer's normal linkage path.
+                let resolved_name = if symbol.linkage == Linkage::None {
+                    symbol.asm_label.as_deref()
+                        .filter(|label| is_private_block_static_symbol(label))
+                        .unwrap_or(name)
                 } else { name };
                 Ok(CheckedExpr { ty: symbol.ty.clone(), category,
-                    kind: CheckedExprKind::Name(resolved_name.to_owned()) })
+                    kind: CheckedExprKind::Name(resolved_name.to_owned()), source_span:None })
             }
             Expr::Member(base, name, arrow) => {
                 let base = self.check_expr(base, span)?;
@@ -2949,6 +3449,7 @@ impl Checker {
                         ty: complete,
                         category: Category::LValue,
                         kind: CheckedExprKind::Unary(UnOp::Deref, Box::new(base)),
+                        source_span:None,
                     }
                 } else {
                     if base.category != Category::LValue {
@@ -2958,6 +3459,9 @@ impl Checker {
                 };
                 let mut object = object;
                 object.ty = self.complete_tag_type(object.ty.clone(), span)?;
+                if object.ty.is_atomic() {
+                    return Err(type_error(span, "member access of atomic aggregate is unsupported"));
+                }
                 let members = match object.ty.unqualified() {
                     CType::Struct { members, .. } | CType::Union { members, .. } => members,
                     _ => return Err(Diagnostic::coded(span, DiagnosticCode::SemanticInvalidMemberAccess, "member access requires a struct or union")),
@@ -2981,6 +3485,7 @@ impl Checker {
                     ty: field_ty,
                     category: Category::LValue,
                     kind,
+                    source_span:None,
                 })
             }
             Expr::Index(base, offset) => {
@@ -3001,9 +3506,24 @@ impl Checker {
                     ty: element.as_ref().clone(),
                     category: Category::LValue,
                     kind: CheckedExprKind::Unary(UnOp::Deref, Box::new(added)),
+                    source_span:None,
                 })
             }
             Expr::Unary(op, inner) => {
+                // C99 6.5.3.2p3: &*E is as if both operators were omitted,
+                // including for null and void pointers. Check E once and
+                // require a pointer, but never materialize a dereference.
+                if *op == UnOp::Address {
+                    if let Expr::Unary(UnOp::Deref, pointer) = inner.without_location() {
+                        let value = self.check_expr(pointer, span)?.rvalue();
+                        if !matches!(value.ty, CType::Pointer(_)) {
+                            return Err(Diagnostic::coded(span,
+                                DiagnosticCode::SemanticInvalidOperatorOperands,
+                                "dereference requires a pointer"));
+                        }
+                        return Ok(value);
+                    }
+                }
                 let typed = self.check_expr(inner, span)?;
                 match op {
                     UnOp::Address => {
@@ -3034,14 +3554,17 @@ impl Checker {
                             return Err(Diagnostic::coded(span, DiagnosticCode::SemanticInvalidOperatorOperands, "dereference requires a pointer"));
                         };
                         let ty = self.complete_tag_type((**inner_ty).clone(), span)?;
-                        let category = if matches!(ty, CType::Function { .. } | CType::VariadicFunction { .. }) { Category::Function } else if ty == CType::Void {
+                        let category = if matches!(ty, CType::Function { .. } | CType::VariadicFunction { .. } | CType::UnprototypedFunction { .. }) { Category::Function } else if ty == CType::Void {
                             return Err(type_error(span, "cannot dereference void pointer"));
                         } else { Category::LValue };
-                        Ok(CheckedExpr { ty, category, kind: CheckedExprKind::Unary(*op, Box::new(typed)) })
+                        Ok(CheckedExpr { ty, category, kind: CheckedExprKind::Unary(*op, Box::new(typed)), source_span:None })
                     }
                     UnOp::Not => {
+                        // Logical negation is a value context: array and
+                        // function designators decay before the scalar check.
+                        let typed = typed.rvalue();
                         if !typed.ty.is_scalar() { return Err(Diagnostic::coded(span, DiagnosticCode::SemanticInvalidOperatorOperands, "logical not requires scalar operand")); }
-                        Ok(CheckedExpr::value(CType::int(), CheckedExprKind::Unary(*op, Box::new(typed.rvalue()))))
+                        Ok(CheckedExpr::value(CType::int(), CheckedExprKind::Unary(*op, Box::new(typed))))
                     }
                     UnOp::Plus | UnOp::Neg | UnOp::BitNot => {
                         let floating = matches!(typed.ty.unqualified(), CType::Floating(_));
@@ -3078,7 +3601,7 @@ impl Checker {
                 // pairs; ordering requires compatible object pointer types.
                 let equality = matches!(op, BinOp::Eq | BinOp::Ne);
                 if relation && (matches!((&left.ty, &right.ty), (CType::Pointer(a), CType::Pointer(b))
-                        if (a.unqualified().same_type(b.unqualified())
+                        if (a.unqualified().composite(b.unqualified()).is_some()
                             && (equality || a.unqualified().is_object()))
                             || (equality && ((*a.unqualified() == CType::Void && b.unqualified().is_object())
                                 || (*b.unqualified() == CType::Void && a.unqualified().is_object()))))
@@ -3104,7 +3627,7 @@ impl Checker {
                                 DiagnosticCode::SemanticInvalidOperatorOperands,
                                 "pointer subtraction requires compatible pointed-to types"));
                         }
-                        if left_element.size_bytes(self.target).is_none() {
+                        if left_element.size_bytes(self.target).is_none() && !left_element.is_variable_array() {
                             return Err(Diagnostic::coded(span,
                                 DiagnosticCode::SemanticInvalidOperatorOperands,
                                 "pointer subtraction requires a complete object type"));
@@ -3167,6 +3690,17 @@ impl Checker {
                         if has_float { "operator requires compatible arithmetic operands" }
                         else { "operator requires compatible integer operands" })
                 })?;
+                // Usual arithmetic conversions also implicitly change the
+                // operand type. Diagnose sign changes on the operands, not
+                // on the arithmetic result, preserving explicit-cast opt-out.
+                if relation {
+                    self.warn_sign_comparison(&left, &right, &common, span);
+                } else {
+                    self.warn_implicit_sign_conversion(&left, &common,
+                        lhs.location().unwrap_or(span));
+                    self.warn_implicit_sign_conversion(&right, &common,
+                        rhs.location().unwrap_or(span));
+                }
                 let left = self.convert(left, &common);
                 let right = self.convert(right, &common);
                 let result = if relation { CType::int() } else { common };
@@ -3205,8 +3739,8 @@ impl Checker {
                 {
                     let base_a = a.unqualified();
                     let base_b = b.unqualified();
-                    let unified = if base_a.same_type(base_b) {
-                        base_a.clone()
+                    let unified = if let Some(composite) = base_a.composite(base_b) {
+                        composite
                     } else if (*base_a == CType::Void && base_b.is_object())
                         || (*base_b == CType::Void && base_a.is_object())
                     {
@@ -3304,13 +3838,22 @@ impl Checker {
             Expr::Assign(lhs, rhs) => {
                 let lhs_span = lhs.location().unwrap_or(span);
                 let rhs_span = rhs.location().unwrap_or(span);
+                let direct_name = match lhs.without_location() {
+                    Expr::Name(name) => Some(name.as_str()),
+                    _ => None,
+                };
                 let lhs = self.check_expr(lhs, span)?;
                 if lhs.category != Category::LValue || lhs.ty.is_const()
-                    || matches!(lhs.ty.unqualified(), CType::Array(..)) {
+                    || lhs.ty.is_array() {
                     return Err(Diagnostic::coded(lhs_span, DiagnosticCode::SemanticInvalidAssignmentTarget, "left side of assignment must be a modifiable lvalue"));
                 }
                 let rhs_typed = self.check_expr(rhs, span)?;
                 let rhs_typed = self.convert_for_assignment(rhs_typed, &lhs.ty, rhs, rhs_span)?;
+                // Checking a direct name LHS visited it as a normal expression.
+                // A plain assignment writes rather than reads that binding.
+                if let Some(name) = direct_name {
+                    self.write_warning_binding(name);
+                }
                 // C assignment returns a value, not a qualified atomic
                 // lvalue. Keep the lvalue itself qualified inside the AST
                 // for the TypeId emitter to select ordered atomic storage.
@@ -3361,7 +3904,7 @@ impl Checker {
                     // to complete object types, with element-sized scaling.
                     let CType::Pointer(element) = lhs.ty.unqualified() else { unreachable!() };
                     let complete = self.complete_tag_type(element.as_ref().clone(), lhs_span)?;
-                    if complete.size_bytes(self.target).is_none() {
+                    if complete.size_bytes(self.target).is_none() && !complete.is_variable_array() {
                         return Err(type_error(lhs_span,
                             "pointer arithmetic requires a complete object type"));
                     }
@@ -3391,6 +3934,37 @@ impl Checker {
                 } else {
                     computation_ty.clone()
                 };
+                // Compound assignment first converts the RHS for arithmetic,
+                // then converts the computed value back to the LHS type.
+                // Check both implicit conversions without counting the
+                // compound LHS as an unrelated assignment initializer.
+                if !pointer_arithmetic {
+                    self.warn_implicit_sign_conversion(&lhs, &computation_ty, lhs_span);
+                }
+                self.warn_implicit_sign_conversion(&rhs_checked, &rhs_ty, rhs_span);
+                if !pointer_arithmetic {
+                    // GCC classifies a narrowed compound store as
+                    // -Wconversion, not -Wsign-conversion. At equal widths
+                    // the signedness-changing store remains -Wsign-conversion.
+                    match (computation_ty.unqualified(), lhs.ty.unqualified()) {
+                        (CType::Integer { rank: source, .. },
+                         CType::Integer { rank: dest, .. })
+                            if self.target.bits(*dest) < self.target.bits(*source) =>
+                        {
+                            if self.warning_policy.enabled("conversion") {
+                                self.conversion_warnings.borrow_mut().push(
+                                    ReportedDiagnostic::warning(
+                                        Diagnostic::semantic(lhs_span,
+                                            "implicit compound assignment may change value"),
+                                        "conversion",
+                                    )
+                                );
+                            }
+                        }
+                        _ => self.warn_implicit_sign_conversion_type(
+                            &computation_ty, &lhs.ty, None, lhs_span),
+                    }
+                }
                 let rhs_checked = self.convert(rhs_checked, &rhs_ty);
                 let result_ty = if lhs.ty.is_atomic() {
                     lhs.ty.unqualified().clone()
@@ -3411,7 +3985,7 @@ impl Checker {
                 }
                 let computation_ty = if let CType::Pointer(pointee) = checked.ty.unqualified() {
                     let complete = self.complete_tag_type(pointee.as_ref().clone(), target_span)?;
-                    if complete.size_bytes(self.target).is_none() {
+                    if complete.size_bytes(self.target).is_none() && !complete.is_variable_array() {
                         return Err(type_error(target_span,
                             "increment/decrement requires pointer to complete object type"));
                     }
@@ -3468,6 +4042,16 @@ impl Checker {
                                     return Ok(CheckedExpr::value(CType::int(),
                                         CheckedExprKind::BuiltinCtz(Box::new(argument))));
                                 }
+                                builtins::BuiltinId::BitCount(kind,rank) => {
+                                    let argument=&args[0];
+                                    let at=argument.location().unwrap_or(span);
+                                    let typed=self.check_expr(argument,at)?.rvalue();
+                                    if !typed.ty.is_integer() {
+                                        return Err(type_error(at,format!("{name} requires an integer argument")));
+                                    }
+                                    let argument=self.convert(typed,&CType::Integer{rank,unsigned:true});
+                                    return Ok(CheckedExpr::value(CType::int(),CheckedExprKind::BuiltinBitCount(kind,Box::new(argument))));
+                                }
                                 builtins::BuiltinId::ByteSwap(bits) => {
                                     let argument = &args[0];
                                     let at = argument.location().unwrap_or(span);
@@ -3503,9 +4087,11 @@ impl Checker {
                 let signature = match &callee.ty {
                     CType::Function { result, params } => Some((result.as_ref(), params.as_slice(), false)),
                     CType::VariadicFunction { result, params } => Some((result.as_ref(), params.as_slice(), true)),
+                    CType::UnprototypedFunction { result } => Some((result.as_ref(), &[][..], true)),
                     CType::Pointer(inner) => match inner.as_ref() {
                         CType::Function { result, params } => Some((result.as_ref(), params.as_slice(), false)),
                         CType::VariadicFunction { result, params } => Some((result.as_ref(), params.as_slice(), true)),
+                    CType::UnprototypedFunction { result } => Some((result.as_ref(), &[][..], true)),
                         _ => None,
                     },
                     _ => None,
@@ -3528,7 +4114,7 @@ impl Checker {
                     checked_args.push(self.convert_for_assignment(typed, ty, arg,
                         arg.location().unwrap_or(span))?);
                 }
-                // C default argument promotions apply only to ellipsis arguments.
+                // C default argument promotions apply to ellipsis and non-prototype arguments.
                 for arg in args.iter().skip(params.len()) {
                     let typed = self.check_expr(arg, span)?.rvalue();
                     if !typed.ty.is_scalar() {
@@ -3561,9 +4147,13 @@ pub fn diagnose_stream_recovering(
     checker: &mut Checker,
     max_errors: usize,
 ) -> Vec<Diagnostic> {
-    parser.for_each_item_collecting(max_errors, |item, remaining| {
+    let mut errors = parser.for_each_item_collecting(max_errors, |item, remaining| {
         checker.check_item_diagnostics(item, remaining)
-    })
+    });
+    if errors.is_empty() && max_errors > 0 {
+        if let Err(error) = checker.finish_translation_unit() { errors.push(error); }
+    }
+    errors
 }
 
 /// Consume one translation unit without collecting its function ASTs.
@@ -3576,7 +4166,7 @@ where
     while let Some(item) = parser.next_item()? {
         receive(checker.check_item(item)?)?;
     }
-    Ok(())
+    checker.finish_translation_unit()
 }
 
 #[cfg(test)]

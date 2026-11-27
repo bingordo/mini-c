@@ -41,11 +41,66 @@ fn bounded_arithmetic(value: i128, ty: &CType, target: Target) -> Result<i128, &
     normalize(value, ty, target)
 }
 
+
+/// Decompose a checked constant address into a storage root and a signed
+/// byte displacement. The caller must validate that the root has static
+/// storage duration; no loads or runtime indices are evaluated here.
+/// Pointer casts affect subsequent arithmetic through the checked pointee
+/// type, not the underlying object's identity.
+pub fn static_address(expr: &CheckedExpr, target: Target) -> Option<(&CheckedExpr, i64)> {
+    fn lvalue(expr: &CheckedExpr, target: Target) -> Option<(&CheckedExpr, i64)> {
+        match &expr.kind {
+            CheckedExprKind::Name(_) | CheckedExprKind::StringLiteral(_) |
+            CheckedExprKind::StaticCompoundLiteral { .. } => Some((expr, 0)),
+            CheckedExprKind::Member(base, offset) => {
+                let (root, addend) = lvalue(base, target)?;
+                Some((root, addend.checked_add(i64::try_from(*offset).ok()?)?))
+            }
+            CheckedExprKind::Unary(UnOp::Deref, pointer) => static_address(pointer, target),
+            _ => None,
+        }
+    }
+    match &expr.kind {
+        CheckedExprKind::Unary(UnOp::Address, inner) |
+        CheckedExprKind::ArrayDecay(inner) => lvalue(inner, target),
+        CheckedExprKind::Convert(inner)
+            if matches!(expr.ty.unqualified(), CType::Pointer(_))
+                && matches!(inner.ty.unqualified(), CType::Pointer(_)) =>
+            static_address(inner, target),
+        CheckedExprKind::Binary(op @ (BinOp::Add | BinOp::Sub), pointer, index) => {
+            let CType::Pointer(element) = pointer.ty.unqualified() else { return None; };
+            if !index.ty.is_integer() { return None; }
+            let (root, addend) = static_address(pointer, target)?;
+            let stride = i128::from(element.size_bytes(target)?);
+            let offset = evaluate(index, target).ok()?.checked_mul(stride)?;
+            let offset = if *op == BinOp::Sub { offset.checked_neg()? } else { offset };
+            Some((root, i64::try_from(i128::from(addend).checked_add(offset)?).ok()?))
+        }
+        _ if expr.ty.is_array() || expr.category == crate::Category::Function =>
+            lvalue(expr, target),
+        _ => None,
+    }
+}
+
 pub fn evaluate(expr: &CheckedExpr, target: Target) -> Result<i128, &'static str> {
     match &expr.kind {
         CheckedExprKind::Literal(value) => Ok(i128::from(*value)),
         CheckedExprKind::FloatLiteral(_) => Err("not an integer constant expression"),
         CheckedExprKind::EnumConstant(value) => Ok(i128::from(*value)),
+        CheckedExprKind::BuiltinBitCount(kind,inner) => {
+            use crate::builtins::BitCountKind::*;
+            let v=evaluate(inner,target)?;
+            let CType::Integer{rank,..}=inner.ty.unqualified() else {return Err("invalid bit count operand");};
+            let bits=target.bits(*rank);
+            if !matches!(bits,32|64) {return Err("unsupported bit count width");}
+            let v=(v as u64) & (u64::MAX >> (64-bits));
+            if v==0 && *kind!=Population {return Err("zero operand in clz/ctz");}
+            Ok(i128::from(match kind {
+                LeadingZero => v.leading_zeros() - (64-u32::from(bits)),
+                TrailingZero => v.trailing_zeros(),
+                Population => v.count_ones(),
+            }))
+        }
         CheckedExprKind::BuiltinByteSwap(bits,inner) => {
             let v=evaluate(inner,target)?;
             Ok(match bits {
@@ -157,7 +212,7 @@ mod tests {
     use crate::{Category, CheckedExprKind as K, CheckedExpr as E};
     use crate::types::IntRank;
     fn lit(n: u64) -> E {
-        E { ty: CType::int(), category: Category::Value, kind: K::Literal(n) }
+        E { ty: CType::int(), category: Category::Value, kind: K::Literal(n), source_span:None }
     }
     #[test]
     fn signed_overflow_and_division_by_zero_are_rejected() {

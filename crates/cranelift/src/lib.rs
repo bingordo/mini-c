@@ -33,7 +33,7 @@ fn scalar_type(ty: &CType) -> Result<ir::Type> {
         CType::Floating(FloatRank::Float) => Ok(types::F32),
         CType::Floating(FloatRank::Double) => Ok(types::F64),
         CType::Struct { .. } | CType::Union { .. } | CType::TagRef { .. } |
-        CType::Array(..) => Err(format!(
+        CType::Array(..) | CType::VariableArray(..) => Err(format!(
             "unsupported SysV aggregate-by-value ABI for {ty:?}; use pointer parameters/returns"
         )),
         _ => Err(format!("unsupported scalar type {ty:?}")),
@@ -96,7 +96,8 @@ fn aggregate_abi_types(ty: &CType) -> Result<Vec<ir::Type>> {
 fn signature(module: &ObjectModule, ty: &CType) -> Result<ir::Signature> {
     let (params, result) = match ty {
         CType::Function { params, result } |
-        CType::VariadicFunction { params, result } => (params, result),
+        CType::VariadicFunction { params, result } => (params.as_slice(), result),
+        CType::UnprototypedFunction { result } => (&[][..], result),
         _ => return Err("function declaration requires a function type".into()),
     };
     let mut sig = module.make_signature();
@@ -176,9 +177,16 @@ struct KnownFunction {
 /// arguments in their ordinary GP/XMM registers and stack slots, but has no
 /// special AL register-value operand on a variadic call. The wrapper sets
 /// AL to the number of vector argument registers used, then tail-jumps.
+enum SysvThunkTarget {
+    Direct(FuncId),
+    /// The extra pointer follows all real arguments in the fixed signature.
+    IndirectRegister(u8),
+    IndirectStack(i32),
+}
+
 struct SysvVarargThunk {
     wrapper: FuncId,
-    target: FuncId,
+    target: SysvThunkTarget,
     sse_count: u8,
 }
 
@@ -194,22 +202,23 @@ struct PendingFunction {
 #[derive(Clone)]
 enum RelocationSource {
     Object(String, i64),
-    Literal(Vec<u8>),
+    Literal(Vec<u8>, i64),
 }
 
 #[derive(Clone)]
 enum RelocationTarget {
     Object(String, i64),
-    Literal(DataId),
+    Literal(DataId, i64),
 }
 
 struct KnownData {
     id: DataId,
     ty: CType,
     linkage: Linkage,
+    thread_local: bool,
     initialized: Option<Vec<u8>>,
     address_of: Option<(String, i64)>,
-    string_address: Option<DataId>,
+    string_address: Option<(DataId, i64)>,
     /// Multiple pointer fields can carry independent ELF data relocations.
     aggregate_relocations: Vec<(u32, RelocationTarget)>,
     tentative: bool,
@@ -278,20 +287,15 @@ fn initializer_subobject(
     Ok((current.clone(), offset, bits))
 }
 
-/// Resolve a checked constant-address lvalue, preserving an optional
-/// struct/union member displacement for ELF data relocations. Arrays decay
-/// to their first element (zero displacement). Only the checker can permit
-/// these operands into a static pointer initializer.
-fn static_object_address(expr: &CheckedExpr) -> Option<(String, i64)> {
-    match &expr.kind {
-        CheckedExprKind::Name(name) => Some((name.clone(), 0)),
+/// Convert the shared checked address decomposition into a relocation source.
+fn static_relocation_source(expr: &CheckedExpr) -> Option<RelocationSource> {
+    let (root, addend) = mini_c_sema::const_eval::static_address(expr, Target::default())?;
+    match &root.kind {
+        CheckedExprKind::Name(name) => Some(RelocationSource::Object(name.clone(), addend)),
         CheckedExprKind::StaticCompoundLiteral { symbol, .. } =>
-            Some((symbol.clone(), 0)),
-        CheckedExprKind::Member(base, offset) => {
-            let (name, base_offset) = static_object_address(base)?;
-            let offset = i64::try_from(*offset).ok()?;
-            Some((name, base_offset.checked_add(offset)?))
-        }
+            Some(RelocationSource::Object(symbol.clone(), addend)),
+        CheckedExprKind::StringLiteral(bytes) =>
+            Some(RelocationSource::Literal(bytes.clone(), addend)),
         _ => None,
     }
 }
@@ -433,20 +437,8 @@ fn static_initializer_bytes(
                     if mini_c_sema::const_eval::evaluate(source, Target::default()) == Ok(0) {
                         out[offset..end].fill(0);
                     } else {
-                        let target = match &source.kind {
-                            CheckedExprKind::Unary(UnOp::Address, inner) |
-                            CheckedExprKind::ArrayDecay(inner) => inner.as_ref(),
-                            _ => return Err("aggregate pointer initializer requires constant address".into()),
-                        };
-                        let target = if let Some((name, addend)) =
-                            static_object_address(target)
-                        {
-                            RelocationSource::Object(name, addend)
-                        } else if let CheckedExprKind::StringLiteral(bytes) = &target.kind {
-                            RelocationSource::Literal(bytes.clone())
-                        } else {
-                            return Err("aggregate pointer initializer requires constant object address".into());
-                        };
+                        let target = static_relocation_source(init)
+                            .ok_or("aggregate pointer initializer requires constant object address")?;
                         let offset = u32::try_from(offset)
                             .map_err(|_| "aggregate relocation offset overflow")?;
                         relocations.push((offset, target));
@@ -488,6 +480,8 @@ pub struct Compiler {
     module: ObjectModule,
     functions: HashMap<String, KnownFunction>,
     pending_functions: HashMap<String, PendingFunction>,
+    external_defining_declarations: std::collections::HashSet<String>,
+    inline_candidates: Vec<CheckedFunction>,
     vararg_thunks: Vec<SysvVarargThunk>,
     data: HashMap<String, KnownData>,
     strings: HashMap<Vec<u8>, DataId>,
@@ -500,6 +494,7 @@ impl Compiler {
         }
         let mut flags = settings::builder();
         flags.set("is_pic", "true").map_err(|e| e.to_string())?;
+        flags.set("tls_model", "elf_gd").map_err(|e| e.to_string())?;
         let isa = cranelift_native::builder()
             .map_err(|e| format!("native Cranelift target: {e}"))?
             .finish(settings::Flags::new(flags))
@@ -509,6 +504,8 @@ impl Compiler {
         Ok(Self {
             module: ObjectModule::new(object),
             functions: HashMap::new(), pending_functions: HashMap::new(),
+            external_defining_declarations: std::collections::HashSet::new(),
+            inline_candidates: Vec::new(),
             vararg_thunks: Vec::new(),
             data: HashMap::new(), strings: HashMap::new(),
         })
@@ -586,8 +583,10 @@ impl Compiler {
             CheckedExprKind::StaticCompoundLiteral { symbol, initializer } => {
                 if !self.data.contains_key(symbol) {
                     self.declare_object(CheckedDecl {
+                        runtime_bounds: Box::default(),
                         name: symbol.clone(),
                         storage: StorageClass::Static,
+                        is_inline: false,
                         ty: expr.ty.clone(),
                         linkage: Linkage::Internal,
                         asm_label: None,
@@ -611,6 +610,10 @@ impl Compiler {
             CheckedExprKind::Load(inner) |
             CheckedExprKind::Member(inner, _) =>
                 self.register_static_compounds(inner)?,
+            CheckedExprKind::Binary(_, left, right) => {
+                self.register_static_compounds(left)?;
+                self.register_static_compounds(right)?;
+            }
             _ => {}
         }
         Ok(())
@@ -634,8 +637,8 @@ impl Compiler {
                     let target = match source {
                         RelocationSource::Object(name, addend) =>
                             RelocationTarget::Object(name, addend),
-                        RelocationSource::Literal(bytes) => RelocationTarget::Literal(
-                            intern_string(&mut self.module, &mut self.strings, &bytes)?),
+                        RelocationSource::Literal(bytes, addend) => RelocationTarget::Literal(
+                            intern_string(&mut self.module, &mut self.strings, &bytes)?, addend),
                     };
                     aggregate_relocations.push((offset, target));
                 }
@@ -654,23 +657,17 @@ impl Compiler {
                 match mini_c_sema::const_eval::evaluate(integer, Target::default()) {
                     Ok(0) => 0,
                     _ => {
-                        let target = match &integer.kind {
-                            CheckedExprKind::Unary(UnOp::Address, target)
-                            | CheckedExprKind::ArrayDecay(target) => Some(target.as_ref()),
-                            _ => None,
-                        };
-                        if let Some((symbol, addend)) =
-                            target.and_then(static_object_address)
-                        {
-                            address_of = Some((symbol, addend));
-                            0
-                        } else if let Some(CheckedExprKind::StringLiteral(bytes)) =
-                            target.map(|expr| &expr.kind)
-                        {
-                            string_address = Some(intern_string(&mut self.module, &mut self.strings, bytes)?);
-                            0
-                        } else {
-                            return Err(format!("global initializer for '{name}' requires a null pointer or constant object address"));
+                        match static_relocation_source(init) {
+                            Some(RelocationSource::Object(symbol, addend)) => {
+                                address_of = Some((symbol, addend));
+                                0
+                            }
+                            Some(RelocationSource::Literal(bytes, addend)) => {
+                                let id = intern_string(&mut self.module, &mut self.strings, &bytes)?;
+                                string_address = Some((id, addend));
+                                0
+                            }
+                            None => return Err(format!("global initializer for '{name}' requires a null pointer or constant object address")),
                         }
                     }
                 }
@@ -684,12 +681,13 @@ impl Compiler {
             Some(bytes[..usize::try_from(size).map_err(|_| "oversized global object")?].to_vec())
             }
         } else { None };
-        let tentative = decl.storage != StorageClass::Extern && initialized.is_none();
+        let thread_local = decl.storage.is_thread_local();
+        let tentative = decl.storage.linkage_storage() != StorageClass::Extern && initialized.is_none();
         if let Some(data) = self.data.get_mut(&name) {
             let Some(composite) = data.ty.composite(&decl.ty) else {
                 return Err(format!("conflicting global object declaration '{name}'"));
             };
-            if data.linkage != decl.linkage {
+            if data.linkage != decl.linkage || data.thread_local != thread_local {
                 return Err(format!("conflicting global object linkage '{name}'"));
             }
             data.ty = composite;
@@ -709,7 +707,7 @@ impl Compiler {
                 } else {
                     ClLinkage::Export
                 };
-                self.module.declare_data(&name, linkage, true, false)
+                self.module.declare_data(&name, linkage, true, thread_local)
                     .map_err(|e| format!("upgrading global '{name}': {e}"))?;
             }
             return Ok(());
@@ -723,10 +721,10 @@ impl Compiler {
         } else {
             ClLinkage::Import
         };
-        let id = self.module.declare_data(&name, linkage, true, false)
+        let id = self.module.declare_data(&name, linkage, true, thread_local)
             .map_err(|e| format!("declaring global '{name}': {e}"))?;
         self.data.insert(name, KnownData {
-            id, ty: decl.ty, linkage: decl.linkage, initialized,
+            id, ty: decl.ty, linkage: decl.linkage, thread_local, initialized,
             address_of, string_address, aggregate_relocations, tentative,
         });
         Ok(())
@@ -749,6 +747,22 @@ impl Compiler {
 
     /// Register declarations and compile one complete checked function.
     pub fn add(&mut self, item: CheckedItem) -> Result<()> {
+        // Type-only declarations have already been checked and emit no
+        // storage, ABI signature or memory operation. Keep the checker-owned
+        // qualifier intact; any subsequent executable use is checked below.
+        if matches!(&item, CheckedItem::Typedef { .. } | CheckedItem::Tag) {
+            return Ok(());
+        }
+        // Unused atomic-qualified function prototypes have no emitted
+        // signature. Calls and function-address uses remain checked below;
+        // never register an ABI we cannot implement.
+        if let CheckedItem::Declaration(decl) = &item {
+            if matches!(decl.ty, CType::Function { .. } | CType::VariadicFunction { .. }
+                | CType::UnprototypedFunction { .. }) && item.contains_atomic_type()
+            {
+                return Ok(());
+            }
+        }
         // Volatile reads and writes are observable C side effects.
         // Never emit an ordinary load/store in lieu of a volatile operation.
         // The canonical native TypeId IR support is compiler#1047.
@@ -765,7 +779,7 @@ impl Compiler {
         match item {
             CheckedItem::Typedef { .. } | CheckedItem::Tag => Ok(()),
             CheckedItem::Declaration(decl) => {
-                if matches!(decl.ty, CType::Function { .. } | CType::VariadicFunction { .. }) {
+                if matches!(decl.ty, CType::Function { .. } | CType::VariadicFunction { .. } | CType::UnprototypedFunction { .. }) {
                     // Header prototypes do not need an emitted ABI signature
                     // until they are used. In particular, glibc stdio.h
                     // declares unused functions with by-value aggregate or
@@ -783,6 +797,9 @@ impl Compiler {
                         Err(reason) => return Err(reason),
                     }
                     let name = decl.name.clone();
+                    if !decl.is_inline || decl.storage == StorageClass::Extern {
+                        self.external_defining_declarations.insert(name.clone());
+                    }
                     let link_name = decl.asm_label.unwrap_or_else(|| name.clone());
                     if self.functions.contains_key(&name) {
                         // Previously used or defined imports cannot be renamed;
@@ -801,6 +818,21 @@ impl Compiler {
                     }
                     Ok(())
                 } else { self.declare_object(decl) }
+            }
+            CheckedItem::Function(function) if function.inline_only_candidate => {
+                // Calls and addresses may refer to the external definition.
+                // Delay only ambiguous inline bodies until all declarations
+                // have been seen; a non-inline or extern declaration makes
+                // this TU responsible for emitting the external definition.
+                self.add(CheckedItem::Declaration(CheckedDecl {
+                    runtime_bounds: Box::default(),
+                    storage: StorageClass::Default, is_inline: true,
+                    name: function.name.clone(), ty: function.signature.clone(),
+                    linkage: function.linkage, asm_label: None,
+                    initializer: None, span: function.span,
+                }))?;
+                self.inline_candidates.push(function);
+                Ok(())
             }
             CheckedItem::Function(function) => self.define(function),
         }
@@ -908,6 +940,40 @@ impl Compiler {
         false
     }
 
+    /// Register static-duration locals before generating the executable CFG,
+    /// even when their lexical declaration is skipped by a goto or branch.
+    /// Checked names already refer to these private backing symbols.
+    fn register_block_statics(&mut self, stmt: &CheckedStmt) -> Result<()> {
+        match stmt {
+            CheckedStmt::Decl(decl) if decl.storage == StorageClass::Static => {
+                let mut object = decl.clone();
+                object.name = object.asm_label.take()
+                    .filter(|name| mini_c_sema::is_private_block_static_symbol(name))
+                    .ok_or("block-static declaration has no private backing identity")?;
+                object.linkage = Linkage::Internal;
+                object.runtime_bounds = Box::default();
+                self.declare_object(object)?;
+            }
+            CheckedStmt::Block(stmts) => {
+                for stmt in stmts { self.register_block_statics(stmt)?; }
+            }
+            CheckedStmt::If { then, otherwise, .. } => {
+                self.register_block_statics(then)?;
+                if let Some(otherwise) = otherwise { self.register_block_statics(otherwise)?; }
+            }
+            CheckedStmt::While { body, .. } | CheckedStmt::DoWhile { body, .. }
+            | CheckedStmt::Switch { body, .. } | CheckedStmt::Case { body, .. }
+            | CheckedStmt::Default(body) | CheckedStmt::Label { body, .. } =>
+                self.register_block_statics(body)?,
+            CheckedStmt::For(for_loop) => {
+                if let Some(init) = &for_loop.init { self.register_block_statics(init)?; }
+                self.register_block_statics(&for_loop.body)?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     fn define(&mut self, function: CheckedFunction) -> Result<()> {
         // C99 __func__ is a separately addressable, function-scope
         // static const char array, not an interned string literal. Reserve
@@ -922,7 +988,9 @@ impl Compiler {
                 unsigned: !Target::default().char_is_signed }.with_const()),
             Some(bytes_len));
         self.declare_object(CheckedDecl {
+            runtime_bounds: Box::default(),
             storage: StorageClass::Static,
+            is_inline: false,
             name: implicit_function_name_symbol(&function.name),
             ty: name_type.clone(),
             linkage: Linkage::Internal,
@@ -930,12 +998,23 @@ impl Compiler {
             initializer: Some(CheckedExpr {
                 ty: name_type, category: Category::LValue,
                 kind: CheckedExprKind::StringLiteral(function_bytes),
+                source_span:None, // synthetic compiler-owned __func__ name
             }),
             span: Default::default(),
         })?;
+        self.register_block_statics(&function.body)?;
         let (label_names, referenced_labels) = Self::native_goto_plan(&function.body)?;
+        // A declaration immediately preceding a definition need not be
+        // installed as an import with an obsolete no-prototype ABI.
+        let pending = self.pending_functions.remove(&function.name);
+        let label = if let Some(pending) = &pending {
+            if pending.ty.composite(&function.signature).is_none() {
+                return Err(format!("conflicting backend signature for '{}'", function.name));
+            }
+            Some(pending.link_name.as_str())
+        } else { None };
         self.flush_pending_imports()?;
-        let id = self.declare(&function.name, &function.signature, function.linkage, true, None)?;
+        let id = self.declare(&function.name, &function.signature, function.linkage, true, label)?;
         let mut ctx = self.module.make_context();
         ctx.func.signature = signature(&self.module, &function.signature)?;
         ctx.func.name = ir::UserFuncName::user(0, id.as_u32());
@@ -971,7 +1050,10 @@ impl Compiler {
                     .ok_or("missing hidden SysV sret parameter")?);
                 next += 1;
             }
-            for param in &function.params {
+            let CType::Function { params: source_abi_types, .. } = &function.signature else {
+                return Err("function signature expected".into());
+            };
+            for (param, abi_type) in function.params.iter().zip(source_abi_types) {
                 if is_aggregate(&param.ty) {
                     lower.bind_storage(&mut builder, &param.name, &param.ty)?;
                     let address = lower.object_address(&mut builder, &param.name)?;
@@ -997,6 +1079,11 @@ impl Compiler {
                 } else {
                     let value = *params.get(next)
                         .ok_or_else(|| format!("ABI parameter mismatch for '{}'", function.name))?;
+                    // An identifier-list definition receives default-promoted
+                    // ABI values but its local parameter keeps the declared type.
+                    let value = if abi_type.unqualified() != param.ty.unqualified() {
+                        Lower::convert(&mut builder, value, abi_type, &param.ty)?
+                    } else { value };
                     lower.bind(&mut builder, &param.name, &param.ty, Some(value))?;
                     next += 1;
                 }
@@ -1043,7 +1130,7 @@ impl Compiler {
             // checked at construction. Do not treat these as undeclared
             // user globals or weaken source-name completeness checks.
             if name.starts_with(".Lmini_c_compound_")
-                || name.starts_with(".Lmini_c_funcname_")
+                || mini_c_sema::is_private_block_static_symbol(name)
             { continue; }
             let resolved = checker.completed_global_type(name)
                 .ok_or_else(|| format!("missing semantic declaration for global '{name}'"))?;
@@ -1054,6 +1141,13 @@ impl Compiler {
     }
 
     pub fn finish(mut self) -> Result<Vec<u8>> {
+        for function in std::mem::take(&mut self.inline_candidates) {
+            if self.external_defining_declarations.contains(&function.name) {
+                self.define(function)?;
+            }
+            // Without an external definition, C99 permits using the external
+            // implementation rather than substituting this inline body.
+        }
         self.flush_pending_imports()?;
         for (name, data) in &self.data {
             if data.initialized.is_none() && !data.tentative { continue; }
@@ -1079,6 +1173,7 @@ impl Compiler {
             desc.set_align(alignment);
             if let Some((symbol, addend)) = &data.address_of {
                 if let Some(target) = self.data.get(symbol) {
+                    if target.thread_local { return Err("static relocation cannot name thread-local storage".into()); }
                     let gv = self.module.declare_data_in_data(target.id, &mut desc);
                     desc.write_data_addr(0, gv, *addend);
                 } else if let Some(target) = self.functions.get(symbol) {
@@ -1090,14 +1185,15 @@ impl Compiler {
                 } else {
                     return Err(format!("global initializer for '{name}' refers to unknown symbol '{symbol}'"));
                 }
-            } else if let Some(string) = data.string_address {
+            } else if let Some((string, addend)) = data.string_address {
                 let gv = self.module.declare_data_in_data(string, &mut desc);
-                desc.write_data_addr(0, gv, 0);
+                desc.write_data_addr(0, gv, addend);
             }
             for (offset, target) in &data.aggregate_relocations {
                 match target {
                     RelocationTarget::Object(symbol, addend) => {
                         if let Some(target) = self.data.get(symbol) {
+                    if target.thread_local { return Err("static relocation cannot name thread-local storage".into()); }
                             let gv = self.module.declare_data_in_data(target.id, &mut desc);
                             desc.write_data_addr(*offset, gv, *addend);
                         } else if let Some(target) = self.functions.get(symbol) {
@@ -1110,9 +1206,9 @@ impl Compiler {
                             return Err(format!("aggregate initializer for '{name}' refers to unknown symbol '{symbol}'"));
                         }
                     }
-                    RelocationTarget::Literal(id) => {
+                    RelocationTarget::Literal(id, addend) => {
                         let gv = self.module.declare_data_in_data(*id, &mut desc);
-                        desc.write_data_addr(*offset, gv, 0);
+                        desc.write_data_addr(*offset, gv, *addend);
                     }
                 }
             }
@@ -1124,7 +1220,10 @@ impl Compiler {
             let text = product.object.section_id(StandardSection::Text);
             for thunk in self.vararg_thunks {
                 let wrapper = product.function_symbol(thunk.wrapper);
-                let destination = product.function_symbol(thunk.target);
+                let destination = match thunk.target {
+                    SysvThunkTarget::Direct(id) => Some(product.function_symbol(id)),
+                    _ => None,
+                };
                 // x86-64: xor eax,eax (0) or mov al,imm8 (1..8), then
                 // jmp rel32. Both prologues take two bytes; preserve GP/XMM
                 // arguments, stack argument area, return address and alignment.
@@ -1137,10 +1236,24 @@ impl Compiler {
                 } else {
                     [0xb0, thunk.sse_count] // mov al, imm8
                 };
-                let start = product.object.add_symbol_data(
-                    wrapper, text, &[prologue[0], prologue[1], 0xe9, 0, 0, 0, 0], 16
-                );
-                product.object.add_relocation(text, Relocation {
+                let mut bytes = prologue.to_vec();
+                match thunk.target {
+                    SysvThunkTarget::Direct(_) => bytes.extend_from_slice(&[0xe9, 0, 0, 0, 0]),
+                    SysvThunkTarget::IndirectRegister(index) => {
+                        // SysV integer argument registers: RDI, RSI, RDX, RCX, R8, R9.
+                        let code = [7, 6, 2, 1, 0, 1][usize::from(index)];
+                        if index >= 4 { bytes.push(0x41); }
+                        bytes.extend_from_slice(&[0xff, 0xe0 | code]);
+                    }
+                    SysvThunkTarget::IndirectStack(offset) => {
+                        // jmp [rsp+disp32]; preserve every actual argument.
+                        bytes.extend_from_slice(&[0xff, 0xa4, 0x24]);
+                        bytes.extend_from_slice(&offset.to_le_bytes());
+                    }
+                }
+                let start = product.object.add_symbol_data(wrapper, text, &bytes, 16);
+                if let Some(destination) = destination {
+                    product.object.add_relocation(text, Relocation {
                     offset: start + 3,
                     symbol: destination,
                     addend: -4,
@@ -1149,7 +1262,8 @@ impl Compiler {
                         encoding: RelocationEncoding::X86Branch,
                         size: 32,
                     },
-                }).map_err(|e| format!("SysV varargs thunk relocation: {e}"))?;
+                    }).map_err(|e| format!("SysV varargs thunk relocation: {e}"))?;
+                }
             }
         }
         product.emit().map_err(|e| e.to_string())
@@ -1186,6 +1300,7 @@ pub fn compile_source_diagnostic(source: &str) -> std::result::Result<Vec<u8>, C
         let checked = checker.check_item(item).map_err(CompileError::Diagnostic)?;
         compiler.add(checked).map_err(CompileError::Backend)?;
     }
+    checker.finish_translation_unit().map_err(CompileError::Diagnostic)?;
     compiler.complete_file_object_types(&checker).map_err(CompileError::Backend)?;
     compiler.finish().map_err(CompileError::Backend)
 }
@@ -1232,7 +1347,7 @@ impl Lower<'_> {
         match ty.unqualified() {
             CType::Struct { align, .. } | CType::Union { align, .. } =>
                 u8::try_from(align.trailing_zeros()).unwrap_or(3),
-            CType::Array(element, _) => Self::alignment(element),
+            CType::Array(element, _) | CType::VariableArray(element, _) => Self::alignment(element),
             CType::Integer { rank: IntRank::Bool | IntRank::Char, .. } => 0,
             CType::Integer { rank: IntRank::Short, .. } => 1,
             CType::Integer { rank: IntRank::Int, .. } => 2,
@@ -1559,7 +1674,10 @@ impl Lower<'_> {
         }
         let data = self.data.get(name).ok_or_else(|| format!("unresolved variable '{name}'"))?;
         let gv = self.module.declare_data_in_func(data.id, b.func);
-        Ok(b.ins().symbol_value(types::I64, gv))
+        // ELF general-dynamic TLS computes this thread's address at the
+        // access site; a normal symbol_value would address the wrong object.
+        Ok(if data.thread_local { b.ins().tls_value(types::I64, gv) }
+            else { b.ins().symbol_value(types::I64, gv) })
     }
 
     /// Native type matching a checked C bit-field allocation unit.
@@ -1795,12 +1913,9 @@ impl Lower<'_> {
     /// Byte displacement shared by ordinary pointer arithmetic and pointer
     /// compound assignments. Both call sites evaluate their operands once.
     fn pointer_displacement(
-        b: &mut FunctionBuilder<'_>, raw_index: Value,
+        &mut self, b: &mut FunctionBuilder<'_>, raw_index: Value,
         offset_ty: &CType, element: &CType,
     ) -> Result<Value> {
-        let width = element.size_bytes(Target::default())
-            .ok_or("pointer arithmetic requires sized element")?;
-        let width = i64::try_from(width).map_err(|_| "pointer element too large")?;
         let index = if b.func.dfg.value_type(raw_index) == types::I64 {
             raw_index
         } else if matches!(offset_ty, CType::Integer { unsigned: true, .. }) {
@@ -1808,8 +1923,27 @@ impl Lower<'_> {
         } else {
             b.ins().sextend(types::I64, raw_index)
         };
-        let scale = b.ins().iconst(types::I64, width);
+        let scale = self.object_size(b, element)?;
         Ok(b.ins().imul(index, scale))
+    }
+
+    /// Materialize a fixed or declaration-time saved array stride.
+    fn object_size(&mut self, b: &mut FunctionBuilder<'_>, ty: &CType) -> Result<Value> {
+        if let Some(size) = ty.size_bytes(Target::default()) {
+            return Ok(b.ins().iconst(types::I64, size as i64));
+        }
+        let (element, count) = match ty.unqualified() {
+            CType::VariableArray(element, id) => {
+                let address = self.object_address(b, &mini_c_sema::vla_bound_name(*id))?;
+                let count = b.ins().load(types::I64, ir::MemFlagsData::new(), address, 0);
+                (element, count)
+            }
+            CType::Array(element, Some(count)) =>
+                (element, b.ins().iconst(types::I64, *count as i64)),
+            _ => return Err("pointer arithmetic requires sized element".into()),
+        };
+        let stride = self.object_size(b, element)?;
+        Ok(b.ins().imul(count, stride))
     }
 
     fn pointer_offset(
@@ -1821,7 +1955,7 @@ impl Lower<'_> {
         };
         let base = self.expression(b, pointer)?;
         let raw_index = self.integer_value(b, offset)?;
-        let displacement = Self::pointer_displacement(
+        let displacement = self.pointer_displacement(
             b, raw_index, &offset.ty, element.as_ref())?;
         Ok(match op {
             BinOp::Add => b.ins().iadd(base, displacement),
@@ -1861,22 +1995,15 @@ impl Lower<'_> {
                 Err("braced initializer cannot be evaluated as an expression".into()),
             CheckedExprKind::Literal(n) => Ok(b.ins().iconst(scalar_type(&expr.ty)?, *n as i64)),
             CheckedExprKind::FloatLiteral(text) => {
-                // Keep rounding at the declared C rank; fail closed on C99
-                // hexadecimal forms until a correctly rounded parser exists.
-                if text.starts_with("0x") || text.starts_with("0X") {
-                    return Err("hexadecimal floating-point literal lowering is unsupported".into());
-                }
+                // Reuse the checked frontend's direct target-rank literal conversion.
                 match expr.ty.unqualified() {
                     CType::Floating(FloatRank::Float) => {
-                        let digits = text.trim_end_matches(['f', 'F']);
-                        let value = digits.parse::<f32>()
-                            .map_err(|e| format!("invalid binary32 literal '{text}': {e}"))?;
-                        Ok(b.ins().f32const(ir::immediates::Ieee32::with_bits(value.to_bits())))
+                        let bits = mini_c_sema::float_literal::binary32_bits(text)?;
+                        Ok(b.ins().f32const(ir::immediates::Ieee32::with_bits(bits)))
                     }
                     CType::Floating(FloatRank::Double) => {
-                        let value = text.parse::<f64>()
-                            .map_err(|e| format!("invalid binary64 literal '{text}': {e}"))?;
-                        Ok(b.ins().f64const(ir::immediates::Ieee64::with_bits(value.to_bits())))
+                        let bits = mini_c_sema::float_literal::binary64_bits(text)?;
+                        Ok(b.ins().f64const(ir::immediates::Ieee64::with_bits(bits)))
                     }
                     _ => Err("unsupported extended floating-point literal ABI".into()),
                 }
@@ -1930,6 +2057,18 @@ impl Lower<'_> {
                 if ty.bits()!=u32::from(*bits) {return Err("invalid byte-swap width".into());}
                 Ok(b.ins().bswap(value))
             }
+            CheckedExprKind::BuiltinBitCount(kind,inner) => {
+                use mini_c_sema::builtins::BitCountKind::*;
+                let value=self.integer_value(b,inner)?;
+                let ty=b.func.dfg.value_type(value);
+                if !matches!(ty,types::I32|types::I64) {return Err("unsupported bit count width".into());}
+                let count=match kind {
+                    LeadingZero=>b.ins().clz(value),
+                    TrailingZero=>b.ins().ctz(value),
+                    Population=>b.ins().popcnt(value),
+                };
+                Ok(if ty==types::I64 {b.ins().ireduce(types::I32,count)} else {count})
+            }
             CheckedExprKind::BuiltinCtz(inner) => {
                 // GCC defines __builtin_ctz(0) as undefined behavior. The
                 // source must guard zero; CLIF ctz is permitted to produce
@@ -1945,7 +2084,7 @@ impl Lower<'_> {
             }
             CheckedExprKind::Unary(op, inner) => {
                 if *op == UnOp::Address {
-                    if let (CType::Function { .. }, CheckedExprKind::Name(name)) =
+                    if let (CType::Function { .. } | CType::VariadicFunction { .. } | CType::UnprototypedFunction { .. }, CheckedExprKind::Name(name)) =
                         (&inner.ty, &inner.kind)
                     {
                         let id = self.functions.get(name)
@@ -1959,6 +2098,14 @@ impl Lower<'_> {
                 if *op == UnOp::Deref {
                     return self.expression(b, inner);
                 }
+                // All scalar truth conversions (including pointers and NaNs)
+                // use the same path as if/while and short-circuit operators.
+                if *op == UnOp::Not {
+                    let truth = self.condition(b, inner)?;
+                    let zero = b.ins().iconst(types::I32, 0);
+                    let one = b.ins().iconst(types::I32, 1);
+                    return Ok(b.ins().select(truth, zero, one));
+                }
                 let floating = matches!(inner.ty.unqualified(), CType::Floating(_));
                 let val = if floating {
                     self.expression(b, inner)?
@@ -1970,22 +2117,7 @@ impl Lower<'_> {
                     UnOp::Neg => Ok(if floating { b.ins().fneg(val) } else { b.ins().ineg(val) }),
                     UnOp::BitNot if !floating => Ok(b.ins().bnot(val)),
                     UnOp::BitNot => Err("bitwise negation requires integer".into()),
-                    UnOp::Not => {
-                        let ty = b.func.dfg.value_type(val);
-                        let cond = if floating {
-                            let zero = if ty == types::F32 {
-                                b.ins().f32const(ir::immediates::Ieee32::with_bits(0))
-                            } else {
-                                b.ins().f64const(ir::immediates::Ieee64::with_bits(0))
-                            };
-                            b.ins().fcmp(FloatCC::Equal, val, zero)
-                        } else {
-                            let zero = b.ins().iconst(ty, 0);
-                            b.ins().icmp(IntCC::Equal, val, zero)
-                        };
-                        Ok(Self::boolean(b, cond))
-                    }
-                    UnOp::Address | UnOp::Deref => unreachable!(),
+                    UnOp::Address | UnOp::Deref | UnOp::Not => unreachable!(),
                 }
             }
             CheckedExprKind::Conditional(condition, yes, no) => {
@@ -2049,11 +2181,9 @@ impl Lower<'_> {
                         ir::MemFlagsData::new(), address, 0)
                 };
                 let stored = if let CType::Pointer(element) = computation_ty {
-                    let width = element.size_bytes(Target::default())
-                        .ok_or("increment/decrement requires complete pointer element")?;
-                    let width = i64::try_from(width)
-                        .map_err(|_| "pointer element exceeds supported offset")?;
-                    b.ins().iadd_imm_s(old, if *increment { width } else { -width })
+                    let width = self.object_size(b, element)?;
+                    if *increment { b.ins().iadd(old, width) }
+                    else { b.ins().isub(old, width) }
                 } else {
                     let promoted = Self::convert(b, old, &target.ty, computation_ty)?;
                     let floating = matches!(computation_ty.unqualified(), CType::Floating(_));
@@ -2098,7 +2228,7 @@ impl Lower<'_> {
                     // The lvalue address above and right expression below
                     // are each computed exactly once.
                     let offset = self.integer_value(b, rhs)?;
-                    let displacement = Self::pointer_displacement(
+                    let displacement = self.pointer_displacement(
                         b, offset, &rhs.ty, element.as_ref())?;
                     let result = match op {
                         BinOp::Add => b.ins().iadd(old, displacement),
@@ -2169,17 +2299,13 @@ impl Lower<'_> {
                         // The checker establishes compatible complete object
                         // pointees. Cranelift addresses are byte offsets;
                         // pointer difference is a signed element count.
-                        let width = element.size_bytes(Target::default())
-                            .ok_or("native ptrdiff requires a complete object type")?;
-                        let width = i64::try_from(width)
-                            .map_err(|_| "native ptrdiff element size exceeds i64")?;
                         let left = self.expression(b, lhs)?;
                         let right = self.expression(b, rhs)?;
                         let bytes = b.ins().isub(left, right);
-                        return Ok(if width == 1 {
+                        return Ok(if element.size_bytes(Target::default()) == Some(1) {
                             bytes
                         } else {
-                            let scale = b.ins().iconst(types::I64, width);
+                            let scale = self.object_size(b, element)?;
                             b.ins().sdiv(bytes, scale)
                         });
                     }
@@ -2245,25 +2371,19 @@ impl Lower<'_> {
                 // the count of used vector argument registers, preserving
                 // GP, SSE and outgoing stack arguments before jumping to libc.
                 let variadic = match &callee.ty {
-                    CType::VariadicFunction { .. } => true,
+                    CType::VariadicFunction { .. } | CType::UnprototypedFunction { .. } => true,
                     CType::Pointer(inner) =>
-                        matches!(inner.as_ref(), CType::VariadicFunction { .. }),
+                        matches!(inner.as_ref(), CType::VariadicFunction { .. } | CType::UnprototypedFunction { .. }),
                     _ => false,
                 };
-                if variadic && !matches!(
-                    (&callee.kind, &callee.ty),
-                    (CheckedExprKind::Name(_), CType::VariadicFunction { .. })
-                ) {
-                    return Err("indirect SysV variadic calls are unsupported".into());
-                }
                 let function_ty = match callee.ty.unqualified() {
-                    CType::Function { .. } | CType::VariadicFunction { .. } => callee.ty.unqualified(),
+                    CType::Function { .. } | CType::VariadicFunction { .. } | CType::UnprototypedFunction { .. } => callee.ty.unqualified(),
                     CType::Pointer(inner) if matches!(inner.unqualified(),
-                        CType::Function { .. } | CType::VariadicFunction { .. }) => inner.unqualified(),
+                        CType::Function { .. } | CType::VariadicFunction { .. } | CType::UnprototypedFunction { .. }) => inner.unqualified(),
                     _ => return Err("call target is not a function".into()),
                 };
                 let result_ty = match function_ty {
-                    CType::Function { result, .. } | CType::VariadicFunction { result, .. } =>
+                    CType::Function { result, .. } | CType::VariadicFunction { result, .. } | CType::UnprototypedFunction { result } =>
                         result.as_ref(),
                     _ => unreachable!(),
                 };
@@ -2317,23 +2437,45 @@ impl Lower<'_> {
                         return Err("internal SysV aggregate argument count mismatch".into());
                     }
                 }
-                let inst = if let (CheckedExprKind::Name(name),
-                    CType::VariadicFunction { result, .. }) = (&callee.kind, &callee.ty)
-                {
-                    let target = self.functions.get(name)
-                        .map(|known| known.id)
-                        .ok_or_else(|| format!("missing variadic function declaration for '{name}'"))?;
+                let inst = if variadic {
+                    if is_aggregate(result_ty) {
+                        return Err("unsupported aggregate result in SysV variadic or non-prototype call".into());
+                    }
                     let mut sig = self.module.make_signature();
                     let mut sse_count = 0u8;
+                    let mut gp_count = 0u8;
+                    let mut stack_slots = 0i32;
                     for arg in args {
                         let ty = scalar_type(&arg.ty)?;
                         if ty == types::F32 || ty == types::F64 {
-                            sse_count = sse_count.saturating_add(1).min(8);
-                        }
+                            if sse_count == 8 { stack_slots += 1; }
+                            else { sse_count += 1; }
+                        } else if gp_count == 6 { stack_slots += 1; }
+                        else { gp_count += 1; }
                         sig.params.push(AbiParam::new(ty));
                     }
-                    if result.unqualified() != &CType::Void {
-                        sig.returns.push(AbiParam::new(scalar_type(result)?));
+                    let target = if let (CheckedExprKind::Name(name),
+                        CType::VariadicFunction { .. } | CType::UnprototypedFunction { .. }) = (&callee.kind, &callee.ty)
+                    {
+                        SysvThunkTarget::Direct(self.functions.get(name)
+                            .map(|known| known.id)
+                            .ok_or_else(|| format!("missing variadic function declaration for '{name}'"))?)
+                    } else {
+                        // Append the target pointer after every actual C argument.
+                        // It occupies the next free GP register or a new stack
+                        // slot, never shifting the real arguments. Tail-jumping
+                        // leaves the caller responsible for all stack cleanup.
+                        let address = self.expression(b, callee)?;
+                        sig.params.push(AbiParam::new(types::I64));
+                        values.push(address);
+                        if gp_count < 6 { SysvThunkTarget::IndirectRegister(gp_count) }
+                        else {
+                            SysvThunkTarget::IndirectStack(stack_slots.checked_mul(8)
+                                .and_then(|n| n.checked_add(8)).ok_or("too many SysV stack arguments")?)
+                        }
+                    };
+                    if result_ty.unqualified() != &CType::Void {
+                        sig.returns.push(AbiParam::new(scalar_type(result_ty)?));
                     }
                     let wrapper_name = format!("__mini_c_sysv_gpvar_{}", self.vararg_thunks.len());
                     let wrapper = self.module.declare_function(
@@ -2579,11 +2721,16 @@ impl Lower<'_> {
                 .any(|name| self.referenced_labels.contains(*name));
             if !live && !referenced {
                 match tail {
-                    CheckedStmt::Decl(CheckedDecl { name, ty, storage, .. }) => {
-                        if !matches!(*storage, StorageClass::Default | StorageClass::Register) {
+                    CheckedStmt::Decl(CheckedDecl { name, ty, storage, runtime_bounds, .. }) => {
+                        if !matches!(*storage, StorageClass::Default | StorageClass::Register | StorageClass::Static) {
                             return Err(format!("M2.5 does not emit storage-class local '{name}'"));
                         }
-                        self.bind_storage(b, name, ty)?;
+                        for (id, bound) in runtime_bounds {
+                            self.bind_storage(b, &mini_c_sema::vla_bound_name(*id), &bound.ty)?;
+                        }
+                        if *storage != StorageClass::Static {
+                            self.bind_storage(b, name, ty)?;
+                        }
                     }
                     CheckedStmt::Block(inner) if self.contains_referenced_label(tail)
                         || self.contains_active_switch_case(tail) =>
@@ -2654,10 +2801,20 @@ impl Lower<'_> {
                 b.switch_to_block(target);
                 self.statement(b, body)
             },
-            CheckedStmt::Decl(CheckedDecl { name, ty, storage, initializer, .. }) => {
-                if !matches!(*storage, StorageClass::Default | StorageClass::Register) {
+            CheckedStmt::Decl(CheckedDecl { name, ty, storage, initializer, runtime_bounds, .. }) => {
+                if !matches!(*storage, StorageClass::Default | StorageClass::Register | StorageClass::Static) {
                     return Err(format!("M2.5 does not emit storage-class local '{name}'"));
                 }
+                if ty.is_variable_array() {
+                    return Err("automatic VLA storage requires dynamic stack allocation".into());
+                }
+                for (id, bound) in runtime_bounds {
+                    let value = self.expression(b, bound)?;
+                    self.bind(b, &mini_c_sema::vla_bound_name(*id), &bound.ty, Some(value))?;
+                }
+                // Static storage was initialized in the object file, not
+                // at the declaration's runtime control-flow position.
+                if *storage == StorageClass::Static { return Ok(true); }
                 self.bind(b, name, ty, None)?;
                 if let Some(initializer) = initializer {
                     let address = self.object_address(b, name)?;
@@ -2672,6 +2829,9 @@ impl Lower<'_> {
                 if let Some(expr) = expr { self.expression(b, expr)?; }
                 Ok(true)
             }
+            CheckedStmt::MustTailReturn(_) => Err(
+                "musttail requires a backend with guaranteed physical tail transfer; the Cranelift reference emitter does not prove this ABI contract".into()
+            ),
             CheckedStmt::Return(value) => {
                 if let Some(expr) = value {
                     let v = self.expression(b, expr)?;
@@ -2959,17 +3119,38 @@ mod tests {
     }
 
     #[test]
-    fn indirect_sysv_variadic_call_fails_closed() {
+    fn indirect_sysv_variadic_call_emits_tail_thunk() {
         let source = concat!(
             "extern int printf(const char *, ...); ",
             "int main(void) { int (*p)(const char *, ...) = printf; ",
             "return p(\"%s\", \"word\"); }"
         );
-        let err = compile_source(source).unwrap_err();
-        // Until function-designator decay is supported in all initializer
-        // contexts, the front-end may reject the function-pointer assignment.
-        assert!(err.contains("indirect SysV variadic")
-                || err.contains("unresolved variable"), "{err}");
+        let bytes = compile_source(source).expect("indirect SysV variadic call");
+        assert!(bytes.windows(4).any(|w| w == [0x31, 0xc0, 0xff, 0xe2]),
+            "expected xor eax,eax; jmp rdx with target after two GP arguments");
+    }
+
+    #[test]
+    fn c99_inline_external_definition_depends_on_all_file_declarations() {
+        use object::{Object, ObjectSymbol};
+        for (source, defined) in [
+            ("inline int f(void){return 1;} int g(void){return f();}", false),
+            ("inline int f(void); inline int f(void){return 1;} int g(void){return f();}", false),
+            ("extern inline int f(void){return 1;}", true),
+            ("int f(void); inline int f(void){return 1;}", true),
+            ("inline int f(void){return 1;} extern inline int f(void);", true),
+            ("inline int f(void){return 1;} int g(void){return f();} int f(void);", true),
+        ] {
+            let bytes = compile_source(source).unwrap_or_else(|e| panic!("{source}: {e}"));
+            let elf = object::File::parse(bytes.as_slice()).unwrap();
+            let symbol = elf.symbols().find(|s| s.name().ok() == Some("f")).expect("f symbol");
+            assert_eq!(!symbol.is_undefined(), defined, "{source}");
+            if defined { assert!(symbol.is_global(), "{source}"); }
+        }
+        let bytes = compile_source("static inline int f(void){return 1;} int g(void){return f();}").unwrap();
+        let elf = object::File::parse(bytes.as_slice()).unwrap();
+        let f = elf.symbols().find(|s| s.name().ok() == Some("f")).unwrap();
+        assert!(!f.is_undefined() && !f.is_global());
     }
 
     #[test]
@@ -3009,16 +3190,17 @@ mod tests {
     }
 
     #[test]
-    fn variadic_calls_fail_with_explicit_sysv_abi_diagnostic() {
-        // GP-class direct variadic calls are supported. Indirect calls must
-        // still fail explicitly rather than lowering with a wrong ABI.
+    fn scalar_variadic_calls_supported_and_aggregate_abi_fails_closed() {
         assert!(compile_source(
             "extern int printf(const char *, ...); int main(void) { return printf(\"%s\", \"hi\"); }"
         ).is_ok());
+        assert!(compile_source(
+            "int invoke(int (*callback)(const char *, ...)) { return callback(\"%s\", \"hi\"); }"
+        ).is_ok());
         let error = compile_source(
-            "int main(void) { int (*callback)(const char *, ...) = 0; return callback(\"%s\", \"hi\"); }"
+            "struct S {int x;}; extern int f(struct S, ...); int g(void) {struct S s={1}; return f(s,2);}"
         ).unwrap_err();
-        assert!(error.contains("indirect SysV variadic"), "{error}");
+        assert!(error.contains("unsupported SysV aggregate-by-value ABI in variadic call"), "{error}");
         assert!(compile_source(
             "extern int puts(const char *); int main(void) { return puts(\"hello\"); }"
         ).is_ok());
@@ -3524,7 +3706,8 @@ mod tests {
             assert_eq!(&object[..4], b"\x7fELF");
         }
         assert!(compile_source("long double f(void) { return 1.0L; }").is_err());
-        assert!(compile_source("double f(void) { return 0x1.8p+1; }").is_err());
+        let object = compile_source("double f(void) { return 0x1.8p+1; }").unwrap();
+        assert_eq!(&object[..4], b"\x7fELF");
     }
 
     #[test]
@@ -3667,4 +3850,16 @@ mod tests {
         }
     }
 
+}
+
+#[cfg(test)]
+#[test]
+fn static_compound_pointer_arithmetic_materializes_backing_objects() {
+    for source in [
+        "int *p=(int[]){1,2,3}+1; int main(void){return *p!=2;}",
+        "struct S{int x;}; int *p=&((struct S[]){{1},{2}})[1].x; int main(void){return *p!=2;}",
+        "int *p[2]={(int[]){1,2}+1,(int[]){3,4}+1}; int main(void){return *p[0]!=2||*p[1]!=4;}",
+    ] {
+        compile_source(source).unwrap_or_else(|error| panic!("{source}: {error}"));
+    }
 }

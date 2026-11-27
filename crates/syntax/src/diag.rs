@@ -136,6 +136,8 @@ pub struct WarningPolicy {
     pub warnings_as_errors: bool,
     /// Ordered per-group overrides. The last matching flag wins.
     pub overrides: Vec<(String, bool)>,
+    /// Per-warning overrides for severity promotion, last occurrence wins.
+    pub error_overrides: Vec<(String, bool)>,
 }
 
 impl WarningPolicy {
@@ -149,6 +151,23 @@ impl WarningPolicy {
             "-Wno-extra" => self.wextra = false,
             "-Werror" => self.warnings_as_errors = true,
             "-Wno-error" => self.warnings_as_errors = false,
+            _ if flag.starts_with("-Werror=") => {
+                let group = &flag["-Werror=".len()..];
+                if !Self::known_group(group) {
+                    return Err(format!("unsupported warning option: {flag}"));
+                }
+                // GCC's -Werror=group also enables that warning group.
+                self.overrides.push((group.to_owned(), true));
+                self.error_overrides.push((group.to_owned(), true));
+            }
+            _ if flag.starts_with("-Wno-error=") => {
+                let group = &flag["-Wno-error=".len()..];
+                if !Self::known_group(group) {
+                    return Err(format!("unsupported warning option: {flag}"));
+                }
+                // Suppress promotion, not the warning itself.
+                self.error_overrides.push((group.to_owned(), false));
+            }
             _ => {
                 if let Some(name) = flag.strip_prefix("-Wno-") {
                     if !Self::known_group(name) {
@@ -171,7 +190,7 @@ impl WarningPolicy {
     pub fn known_group(group: &str) -> bool {
         // Only claim groups with working diagnostic producers. Other
         // groups must not silently turn into no-op compatibility flags.
-        matches!(group, "shadow" | "unused-variable" | "unused-parameter")
+        matches!(group, "shadow" | "unused-variable" | "unused-parameter" | "unused-but-set-variable" | "conversion" | "sign-conversion" | "sign-compare")
     }
 
     /// Default enablement is conservative until Mini-C has a tested
@@ -180,7 +199,7 @@ impl WarningPolicy {
         // GCC keeps -Wshadow opt-in. Local-variable and parameter warnings
         // follow -Wall and -Wextra respectively.
         let default = match group {
-            "unused-variable" => self.wall,
+            "unused-variable" | "unused-but-set-variable" | "sign-compare" => self.wall,
             "unused-parameter" => self.wextra,
             _ => false,
         };
@@ -193,7 +212,10 @@ impl WarningPolicy {
             DiagnosticSeverity::Warning => {
                 let group = report.warning_group?;
                 if !self.enabled(group) { return None; }
-                Some(if self.warnings_as_errors {
+                let promoted = self.error_overrides.iter().rev()
+                    .find(|(name, _)| name == group)
+                    .map_or(self.warnings_as_errors, |(_, value)| *value);
+                Some(if promoted {
                     DiagnosticSeverity::Error
                 } else {
                     DiagnosticSeverity::Warning

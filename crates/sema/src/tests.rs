@@ -1411,7 +1411,7 @@ fn c99_completed_tagged_aggregate_members_have_full_layout_and_type_identity() {
         "structure member has incomplete type");
     reject("struct Self{struct Self member;};", "structure member has incomplete type");
     reject("struct Incomplete; struct Holder{struct Incomplete items[2];};",
-        "structure member has incomplete type");
+        "array element requires a complete object type");
     reject("struct Node{int x;};struct Holder{struct Node node;struct Node node;};",
         "duplicate structure member");
 }
@@ -1789,6 +1789,7 @@ fn c99_bitfield_integer_promotions_follow_value_width_not_base_rank() {
         let member = CheckedExpr {
             ty, category: Category::LValue,
             kind: CheckedExprKind::BitFieldMember(Box::new(base.clone()), 0, 0, width),
+            source_span: None,
         };
         assert_eq!(member.integer_promotion_type(lp64), expected,
             "promotion of bit-field lvalue of width {width}");
@@ -1930,7 +1931,7 @@ fn c99_bitfield_positional_sparse_and_nested_object_initializers_are_checked() {
 fn inline_struct_member_errors() {
     reject("struct X { int a; int a; } x;", "duplicate structure member");
     reject("struct X { void a; } x;", "incomplete");
-    reject("struct X { int a[]; } x;", "incomplete");
+    reject("struct X { int a[]; } x;", "invalid flexible array member");
     reject("int main(void) { int n; return n.foo; }", "requires a struct");
     reject("int main(void) { struct { int a; } s; return s.missing; }",
         "unknown struct member");
@@ -2060,7 +2061,7 @@ fn function_designators_decay_in_initializer_and_assignment_contexts() {
            int main(void) { int (*local)(int) = identity; \
                local = identity; return local != 0; }").unwrap();
     reject("int identity(int x) { return x; } int *wrong = identity;",
-        "pointer initializer requires");
+        "incompatible assignment");
 }
 
 
@@ -3262,7 +3263,8 @@ fn s21_gcc_ctz_builtin_rejects_malformed_uses() {
     reject("int f(void) { return __builtin_ctz(); }", "expects exactly one argument");
     reject("int f(void) { return __builtin_ctz(1, 2); }", "expects exactly one argument");
     reject("int f(void) { int x=7; return __builtin_ctz(&x); }", "requires an integer argument");
-    reject("int f(void) { return __builtin_ctzll(1); }", "unsupported compiler builtin");
+    reject("int f(void) { return __builtin_ctzll(); }", "expects exactly one argument");
+    reject("int f(void) { return __builtin_clz_fake(1); }", "unsupported compiler builtin");
     reject("int __builtin_ctz; int f(void) { return __builtin_ctz(8); }", "not a function");
     // A builtin evaluation is not a C integer constant expression (even if
     // the backend might fold its bits); don't add GNU constant-folding here.
@@ -4539,6 +4541,160 @@ fn asm3_p03_gnu_extended_template_is_instruction_opaque_in_source_checker() {
     }
 }
 
+#[test]
+fn c99_flexible_array_member_constraints_and_access() {
+    for source in [
+        "struct S{int n; int data[];}; int f(struct S *p){return p->data[1];}",
+        "struct S{char n; double data[];}; int f(void){return sizeof(struct S)==8;}",
+        "struct S{int n; int data[];}; struct S s={1};",
+        "struct S{int n; int data[];}; union U{struct S s; int n;}; union U u;",
+        "struct S{int n; int data[];}; struct T{struct S *p;};",
+    ] {
+        check(source).unwrap_or_else(|err| panic!("{source}: {err:?}"));
+    }
+    for source in [
+        "struct S{int data[];};",
+        "struct S{int data[]; int n;};",
+        "union U{int n; int data[];};",
+        "struct S{int n; int data[];}; struct T{struct S s;};",
+        "struct S{int n; int data[];}; struct S a[2];",
+        "struct S{int n; int data[];}; union U{struct S s; int n;}; struct T{union U u;};",
+        "struct S{int n; int data[];}; struct S s={1,{2}};",
+        "struct S{int n; int data[];}; struct S s={.data={2}};",
+    ] {
+        assert!(check(source).is_err(), "accepted invalid C99: {source}");
+    }
+}
+
+#[test]
+fn c99_composite_pointer_types_in_value_contexts() {
+    for source in [
+        "int f(int (*a)[], int (*b)[4]){a=b;return a==b;}",
+        "int f(int (*a)[], int (*b)[4]){b=a;return a!=b;}",
+        "int f(int c, int (*a)[], int (*b)[4]){return sizeof *(c?a:b)==4*sizeof(int);}",
+        "typedef int F(int (*)[]); typedef int G(int (*)[4]); int f(F *p,G *q){p=q;return p==q;}",
+    ] {
+        check(source).unwrap_or_else(|err| panic!("{source}: {err:?}"));
+    }
+    for source in [
+        "int f(int (*a)[3], int (*b)[4]){a=b;return 0;}",
+        "int f(int (*a)[3], int (*b)[4]){return a==b;}",
+        "int f(int c,int (*a)[3],int (*b)[4]){return (c?a:b)!=0;}",
+        "typedef int F(int (*)[3]); typedef int G(int (*)[4]); int f(F *p,G *q){p=q;return 0;}",
+    ] {
+        assert!(check(source).is_err(), "accepted incompatible C99 types: {source}");
+    }
+}
+
+#[test]
+fn c99_function_result_type_constraints() {
+    for source in [
+        "typedef int A[4]; A f(void);",
+        "typedef int A[4]; A f(void){for(;;){}}",
+        "typedef int A[4]; typedef A F(void);",
+        "typedef int F(void); F f(void);",
+        "typedef int F(void); F f(void){for(;;){}}",
+    ] {
+        assert!(check(source).is_err(), "accepted invalid function result: {source}");
+    }
+    for source in [
+        "typedef int A[4]; A *f(void);",
+        "typedef int F(void); F *f(void);",
+        "typedef int A[4]; A *f(void){return 0;}",
+        "typedef int F(void); F *f(void){return 0;}",
+    ] {
+        check(source).unwrap_or_else(|err| panic!("{source}: {err:?}"));
+    }
+}
+
+#[test]
+fn c99_restrict_requires_pointer_to_object_or_incomplete_type() {
+    for source in [
+        "typedef int F(void); F *restrict p;",
+        "typedef int (*P)(void); restrict P p;",
+        "typedef int F(int,...); F *restrict p;",
+        "typedef int (*P)(void); int f(void){return sizeof(restrict P);}",
+    ] {
+        reject(source, "restrict requires");
+    }
+    for source in [
+        "int f(void *restrict p){return p!=0;}",
+        "struct S; int f(struct S *restrict p){return p!=0;}",
+        "typedef int F(void); F **restrict p;",
+        "typedef int *P; int f(void){return sizeof(restrict P)==sizeof(P);}",
+    ] {
+        check(source).unwrap_or_else(|err| panic!("{source}: {err:?}"));
+    }
+}
+
+#[test]
+fn c99_nonprototype_function_declarations_and_promotions() {
+    for source in [
+        "int f(); int g(void){return f(1,2);}",
+        "int f(); int f(int x); int g(void){return f(1);}",
+        "int f(int x); int f(); int g(void){return f(1);}",
+        "int f(); int f(double x);",
+        "int f(); int f(void);",
+        "int f(); int g(void){int (*p)()=f;return p(1);}",
+    ] {
+        check(source).unwrap_or_else(|err| panic!("{source}: {err:?}"));
+    }
+    for source in [
+        "int f(); int f(char x);",
+        "int f(); int f(short x);",
+        "int f(); int f(float x);",
+        "int f(); int f(int x,...);",
+        "int f(void); int g(void){return f(1);}",
+        "int f(); int f(int x); int g(void){return f();}",
+    ] {
+        assert!(check(source).is_err(), "accepted incompatible declaration or call: {source}");
+    }
+    let items = check("int f(); int g(char a, float b){return f(a,b);}").unwrap();
+    let CheckedItem::Function(g) = &items[1] else { panic!("function") };
+    let CheckedStmt::Block(stmts) = &g.body else { panic!("block") };
+    let CheckedStmt::Return(Some(expr)) = &stmts[0] else { panic!("return") };
+    let CheckedExprKind::Call(_, args) = &expr.kind else { panic!("call") };
+    assert_eq!(args[0].ty, CType::int());
+    assert_eq!(args[1].ty, CType::Floating(mini_c_syntax::ast::FloatRank::Double));
+}
+
+#[test]
+fn c99_identifier_list_definitions_preserve_parameter_types_and_promoted_abi() {
+    let items = check("int f(a,b,c) float c; register char a; short b; {return sizeof(a)+sizeof(b)+sizeof(c);}").unwrap();
+    let CheckedItem::Function(f) = &items[0] else { panic!("function expected") };
+    let CType::Function { params, .. } = &f.signature else { panic!("ABI signature expected") };
+    assert_eq!(params, &vec![CType::int(), CType::int(), CType::Floating(mini_c_syntax::ast::FloatRank::Double)]);
+    assert_eq!(f.params[0].name, "a");
+    assert_eq!(f.params[1].name, "b");
+    assert_eq!(f.params[2].name, "c");
+    assert_eq!(f.params[0].ty.size_bytes(Target::default()), Some(1));
+    assert_eq!(f.params[1].ty.size_bytes(Target::default()), Some(2));
+    assert_eq!(f.params[2].ty.size_bytes(Target::default()), Some(4));
+    for source in [
+        "int f(int, double); int f(a,b) char a; float b; {return a;}",
+        "int f(a,b) char a; float b; {return a;} int f(int,double);",
+        "int f(); int f(a,b) int a,b; {return a+b;}",
+        "int f(a) int a; {return a;} int g(void){return f(1);}",
+        "int f(){return 0;} int f(void);",
+    ] {
+        check(source).unwrap_or_else(|err| panic!("{source}: {err:?}"));
+    }
+    for source in [
+        "int f(a,a) int a; {return a;}",
+        "int f(a,b) int a; {return a;}",
+        "int f(a) int a,b; {return a;}",
+        "int f(a) int a; int a; {return a;}",
+        "int f(a) int a=1; {return a;}",
+        "int f(a) static int a; {return a;}",
+        "int f(a);",
+        "int f(char); int f(a) char a; {return a;}",
+        "int f(a) char a; {return a;} int f(char);",
+        "int f(a) int a; {return a;} int f(void);",
+        "int f(int); int f(){return 0;}",
+    ] {
+        assert!(check(source).is_err(), "accepted invalid old-style definition: {source}");
+    }
+}
 
 #[test]
 fn gnu_member_alignment_checks_natural_target_layout() {
@@ -4571,4 +4727,261 @@ fn c11_atomic_pointer_objects_use_ordinary_pointer_semantics() {
         assert!(items.iter().any(CheckedItem::contains_atomic_type));
     }
     assert!(check("int *f(_Atomic(int*) *p){return *p*=2;}").is_err());
+}
+
+#[test]
+fn atomic_single_byte_aggregate_declarations_are_layout_checked() {
+    let items = check("typedef _Atomic struct { _Bool value; } Flag; extern _Bool test(volatile Flag *); int f(void){return sizeof(Flag);}").unwrap();
+    let CheckedItem::Typedef { ty, .. } = &items[0] else { panic!("typedef") };
+    assert!(ty.is_atomic() && ty.contains_atomic_aggregate());
+    assert_eq!(ty.size_bytes(Target::default()), Some(1));
+    assert_eq!(ty.align_bytes(Target::default()), Some(1));
+    for source in [
+        "typedef _Atomic struct { int value; } Flag;",
+        "typedef _Atomic struct { _Bool value; } Flag; Flag object;",
+        "typedef _Atomic struct { _Bool value; } Flag; int f(void){Flag object;return 0;}",
+        "typedef _Atomic struct { _Bool value; } Flag; int f(Flag *p){return p->value;}",
+        "typedef _Atomic struct { _Bool value; } Flag; extern _Bool test(volatile Flag *); int f(void){return test(0);}",
+    ] {
+        assert!(check(source).is_err(), "unsupported atomic aggregate admitted: {source}");
+    }
+}
+
+#[test]
+fn c99_inline_only_constraints_use_final_file_scope_declarations() {
+    for source in [
+        "inline int f(void){return 1;}",
+        "inline int f(void); inline int f(void){return 1;}",
+        "static int x; inline int f(void){return x;} extern inline int f(void);",
+        "static int x; int f(void); inline int f(void){return x;}",
+        "static int x; extern inline int f(void){return x;}",
+        "inline int f(void){static int x;return ++x;} int f(void);",
+        "inline int f(void){static const int x=1;return x;}",
+        "inline int f(void){static const int a[2]={1,2};return a[0];}",
+        "static int x; inline int f(int x){return x;}",
+        "static int x; static inline int f(void){return x;}",
+        "static inline int f(void);",
+        "extern int x; inline int f(void){return x;}",
+    ] {
+        check(source).unwrap_or_else(|e| panic!("{source}: {e:?}"));
+    }
+    for (source, expected) in [
+        ("inline int f(void);", "requires a definition"),
+        ("extern inline int f(void);", "requires a definition"),
+        ("int f(void); inline int f(void);", "requires a definition"),
+        ("static int x; inline int f(void){return x;}", "internal-linkage identifier"),
+        ("static const int x=1; inline int f(void){return x;}", "internal-linkage identifier"),
+        ("static int g(void){return 1;} inline int f(void){return g();}", "internal-linkage identifier"),
+        ("inline int f(void){static int x;return x;}", "modifiable static object"),
+        ("inline int f(void){static int x[2];return x[0];}", "modifiable static object"),
+        ("inline int f(void){static const int *p;return p==0;}", "modifiable static object"),
+    ] {
+        reject(source, expected);
+    }
+}
+
+#[test]
+fn inline_finalization_does_not_retain_rejected_items() {
+    let mut checker = Checker::new(Target::default()).unwrap();
+    let mut parser = Parser::new("inline int f(void){static int x; return missing;} int g(void){return 1;}");
+    assert!(checker.check_item_recovering(parser.next_item().unwrap().unwrap()).is_err());
+    checker.check_item_recovering(parser.next_item().unwrap().unwrap()).unwrap();
+    checker.finish_translation_unit().unwrap();
+}
+
+#[test]
+fn c99_runtime_sizeof_array_type_names() {
+    let items = check("unsigned long f(int n,int m){return sizeof(int[n][m]);}").unwrap();
+    let CheckedItem::Function(f) = &items[0] else {panic!("expected function")};
+    let CheckedStmt::Block(stmts) = &f.body else {panic!("expected block")};
+    let CheckedStmt::Return(Some(size)) = &stmts[0] else {panic!("expected return")};
+    assert!(matches!(size.kind, CheckedExprKind::Binary(BinOp::Mul, ..)));
+    assert_eq!(size.ty, CType::Integer { rank: IntRank::Long, unsigned: true });
+    assert!(const_eval::evaluate(size, Target::default()).is_err());
+    for source in [
+        "unsigned long f(int n){return sizeof(int[n++]);}",
+        "int next(void); unsigned long f(void){return sizeof(int[next()]);}",
+        "unsigned long f(int n){return sizeof(char[2][n][3]);}",
+        "typedef int Row[4]; unsigned long f(int n){return sizeof(Row[n]);}",
+    ] { check(source).unwrap_or_else(|e| panic!("{source}: {e:?}")); }
+    for (source, message) in [
+        ("int f(double n){return sizeof(int[n]);}", "integer expression"),
+        ("int f(void){return sizeof(int[0]);}", "positive"),
+        ("int f(void){return sizeof(int[-1]);}", "positive"),
+        ("int f(void){return sizeof(int[1/0]);}", "array bound requires"),
+        ("int f(int n){return sizeof(void[n]);}", "complete object type"),
+        ("int f(int n){return sizeof(int[n][]);}", "complete object type"),
+        ("struct S{int n;int a[];}; int f(int n){return sizeof(struct S[n]);}", "flexible array member"),
+        ("int n; int a[sizeof(int[n])];", "integer constant expression"),
+    ] { reject(source, message); }
+}
+
+#[test]
+fn gnu_bit_count_families_preserve_unsigned_rank_and_int_result() {
+    use crate::builtins::BitCountKind;
+    for (name,kind,rank) in [
+        ("__builtin_clz",BitCountKind::LeadingZero,IntRank::Int),
+        ("__builtin_clzl",BitCountKind::LeadingZero,IntRank::Long),
+        ("__builtin_clzll",BitCountKind::LeadingZero,IntRank::LongLong),
+        ("__builtin_ctzl",BitCountKind::TrailingZero,IntRank::Long),
+        ("__builtin_ctzll",BitCountKind::TrailingZero,IntRank::LongLong),
+        ("__builtin_popcount",BitCountKind::Population,IntRank::Int),
+        ("__builtin_popcountl",BitCountKind::Population,IntRank::Long),
+        ("__builtin_popcountll",BitCountKind::Population,IntRank::LongLong),
+    ] {
+        let items=check(&format!("int f(int x){{return {name}(x);}}")).unwrap();
+        let CheckedItem::Function(fun)=&items[0] else {panic!("function");};
+        let CheckedStmt::Block(stmts)=&fun.body else {panic!("body");};
+        let CheckedStmt::Return(Some(result))=&stmts[0] else {panic!("return");};
+        assert_eq!(result.ty,CType::int());
+        let CheckedExprKind::BuiltinBitCount(actual,arg)=&result.kind else {panic!("bit count");};
+        assert_eq!(*actual,kind);
+        assert_eq!(arg.ty,CType::Integer{rank,unsigned:true});
+        reject(&format!("int f(void){{return {name}();}}"),"expects exactly one argument");
+        reject(&format!("int f(int *p){{return {name}(p);}}"),"requires an integer argument");
+    }
+    check("int a=__builtin_clz(1); int b=__builtin_ctzll(8); int c=__builtin_popcount(0);").unwrap();
+    reject("int a=__builtin_clz(0);","zero operand");
+    reject("int a=__builtin_ctzll(0);","zero operand");
+}
+
+#[test]
+fn c99_local_vla_bound_capture_and_runtime_types() {
+    let items = check("unsigned long f(int n,int m){int a[n++][m]; n=9; m=10; return sizeof a + sizeof a[0];}").unwrap();
+    let CheckedItem::Function(f) = &items[0] else {panic!("function")};
+    let CheckedStmt::Block(stmts) = &f.body else {panic!("block")};
+    let CheckedStmt::Decl(a) = &stmts[0] else {panic!("declaration")};
+    assert!(a.ty.is_variable_array());
+    assert!(a.ty.is_variably_modified());
+    assert_eq!(a.runtime_bounds.len(), 2);
+    assert_ne!(a.runtime_bounds[0].0, a.runtime_bounds[1].0);
+    assert_eq!(a.ty.size_bytes(Target::default()), None);
+    let CheckedStmt::Return(Some(size)) = &stmts[3] else {panic!("return")};
+    assert!(const_eval::evaluate(size, Target::default()).is_err());
+
+    for source in [
+        "int f(int n){int a[n]; a[0]=3;return a[0];}",
+        "int f(int n){int a[2][n];a[1][0]=3;return a[1][0];}",
+        "long f(int n){int a[2][3];int (*p)[n]=a;return (p+1)-p;}",
+        "unsigned long f(int n){int a[2][3];int (*p)[n++]=a;return sizeof *p;}",
+        "int f(int n){int a[n];{int a[n+1];a[0]=1;}return sizeof a;}",
+    ] { check(source).unwrap_or_else(|e| panic!("{source}: {e:?}")); }
+    for (source, expected) in [
+        ("int n; int a[n];", "integer constant expression"),
+        ("int f(int n){static int a[n];return 0;}", "static storage"),
+        ("int f(int n){extern int a[n];return 0;}", "cannot have linkage"),
+        ("int f(int n){int a[n]={1};return 0;}", "cannot have an initializer"),
+        ("int f(int n){struct S {int a[n];};return 0;}", "array bound requires an integer constant expression"),
+        ("int f(int n){struct S {int (*a)[n];} s;return 0;}", "variably modified type"),
+        ("int f(int n){int a[n][];return 0;}", "complete object type"),
+    ] { reject(source, expected); }
+}
+
+#[test]
+fn c99_logical_not_decays_array_and_function_designators() {
+    let items = check("int a[3]; int g(void); int f(void){return !a + !g;}").unwrap();
+    let CheckedItem::Function(fun) = &items[2] else { panic!("function"); };
+    let CheckedStmt::Block(stmts) = &fun.body else { panic!("body"); };
+    let CheckedStmt::Return(Some(expr)) = &stmts[0] else { panic!("return"); };
+    let CheckedExprKind::Binary(_, left, right) = &expr.kind else { panic!("sum"); };
+    for operand in [left, right] {
+        let CheckedExprKind::Unary(UnOp::Not, arg) = &operand.kind else { panic!("not"); };
+        assert!(matches!(arg.ty, CType::Pointer(_)));
+        assert_eq!(operand.ty, CType::int());
+    }
+    reject("struct S{int x;}; int f(struct S s){return !s;}", "logical not requires scalar operand");
+}
+
+#[test]
+fn c99_address_of_dereference_cancels_without_evaluating_indirection() {
+    for source in [
+        "void *f(void *p){return &*p;}",
+        "void *f(void){return &*(void*)0;}",
+        "struct S; struct S *f(struct S *p){return &*p;}",
+        "int *f(int *p){return &*p++;}",
+        "int g(void); int (*f(void))(void){return &*g;}",
+    ] {
+        check(source).unwrap_or_else(|err| panic!("{source}: {err:?}"));
+    }
+    let items = check("void *f(void *g(void)){return &*g();}").unwrap();
+    let CheckedItem::Function(fun) = &items[0] else { panic!("function"); };
+    let CheckedStmt::Block(stmts) = &fun.body else { panic!("body"); };
+    let CheckedStmt::Return(Some(expr)) = &stmts[0] else { panic!("return"); };
+    assert!(matches!(expr.kind, CheckedExprKind::Call(..)));
+    reject("int *f(int x){return &*x;}", "dereference requires a pointer");
+}
+
+#[test]
+fn c99_static_member_addresses_use_lexically_resolved_static_roots() {
+    for source in [
+        "struct S{int a,b;}; struct S s; int *p=&s.b;",
+        "struct S{int a[3];}; struct S s; int *p=s.a;",
+        "struct N{int x;}; struct S{int pad; struct N n;}; struct S s; int *p=&s.n.x;",
+        "int x; int *p=&*(&x);",
+        "struct S{int a,b;}; struct S s; int *p[2]={&s.a,&s.b};",
+        "int x; int f(void){static int *p=&x; return *p;}",
+    ] {
+        check(source).unwrap_or_else(|err| panic!("{source}: {err:?}"));
+    }
+    for source in [
+        "int x; int f(void){int x; static int *p=&x; return 0;}",
+        "struct S{int a,b;}; struct S s; int f(void){struct S s; static int *p=&s.b; return 0;}",
+        "struct S{int a,b;}; struct S s; struct S *q=&s; int *p=&q->b;",
+        "int x; int *q=&x; int *p=&*q;",
+        "struct S{int *p;}; struct S s; int *p=s.p;",
+    ] {
+        reject(source, "pointer initializer requires");
+    }
+}
+
+#[test]
+fn c99_static_pointer_offsets_share_target_layout() {
+    let items = check(concat!(
+        "int a[5]; int *p=a+2; int *q=&a[3]; int *end=a+5;",
+        "int *back=(a+4)-3; char *s=\"abc\"+1;",
+        "struct N{int x;}; struct N n[3]; int *member=&n[2].x;"
+    )).unwrap();
+    let mut offsets = Vec::new();
+    for item in &items {
+        let CheckedItem::Declaration(decl) = item else { continue; };
+        if let Some(init) = &decl.initializer {
+            let (_, offset) = const_eval::static_address(init, Target::default())
+                .expect("checked address decomposition");
+            offsets.push(offset);
+        }
+    }
+    assert_eq!(offsets, [8,12,20,4,1,8]);
+    for source in [
+        "int a[5]; int i; int *p=a+i;",
+        "int a[5]; int *q=a; int *p=q+1;",
+        "int a[5]; int *p=a+(1/0);",
+        "int a[5]; int f(void){int a[5]; static int *p=a+1;return 0;}",
+    ] {
+        reject(source, "pointer initializer requires");
+    }
+}
+
+#[test]
+fn c99_block_static_identity_and_storage_duration() {
+    let items = check("int f(void){static int a[3]; static int *p=a+1; {static int a; static int *q=&a; return *q+*p;}}").unwrap();
+    let CheckedItem::Function(fun) = &items[0] else { panic!("function"); };
+    let CheckedStmt::Block(stmts) = &fun.body else { panic!("body"); };
+    let CheckedStmt::Decl(a) = &stmts[0] else { panic!("array"); };
+    let CheckedStmt::Decl(p) = &stmts[1] else { panic!("pointer"); };
+    let CheckedStmt::Block(nested) = &stmts[2] else { panic!("nested"); };
+    let CheckedStmt::Decl(inner_a) = &nested[0] else { panic!("shadow"); };
+    let CheckedStmt::Decl(q) = &nested[1] else { panic!("pointer"); };
+    assert_eq!(a.linkage, Linkage::None);
+    assert_eq!(a.name, "a");
+    assert_ne!(a.asm_label, inner_a.asm_label);
+    for (object, pointer, expected) in [(a,p,4), (inner_a,q,0)] {
+        let (root, offset) = const_eval::static_address(pointer.initializer.as_ref().unwrap(), Target::default()).unwrap();
+        assert!(matches!(&root.kind, CheckedExprKind::Name(name) if Some(name) == object.asm_label.as_ref()));
+        assert_eq!(offset, expected);
+    }
+    check("void *f(void){static void *p=&p; return p;}").unwrap();
+    check("const char *f(void){static const char *p=__func__; return p;}").unwrap();
+    reject("int f(void){static int x; {int x; static int *p=&x; return 0;}}",
+        "pointer initializer requires");
+    reject("int f(int x){static int y=x; return y;}", "integer constant expression");
 }

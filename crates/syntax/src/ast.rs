@@ -8,6 +8,26 @@ pub enum StorageClass {
     Static,
     /// Block-scope or parameter automatic object; its address cannot be taken.
     Register,
+    /// File-scope thread storage, kept distinct from ordinary static storage.
+    ThreadLocal,
+    ExternThreadLocal,
+    StaticThreadLocal,
+}
+
+impl StorageClass {
+    /// True for declarations whose object identity is per-thread.
+    pub fn is_thread_local(self) -> bool {
+        matches!(self, Self::ThreadLocal | Self::ExternThreadLocal | Self::StaticThreadLocal)
+    }
+    /// Linkage specifier independent of the thread storage duration.
+    pub fn linkage_storage(self) -> Self {
+        match self {
+            Self::ThreadLocal => Self::Default,
+            Self::ExternThreadLocal => Self::Extern,
+            Self::StaticThreadLocal => Self::Static,
+            other => other,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -27,10 +47,13 @@ pub enum Item {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Function {
     pub storage: StorageClass,
+    pub is_inline: bool,
     pub name: Ident,
     /// Name token range in opt-in location-aware parser mode.
     pub name_span: Option<Span>,
     pub result: Type,
+    /// An identifier-list or empty-list definition, rather than a prototype.
+    pub old_style: bool,
     pub params: Vec<Decl>,
     pub body: Stmt,
     pub span: Span,
@@ -38,6 +61,7 @@ pub struct Function {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Decl {
     pub storage: StorageClass,
+    pub is_inline: bool,
     pub name: Ident,
     /// Name token range; `span` continues to cover the full declaration.
     pub name_span: Option<Span>,
@@ -111,6 +135,8 @@ pub enum Type {
         result: Box<Type>,
         params: Vec<Type>,
     },
+    /// C99 empty parameter list in a declaration: no prototype, not (void).
+    UnprototypedFunction { result: Box<Type> },
     VariadicFunction {
         result: Box<Type>,
         params: Vec<Type>,
@@ -153,6 +179,9 @@ pub enum Stmt {
         span: Span,
     },
     Return(Option<Expr>),
+    /// Explicit clang-compatible guaranteed sibling-tail return. Never
+    /// silently rewrite this into an ordinary C return during lowering.
+    MustTailReturn(Expr),
     If {
         cond: Expr,
         then: Box<Stmt>,

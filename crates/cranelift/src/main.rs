@@ -90,6 +90,10 @@ fn collect_semantic_warnings(
     if !policy.enabled("shadow")
         && !policy.enabled("unused-variable")
         && !policy.enabled("unused-parameter")
+        && !policy.enabled("unused-but-set-variable")
+        && !policy.enabled("conversion")
+        && !policy.enabled("sign-conversion")
+        && !policy.enabled("sign-compare")
     {
         return Ok(Vec::new());
     }
@@ -99,6 +103,7 @@ fn collect_semantic_warnings(
     while let Some(item) = parser.next_item()? {
         checker.check_item(item)?;
     }
+    checker.finish_translation_unit()?;
     Ok(checker.take_warnings())
 }
 
