@@ -4878,6 +4878,30 @@ fn c99_local_vla_bound_capture_and_runtime_types() {
 }
 
 #[test]
+fn c99_variably_modified_typedefs_and_scope_entry() {
+    for source in [
+        "unsigned long f(int n){typedef int A[n++];n=100;return sizeof(A);}",
+        "int f(int n){typedef int A[n];typedef A B;B a;a[0]=7;return a[0];}",
+        "int f(int n){typedef int A[n];goto L;L:return sizeof(A);}",
+        "int f(int n){L:;typedef int A[n];if(n--)goto L;return sizeof(A);}",
+        "int f(int n){{typedef int A[n];goto L;}L:return 0;}",
+        "int f(int n){switch(n){case 1:{typedef int A[n];return sizeof(A);}default:return 0;}}",
+        "int f(int n){typedef int A[n];switch(n){case 1:return sizeof(A);default:return 0;}}",
+        "int f(int n){goto L;{typedef int A[n];}L:return 0;}",
+    ] { check(source).unwrap_or_else(|e| panic!("{source}: {e:?}")); }
+    for source in [
+        "int f(int n){goto L;typedef int A[n];L:return sizeof(A);}",
+        "int f(int n){goto L;int a[n];L:return 0;}",
+        "int f(int n){goto L;int (*p)[n];L:return 0;}",
+        "int f(int n){typedef int A[n];goto L;typedef A B;L:return 0;}",
+        "int f(int n){{typedef int A[n];goto L;}{typedef int B[n];L:return 0;}}",
+        "int f(int n){switch(n){typedef int A[n];case 1:return 0;}return 0;}",
+        "int f(int n){switch(n){int a[n];default:return 0;}}",
+        "int f(int n){goto L;for(int (*p)[n]=0;n;n--) {L:return 0;}return 1;}",
+    ] { reject(source, "scope of a variably modified identifier"); }
+}
+
+#[test]
 fn c99_logical_not_decays_array_and_function_designators() {
     let items = check("int a[3]; int g(void); int f(void){return !a + !g;}").unwrap();
     let CheckedItem::Function(fun) = &items[2] else { panic!("function"); };
