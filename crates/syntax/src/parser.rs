@@ -1356,6 +1356,21 @@ impl<'a> Parser<'a> {
             Span { lo: open.span.lo, hi: close.span.hi }))
     }
 
+    /// Apply trailing declarator attributes consistently for block objects,
+    /// including tag-based declarations and each comma-separated declarator.
+    fn parse_local_declarator_attributes(&mut self, ty:&mut Type)->Result<(),Diagnostic> {
+        while self.peek()?.is_some_and(|t|
+            matches!(t.text.as_ref(),"__attribute__"|"__attribute")) {
+            let signature=match ty {
+                Type::Function{params,..}=>Some((params.len(),false)),
+                Type::VariadicFunction{params,..}=>Some((params.len(),true)),
+                _=>None,
+            };
+            self.parse_gnu_declarator_attributes(signature,Some(ty))?;
+        }
+        Ok(())
+    }
+
     fn parse_decl(&mut self, is_typedef: bool) -> Result<Decl, Diagnostic> {
         let mut declarations = self.parse_decl_group(is_typedef)?;
         if declarations.len() != 1 {
@@ -1410,8 +1425,9 @@ impl<'a> Parser<'a> {
             .ok_or_else(|| Diagnostic::new(self.eof_span(), "expected type"))?;
         let mut declarations = Vec::new();
         loop {
-            let (name, ty, _, name_span) =
+            let (name, mut ty, _, name_span) =
                 self.parse_declarator_shape(false)?.finish(base.clone());
+            self.parse_local_declarator_attributes(&mut ty)?;
             self.scopes.declare(&name,
                 if is_typedef { Binding::Typedef } else { Binding::Ordinary });
             let initializer_operator = self.peek()?.filter(|t| t.text.as_ref() == "=").map(|t| t.span);
@@ -1451,7 +1467,8 @@ impl<'a> Parser<'a> {
             self.take()?;
             return Ok(Stmt::Tag(base));
         }
-        let (name, ty, _, name_span) = self.parse_declarator_shape(false)?.finish(base.clone());
+        let (name, mut ty, _, name_span) = self.parse_declarator_shape(false)?.finish(base.clone());
+        self.parse_local_declarator_attributes(&mut ty)?;
         self.scopes.declare(&name, Binding::Ordinary);
         let init = if self.peek()?.is_some_and(|t| t.text.as_ref() == "=") {
             self.take()?;
