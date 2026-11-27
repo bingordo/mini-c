@@ -3213,27 +3213,32 @@ impl Checker {
                     args[0].location().unwrap_or(span))?.rvalue();
                 let CType::Pointer(pointee) = &address.ty else {
                     return Err(type_error(span, format!(
-                        "{} requires a pointer to an integer object", spec.name)));
+                        "{} requires a pointer to a scalar object", spec.name)));
                 };
-                let CType::Integer { rank, .. } = pointee.unqualified() else {
-                    return Err(type_error(span, format!(
-                        "{} requires an integer object (pointer and aggregate atomics are pending)",
-                        spec.name)));
+                let pointer=matches!(pointee.unqualified(),CType::Pointer(_));
+                let width=match pointee.unqualified() {
+                    CType::Integer{rank,..}=>self.target.bits(*rank),
+                    CType::Pointer(inner) if !matches!(inner.unqualified(),
+                        CType::Function{..}|CType::VariadicFunction{..}|CType::UnprototypedFunction{..})=>self.target.pointer_bits,
+                    _=>return Err(type_error(span,format!(
+                        "{} requires an integer object or data pointer object",spec.name))),
                 };
-                let width = self.target.bits(*rank);
+                if pointer && matches!(spec.id,A::AtomicFetchAnd|A::AtomicFetchOr|A::AtomicFetchXor) {
+                    return Err(type_error(span,"atomic bitwise fetch requires an integer object"));
+                }
                 let bytes = u8::try_from(width / 8)
-                    .map_err(|_| type_error(span, "unsupported atomic integer width"))?;
+                    .map_err(|_| type_error(span, "unsupported atomic scalar width"))?;
                 let alignment = pointee.align_bytes(self.target)
                     .and_then(|align| u8::try_from(align).ok())
-                    .ok_or_else(|| type_error(span, "unsupported atomic integer alignment"))?;
+                    .ok_or_else(|| type_error(span, "unsupported atomic scalar alignment"))?;
                 if !matches!(width, 8 | 16 | 32 | 64) ||
                     alignment < bytes || !alignment.is_power_of_two()
                 {
-                    return Err(type_error(span, "atomic object requires a naturally aligned 8/16/32/64-bit integer"));
+                    return Err(type_error(span, "atomic object requires a naturally aligned 8/16/32/64-bit scalar"));
                 }
                 if spec.id != A::AtomicLoadN && pointee.is_const() {
                     return Err(type_error(span, format!(
-                        "{} requires a writable integer object", spec.name)));
+                        "{} requires a writable scalar object", spec.name)));
                 }
                 let value_ty = pointee.unqualified().clone();
                 operands.push(address);
@@ -3245,8 +3250,20 @@ impl Checker {
                         let argument = &args[1];
                         let checked = self.check_expr(argument,
                             argument.location().unwrap_or(span))?;
+                        // GNU pointer fetch arithmetic adds raw bytes, unlike
+                        // ordinary C pointer arithmetic. Convert the offset
+                        // to an integer of the target pointer width.
+                        let operand_ty=if pointer && matches!(spec.id,A::AtomicFetchAdd|A::AtomicFetchSub) {
+                            if !checked.ty.is_integer() {
+                                return Err(type_error(span,"atomic pointer fetch requires integer byte offset"));
+                            }
+                            let rank=if self.target.pointer_bits==self.target.long_bits {IntRank::Long}
+                                else if self.target.pointer_bits==self.target.int_bits {IntRank::Int}
+                                else {IntRank::LongLong};
+                            CType::Integer{rank,unsigned:true}
+                        } else {value_ty.clone()};
                         operands.push(self.convert_for_assignment(
-                            checked, &value_ty, argument, argument.location().unwrap_or(span))?);
+                            checked, &operand_ty, argument, argument.location().unwrap_or(span))?);
                         if spec.id == A::AtomicStoreN { CType::Void } else { value_ty }
                     }
                     A::AtomicCompareExchangeN => {
@@ -3262,7 +3279,7 @@ impl Checker {
                             !expected_pointee.unqualified().same_type(&value_ty)
                         {
                             return Err(type_error(span,
-                                "atomic compare-exchange expected pointer requires matching writable integer type"));
+                                "atomic compare-exchange expected pointer requires matching writable scalar type"));
                         }
                         operands.push(expected);
                         let argument = &args[2];
