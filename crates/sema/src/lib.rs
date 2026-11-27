@@ -975,7 +975,7 @@ impl Checker {
                 // automatic declaration's extent list.
                 let outer_bounds=self.capturing_vla_bounds.take();
                 let outer_prototype=std::mem::replace(&mut self.prototype_parameter_scope,true);
-                let checked=self.resolve_parameter_declarations(params);
+                let checked=self.resolve_parameter_declarations(params,false);
                 self.prototype_parameter_scope=outer_prototype;
                 self.capturing_vla_bounds=outer_bounds;
                 let converted=checked?.iter().map(|p|Self::parameter_signature_type(p.ty.unqualified())).collect();
@@ -1873,7 +1873,7 @@ impl Checker {
     /// A definition's parameter declarations can reference earlier parameters.
     /// Use a temporary lookup scope while capturing bounds; the ordinary
     /// body scope subsequently registers the checked parameters and warnings.
-    fn resolve_parameter_declarations(&mut self, declarations:&[Decl]) -> Result<Vec<CheckedDecl>,Diagnostic> {
+    fn resolve_parameter_declarations(&mut self, declarations:&[Decl],definition:bool) -> Result<Vec<CheckedDecl>,Diagnostic> {
         self.locals.push(HashMap::new());
         let checked=(|| {
             let mut params = Vec::new();
@@ -1903,7 +1903,10 @@ impl Checker {
                 if bracket_qualifiers.is_volatile {ty=ty.with_volatile();}
                 // Restrict and static minimum are source contracts, not
                 // optimization assumptions in the current checked IR.
-                let ty = self.complete_tag_type(ty, param.span)?;
+                // Declarations may name an incomplete nominal aggregate;
+                // only a definition requires its by-value layout now.
+                let ty = if definition {self.complete_tag_type(ty,param.span)?}
+                    else {self.try_complete_tag_type(ty)?};
                 if !ty.is_object() {
                     return Err(type_error(param.span, "function parameter cannot have void or function type"));
                 }
@@ -1960,7 +1963,7 @@ impl Checker {
         if matches!(result.unqualified(), CType::Array(..)) {
             return Err(type_error(func.span, "function cannot return an array"));
         }
-        let params = self.resolve_parameter_declarations(&func.params)?;
+        let params = self.resolve_parameter_declarations(&func.params,true)?;
         let signature = CType::Function {
             result: Box::new(result.clone()),
             params: params.iter().map(|p| {
