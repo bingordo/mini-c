@@ -157,6 +157,7 @@ pub fn evaluate(expr: &CheckedExpr, target: Target) -> Result<i128, &'static str
         CheckedExprKind::Member(..) | CheckedExprKind::BitFieldMember(..) |
         CheckedExprKind::StringLiteral(_) | CheckedExprKind::Name(_) | CheckedExprKind::Load(_) |
         CheckedExprKind::ArrayDecay(_) | CheckedExprKind::Comma(..) |
+        CheckedExprKind::StatementExpression { .. } |
         CheckedExprKind::Assign(..) |
         CheckedExprKind::CompoundAssign(..) | CheckedExprKind::Update { .. } |
         CheckedExprKind::Call(..) | CheckedExprKind::BuiltinCtz(_) |
