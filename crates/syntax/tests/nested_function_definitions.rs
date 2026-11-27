@@ -7,11 +7,13 @@ use mini_c_syntax::{
     stream::{ExternalItem, ItemSource},
 };
 
-fn returned_callback_type() -> Type {
-    Type::Pointer(Box::new(Type::Function {
-        result: Box::new(Type::Int),
-        params: vec![Type::Int],
-    }))
+fn assert_returned_callback_type(ty:&Type) {
+    let Type::Pointer(inner)=ty else {panic!("callback pointer");};
+    let Type::Function{result,params}=inner.as_ref() else {panic!("callback function");};
+    assert_eq!(**result,Type::Int);
+    assert_eq!(params.len(),1);
+    assert_eq!(params[0].ty,Type::Int);
+    assert!(params[0].name.is_empty());
 }
 
 #[test]
@@ -27,8 +29,8 @@ fn function_returning_callback_keeps_defining_parameter_names() {
     assert_eq!(f.params[0].name, "flag");
     assert_eq!(f.params[0].ty, Type::Int);
     assert_eq!(f.params[1].name, "callback");
-    assert_eq!(f.params[1].ty, returned_callback_type());
-    assert_eq!(f.result, returned_callback_type());
+    assert_returned_callback_type(&f.params[1].ty);
+    assert_returned_callback_type(&f.result);
     let Stmt::Block(stmts) = f.body else { panic!("body"); };
     assert_eq!(stmts.len(), 1);
 }
@@ -45,7 +47,7 @@ fn nested_callbacks_do_not_steal_definition_parameters() {
         let ExternalItem::Function(f) = parser.next_item().unwrap().expect("function")
             else { panic!("expected definition"); };
         assert_eq!(f.params.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), names, "{source}");
-        assert_eq!(f.result, returned_callback_type());
+        assert_returned_callback_type(&f.result);
     }
 }
 
