@@ -255,6 +255,9 @@ pub enum Expr {
     /// Postfix member selection: true for `->`, false for `.`.
     Member(Box<Expr>, Ident, bool),
     Assign(Box<Expr>, Box<Expr>),
+    /// GNU `({ ... })`: a scoped compound statement used as an expression.
+    /// Preserve every statement, including the final expression statement.
+    StatementExpression(Vec<Stmt>),
     /// C comma operator, evaluated left to right with the value of the right operand.
     Comma(Box<Expr>, Box<Expr>),
     /// C99 compound literal: an addressable object with the named type and

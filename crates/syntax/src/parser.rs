@@ -494,6 +494,18 @@ impl<'a> Parser<'a> {
         Ok(lhs)
     }
 
+    /// The opening parenthesis has already been consumed. Reuse the normal
+    /// compound-statement parser so typedef and ordinary name scopes are
+    /// restored on both success and failure.
+    fn parse_gnu_statement_expression(&mut self, open: Span) -> Result<Expr, Diagnostic> {
+        self.require_gnu(open, "statement expression")?;
+        let (block, _) = self.parse_block()?;
+        let Stmt::Block(statements) = block else { unreachable!("parse_block returns Block") };
+        let close = self.expect(")")?;
+        Ok(self.located(Expr::StatementExpression(statements),
+            Span { lo: open.lo, hi: close.span.hi }))
+    }
+
     fn parse_unary(&mut self) -> Result<Expr, Diagnostic> {
         if self.peek()?.is_some_and(|t|t.text.as_ref()=="__extension__") {
             let marker=self.take()?.expect("peeked extension");
@@ -504,7 +516,13 @@ impl<'a> Parser<'a> {
         if self.peek()?.is_some_and(|token| token.text.as_ref() == "sizeof") {
             let keyword = self.take()?.expect("peeked sizeof");
             if self.peek()?.is_some_and(|t| t.text.as_ref() == "(") {
-                self.take()?;
+                let open = self.take()?.expect("peeked sizeof parenthesis");
+                if self.peek()?.is_some_and(|t| t.text.as_ref() == "{") {
+                    let operand = self.parse_gnu_statement_expression(open.span)?;
+                    let hi = operand.location().map_or(open.span.hi, |span| span.hi);
+                    return Ok(self.located(Expr::SizeofExpr(Box::new(operand)),
+                        Span { lo: keyword.span.lo, hi }));
+                }
                 // A typedef-aware type-name lookahead is essential:
                 // sizeof(T) and sizeof(variable) have different AST forms.
                 let type_name = self.peek()?.is_some_and(|next| {
@@ -633,7 +651,9 @@ impl<'a> Parser<'a> {
                         "const" | "volatile" | "_Atomic" | "restrict" | "__restrict" | "__restrict__")
                         || next.kind == TokenKind::TypedefName
                 });
-                if cast_type {
+                if self.peek()?.is_some_and(|next| next.text.as_ref() == "{") {
+                    self.parse_gnu_statement_expression(t.span)?
+                } else if cast_type {
                     let (base, _) = self.parse_type()?.expect("type-name lookahead");
                     let (name, ty, nested, _) = self.parse_declarator_shape(true)?.finish(base);
                     if !name.is_empty() || nested.is_some() {
