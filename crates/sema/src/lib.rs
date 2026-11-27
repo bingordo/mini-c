@@ -79,6 +79,9 @@ pub enum CheckedExprKind {
     Name(String),
     Unary(UnOp, Box<CheckedExpr>),
     Binary(BinOp, Box<CheckedExpr>, Box<CheckedExpr>),
+    /// Scoped GNU statement expression. The final expression is evaluated once
+    /// before the lexical scope is left; None denotes a void result.
+    StatementExpression { statements: Vec<CheckedStmt>, result: Option<Box<CheckedExpr>> },
     /// Sequenced left-to-right comma; result is always a non-lvalue.
     Comma(Box<CheckedExpr>, Box<CheckedExpr>),
     /// Lazy, non-lvalue C conditional; both arms are coerced to one result type.
@@ -326,6 +329,9 @@ impl CheckedExpr {
         if has(&self.ty) {return true;}
         use CheckedExprKind as K;
         match &self.kind {
+            K::StatementExpression { statements, result } =>
+                statements.iter().any(|s| s.contains_memory_qualifier(has))
+                || result.as_ref().is_some_and(|e| e.contains_memory_qualifier(has)),
             K::Initializer(values) => values.iter().any(|e|e.contains_memory_qualifier(has)),
             K::SparseInitializer(values) => values.iter()
                 .any(|(_,e)|e.contains_memory_qualifier(has)),
@@ -423,6 +429,8 @@ pub struct Symbol {
     pub enum_value: Option<i64>,
     /// C register object: the address of this object cannot be computed.
     pub is_register: bool,
+    /// Unique backing name when source scope starts after an initializer.
+    local_name: Option<String>,
     /// C thread storage duration, independently of linkage.
     pub is_thread_local: bool,
     // For old-style definitions, retain the promoted ABI separately from the visible C type.
@@ -463,6 +471,7 @@ pub struct Checker {
     saw_atomic_aggregate: Cell<bool>,
     next_static_compound_identity: Cell<u64>,
     next_block_static_identity: u64,
+    next_inferred_local_identity: u64,
     /// Independent tag namespace, parallel to ordinary identifier scopes.
     tags: RefCell<Vec<HashMap<String, TagEntry>>>,
     /// Stable definition lookup independent of currently visible shadowing tags.
@@ -499,7 +508,7 @@ pub struct Checker {
 
 impl Checker {
     pub fn new(target: Target) -> Result<Self, Diagnostic> {
-        Ok(Self { target: target.validate()?, next_tag_identity: Cell::new(1), saw_atomic_aggregate: Cell::new(false), next_static_compound_identity: Cell::new(1), next_block_static_identity: 1, tags: RefCell::new(vec![HashMap::new()]), tag_definitions: RefCell::new(HashMap::new()), globals: HashMap::new(), next_vla_bound: 0, capturing_vla_bounds: None, vm_scopes: vm_scope::VmScopes::default(), checking_inline_body: false, inline_body_violation: RefCell::new(None), locals: Vec::new(), result_ty: None, current_signature: None, loop_depth: 0, switches: Vec::new(), function_labels: HashMap::new(), rollback_log: None, statement_undo: Vec::new(),
+        Ok(Self { target: target.validate()?, next_tag_identity: Cell::new(1), saw_atomic_aggregate: Cell::new(false), next_static_compound_identity: Cell::new(1), next_block_static_identity: 1, next_inferred_local_identity: 0, tags: RefCell::new(vec![HashMap::new()]), tag_definitions: RefCell::new(HashMap::new()), globals: HashMap::new(), next_vla_bound: 0, capturing_vla_bounds: None, vm_scopes: vm_scope::VmScopes::default(), checking_inline_body: false, inline_body_violation: RefCell::new(None), locals: Vec::new(), result_ty: None, current_signature: None, loop_depth: 0, switches: Vec::new(), function_labels: HashMap::new(), rollback_log: None, statement_undo: Vec::new(),
             recovery_errors: None, recovery_limit: 0,
             warning_policy: WarningPolicy::default(), emitted_warnings: Vec::new(),
             conversion_warnings: RefCell::new(Vec::new()),
@@ -736,6 +745,7 @@ impl Checker {
 
     fn resolve(&mut self, ty: &Type, span: Span) -> Result<CType, Diagnostic> {
         Ok(match ty {
+            Type::AutoType => return Err(type_error(span,"__auto_type requires an inferred local declaration")),
             Type::Atomic(inner) => {
                 let base=self.resolve(inner,span)?;
                 self.atomic_object_type(base,span)?
@@ -1084,7 +1094,7 @@ impl Checker {
         // atomic stores are observable; only linked aliases are exempt.
         let warning_exempt = linkage != Linkage::None;
         self.locals.last_mut().expect("local scope").insert(name.to_owned(), Symbol {
-            ty, kind, linkage, defined: true, asm_label: None, enum_value: None, is_register, is_thread_local: false, old_style_signature: None, non_inline_or_extern: false, inline_declaration: None,
+            ty, kind, linkage, defined: true, asm_label: None, enum_value: None, is_register, is_thread_local: false, local_name: None, old_style_signature: None, non_inline_or_extern: false, inline_declaration: None,
         });
         if kind == SymbolKind::Object {
             // Extern aliases are not automatic locals for unused diagnostics.
@@ -1148,7 +1158,7 @@ impl Checker {
             prior.defined |= defining;
         } else {
             self.globals.insert(name.to_owned(), Symbol {
-                ty, kind, linkage: requested, defined: defining, asm_label: None, enum_value: None, is_register: false, is_thread_local, old_style_signature: None, non_inline_or_extern: false, inline_declaration: None,
+                ty, kind, linkage: requested, defined: defining, asm_label: None, enum_value: None, is_register: false, is_thread_local, local_name: None, old_style_signature: None, non_inline_or_extern: false, inline_declaration: None,
             });
         }
         Ok(())
@@ -1275,7 +1285,7 @@ impl Checker {
     /// For an incomplete array the NUL is included in the inferred bound;
     /// an explicitly sized array may omit the final NUL, as required by C.
     fn complete_string_array(
-        &self, ty: CType, initializer: Option<&Expr>, span: Span
+        &mut self, ty: CType, initializer: Option<&Expr>, span: Span
     ) -> Result<CType, Diagnostic> {
         if let (CType::Array(element, bound), Some(Expr::StringLiteral(bytes))) =
             (&ty, initializer.map(Expr::without_location)) {
@@ -1324,7 +1334,7 @@ impl Checker {
     /// Evaluate a C99 designator index as an integer constant expression.
     /// Negative indices and enormous sparse arrays are diagnosed before
     /// converting to host indexes or allocating initializer vectors.
-    fn initializer_index(&self, expr: &Expr, span: Span) -> Result<u64, Diagnostic> {
+    fn initializer_index(&mut self, expr: &Expr, span: Span) -> Result<u64, Diagnostic> {
         let typed = self.check_expr(expr, expr.location().unwrap_or(span))?;
         if !typed.ty.is_integer() {
             return Err(type_error(span, "array designator requires integer constant expression"));
@@ -1341,7 +1351,7 @@ impl Checker {
     /// Resolve one C99 designator path through the current aggregate, with
     /// strict bounds and member-name constraints at *every* level.
     fn initializer_path(
-        &self, ty: &CType, path: &[Designator], span: Span,
+        &mut self, ty: &CType, path: &[Designator], span: Span,
     ) -> Result<(Vec<usize>, CType), Diagnostic> {
         let mut current = ty;
         let mut slots = Vec::with_capacity(path.len());
@@ -1504,7 +1514,7 @@ impl Checker {
     /// The current-object cursor tracks the next nested subobject across
     /// aggregate boundaries, not merely the next top-level member.
     fn check_deep_initializer(
-        &self, values: &[Expr], ty: &CType, span: Span, is_static: bool,
+        &mut self, values: &[Expr], ty: &CType, span: Span, is_static: bool,
     ) -> Result<CheckedExpr, Diagnostic> {
         let mut checked_paths: Vec<(Vec<usize>, CheckedExpr)> = Vec::new();
         // None means the initializer exhausted the enclosing object.
@@ -1609,7 +1619,7 @@ impl Checker {
     }
 
     fn check_object_initializer(
-        &self, original: &Expr, ty: &CType, span: Span, is_static: bool
+        &mut self, original: &Expr, ty: &CType, span: Span, is_static: bool
     ) -> Result<CheckedExpr, Diagnostic> {
         let span = original.location().unwrap_or(span);
         let original = original.without_location();
@@ -1877,7 +1887,7 @@ impl Checker {
                     let prior=self.locals.last_mut().expect("parameter scope").insert(param.name.clone(),Symbol {
                         ty:ty.clone(),kind:SymbolKind::Object,linkage:Linkage::None,defined:true,
                         asm_label:None,enum_value:None,is_register:param.storage==StorageClass::Register,
-                        is_thread_local:false,old_style_signature:None,non_inline_or_extern:false,inline_declaration:None,
+                        is_thread_local:false,local_name:None,old_style_signature:None,non_inline_or_extern:false,inline_declaration:None,
                     });
                     if prior.is_some() {
                         return Err(Diagnostic::coded(param.name_span.unwrap_or(param.span),DiagnosticCode::SemanticDuplicateDeclaration,
@@ -1978,7 +1988,7 @@ impl Checker {
         self.locals.last_mut().expect("function scope").insert("__func__".into(), Symbol {
             ty: name_type, kind: SymbolKind::Object, linkage: Linkage::None,
             defined: true, asm_label: Some(implicit_function_name_symbol(&func.name)),
-            enum_value: None, is_register: false, is_thread_local: false, old_style_signature: None, non_inline_or_extern: false, inline_declaration: None,
+            enum_value: None, is_register: false, is_thread_local: false, local_name: None, old_style_signature: None, non_inline_or_extern: false, inline_declaration: None,
         });
         for (parsed_param, param) in func.params.iter().zip(&params) {
             if let Err(err) = self.define_local(&param.name, param.ty.clone(),
@@ -2089,6 +2099,41 @@ impl Checker {
             Stmt::Tag(ty) => {
                 self.declare_tag_only(ty, span)?;
                 CheckedStmt::Tag
+            }
+            Stmt::Decl(decl) if decl.ty==Type::AutoType => {
+                // Check before binding: the initializer may refer to an
+                // outer object with this same source name. A private checked
+                // name prevents either backend from capturing that reference
+                // when allocating the new local before initialization.
+                let original=decl.init.as_ref().ok_or_else(||type_error(decl.span,"__auto_type requires an initializer"))?;
+                let value=self.check_expr(original,decl.span)?;
+                if matches!(value.kind,CheckedExprKind::BitFieldMember(..)) {
+                    return Err(type_error(decl.span,"__auto_type cannot infer from a bit-field"));
+                }
+                let value=value.rvalue();
+                let ty=value.ty.clone();
+                if !ty.is_object() || ty.size_bytes(self.target).is_none() {
+                    return Err(type_error(decl.span,"__auto_type requires a complete object value"));
+                }
+                if !matches!(decl.storage,StorageClass::Default|StorageClass::Register) {
+                    return Err(type_error(decl.span,"unsupported storage class for __auto_type"));
+                }
+                if decl.storage==StorageClass::Register && !ty.is_integer() && !matches!(ty.unqualified(),CType::Pointer(_)) {
+                    return Err(type_error(decl.span,"register local currently requires an integer or pointer type"));
+                }
+                let backing=if self.lookup(&decl.name).is_some() {
+                    let id=self.next_inferred_local_identity;
+                    self.next_inferred_local_identity=id.checked_add(1).ok_or_else(||type_error(decl.span,"inferred local identity overflow"))?;
+                    format!(".Lmini_c_inferred_{id}")
+                } else {decl.name.clone()};
+                self.define_local(&decl.name,ty.clone(),SymbolKind::Object,Linkage::None,
+                    decl.storage==StorageClass::Register,decl.name_span.unwrap_or(decl.span))?;
+                if backing!=decl.name {
+                    self.locals.last_mut().expect("local scope").get_mut(&decl.name).expect("defined local").local_name=Some(backing.clone());
+                }
+                if ty.is_variably_modified() { self.vm_scopes.enter_declaration(); }
+                CheckedStmt::Decl(CheckedDecl{storage:decl.storage,runtime_bounds:Box::default(),is_inline:false,
+                    name:backing,ty,linkage:Linkage::None,asm_label:None,initializer:Some(value),span:decl.span})
             }
             Stmt::Decl(decl) => {
                 let (resolved, runtime_bounds) = self.resolve_local_type(&decl.ty, decl.span)?;
@@ -2602,7 +2647,7 @@ impl Checker {
         })
     }
 
-    fn check_condition(&self, cond: &Expr, span: Span) -> Result<CheckedExpr, Diagnostic> {
+    fn check_condition(&mut self, cond: &Expr, span: Span) -> Result<CheckedExpr, Diagnostic> {
         let span = cond.location().unwrap_or(span);
         let typed = self.check_expr(cond, span)?.rvalue();
         if !typed.ty.is_scalar() {
@@ -2673,7 +2718,7 @@ impl Checker {
     }
 
     /// Resolve the integer subset of C cast type-names without mutating tags
-    /// or scopes; expression checking only holds an immutable checker borrow.
+    /// or scopes.
     fn cast_integer_type(&self, ty: &Type, span: Span) -> Result<CType, Diagnostic> {
         let resolved = match ty {
             Type::Bool => CType::Integer { rank: IntRank::Bool, unsigned: true },
@@ -3023,7 +3068,7 @@ impl Checker {
     /// requests proven not to change the natural layout for now; actual
     /// over-alignment also needs storage and ABI guarantees in both backends.
     fn check_member_alignment(
-        &self, alignment: Option<&mini_c_syntax::ast::MemberAlignment>,
+        &mut self, alignment: Option<&mini_c_syntax::ast::MemberAlignment>,
         ty: &CType, bit_field: bool, span: Span,
     ) -> Result<(), Diagnostic> {
         use mini_c_syntax::ast::MemberAlignment;
@@ -3064,7 +3109,7 @@ impl Checker {
     }
 
     fn check_bit_width(
-        &self, width: &Expr, ty: &CType, unnamed: bool, span: Span,
+        &mut self, width: &Expr, ty: &CType, unnamed: bool, span: Span,
     ) -> Result<u8, Diagnostic> {
         let max_width = match ty.unqualified() {
             CType::Integer { rank: IntRank::Bool, .. } => 1i128,
@@ -3100,7 +3145,7 @@ impl Checker {
     }
 
     fn resolve_typename_aggregate(
-        &self, ty: &Type, span: Span,
+        &mut self, ty: &Type, span: Span,
     ) -> Result<CType, Diagnostic> {
         let (kind, tag, members) = match ty {
             Type::Struct { tag, members } => (TagKind::Struct, tag, members),
@@ -3181,11 +3226,11 @@ impl Checker {
     /// References to existing tags are read-only, but an *explicit* inline
     /// struct/union definition introduces its tag in the current C scope.
     /// Enumerator definitions remain handled by declaration processing.
-    fn sizeof_type_expression(&self, ty: &Type, span: Span) -> Result<CheckedExpr, Diagnostic> {
+    fn sizeof_type_expression(&mut self, ty: &Type, span: Span) -> Result<CheckedExpr, Diagnostic> {
         self.sizeof_type_expression_impl(ty, span, false)
     }
 
-    fn sizeof_type_expression_impl(&self, ty: &Type, span: Span, array_element: bool) -> Result<CheckedExpr, Diagnostic> {
+    fn sizeof_type_expression_impl(&mut self, ty: &Type, span: Span, array_element: bool) -> Result<CheckedExpr, Diagnostic> {
         let size_ty = self.size_type();
         // A variably modified array type-name needs no object allocation.
         // The size is the product of each evaluated bound and element size,
@@ -3230,8 +3275,9 @@ impl Checker {
         self.object_size_expression(&operand_ty, span)
     }
 
-    fn resolve_sizeof_type(&self, ty: &Type, span: Span) -> Result<CType, Diagnostic> {
+    fn resolve_sizeof_type(&mut self, ty: &Type, span: Span) -> Result<CType, Diagnostic> {
         Ok(match ty {
+            Type::AutoType => return Err(type_error(span,"__auto_type is not a type name")),
             Type::Void => CType::Void,
             Type::Bool => CType::Integer { rank: IntRank::Bool, unsigned: true },
             Type::Char => CType::Integer {
@@ -3331,7 +3377,7 @@ impl Checker {
     /// This produces a typed operation plan but never a generic C Call. Target
     /// code generation remains gated until true atomic lowering is available.
     fn check_atomic_builtin(
-        &self, spec: &builtins::BuiltinSpec, args: &[Expr], span: Span,
+        &mut self, spec: &builtins::BuiltinSpec, args: &[Expr], span: Span,
     ) -> Result<CheckedExpr, Diagnostic> {
         use builtins::BuiltinId as A;
         let success = self.atomic_builtin_constant_arg(
@@ -3461,7 +3507,7 @@ impl Checker {
     }
 
     fn atomic_builtin_constant_arg(
-        &self, expr: &Expr, span: Span, label: &str,
+        &mut self, expr: &Expr, span: Span, label: &str,
     ) -> Result<u8, Diagnostic> {
         let actual_span = expr.location().unwrap_or(span);
         let checked = self.check_expr(expr, actual_span)?.rvalue();
@@ -3476,7 +3522,68 @@ impl Checker {
             format!("atomic {label} is outside the supported constant range")))
     }
 
-    fn check_expr(&self, expr: &Expr, span: Span) -> Result<CheckedExpr, Diagnostic> {
+    /// Only structured, fall-through statements are admitted in the first
+    /// executable slice. The function-label prepass does not traverse
+    /// expressions, so never admit a label or nonlocal transfer here.
+    fn statement_expression_structured(stmt: &Stmt) -> bool {
+        match stmt {
+            Stmt::Block(stmts) => stmts.iter().all(Self::statement_expression_structured),
+            Stmt::Decl(decl) => matches!(decl.storage, StorageClass::Default | StorageClass::Register),
+            Stmt::Typedef(_) | Stmt::Tag(_) | Stmt::Expr(_) => true,
+            Stmt::If { then, otherwise, .. } => Self::statement_expression_structured(then)
+                && otherwise.as_ref().is_none_or(|s| Self::statement_expression_structured(s)),
+            Stmt::While { body, .. } | Stmt::DoWhile { body, .. } =>
+                Self::statement_expression_structured(body),
+            Stmt::For { init, body, .. } =>
+                init.as_ref().is_none_or(|s| Self::statement_expression_structured(s))
+                && Self::statement_expression_structured(body),
+            _ => false,
+        }
+    }
+
+    fn check_statement_expression(&mut self, statements: &[Stmt], span: Span) -> Result<CheckedExpr, Diagnostic> {
+        if self.result_ty.is_none() {
+            return Err(type_error(span, "GNU statement expression requires function scope"));
+        }
+        if self.capturing_vla_bounds.is_some() {
+            return Err(type_error(span, "GNU statement expression inside a declarator bound is unsupported"));
+        }
+        if !statements.iter().all(Self::statement_expression_structured) {
+            return Err(type_error(span, "GNU statement expression contains unsupported control transfer or storage"));
+        }
+        // Reuse ordinary declaration checking, tags, identifier and warning
+        // scopes. The result is checked before these scopes are popped.
+        let vm_region = self.vm_scopes.current();
+        self.locals.push(HashMap::new());
+        self.push_warning_scope();
+        self.tags.borrow_mut().push(HashMap::new());
+        let checked = (|| {
+            let (prefix, result) = match statements.split_last() {
+                Some((Stmt::Expr(Some(expr)), prefix)) => (prefix, Some(expr)),
+                _ => (statements, None),
+            };
+            let mut checked = Vec::with_capacity(prefix.len());
+            for stmt in prefix {
+                checked.push(self.check_stmt(stmt, span)?);
+            }
+            let result = result.map(|expr| self.check_expr(expr, span).map(CheckedExpr::rvalue))
+                .transpose()?;
+            let ty = result.as_ref().map_or(CType::Void, |e| e.ty.clone());
+            if ty != CType::Void && !ty.is_scalar() {
+                return Err(type_error(span, "GNU statement expression aggregate result is unsupported"));
+            }
+            Ok(CheckedExpr::value(ty, CheckedExprKind::StatementExpression {
+                statements: checked, result: result.map(Box::new),
+            }))
+        })();
+        self.pop_tag_scope();
+        self.pop_warning_scope();
+        self.locals.pop();
+        self.vm_scopes.leave_scope(vm_region);
+        checked
+    }
+
+    fn check_expr(&mut self, expr: &Expr, span: Span) -> Result<CheckedExpr, Diagnostic> {
         match expr {
             Expr::Located(inner, located_span) => {
                 self.check_expr(inner, *located_span).map(|mut checked| {
@@ -3501,6 +3608,7 @@ impl Checker {
                     error
                 })
             },
+            Expr::StatementExpression(statements) => self.check_statement_expression(statements, span),
             Expr::Initializer(_) | Expr::Designated { .. } => Err(type_error(span,
                 "brace initializer is only valid in an object declaration")),
             Expr::CompoundLiteral(type_name, initializer) => {
@@ -3521,9 +3629,8 @@ impl Checker {
                 let static_storage = self.result_ty.is_none();
                 let value = self.check_object_initializer(initializer, &ty, span, static_storage)?;
                 let kind = if static_storage {
-                    // Checker::check_expr is read-only by design, so allocate
-                    // per-occurrence IDs using the same Cell pattern as tag
-                    // identities. The prefix contains '.' and cannot collide
+                    // Allocate per-occurrence IDs independently of lexical
+                    // scope. The prefix contains '.' and cannot collide
                     // with a valid C source identifier.
                     let id = self.next_static_compound_identity.get();
                     self.next_static_compound_identity.set(id.checked_add(1)
@@ -3604,8 +3711,8 @@ impl Checker {
                 // and diagnostics. External asm aliases are still resolved
                 // by the consumer's normal linkage path.
                 let resolved_name = if symbol.linkage == Linkage::None {
-                    symbol.asm_label.as_deref()
-                        .filter(|label| is_private_block_static_symbol(label))
+                    symbol.local_name.as_deref().or_else(|| symbol.asm_label.as_deref()
+                        .filter(|label| is_private_block_static_symbol(label)))
                         .unwrap_or(name)
                 } else { name };
                 Ok(CheckedExpr { ty: symbol.ty.clone(), category,

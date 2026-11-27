@@ -114,7 +114,7 @@ impl ParserTokenSource<'static> for CppTokens {
 }
 
 pub(super) fn check(
-    path: &str, config: &preprocess::Config, max_errors: Option<usize>,
+    path: &str, config: &preprocess::Config, max_errors: Option<usize>,mode:mini_c_syntax::parser::GnuExtensions,
 ) -> Result<(), String> {
     let stream = stream::start(Path::new(path), &config.args)?;
     let origins = Rc::new(RefCell::new(OriginLines::default()));
@@ -126,7 +126,7 @@ pub(super) fn check(
     };
     // Unknown end offset is updated from the actually pulled tokens.
     let mut parser = Parser::from_parser_token_source(source, 0)
-        .with_expression_spans();
+        .with_expression_spans().with_gnu_extensions(mode);
     let mut checker = Checker::new(Target::default())
         .expect("valid default target");
     if let Some(limit) = max_errors {

@@ -101,7 +101,7 @@
         assert_eq!(cpp.executable, OsString::from("clang"));
         assert_eq!(cpp.args, vec![
             "-E", "-Iinclude dir", "-DNAME=one two;$(touch never)",
-            "-DOTHER=42", "-UOLD", "-UOBSOLETE", "-undef",
+            "-DOTHER=42", "-UOLD", "-UOBSOLETE", "-undef", "-std=c11",
         ].into_iter().map(OsString::from).collect::<Vec<_>>());
         assert_eq!(options.paths, ["source.c"]);
         assert_eq!(options.max_errors, None);

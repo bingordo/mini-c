@@ -1300,7 +1300,11 @@ impl std::fmt::Display for CompileError {
 impl std::error::Error for CompileError {}
 
 pub fn compile_source_diagnostic(source: &str) -> std::result::Result<Vec<u8>, CompileError> {
-    let mut parser = Parser::new(source);
+    compile_source_diagnostic_with_mode(source,mini_c_syntax::parser::GnuExtensions::Enabled)
+}
+
+pub fn compile_source_diagnostic_with_mode(source:&str, mode:mini_c_syntax::parser::GnuExtensions)->std::result::Result<Vec<u8>,CompileError> {
+    let mut parser = Parser::new(source).with_gnu_extensions(mode);
     let mut checker = Checker::new(Target::default())
         .map_err(CompileError::Diagnostic)?;
     let mut compiler = Compiler::new().map_err(CompileError::Backend)?;
@@ -2159,6 +2163,22 @@ impl Lower<'_> {
 
                 b.switch_to_block(join);
                 Ok(b.use_var(result))
+            }
+            CheckedExprKind::StatementExpression { statements, result } => {
+                self.scopes.push(HashMap::new());
+                let lowered = (|| {
+                    for statement in statements {
+                        if !self.statement(b, statement)? {
+                            return Err("statement expression unexpectedly terminated control flow".into());
+                        }
+                    }
+                    match result {
+                        Some(value) => self.expression(b, value),
+                        None => Ok(b.ins().iconst(types::I32, 0)),
+                    }
+                })();
+                self.scopes.pop();
+                lowered
             }
             CheckedExprKind::Comma(left, right) => {
                 // C comma expressions provide a sequence point. Preserve

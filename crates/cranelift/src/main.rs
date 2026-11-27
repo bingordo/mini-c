@@ -1,11 +1,11 @@
 //! Standalone native ELF object emitter. Preprocessing is a driver operation,
 //! never a parser side effect. The internal CPP is the default; --cpp=cc
 //! selects the external compatibility fallback.
-use mini_c_cranelift::{compile_source_diagnostic, CompileError};
+use mini_c_cranelift::{compile_source_diagnostic_with_mode, CompileError};
 use mini_c_preprocess::source_map::SourceMap;
 use mini_c_syntax::source::SourceFile;
 use mini_c_syntax::diag::{Diagnostic, DiagnosticSeverity, ReportedDiagnostic, WarningPolicy};
-use mini_c_syntax::parser::Parser;
+use mini_c_syntax::parser::{Parser,GnuExtensions};
 use mini_c_syntax::stream::ItemSource;
 use mini_c_sema::{Checker, Target};
 use mini_c_preprocess::{self as preprocess, driver_options::CppOptions};
@@ -16,12 +16,15 @@ struct Options {
     source: String,
     cpp: Option<preprocess::Config>,
     warnings: WarningPolicy,
+    mode:GnuExtensions,
 }
 
 fn parse_options(args: impl IntoIterator<Item = String>) -> Result<Options, String> {
     let mut args = args.into_iter();
     let mut cpp = CppOptions::default();
     let mut warnings = WarningPolicy::default();
+    let mut mode=GnuExtensions::Disabled;
+    let mut std_flag="-std=c11".to_owned();
     let mut output = None;
     let mut inputs = Vec::new();
     let mut end_options = false;
@@ -38,6 +41,9 @@ fn parse_options(args: impl IntoIterator<Item = String>) -> Result<Options, Stri
             if output.replace(name).is_some() {
                 return Err("--emit-obj requires exactly one output filename".into());
             }
+        } else if arg.starts_with("-std=") {
+            mode=GnuExtensions::from_std_flag(&arg)?;
+            std_flag=arg;
         } else if arg.starts_with("-W") {
             warnings.apply_flag(&arg)?;
         } else if cpp.consume(&arg, &mut args)? {
@@ -52,11 +58,16 @@ fn parse_options(args: impl IntoIterator<Item = String>) -> Result<Options, Stri
         return Err("expected exactly one input C source file".into());
     }
     let output = output.ok_or("missing --emit-obj OUTPUT.o")?;
+    let mut cpp=cpp.finish()?;
+    if let Some(config)=&mut cpp {
+        if config.executable!="internal" {config.args.push(std_flag.into());}
+    }
     Ok(Options {
         output,
         source: inputs.remove(0),
-        cpp: cpp.finish()?,
+        cpp,
         warnings,
+        mode,
     })
 }
 
@@ -87,6 +98,9 @@ fn format_compiler_error(
 fn collect_semantic_warnings(
     source: &str, policy: &WarningPolicy
 ) -> Result<Vec<ReportedDiagnostic>, Diagnostic> {
+    collect_semantic_warnings_mode(source,policy,GnuExtensions::Enabled)
+}
+fn collect_semantic_warnings_mode(source:&str,policy:&WarningPolicy,mode:GnuExtensions)->Result<Vec<ReportedDiagnostic>,Diagnostic> {
     if !policy.enabled("shadow")
         && !policy.enabled("unused-variable")
         && !policy.enabled("unused-parameter")
@@ -98,7 +112,7 @@ fn collect_semantic_warnings(
     {
         return Ok(Vec::new());
     }
-    let mut parser = Parser::new_with_spans(source);
+    let mut parser = Parser::new_with_spans(source).with_gnu_extensions(mode);
     let mut checker = Checker::new(Target::default())?;
     checker.set_warning_policy(policy.clone());
     while let Some(item) = parser.next_item()? {
@@ -114,7 +128,10 @@ fn collect_semantic_warnings(
 fn format_semantic_warnings(
     filename: &str, source: &str, preprocessed: bool, policy: &WarningPolicy,
 ) -> Result<(Vec<String>, bool), Diagnostic> {
-    let reports = collect_semantic_warnings(source, policy)?;
+    format_semantic_warnings_mode(filename,source,preprocessed,policy,GnuExtensions::Enabled)
+}
+fn format_semantic_warnings_mode(filename:&str,source:&str,preprocessed:bool,policy:&WarningPolicy,mode:GnuExtensions)->Result<(Vec<String>,bool),Diagnostic> {
+    let reports = collect_semantic_warnings_mode(source, policy,mode)?;
     // No source map or location index is needed for the common no-warning case.
     if reports.is_empty() {
         return Ok((Vec::new(), false));
@@ -145,9 +162,9 @@ fn format_semantic_warnings(
 
 /// Print semantic warnings, retaining the fast path when none are enabled.
 fn emit_semantic_warnings(
-    filename: &str, source: &str, preprocessed: bool, policy: &WarningPolicy
+    filename: &str, source: &str, preprocessed: bool, policy: &WarningPolicy, mode:GnuExtensions
 ) -> Result<bool, Diagnostic> {
-    let (messages, failed) = format_semantic_warnings(filename, source, preprocessed, policy)?;
+    let (messages, failed) = format_semantic_warnings_mode(filename, source, preprocessed, policy,mode)?;
     for message in messages {
         eprintln!("{message}");
     }
@@ -162,7 +179,7 @@ fn main() -> ExitCode {
             eprintln!(
                 "usage: mini-c-cranelift --emit-obj OUTPUT.o \
                  [--cpp=internal|--cpp=cc|--cpp=none|--cpp=clang|--cpp=<path>] \
-                 [-I dir] [-DNAME=value] [-UNAME] [--cpp-arg=<arg>] [-Wall|-Wextra|-Werror|-Wno-*] INPUT.c"
+                 [-std=c11|-std=gnu11] [-I dir] [-DNAME=value] [-UNAME] [--cpp-arg=<arg>] [-Wall|-Wextra|-Werror|-Wno-*] INPUT.c"
             );
             return ExitCode::FAILURE;
         }
@@ -214,7 +231,7 @@ fn compile_to_object(opts: &Options) -> ExitCode {
     // code generation. Without enabled semantic groups, this is a no-op and
     // preserves the ordinary fast compilation path.
     match emit_semantic_warnings(
-        &opts.source, &source, opts.cpp.is_some(), &opts.warnings,
+        &opts.source, &source, opts.cpp.is_some(), &opts.warnings, opts.mode,
     ) {
         Ok(true) => return ExitCode::FAILURE,
         Ok(false) => {}
@@ -229,7 +246,7 @@ fn compile_to_object(opts: &Options) -> ExitCode {
         }
     }
 
-    match compile_source_diagnostic(&source) {
+    match compile_source_diagnostic_with_mode(&source,opts.mode) {
         Ok(bytes) => match fs::write(&opts.output, bytes) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => { eprintln!("{}: {e}", opts.output); ExitCode::FAILURE }
