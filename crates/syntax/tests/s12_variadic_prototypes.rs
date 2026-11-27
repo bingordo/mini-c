@@ -9,8 +9,8 @@ fn printf_variadic_prototype_is_not_fixed_arity() {
     else { panic!("ellipsis must be retained in the function type"); };
     assert_eq!(*result, Type::Int);
     assert_eq!(params.len(), 1);
-    assert_ne!(Type::VariadicFunction { result: Box::new(Type::Int), params: vec![Type::Int] },
-               Type::Function { result: Box::new(Type::Int), params: vec![Type::Int] });
+    assert_ne!(Type::VariadicFunction { result: result.clone(), params: params.clone() },
+               Type::Function { result, params });
 }
 
 #[test]
