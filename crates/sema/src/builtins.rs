@@ -15,6 +15,7 @@ pub enum BuiltinId {
     ByteSwap(u8),
     Nan(u8),
     IsNan,
+    IsInfSign,
     AtomicLoadN,
     AtomicStoreN,
     AtomicExchangeN,
@@ -64,7 +65,7 @@ const fn atomic(id: BuiltinId, name: &'static str, count: usize, order: usize,
 
 /// Fixed spellings and signatures. Unsupported by-address GNU atomic overloads
 /// are intentionally absent; source diagnostics must not infer their ABI.
-pub const REGISTRY: [BuiltinSpec; 26] = [
+pub const REGISTRY: [BuiltinSpec; 27] = [
     BuiltinSpec {
         id: BuiltinId::Ctz32, name: "__builtin_ctz", argument_count: 1,
         memory_order_argument: None, failure_order_argument: None,
@@ -116,6 +117,11 @@ pub const REGISTRY: [BuiltinSpec; 26] = [
         memory_order_argument: None, failure_order_argument: None,
         weak_argument: None, lowering: LoweringClass::FloatClassify,
     },
+    BuiltinSpec {
+        id: BuiltinId::IsInfSign, name: "__builtin_isinf_sign", argument_count: 1,
+        memory_order_argument: None, failure_order_argument: None,
+        weak_argument: None, lowering: LoweringClass::FloatClassify,
+    },
     atomic(BuiltinId::AtomicLoadN, "__atomic_load_n", 2, 1, None, None),
     atomic(BuiltinId::AtomicStoreN, "__atomic_store_n", 3, 2, None, None),
     atomic(BuiltinId::AtomicExchangeN, "__atomic_exchange_n", 3, 2, None, None),
@@ -136,7 +142,7 @@ pub const REGISTRY: [BuiltinSpec; 26] = [
 pub fn valid_atomic_orders(id: BuiltinId, success: u8, failure: Option<u8>) -> bool {
     if success > 5 { return false; }
     match id {
-        BuiltinId::Ctz32 | BuiltinId::ByteSwap(_) | BuiltinId::BitCount(..) | BuiltinId::Nan(_) | BuiltinId::IsNan => false,
+        BuiltinId::Ctz32 | BuiltinId::ByteSwap(_) | BuiltinId::BitCount(..) | BuiltinId::Nan(_) | BuiltinId::IsNan | BuiltinId::IsInfSign => false,
         BuiltinId::AtomicLoadN => failure.is_none() && matches!(success, 0|1|2|5),
         BuiltinId::AtomicStoreN => failure.is_none() && matches!(success, 0|3|5),
         BuiltinId::AtomicCompareExchangeN => {
@@ -228,6 +234,9 @@ mod tests {
                 assert!(matches!(bits,32|64));
                 assert_eq!(spec.argument_count,1);
                 assert_eq!(spec.lowering,LoweringClass::FloatNan);
+            } else if let BuiltinId::IsInfSign=spec.id {
+                assert_eq!(spec.argument_count,1);
+                assert_eq!(spec.lowering,LoweringClass::FloatClassify);
             } else if let BuiltinId::IsNan=spec.id {
                 assert_eq!(spec.argument_count,1);
                 assert_eq!(spec.lowering,LoweringClass::FloatClassify);
