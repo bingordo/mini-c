@@ -973,7 +973,7 @@ impl Checker {
                 // A nested prototype must not capture into its enclosing
                 // automatic declaration's extent list.
                 let outer_bounds=self.capturing_vla_bounds.take();
-                let checked=self.resolve_parameter_declarations(params);
+                let checked=self.resolve_parameter_declarations(params,false);
                 self.capturing_vla_bounds=outer_bounds;
                 let converted=checked?.iter().map(|p|Self::parameter_signature_type(&p.ty)).collect();
                 if matches!(ty, Type::VariadicFunction { .. }) {
@@ -1852,7 +1852,7 @@ impl Checker {
     /// A definition's parameter declarations can reference earlier parameters.
     /// Use a temporary lookup scope while capturing bounds; the ordinary
     /// body scope subsequently registers the checked parameters and warnings.
-    fn resolve_parameter_declarations(&mut self, declarations:&[Decl]) -> Result<Vec<CheckedDecl>,Diagnostic> {
+    fn resolve_parameter_declarations(&mut self, declarations:&[Decl],definition:bool) -> Result<Vec<CheckedDecl>,Diagnostic> {
         self.locals.push(HashMap::new());
         let checked=(|| {
             let mut params = Vec::new();
@@ -1862,7 +1862,10 @@ impl Checker {
                 }
                 let (resolved,runtime_bounds) = self.resolve_local_type(&param.ty, param.span)?;
                 let ty = self.adjust_parameter(resolved);
-                let ty = self.complete_tag_type(ty, param.span)?;
+                // Declarations may name an incomplete nominal aggregate;
+                // only a definition requires its by-value layout now.
+                let ty = if definition {self.complete_tag_type(ty,param.span)?}
+                    else {self.try_complete_tag_type(ty)?};
                 if !ty.is_object() {
                     return Err(type_error(param.span, "function parameter cannot have void or function type"));
                 }
@@ -1919,7 +1922,7 @@ impl Checker {
         if matches!(result.unqualified(), CType::Array(..)) {
             return Err(type_error(func.span, "function cannot return an array"));
         }
-        let params = self.resolve_parameter_declarations(&func.params)?;
+        let params = self.resolve_parameter_declarations(&func.params,true)?;
         let signature = CType::Function {
             result: Box::new(result.clone()),
             params: params.iter().map(|p| {
