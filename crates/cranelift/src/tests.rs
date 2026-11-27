@@ -51,13 +51,13 @@
     fn native_diagnostics_restore_header_origins_and_raw_columns() {
         let source = "# 1 \"source.c\"\n# 8 \"headers with spaces.h\" 1\nint wrong = ;\n";
         let diagnostic = compile_source_diagnostic(source).unwrap_err();
-        let rendered = format_compiler_error("input.c", source, true, diagnostic);
+        let rendered = format_compiler_error("input.c", source, true, &TokenOrigins::default(), diagnostic);
         assert!(rendered.contains("headers with spaces.h:8"), "{rendered}");
         assert!(rendered.contains("error[S"), "{rendered}");
 
         let source = "int wrong = ;\n";
         let diagnostic = compile_source_diagnostic(source).unwrap_err();
-        let rendered = format_compiler_error("raw.c", source, false, diagnostic);
+        let rendered = format_compiler_error("raw.c", source, false, &TokenOrigins::default(), diagnostic);
         assert!(rendered.contains("raw.c:1:"), "{rendered}");
     }
 
@@ -181,11 +181,11 @@ fn native_warning_promotion_blocks_object_write() {
     let mut policy = WarningPolicy::default();
     assert!(collect_semantic_warnings(source, &policy).unwrap().is_empty());
     policy.apply_flag("-Wall").unwrap();
-    assert!(!emit_semantic_warnings("source.c", source, false, &policy).unwrap());
+    assert!(!emit_semantic_warnings("source.c", source, false, &TokenOrigins::default(), &policy).unwrap());
     policy.apply_flag("-Werror").unwrap();
-    assert!(emit_semantic_warnings("source.c", source, false, &policy).unwrap());
+    assert!(emit_semantic_warnings("source.c", source, false, &TokenOrigins::default(), &policy).unwrap());
     policy.apply_flag("-Wno-unused-variable").unwrap();
-    assert!(!emit_semantic_warnings("source.c", source, false, &policy).unwrap());
+    assert!(!emit_semantic_warnings("source.c", source, false, &TokenOrigins::default(), &policy).unwrap());
 }
 
 #[test]
@@ -194,7 +194,7 @@ fn native_warning_checks_preserve_preprocessed_origins() {
     let mut policy = WarningPolicy::default();
     policy.apply_flag("-Wunused-variable").unwrap();
     let (messages, failed) =
-        format_semantic_warnings("main.c", source, true, &policy).unwrap();
+        format_semantic_warnings("main.c", source, true, &TokenOrigins::default(), &policy).unwrap();
     assert!(!failed);
     assert_eq!(messages.len(), 1, "{messages:?}");
     assert!(messages[0].starts_with("source.h:20: warning:"), "{messages:?}");
@@ -207,21 +207,21 @@ fn native_warning_locations_keep_raw_columns_and_werror_severity() {
     let mut policy = WarningPolicy::default();
     policy.apply_flag("-Wunused-variable").unwrap();
     let (warnings, failed) =
-        format_semantic_warnings("raw.c", source, false, &policy).unwrap();
+        format_semantic_warnings("raw.c", source, false, &TokenOrigins::default(), &policy).unwrap();
     assert!(!failed);
     assert_eq!(warnings.len(), 1, "{warnings:?}");
     assert!(warnings[0].starts_with("raw.c:1:"), "{warnings:?}");
     assert!(warnings[0].contains(": warning:"), "{warnings:?}");
     policy.apply_flag("-Werror").unwrap();
     let (errors, failed) =
-        format_semantic_warnings("raw.c", source, false, &policy).unwrap();
+        format_semantic_warnings("raw.c", source, false, &TokenOrigins::default(), &policy).unwrap();
     assert!(failed);
     assert_eq!(errors.len(), 1, "{errors:?}");
     assert!(errors[0].contains(": error:"), "{errors:?}");
     assert!(errors[0].contains("[-Wunused-variable]"), "{errors:?}");
     policy.apply_flag("-Wno-unused-variable").unwrap();
     let (suppressed, failed) =
-        format_semantic_warnings("raw.c", source, false, &policy).unwrap();
+        format_semantic_warnings("raw.c", source, false, &TokenOrigins::default(), &policy).unwrap();
     assert!(!failed);
     assert!(suppressed.is_empty(), "{suppressed:?}");
 }
@@ -521,20 +521,20 @@ fn native_driver_emits_write_only_warning_with_werror() {
     let mut policy = WarningPolicy::default();
     policy.apply_flag("-Wall").unwrap();
     let (warnings, failed) =
-        format_semantic_warnings("raw.c", source, false, &policy).unwrap();
+        format_semantic_warnings("raw.c", source, false, &TokenOrigins::default(), &policy).unwrap();
     assert!(!failed);
     assert_eq!(warnings.len(), 1, "{warnings:?}");
     assert!(warnings[0].contains("[-Wunused-but-set-variable]"), "{warnings:?}");
 
     policy.apply_flag("-Werror=unused-but-set-variable").unwrap();
     let (errors, failed) =
-        format_semantic_warnings("raw.c", source, false, &policy).unwrap();
+        format_semantic_warnings("raw.c", source, false, &TokenOrigins::default(), &policy).unwrap();
     assert!(failed);
     assert!(errors[0].contains(": error:"), "{errors:?}");
 
     policy.apply_flag("-Wno-unused-but-set-variable").unwrap();
     let (suppressed, failed) =
-        format_semantic_warnings("raw.c", source, false, &policy).unwrap();
+        format_semantic_warnings("raw.c", source, false, &TokenOrigins::default(), &policy).unwrap();
     assert!(!failed);
     assert!(suppressed.is_empty());
 }
@@ -576,18 +576,18 @@ fn native_conversion_warning_is_opt_in_and_promotable() {
     let source = "int f(int x) { short y = x; return y; }";
     let mut policy = WarningPolicy::default();
     let (initial, failed) =
-        format_semantic_warnings("narrow.c", source, false, &policy).unwrap();
+        format_semantic_warnings("narrow.c", source, false, &TokenOrigins::default(), &policy).unwrap();
     assert!(initial.is_empty());
     assert!(!failed);
     policy.apply_flag("-Wconversion").unwrap();
     let (warnings, failed) =
-        format_semantic_warnings("narrow.c", source, false, &policy).unwrap();
+        format_semantic_warnings("narrow.c", source, false, &TokenOrigins::default(), &policy).unwrap();
     assert_eq!(warnings.len(), 1, "{warnings:?}");
     assert!(warnings[0].contains("[-Wconversion]"), "{warnings:?}");
     assert!(!failed);
     policy.apply_flag("-Werror=conversion").unwrap();
     let (errors, failed) =
-        format_semantic_warnings("narrow.c", source, false, &policy).unwrap();
+        format_semantic_warnings("narrow.c", source, false, &TokenOrigins::default(), &policy).unwrap();
     assert!(failed);
     assert!(errors[0].contains(": error:"), "{errors:?}");
 }
