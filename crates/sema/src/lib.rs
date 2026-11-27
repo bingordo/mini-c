@@ -3182,6 +3182,46 @@ impl Checker {
         })
     }
 
+    /// Check the exact scalar representation shared by operations and queries.
+    fn atomic_object_layout(&self, pointee:&CType, name:&str, span:Span)->Result<(u8,u8),Diagnostic> {
+        let width=match pointee.unqualified() {
+            CType::Integer{rank,..}=>self.target.bits(*rank),
+            CType::Pointer(inner) if !matches!(inner.unqualified(),
+                CType::Function{..}|CType::VariadicFunction{..}|CType::UnprototypedFunction{..})=>self.target.pointer_bits,
+            _=>return Err(type_error(span,format!(
+                "{} requires an integer object or data pointer object",name))),
+        };
+        let bytes = u8::try_from(width / 8)
+            .map_err(|_| type_error(span, "unsupported atomic scalar width"))?;
+        let alignment = pointee.align_bytes(self.target)
+            .and_then(|align| u8::try_from(align).ok())
+            .ok_or_else(|| type_error(span, "unsupported atomic scalar alignment"))?;
+        if !matches!(width, 8 | 16 | 32 | 64) ||
+            alignment < bytes || !alignment.is_power_of_two()
+        {
+            return Err(type_error(span, "atomic object requires a naturally aligned 8/16/32/64-bit scalar"));
+        }
+        Ok((bytes,alignment))
+    }
+
+    /// Preserve a checked query as a native-only builtin until the target adapter
+    /// evaluates its pointer argument and supplies the capability result.
+    fn check_atomic_lock_free(&self, arg:&Expr, span:Span)->Result<CheckedExpr,Diagnostic> {
+        let address=self.check_expr(arg,arg.location().unwrap_or(span))?.rvalue();
+        let CType::Pointer(pointee)=&address.ty else {
+            return Err(type_error(span,"atomic_is_lock_free requires pointer to atomic object"));
+        };
+        if !pointee.is_atomic() {
+            return Err(type_error(span,"atomic_is_lock_free requires pointer to atomic object"));
+        }
+        let (bytes,alignment)=self.atomic_object_layout(pointee,"atomic_is_lock_free",span)?;
+        Ok(CheckedExpr::value(CType::Integer{rank:IntRank::Bool,unsigned:true},
+            CheckedExprKind::BuiltinAtomic(Box::new(CheckedAtomicBuiltin {
+                builtin:builtins::BuiltinId::AtomicIsLockFree,operands:vec![address],
+                bytes,alignment,success_order:0,failure_order:None,weak:false,
+            }))))
+    }
+
     /// A single checked source entry point for all GNU atomic builtin spellings.
     /// This produces a typed operation plan but never a generic C Call. Target
     /// code generation remains gated until true atomic lowering is available.
@@ -3218,25 +3258,9 @@ impl Checker {
                         "{} requires a pointer to a scalar object", spec.name)));
                 };
                 let pointer=matches!(pointee.unqualified(),CType::Pointer(_));
-                let width=match pointee.unqualified() {
-                    CType::Integer{rank,..}=>self.target.bits(*rank),
-                    CType::Pointer(inner) if !matches!(inner.unqualified(),
-                        CType::Function{..}|CType::VariadicFunction{..}|CType::UnprototypedFunction{..})=>self.target.pointer_bits,
-                    _=>return Err(type_error(span,format!(
-                        "{} requires an integer object or data pointer object",spec.name))),
-                };
+                let (bytes,alignment)=self.atomic_object_layout(pointee,spec.name,span)?;
                 if pointer && matches!(spec.id,A::AtomicFetchAnd|A::AtomicFetchOr|A::AtomicFetchXor) {
                     return Err(type_error(span,"atomic bitwise fetch requires an integer object"));
-                }
-                let bytes = u8::try_from(width / 8)
-                    .map_err(|_| type_error(span, "unsupported atomic scalar width"))?;
-                let alignment = pointee.align_bytes(self.target)
-                    .and_then(|align| u8::try_from(align).ok())
-                    .ok_or_else(|| type_error(span, "unsupported atomic scalar alignment"))?;
-                if !matches!(width, 8 | 16 | 32 | 64) ||
-                    alignment < bytes || !alignment.is_power_of_two()
-                {
-                    return Err(type_error(span, "atomic object requires a naturally aligned 8/16/32/64-bit scalar"));
                 }
                 if spec.id != A::AtomicLoadN && pointee.is_const() {
                     return Err(type_error(span, format!(
@@ -4044,6 +4068,7 @@ impl Checker {
                 if let Expr::Name(name) = callee.without_location() {
                     if let Some(spec) = builtins::lookup(name) {
                         if matches!(spec.lowering, builtins::LoweringClass::AtomicIrRequired
+                            | builtins::LoweringClass::AtomicCapabilityQuery
                             | builtins::LoweringClass::FloatNan
                             | builtins::LoweringClass::FloatClassify)
                             || self.lookup(name).is_none()
@@ -4058,6 +4083,8 @@ impl Checker {
                                     }));
                             }
                             match spec.id {
+                                builtins::BuiltinId::AtomicIsLockFree =>
+                                    return self.check_atomic_lock_free(&args[0],span),
                                 builtins::BuiltinId::IsInfSign => {
                                     let arg=&args[0];
                                     let at=arg.location().unwrap_or(span);
