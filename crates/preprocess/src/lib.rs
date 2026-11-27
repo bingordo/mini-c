@@ -3,6 +3,7 @@
 pub mod driver_options;
 pub mod source_map;
 pub mod token_origins;
+pub mod diagnostic_render;
 #[cfg(feature = "internal-rcc")]
 pub mod internal_rcc;
 
