@@ -2051,6 +2051,8 @@ impl Lower<'_> {
             }
             CheckedExprKind::BuiltinAtomic(_) => Err(
                 "GNU atomic builtin requires native TypeId atomic legalization; Cranelift cannot emit an ordinary memory access or external call".into()),
+            CheckedExprKind::BuiltinIsNan(_) =>
+                Err("GNU isnan requires native TypeId FP predicate lowering".into()),
             CheckedExprKind::BuiltinByteSwap(bits,inner) => {
                 let value=self.integer_value(b,inner)?;
                 let ty=b.func.dfg.value_type(value);
