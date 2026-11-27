@@ -2732,6 +2732,11 @@ impl Lower<'_> {
                             self.bind_storage(b, name, ty)?;
                         }
                     }
+                    CheckedStmt::Typedef { runtime_bounds, .. } => {
+                        for (id, bound) in runtime_bounds {
+                            self.bind_storage(b, &mini_c_sema::vla_bound_name(*id), &bound.ty)?;
+                        }
+                    }
                     CheckedStmt::Block(inner) if self.contains_referenced_label(tail)
                         || self.contains_active_switch_case(tail) =>
                     {
@@ -2784,7 +2789,14 @@ impl Lower<'_> {
     fn statement(&mut self, b: &mut FunctionBuilder<'_>, stmt: &CheckedStmt) -> Result<bool> {
         match stmt {
             CheckedStmt::Block(stmts) => self.lower_block(b, stmts, true),
-            CheckedStmt::Typedef { .. } | CheckedStmt::Tag => Ok(true),
+            CheckedStmt::Typedef { runtime_bounds, .. } => {
+                for (id, bound) in runtime_bounds {
+                    let value = self.expression(b, bound)?;
+                    self.bind(b, &mini_c_sema::vla_bound_name(*id), &bound.ty, Some(value))?;
+                }
+                Ok(true)
+            }
+            CheckedStmt::Tag => Ok(true),
             CheckedStmt::Goto { target } => {
                 let block = *self.labels.get(target)
                     .ok_or_else(|| format!("unplanned native goto target '{target}'"))?;
