@@ -5120,3 +5120,25 @@ fn c99_definition_parameter_vla_extent_scope() {
     assert!(f.params[1].ty.is_variably_modified());
     assert!(!f.signature.is_variably_modified());
 }
+
+#[test]
+fn c99_prototype_parameter_scope_and_no_runtime_bounds() {
+    for source in [
+        "int f(int n,int a[n]); int f(int n,int a[n]){return a[n-1];}",
+        "int f(int n,int m,int a[n][m]); int f(int n,int m,int a[n][m]){return a[1][m-1];}",
+        "int f(int n,int (*a)[n++]); int f(int n,int (*a)[n]){return (*a)[0];}",
+        "typedef int (*Fn)(int n,int (*a)[n]); Fn p;",
+        "int f(int n,int (*cb)(int k,int a[k]),int a[n]);",
+        "int f(int n,int a[n]); int g(void){int a[3];return f(3,a);}",
+    ] { check(source).unwrap_or_else(|e|panic!("{source}: {e:?}")); }
+    for source in [
+        "int f(int a[n],int n);",
+        "int f(int n,int a[n],int n);",
+        "int f(double n,int a[n]);",
+        "int f(int n,int a[n]); int g(void){return n;}",
+    ] { assert!(check(source).is_err(),"{source}"); }
+    let items=check("int f(int n,int (*a)[n++]);").unwrap();
+    let CheckedItem::Declaration(d)=&items[0] else{panic!("prototype")};
+    assert!(d.runtime_bounds.is_empty());
+    assert!(!d.ty.is_variably_modified());
+}
