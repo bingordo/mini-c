@@ -968,18 +968,14 @@ impl Checker {
                 if matches!(result.unqualified(), CType::Array(..)) {
                     return Err(type_error(span, "function cannot return an array"));
                 }
-                let mut converted = Vec::with_capacity(params.len());
-                for param in params {
-                    let resolved = self.resolve(param, span)?;
-                    let ty = self.adjust_parameter(resolved);
-                    if ty.is_variably_modified() {
-                        return Err(type_error(span, "variably modified function parameter types require parameter scope resolution"));
-                    }
-                    if !ty.is_object() {
-                        return Err(type_error(span, "parameter requires a complete non-void object type"));
-                    }
-                    converted.push(ty);
-                }
+                // Prototype bounds are checked in parameter order but never
+                // evaluated. Keep their private identities out of the ABI.
+                // A nested prototype must not capture into its enclosing
+                // automatic declaration's extent list.
+                let outer_bounds=self.capturing_vla_bounds.take();
+                let checked=self.resolve_parameter_declarations(params);
+                self.capturing_vla_bounds=outer_bounds;
+                let converted=checked?.iter().map(|p|Self::parameter_signature_type(&p.ty)).collect();
                 if matches!(ty, Type::VariadicFunction { .. }) {
                     CType::VariadicFunction { result: Box::new(result), params: converted }
                 } else {
@@ -1856,11 +1852,11 @@ impl Checker {
     /// A definition's parameter declarations can reference earlier parameters.
     /// Use a temporary lookup scope while capturing bounds; the ordinary
     /// body scope subsequently registers the checked parameters and warnings.
-    fn resolve_definition_parameters(&mut self, func:&Function) -> Result<Vec<CheckedDecl>,Diagnostic> {
+    fn resolve_parameter_declarations(&mut self, declarations:&[Decl]) -> Result<Vec<CheckedDecl>,Diagnostic> {
         self.locals.push(HashMap::new());
         let checked=(|| {
             let mut params = Vec::new();
-            for param in &func.params {
+            for param in declarations {
                 if !matches!(param.storage, StorageClass::Default | StorageClass::Register) {
                     return Err(type_error(param.span, "function parameter requires automatic or register storage"));
                 }
@@ -1923,7 +1919,7 @@ impl Checker {
         if matches!(result.unqualified(), CType::Array(..)) {
             return Err(type_error(func.span, "function cannot return an array"));
         }
-        let params = self.resolve_definition_parameters(&func)?;
+        let params = self.resolve_parameter_declarations(&func.params)?;
         let signature = CType::Function {
             result: Box::new(result.clone()),
             params: params.iter().map(|p| {
