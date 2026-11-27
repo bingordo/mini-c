@@ -22,6 +22,8 @@ enum Declarator {
     Name(String, Option<Span>),
     Pointer(Box<Self>, Qualifiers),
     Array(Box<Self>, Option<Expr>),
+    StarArray(Box<Self>),
+    ParameterArray(Box<Self>, Option<Expr>, Qualifiers, bool),
     Function(Box<Self>, Vec<Decl>, bool, bool),
 }
 
@@ -38,6 +40,10 @@ impl Declarator {
                 })
             },
             Self::Array(inner, bound) => inner.finish(Type::Array(Box::new(base), bound.map(Box::new))),
+            Self::StarArray(inner) => inner.finish(Type::StarArray(Box::new(base))),
+            Self::ParameterArray(inner,bound,qualifiers,minimum) => inner.finish(Type::ParameterArray {
+                element:Box::new(base),bound:bound.map(Box::new),qualifiers,minimum,
+            }),
             Self::Function(inner, params, variadic, unprototyped) => {
                 let param_types = params.clone();
                 let function_ty = if unprototyped {
@@ -1033,13 +1039,47 @@ impl<'a> Parser<'a> {
         loop {
             if self.peek()?.is_some_and(|token| token.text.as_ref() == "[") {
                 self.take()?;
+                let mut minimum=false;
+                if self.peek()?.is_some_and(|t|t.text.as_ref()=="static") {
+                    self.take()?;
+                    minimum=true;
+                }
+                let qualifiers=self.parse_qualifiers()?;
+                if !minimum && self.peek()?.is_some_and(|t|t.text.as_ref()=="static") {
+                    self.take()?;
+                    minimum=true;
+                }
+                // A sole '*' is prototype syntax, not a dereference.
+                let star=if self.peek()?.is_some_and(|t|t.text.as_ref()=="*") {
+                    if self.second_lookahead.is_none() {
+                        self.second_lookahead=Some(self.scanner.next_parser_token(Some(&self.scopes))?);
+                    }
+                    self.second_lookahead.as_ref().and_then(Option::as_ref)
+                        .is_some_and(|t|t.text.as_ref()=="]")
+                } else {false};
+                if star {
+                    if minimum || qualifiers.any() {
+                        return Err(Diagnostic::new(self.eof_span(),"qualified or static star array is not supported"));
+                    }
+                    self.take()?;
+                    self.expect("]")?;
+                    direct=Declarator::StarArray(Box::new(direct));
+                    continue;
+                }
                 let bound = if self.peek()?.is_some_and(|token| token.text.as_ref() == "]") {
                     None
                 } else {
                     Some(self.parse_expr()?)
                 };
                 self.expect("]")?;
-                direct = Declarator::Array(Box::new(direct), bound);
+                if minimum || qualifiers.any() {
+                    if minimum && bound.is_none() {
+                        return Err(Diagnostic::new(self.eof_span(),"static array parameter requires a bound"));
+                    }
+                    direct=Declarator::ParameterArray(Box::new(direct),bound,qualifiers,minimum);
+                } else {
+                    direct=Declarator::Array(Box::new(direct),bound);
+                }
             } else if self.peek()?.is_some_and(|token| token.text.as_ref() == "(") {
                 self.take()?;
                 let identifiers = allow_old_style && matches!(&direct, Declarator::Name(..))
