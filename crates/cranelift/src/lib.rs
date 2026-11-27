@@ -2143,6 +2143,22 @@ impl Lower<'_> {
                 b.switch_to_block(join);
                 Ok(b.use_var(result))
             }
+            CheckedExprKind::StatementExpression { statements, result } => {
+                self.scopes.push(HashMap::new());
+                let lowered = (|| {
+                    for statement in statements {
+                        if !self.statement(b, statement)? {
+                            return Err("statement expression unexpectedly terminated control flow".into());
+                        }
+                    }
+                    match result {
+                        Some(value) => self.expression(b, value),
+                        None => Ok(b.ins().iconst(types::I32, 0)),
+                    }
+                })();
+                self.scopes.pop();
+                lowered
+            }
             CheckedExprKind::Comma(left, right) => {
                 // C comma expressions provide a sequence point. Preserve
                 // effects from the left before computing the right value.
