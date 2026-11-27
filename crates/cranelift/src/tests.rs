@@ -75,7 +75,7 @@
         assert_eq!(cpp.executable, "clang");
         assert_eq!(
             cpp.args,
-            vec!["-E", "-Ipath with spaces", "-DNAME=17", "-UOLD"]
+            vec!["-E", "-Ipath with spaces", "-DNAME=17", "-UOLD", "-std=c11"]
                 .into_iter().map(std::ffi::OsString::from).collect::<Vec<_>>(),
         );
         let raw = parse_options([
