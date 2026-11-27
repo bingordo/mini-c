@@ -120,6 +120,14 @@ pub enum Type {
     Unsigned(Box<Type>),
     Pointer(Box<Type>),
     Array(Box<Type>, Option<Box<Expr>>),
+    /// Unspecified variable length at function prototype scope.
+    StarArray(Box<Type>, Qualifiers),
+    /// C99 outermost array parameter bracket contract. Qualifiers apply
+    /// to the adjusted pointer, not to the element type.
+    ParameterArray {
+        element: Box<Type>, bound: Option<Box<Expr>>,
+        qualifiers: Qualifiers, minimum: bool,
+    },
     /// C99 structure/union bit-field declaration. Valid only as a member.
     /// The width remains an expression until semantic constant evaluation.
     BitField(Box<Type>, Box<Expr>),
@@ -135,13 +143,13 @@ pub enum Type {
     TagRef(TagKind, Ident),
     Function {
         result: Box<Type>,
-        params: Vec<Type>,
+        params: Vec<Decl>,
     },
     /// C99 empty parameter list in a declaration: no prototype, not (void).
     UnprototypedFunction { result: Box<Type> },
     VariadicFunction {
         result: Box<Type>,
-        params: Vec<Type>,
+        params: Vec<Decl>,
     },
 }
 #[derive(Debug, Clone, PartialEq)]
