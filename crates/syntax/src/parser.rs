@@ -1623,7 +1623,7 @@ impl<'a> Parser<'a> {
                 self.expect("return")?;
                 if self.peek()?.is_some_and(|t|t.text.as_ref()==";") {
                     return Err(Diagnostic::new(start,
-                        "clang::musttail return requires a direct call expression"));
+                        "clang::musttail return requires a call expression"));
                 }
                 let value=self.parse_expr()?;
                 self.expect(";")?;

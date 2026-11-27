@@ -21,18 +21,22 @@ fn preserves_checked_required_scalar_and_void_calls() {
         "int rec(int x){ [[clang::musttail]] return rec(x); }",
         "void consume(int x); void wrapper(int x){ [[clang::musttail]] return consume(x); }",
         "int add(int a,int b); int rev(int a,int b){ [[clang::musttail]] return add(b,a); }",
+        "int (*callback)(int); int wrapper(int x){ [[clang::musttail]] return callback(x); }",
+        "int add(int); int wrapper(int x){ int (*fn)(int)=add; [[clang::musttail]] return (*fn)(x); }",
+        "void (*sink)(long); void wrapper(long x){ [[clang::musttail]] return sink(x); }",
     ];
     for source in examples {
         let items=check(source).unwrap_or_else(|e|panic!("{source}: {e}"));
         let CheckedItem::Function(f)=items.last().unwrap() else{panic!("function expected")};
         let CheckedStmt::Block(stmts)=&f.body else {panic!("block expected")};
-        assert!(matches!(&stmts[0], CheckedStmt::MustTailReturn(e)
-            if matches!(e.kind,CheckedExprKind::Call(..))), "{source}");
+        assert!(stmts.iter().any(|stmt|matches!(stmt,
+            CheckedStmt::MustTailReturn(e)
+                if matches!(e.kind,CheckedExprKind::Call(..)))), "{source}");
     }
 }
 
 #[test]
-fn refuses_mismatched_signatures_indirect_calls_and_noncall_returns() {
+fn refuses_mismatched_prototypes_and_noncall_returns() {
     let cases=[
         "long f(long x); long g(int x){ [[clang::musttail]] return f(x); }",
         "int f(int x); long g(long x){ [[clang::musttail]] return f(x); }",
@@ -42,7 +46,12 @@ fn refuses_mismatched_signatures_indirect_calls_and_noncall_returns() {
         "int f(int x){ [[clang::musttail]] return x?f(x):0; }",
         "float f(float x){ [[clang::musttail]] return f(x); }",
         "short f(short x){ [[clang::musttail]] return f(x); }",
+        // The callee is callable, but its one-parameter prototype differs
+        // from the caller's two-parameter prototype.
         "int f(int (*p)(int),int x){ [[clang::musttail]] return p(x); }",
+        "long (*callback)(long); int wrapper(int x){ [[clang::musttail]] return callback(x); }",
+        "int (*callback)(int,int); int wrapper(int x){ [[clang::musttail]] return callback(x,x); }",
+        "int (*callback)(int,...); int wrapper(int x){ [[clang::musttail]] return callback(x); }",
     ];
     for source in cases {
         let err=check(source).expect_err(source);
