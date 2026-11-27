@@ -74,7 +74,7 @@ fn csmith_style_parameter_declarations_accept_any_integer_specifier_order() {
     let Type::Function { result, params } = decl.ty
     else { panic!("function type expected") };
     assert_eq!(*result, Type::Unsigned(Box::new(Type::Long)));
-    assert_eq!(params, vec![
+    assert_eq!(params.into_iter().map(|p|p.ty).collect::<Vec<_>>(), vec![
         Type::Unsigned(Box::new(Type::Long)),
         Type::Unsigned(Box::new(Type::Int)),
     ]);
