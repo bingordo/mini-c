@@ -567,3 +567,33 @@ fn float_conversion_can_be_suppressed_independently() {
     assert!(warnings("float f(double x) { return x; }",
         &["-Wconversion", "-Wno-float-conversion"]).is_empty());
 }
+
+#[test]
+fn hexadecimal_float_constants_use_exact_binary_rounding_for_warnings() {
+    for source in [
+        "float f(void) { return 0x1p-149; }",
+        "float f(void) { return 0x1.000002p0; }",
+        "int f(void) { return 0x1.8p1; }",
+    ] {
+        let reports = warnings(source, &["-Wfloat-conversion"]);
+        assert!(reports.is_empty(), "{source}: {reports:?}");
+    }
+    for source in [
+        "float f(void) { return 0x1p-150; }",
+        "float f(void) { return 0x1.000001p0; }",
+        "int f(void) { return 0x1.8p0; }",
+    ] {
+        let reports = warnings(source, &["-Wfloat-conversion"]);
+        assert_eq!(reports.len(), 1, "{source}: {reports:?}");
+        assert_eq!(reports[0].warning_group, Some("float-conversion"));
+    }
+}
+
+#[test]
+fn decimal_subnormal_float_warning_uses_same_rounding_as_codegen() {
+    // This double-precision constant is nonzero, but underflows to zero
+    // when rounded to binary32.
+    let reports = warnings("float f(void) { return 1e-50; }",
+        &["-Wfloat-conversion"]);
+    assert_eq!(reports.len(), 1, "{reports:?}");
+}

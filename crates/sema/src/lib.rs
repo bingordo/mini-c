@@ -2772,10 +2772,17 @@ impl Checker {
                 FloatRank::Float128 => 113,
             }
         }
-        let floating_constant = match &expr.kind {
-            CheckedExprKind::FloatLiteral(token) => token
-                .trim_end_matches(['f', 'F', 'l', 'L'])
-                .parse::<f64>().ok(),
+        // Decode using the same C literal rounding implementation as the
+        // code generators. Rust's decimal f64 parser does not accept C hex
+        // floats, and must not be used as a second source of truth here.
+        let floating_constant = match (&expr.kind, expr.ty.unqualified()) {
+            (CheckedExprKind::FloatLiteral(token), CType::Floating(FloatRank::Float)) =>
+                float_literal::binary32_bits(token).ok()
+                    .map(|bits| f64::from(f32::from_bits(bits))),
+            (CheckedExprKind::FloatLiteral(token), CType::Floating(FloatRank::Double)) =>
+                float_literal::binary64_bits(token).ok().map(f64::from_bits),
+            // Do not silently claim that host f64 represents long double or
+            // _Float128 literals exactly.
             _ => None,
         };
         let group = match (expr.ty.unqualified(), target_ty.unqualified()) {
