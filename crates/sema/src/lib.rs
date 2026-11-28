@@ -3447,7 +3447,7 @@ impl Checker {
 
     /// Preserve a checked query as a native-only builtin until the target adapter
     /// evaluates its pointer argument and supplies the capability result.
-    fn check_atomic_lock_free(&self, arg:&Expr, span:Span)->Result<CheckedExpr,Diagnostic> {
+    fn check_atomic_lock_free(&mut self, arg:&Expr, span:Span)->Result<CheckedExpr,Diagnostic> {
         let address=self.check_expr(arg,arg.location().unwrap_or(span))?.rvalue();
         let CType::Pointer(pointee)=&address.ty else {
             return Err(type_error(span,"atomic_is_lock_free requires pointer to atomic object"));
