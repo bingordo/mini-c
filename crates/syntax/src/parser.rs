@@ -233,7 +233,7 @@ impl<'a> Parser<'a> {
         if self.brace_depth == 0
             && error.message.starts_with("expected ';'")
             && self.peek().ok().flatten().is_some_and(|t| matches!(
-                t.text.as_ref(), "int" | "_Bool" | "char" | "short" | "long" | "_Float128" | "float" | "double" | "void" | "signed" |
+                t.text.as_ref(), "int" | "_Bool" | "char" | "short" | "long" | "_Float128" | "typeof" | "__typeof" | "__typeof__" | "float" | "double" | "void" | "signed" |
                     "unsigned" | "static" | "extern" | "register" | "typedef" | "struct" | "union" | "enum"
             ) || t.kind == TokenKind::TypedefName)
         {
@@ -526,7 +526,7 @@ impl<'a> Parser<'a> {
                 // A typedef-aware type-name lookahead is essential:
                 // sizeof(T) and sizeof(variable) have different AST forms.
                 let type_name = self.peek()?.is_some_and(|next| {
-                    matches!(next.text.as_ref(), "int" | "_Bool" | "char" | "short" | "long" | "_Float128" |
+                    matches!(next.text.as_ref(), "int" | "_Bool" | "char" | "short" | "long" | "_Float128" | "typeof" | "__typeof" | "__typeof__" |
                         "float" | "double" | "void" | "signed" | "unsigned" |
                         "struct" | "union" | "enum" | "const" | "volatile" | "_Atomic" | "restrict" |
                         "__restrict" | "__restrict__")
@@ -646,7 +646,7 @@ impl<'a> Parser<'a> {
                 // full *abstract declarator* after the base type so a cast
                 // like (void*)0 is not mistaken for (void) followed by *.
                 let cast_type = self.peek()?.is_some_and(|next| {
-                    matches!(next.text.as_ref(), "int" | "_Bool" | "char" | "short" | "long" | "_Float128" | "float" | "double" | "void" |
+                    matches!(next.text.as_ref(), "int" | "_Bool" | "char" | "short" | "long" | "_Float128" | "typeof" | "__typeof" | "__typeof__" | "float" | "double" | "void" |
                         "signed" | "unsigned" | "struct" | "union" | "enum" |
                         "const" | "volatile" | "_Atomic" | "restrict" | "__restrict" | "__restrict__")
                         || next.kind == TokenKind::TypedefName
@@ -1100,7 +1100,7 @@ impl<'a> Parser<'a> {
                 token.kind == TokenKind::TypedefName
                 || matches!(token.text.as_ref(),
                     ")" | "void" | "_Bool" | "char" | "short" | "int" | "long"
-                    | "signed" | "unsigned" | "float" | "double" | "_Float128"
+                    | "signed" | "unsigned" | "float" | "double" | "_Float128" | "typeof" | "__typeof" | "__typeof__"
                     | "const" | "volatile" | "restrict" | "__restrict" | "__restrict__"
                     | "_Atomic" | "struct" | "union" | "enum" | "register"
                     | "__builtin_va_list"));
@@ -1117,7 +1117,7 @@ impl<'a> Parser<'a> {
             }
         } else if let Some(token) = self.peek()?.filter(|token| {
             matches!(token.kind, TokenKind::Identifier | TokenKind::TypedefName)
-                && !matches!(token.text.as_ref(), "int" | "_Bool" | "char" | "short" | "long" | "_Float128" | "float" | "double" | "void"
+                && !matches!(token.text.as_ref(), "int" | "_Bool" | "char" | "short" | "long" | "_Float128" | "typeof" | "__typeof" | "__typeof__" | "float" | "double" | "void"
                     | "unsigned" | "signed" | "const" | "volatile" | "restrict" | "__restrict" | "__restrict__"
                     | "typedef" | "static" | "extern" | "register"
                     | "struct" | "union" | "enum" | "if" | "else" | "while" | "do" | "for" | "switch" | "case" | "default" | "return" | "break" | "continue")
@@ -1147,7 +1147,7 @@ impl<'a> Parser<'a> {
                 let identifiers = allow_old_style && matches!(&direct, Declarator::Name(..))
                     && self.peek()?.is_some_and(|t| t.kind == TokenKind::Identifier
                         && !matches!(t.text.as_ref(), "void" | "_Bool" | "char" | "short" | "int" | "long"
-                            | "signed" | "unsigned" | "float" | "double" | "_Float128"
+                            | "signed" | "unsigned" | "float" | "double" | "_Float128" | "typeof" | "__typeof" | "__typeof__"
                             | "const" | "volatile" | "restrict" | "__restrict" | "__restrict__"
                             | "_Atomic" | "struct" | "union" | "enum" | "register" | "__builtin_va_list"));
                 let unprototyped = identifiers || self.peek()?.is_some_and(|t| t.text.as_ref() == ")");
@@ -1229,7 +1229,7 @@ impl<'a> Parser<'a> {
                 | "inline" | "int" | "long" | "register" | "restrict" | "return" | "short"
                 | "signed" | "sizeof" | "static" | "struct" | "switch" | "typedef" | "union"
                 | "unsigned" | "void" | "volatile" | "while" | "_Bool" | "_Complex" | "_Imaginary"
-                | "_Atomic" | "_Float128" | "__builtin_va_list" | "__restrict" | "__restrict__") {
+                | "_Atomic" | "_Float128" | "typeof" | "__typeof" | "__typeof__" | "__builtin_va_list" | "__restrict" | "__restrict__") {
                 return Err(Diagnostic::new(token.span, "expected old-style parameter identifier"));
             }
             let name = token.text.to_string();
@@ -1736,7 +1736,7 @@ impl<'a> Parser<'a> {
                                 Stmt::Typedef(self.parse_decl(true)?)
                             }
                             "struct" | "union" | "enum" => self.parse_tag_or_decl()?,
-                            "static" | "extern" | "register" | "__auto_type" | "int" | "_Bool" | "char" | "long"
+                            "static" | "extern" | "register" | "__auto_type" | "typeof" | "__typeof" | "__typeof__" | "int" | "_Bool" | "char" | "long"
                                 | "void" | "unsigned" | "signed" | "const" | "volatile" | "restrict" | "__restrict" | "__restrict__" =>
                                 Stmt::Decl(self.parse_decl(false)?),
                             _ if token.kind == TokenKind::TypedefName =>
@@ -1780,9 +1780,9 @@ impl<'a> Parser<'a> {
             "break" => { self.take()?; self.expect(";")?; Ok(Stmt::Break) }
             "continue" => { self.take()?; self.expect(";")?; Ok(Stmt::Continue) }
             "typedef" => { self.take()?; Ok(Stmt::Typedef(self.parse_decl(true)?)) },
-            "static" | "extern" | "register" | "__auto_type" => Ok(Stmt::Decl(self.parse_decl(false)?)),
+            "static" | "extern" | "register" | "__auto_type" | "typeof" | "__typeof" | "__typeof__" => Ok(Stmt::Decl(self.parse_decl(false)?)),
             "struct" | "union" | "enum" => self.parse_tag_or_decl(),
-            "int" | "_Bool" | "char" | "short" | "long" | "_Float128" | "float" | "double" | "void" | "unsigned" | "signed"
+            "int" | "_Bool" | "char" | "short" | "long" | "_Float128" | "typeof" | "__typeof" | "__typeof__" | "float" | "double" | "void" | "unsigned" | "signed"
                 | "const" | "volatile" | "restrict" | "__restrict" | "__restrict__" => Ok(Stmt::Decl(self.parse_decl(false)?)),
             _ if matches!(token.kind, TokenKind::Identifier | TokenKind::TypedefName)
                 && self.followed_by_colon()? => {
@@ -1792,7 +1792,7 @@ impl<'a> Parser<'a> {
                 let next = self.peek()?;
                 let is_decl_keyword = next.as_ref().is_some_and(|token| matches!(token.text.as_ref(),
                     "typedef" | "static" | "extern" | "register" | "struct" | "union" | "enum" |
-                    "int" | "_Bool" | "char" | "short" | "long" | "_Float128" |
+                    "int" | "_Bool" | "char" | "short" | "long" | "_Float128" | "typeof" | "__typeof" | "__typeof__" |
                     "float" | "double" | "void" | "unsigned" | "signed" |
                     "const" | "volatile" | "restrict" | "__restrict" | "__restrict__"));
                 let is_typedef_decl = next.is_some_and(|token| token.kind == TokenKind::TypedefName)
@@ -1848,7 +1848,7 @@ impl<'a> Parser<'a> {
                 self.take()?;
                 Some(true)
             }
-            "static" | "extern" | "register" | "__auto_type" | "int" | "_Bool" | "char" | "short"
+            "static" | "extern" | "register" | "__auto_type" | "typeof" | "__typeof" | "__typeof__" | "int" | "_Bool" | "char" | "short"
             | "long" | "_Float128" | "float" | "double" | "void"
             | "unsigned" | "signed" | "const" | "volatile" | "restrict" | "_Atomic"
             | "__restrict" | "__restrict__" => Some(false),
@@ -1876,6 +1876,30 @@ impl<'a> Parser<'a> {
             first.span, "type qualifier requires a type specifier"
         ))?;
         let ty = match token.text.as_ref() {
+            "typeof" | "__typeof" | "__typeof__" => {
+                self.take()?;
+                self.require_gnu(token.span,"typeof")?;
+                self.expect("(")?;
+                let type_name=self.peek()?.is_some_and(|t|
+                    t.kind==TokenKind::TypedefName || matches!(t.text.as_ref(),
+                    "void"|"int"|"_Bool"|"char"|"short"|"long"|"signed"|"unsigned"|
+                    "float"|"double"|"_Float128"|"const"|"volatile"|"restrict"|
+                    "__restrict"|"__restrict__"|"_Atomic"|"struct"|"union"|"enum"|
+                    "__builtin_va_list"|"typeof"|"__typeof"|"__typeof__"));
+                let ty=if type_name {
+                    let (base,_)=self.parse_type()?.ok_or_else(||
+                        Diagnostic::new(token.span,"expected typeof type name"))?;
+                    let (name,inner,_,_)=self.parse_declarator_shape(true)?.finish(base);
+                    if !name.is_empty() {
+                        return Err(Diagnostic::new(token.span,"typeof requires an abstract type name"));
+                    }
+                    Type::TypeOfType(Box::new(inner))
+                } else {
+                    Type::TypeOfExpr(Box::new(self.parse_expr()?))
+                };
+                self.expect(")")?;
+                ty
+            }
             "_Atomic" => {
                 // C11 _Atomic(type-name) is a type specifier, not a qualifier.
                 // Retain it in the AST so semantic analysis cannot mistake
