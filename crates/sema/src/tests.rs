@@ -5170,3 +5170,24 @@ fn gnu_declarator_alignment_preserves_only_exact_natural_layout() {
         assert!(check(source).is_err(), "unsupported alignment admitted: {source}");
     }
 }
+
+#[test]
+fn gnu_typeof_preserves_unevaluated_types_and_atomic_macro_declaration() {
+    for source in [
+        "int f(int *p){__typeof__((void)0,*p) tmp=42;return tmp;}",
+        "int f(int x){typeof(++x) y=1;return x+y;}",
+        "int f(void){int a[4];__typeof__(a) b;return sizeof(b);}",
+        "typedef __typeof__(unsigned long) Word; Word x;",
+        "int f(void){const int x=1; __typeof__(x) y=2;return y;}",
+        "int f(int *p){return ({ __auto_type q=p; __typeof__((void)0,*q) v=42; v; });}",
+    ] {
+        check(source).unwrap_or_else(|e|panic!("{source}: {e:?}"));
+    }
+    for source in [
+        "int f(int n){int a[n];typeof(a) b;return 0;}",
+        "int f(void){struct X{unsigned x:3;} s;typeof(s.x) x;return 0;}",
+        "int f(void){const int x=1;typeof(x) y=2;y=3;return y;}",
+    ] {
+        assert!(check(source).is_err(), "invalid typeof admitted: {source}");
+    }
+}
