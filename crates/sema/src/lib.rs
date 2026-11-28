@@ -746,6 +746,26 @@ impl Checker {
     fn resolve(&mut self, ty: &Type, span: Span) -> Result<CType, Diagnostic> {
         Ok(match ty {
             Type::AutoType => return Err(type_error(span,"__auto_type requires an inferred local declaration")),
+            Type::TypeOfType(inner) => {
+                let ty=self.resolve(inner,span)?;
+                if ty.is_variably_modified() {
+                    return Err(type_error(span,"variably modified typeof requires evaluated bounds"));
+                }
+                ty
+            }
+            Type::TypeOfExpr(expr) => {
+                // Unlike auto_type, typeof preserves array, function and
+                // top-level qualified lvalue types. The checked operand is
+                // discarded, so ordinary side effects cannot reach lowering.
+                let checked=self.check_expr(expr,span)?;
+                if matches!(checked.kind,CheckedExprKind::BitFieldMember(..)) {
+                    return Err(type_error(span,"typeof cannot name a bit-field type"));
+                }
+                if checked.ty.is_variably_modified() {
+                    return Err(type_error(span,"variably modified typeof requires evaluated bounds"));
+                }
+                checked.ty
+            }
             Type::Atomic(inner) => {
                 let base=self.resolve(inner,span)?;
                 self.atomic_object_type(base,span)?
