@@ -98,6 +98,10 @@ pub enum FloatRank { Float, Double, LongDouble, Float128 }
 pub enum Type {
     /// GNU inferred declaration type; resolved only from its initializer.
     AutoType,
+    /// GNU typeof preserves the unevaluated operand's type without decay.
+    TypeOfExpr(Box<Expr>),
+    /// Explicit type-name operand of GNU typeof.
+    TypeOfType(Box<Type>),
     Void,
     /// ISO C99 _Bool, a distinct one-byte integer type.
     Bool,
