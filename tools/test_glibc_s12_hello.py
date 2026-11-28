@@ -90,7 +90,7 @@ def main() -> int:
                 line for line in lines if FIRST_MARKER.match(line)
             ][:24]
             stages["mini_c_check"] = invoke([
-                str(args.checker), "check", "--cpp=none", str(preprocessed)
+                str(args.checker), "check", "-std=gnu11", "--cpp=none", str(preprocessed)
             ])
             if not passed(stages["mini_c_check"]):
                 diagnostic = stages["mini_c_check"].get("stderr", "")
@@ -116,7 +116,7 @@ def main() -> int:
             if passed(stages["mini_c_check"]):
                 stages["mini_c_object"] = invoke([
                     str(args.backend), "--emit-obj", str(object_file),
-                    "--cpp=none", str(preprocessed)
+                    "-std=gnu11", "--cpp=none", str(preprocessed)
                 ])
                 if passed(stages["mini_c_object"]) and object_file.is_file():
                     stages["mini_c_link"] = invoke([
@@ -146,12 +146,12 @@ def main() -> int:
         ])
         if passed(stack["preprocess"]):
             stack["mini_c_check"] = invoke([
-                str(args.checker), "check", "--cpp=none", str(stack_preprocessed)
+                str(args.checker), "check", "-std=gnu11", "--cpp=none", str(stack_preprocessed)
             ])
             if passed(stack["mini_c_check"]):
                 stack["mini_c_object"] = invoke([
                     str(args.backend), "--emit-obj", str(stack_object),
-                    "--cpp=none", str(stack_preprocessed)
+                    "-std=gnu11", "--cpp=none", str(stack_preprocessed)
                 ])
                 if passed(stack["mini_c_object"]) and stack_object.is_file():
                     stack["mini_c_link"] = invoke([

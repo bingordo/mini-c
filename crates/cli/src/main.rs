@@ -17,6 +17,9 @@ fn check(path: &str, cpp: Option<&preprocess::Config>) -> Result<(), String> {
     check_with_policy(path, cpp, &WarningPolicy::default())
 }
 
+use preprocess::diagnostic_render::render_diagnostic;
+
+#[cfg(test)]
 fn check_with_policy(
     path: &str, cpp: Option<&preprocess::Config>, warnings: &WarningPolicy
 ) -> Result<(), String> {
@@ -35,10 +38,10 @@ fn check_with_mode(path:&str,cpp:Option<&preprocess::Config>,warnings:&WarningPo
             return Err("internal-stream requires --features internal-cpp".into());
         }
     }
-    let source = match cpp {
-        Some(config) => preprocess::file(Path::new(path), config)
+    let (source, origins) = match cpp {
+        Some(config) => preprocess::file_with_origins(Path::new(path), config)
             .map_err(|e| format!("{path}: {e}"))?,
-        None => fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?,
+        None => (fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?, Default::default()),
     };
     let file = SourceFile::new(path, &source);
     let map = cpp.map(|_| SourceMap::from_preprocessed(&source, path));
@@ -55,13 +58,6 @@ fn check_with_mode(path:&str,cpp:Option<&preprocess::Config>,warnings:&WarningPo
             Ok(Some(_)) => {
                 for warning in checker.take_warnings() {
                     if let Some(severity) = warnings.resolve(&warning) {
-                        let location = if let Some(ref map) = map {
-                            let origin = map.origin(warning.diagnostic.span.lo);
-                            format!("{}:{}", origin.file, origin.line)
-                        } else {
-                            let (line, col) = file.location(warning.diagnostic.span.lo);
-                            format!("{path}:{line}:{col}")
-                        };
                         let level = match severity {
                             DiagnosticSeverity::Error => {
                                 warning_failed = true;
@@ -70,33 +66,18 @@ fn check_with_mode(path:&str,cpp:Option<&preprocess::Config>,warnings:&WarningPo
                             DiagnosticSeverity::Warning => "warning",
                             DiagnosticSeverity::Note => "note",
                         };
-                        eprintln!("{location}: {level}: {} [-W{}]",
-                            warning.diagnostic.message,
-                            warning.warning_group.unwrap_or("unknown"));
+                        eprintln!("{}", render_diagnostic(&file, map.as_ref(), &origins, &warning.diagnostic, level,
+                            &format!(" [-W{}]", warning.warning_group.unwrap_or("unknown"))));
                     }
                 }
             },
             Ok(None) => return if let Err(error) = checker.finish_translation_unit() {
-                let location = if let Some(ref map) = map {
-                    let origin = map.origin(error.span.lo);
-                    format!("{}:{}", origin.file, origin.line)
-                } else {
-                    let (line, col) = file.location(error.span.lo);
-                    format!("{path}:{line}:{col}")
-                };
-                Err(format!("{location}: error: {}", error.message))
+                Err(render_diagnostic(&file, map.as_ref(), &origins, &error, "error", ""))
             } else if warning_failed {
                 Err(format!("{path}: warnings treated as errors"))
             } else { Ok(()) },
             Err(error) => {
-                let location = if let Some(ref map) = map {
-                    let origin = map.origin(error.span.lo);
-                    format!("{}:{}", origin.file, origin.line)
-                } else {
-                    let (line, col) = file.location(error.span.lo);
-                    format!("{path}:{line}:{col}")
-                };
-                return Err(format!("{location}: error: {}", error.message));
+                return Err(render_diagnostic(&file, map.as_ref(), &origins, &error, "error", ""));
             }
         }
     }
@@ -104,6 +85,7 @@ fn check_with_mode(path:&str,cpp:Option<&preprocess::Config>,warnings:&WarningPo
 
 /// Opt-in multi-error checking: each item is checked transactionally and
 /// unsuccessful items do not poison later typedef or semantic symbol state.
+#[cfg(test)]
 fn check_recovering(
     path: &str, cpp: Option<&preprocess::Config>, max_errors: usize
 ) -> Result<(), String> {
@@ -118,10 +100,10 @@ fn check_recovering_mode(path:&str,cpp:Option<&preprocess::Config>,max_errors:us
             return Err("internal-stream requires --features internal-cpp".into());
         }
     }
-    let source = match cpp {
-        Some(config) => preprocess::file(Path::new(path), config)
+    let (source, origins) = match cpp {
+        Some(config) => preprocess::file_with_origins(Path::new(path), config)
             .map_err(|e| format!("{path}: {e}"))?,
-        None => fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?,
+        None => (fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?, Default::default()),
     };
     let file = SourceFile::new(path, &source);
     let map = cpp.map(|_| SourceMap::from_preprocessed(&source, path));
@@ -132,14 +114,7 @@ fn check_recovering_mode(path:&str,cpp:Option<&preprocess::Config>,max_errors:us
     );
     if errors.is_empty() { return Ok(()); }
     Err(errors.into_iter().map(|error| {
-        let location = if let Some(ref map) = map {
-            let origin = map.origin(error.span.lo);
-            format!("{}:{}", origin.file, origin.line)
-        } else {
-            let (line, column) = file.location(error.span.lo);
-            format!("{path}:{line}:{column}")
-        };
-        format!("{location}: error[{}]: {}", error.code.as_str(), error.message)
+        render_diagnostic(&file, map.as_ref(), &origins, &error, &format!("error[{}]", error.code.as_str()), "")
     }).collect::<Vec<_>>().join("\n"))
 }
 
@@ -187,13 +162,13 @@ fn parse_options(args: impl IntoIterator<Item = String>) -> Result<Options, Stri
                 Ok(n) if n > 0 => max_errors = Some(n),
                 _ => return Err("--max-errors requires a positive integer".into()),
             }
-        } else if arg.starts_with("-std=") {
-            mode=GnuExtensions::from_std_flag(&arg)?;
-            std_flag=arg;
         } else if arg.starts_with("-W") {
             warnings.apply_flag(&arg)?;
         } else if cpp.consume(&arg, &mut args)? {
             // Recognized preprocessor option, with any split argument consumed.
+        } else if arg.starts_with("-std=") {
+            mode=GnuExtensions::from_std_flag(&arg)?;
+            std_flag=arg;
         } else if arg.starts_with('-') {
             return Err(format!("unknown option: {arg}"));
         } else {

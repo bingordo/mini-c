@@ -333,11 +333,50 @@
         assert!(first_two.contains("error[S0102]"), "{first_two}");
         assert!(first_two.contains("error[T0105]"), "{first_two}");
         assert!(!first_two.contains("unknown"), "{first_two}");
-        assert_eq!(first_two.lines().count(), 2, "{first_two}");
+        assert_eq!(first_two.lines().filter(|line| line.contains(": error[")).count(), 2, "{first_two}");
 
         let all = check_recovering(filename, None, 4).unwrap_err();
-        assert_eq!(all.lines().count(), 3, "{all}");
+        assert_eq!(all.lines().filter(|line| line.contains(": error[")).count(), 3, "{all}");
         assert!(all.contains("unknown"), "{all}");
         std::fs::remove_file(path).unwrap();
     }
 
+
+    #[cfg(feature = "internal-cpp")]
+    #[test]
+    fn internal_cpp_reports_original_header_spelling_with_logical_line() {
+        let dir = std::env::temp_dir().join(format!("mini-c-origin-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let root = dir.join("main.c");
+        std::fs::write(dir.join("bad.h"), "#line 42 \"virtual.h\"\nint bad = ;\n").unwrap();
+        std::fs::write(&root, "#include \"bad.h\"\n").unwrap();
+        let config = preprocess::Config {
+            executable: "internal".into(), args: vec!["-E".into(), "-nostdinc".into()],
+        };
+        let error = check(root.to_str().unwrap(), Some(&config)).unwrap_err();
+        std::fs::remove_dir_all(dir).unwrap();
+        assert!(error.contains("virtual.h:42:11:"), "{error}");
+        assert!(error.contains("int bad = ;"), "{error}");
+        assert!(error.contains('^'), "{error}");
+    }
+
+    #[cfg(feature = "internal-cpp")]
+    #[test]
+    fn nested_macro_diagnostic_shows_both_invocations() {
+        let path = std::env::temp_dir().join(format!("mini-c-nested-origin-{}.c", std::process::id()));
+        std::fs::write(&path, "#define INNER ;\n#define OUTER INNER\nint x = OUTER;\n").unwrap();
+        let config = preprocess::Config {
+            executable: "internal".into(), args: vec!["-E".into(), "-nostdinc".into()],
+        };
+        let error = check(path.to_str().unwrap(), Some(&config)).unwrap_err();
+        let streamed = check(path.to_str().unwrap(), Some(&preprocess::Config {
+            executable: "internal-stream".into(), args: config.args.clone(),
+        })).unwrap_err();
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(error, streamed);
+        let inner = error.find("in expansion of macro 'INNER'").expect(&error);
+        let outer = error.find("in expansion of macro 'OUTER'").expect(&error);
+        assert!(inner < outer, "{error}");
+        assert!(error.contains("#define OUTER INNER"), "{error}");
+        assert!(error.contains("int x = OUTER;"), "{error}");
+    }

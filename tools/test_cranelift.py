@@ -854,10 +854,12 @@ def test_case(name: str, src: str, args: argparse.Namespace, expected: int | Non
     exe = case / "mini-c.exe"
     ref = case / "gcc.exe"
     obj = case / "mini-c.o"
+    # GNU-specific fixtures must explicitly select their language mode.
+    std = "-std=gnu11" if name.startswith("gnu_") else "-std=c11"
     commands = [
-        [str(args.backend), "--emit-obj", str(obj), str(case / "input.c")],
+        [str(args.backend), std, "--emit-obj", str(obj), str(case / "input.c")],
         [args.cc, str(obj), "-o", str(exe)],
-        [args.cc, "-std=c11", "-O2", str(case / "input.c"), "-o", str(ref)],
+        [args.cc, std, "-O2", str(case / "input.c"), "-o", str(ref)],
         [str(exe)],
         [str(ref)],
     ]

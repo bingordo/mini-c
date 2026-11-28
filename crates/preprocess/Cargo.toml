@@ -20,5 +20,4 @@ rcc_session = { git = "https://github.com/noname0310/rcc.git", rev = "aa7ba4115a
 rcc_lexer = { git = "https://github.com/noname0310/rcc.git", rev = "aa7ba4115a986cd533965ae297de6490315c35cb", optional = true }
 rcc_errors = { git = "https://github.com/noname0310/rcc.git", rev = "aa7ba4115a986cd533965ae297de6490315c35cb", optional = true }
 
-[dev-dependencies]
 mini-c-syntax = { path = "../syntax" }

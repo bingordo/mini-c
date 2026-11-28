@@ -57,6 +57,20 @@ use rcc_span::{BytePos, Interner, SourceMap, Span, Symbol};
 use crate::line_map::LineMap;
 use crate::macros::{BuiltinMacro, HideSet, MacroKind, MacroTable, VA_ARGS_NAME};
 
+/// A shared macro invocation frame, independent of the spelling span.
+/// Parents describe the expansion that exposed this invocation.
+#[derive(Clone, Debug)]
+pub struct ExpansionFrame {
+    /// Macro name in the session interner.
+    pub name: Symbol,
+    /// Definition site.
+    pub definition: Span,
+    /// Immediate invocation site (not the outermost builtin location).
+    pub invocation: Span,
+    /// Enclosing expansion, if any.
+    pub parent: Option<Arc<ExpansionFrame>>,
+}
+
 /// Token paired with its Prosser hide set. The hide set travels
 /// alongside the raw [`PpToken`] through every expansion step and is
 /// dropped once the token reaches the final output stream.
@@ -66,6 +80,7 @@ struct ExpToken {
     hide: HideSet,
     /// Location of the outermost macro invocation, distinct from spelling span.
     expansion_site: Option<Span>,
+    trace: Option<Arc<ExpansionFrame>>,
 }
 
 /// Expand one logical line.
@@ -102,7 +117,27 @@ pub fn expand_line(
     counter: Option<&Cell<u32>>,
 ) -> Vec<PpToken> {
     expand_line_impl(source_map, interner, handler, macros, line_map, line,
-        gnu_va_args_elision, gnu_permissive_paste, counter, None, None)
+        gnu_va_args_elision, gnu_permissive_paste, counter, None, None, None)
+}
+
+/// Expand a token sequence and return a parallel trace vector.
+/// This opt-in API leaves the ordinary token-only path unchanged.
+#[allow(clippy::too_many_arguments)]
+pub fn expand_line_with_trace(
+    source_map: &Arc<RwLock<SourceMap>>,
+    interner: &mut Interner,
+    handler: &mut Handler,
+    macros: &MacroTable,
+    line_map: &LineMap,
+    line: Vec<PpToken>,
+    gnu_va_args_elision: bool,
+    gnu_permissive_paste: bool,
+    counter: Option<&Cell<u32>>,
+) -> (Vec<PpToken>, Vec<Option<Arc<ExpansionFrame>>>) {
+    let mut traces = Vec::new();
+    let tokens = expand_line_impl(source_map, interner, handler, macros, line_map, line,
+        gnu_va_args_elision, gnu_permissive_paste, counter, None, None, Some(&mut traces));
+    (tokens, traces)
 }
 
 /// Apply the same expansion-work budget across every macro rescan, argument
@@ -123,11 +158,12 @@ pub(crate) fn expand_line_bounded(
     expansion_limit: usize,
     synthetic_bytes: &Cell<usize>,
     synthetic_byte_limit: usize,
+    traces: Option<&mut Vec<Option<Arc<ExpansionFrame>>>>,
 ) -> Vec<PpToken> {
     expand_line_impl(source_map, interner, handler, macros, line_map, line,
         gnu_va_args_elision, gnu_permissive_paste, counter,
         Some((expansion_steps, expansion_limit)),
-        Some((synthetic_bytes, synthetic_byte_limit)))
+        Some((synthetic_bytes, synthetic_byte_limit)), traces)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -143,10 +179,12 @@ fn expand_line_impl(
     counter: Option<&Cell<u32>>,
     expansion_budget: Option<(&Cell<usize>, usize)>,
     synthetic_budget: Option<(&Cell<usize>, usize)>,
+    traces: Option<&mut Vec<Option<Arc<ExpansionFrame>>>>,
 ) -> Vec<PpToken> {
     let input: Vec<ExpToken> =
-        line.into_iter().map(|t| ExpToken { tok: t, hide: FxHashSet::default(), expansion_site: None }).collect();
+        line.into_iter().map(|t| ExpToken { tok: t, hide: FxHashSet::default(), expansion_site: None, trace: None }).collect();
     let va_args_sym = interner.intern(VA_ARGS_NAME);
+    let track = traces.is_some();
     let mut exp = Expander {
         source_map,
         interner,
@@ -159,8 +197,13 @@ fn expand_line_impl(
         counter,
         expansion_budget,
         synthetic_budget,
+        track,
     };
-    exp.expand(input).into_iter().map(|et| et.tok).collect()
+    let expanded = exp.expand(input);
+    if let Some(traces) = traces {
+        traces.extend(expanded.iter().map(|et| et.trace.clone()));
+    }
+    expanded.into_iter().map(|et| et.tok).collect()
 }
 
 struct Expander<'a> {
@@ -184,6 +227,7 @@ struct Expander<'a> {
     expansion_budget: Option<(&'a Cell<usize>, usize)>,
     /// Total bytes registered as generated token spellings in SourceMap.
     synthetic_budget: Option<(&'a Cell<usize>, usize)>,
+    track: bool,
 }
 
 impl Expander<'_> {
@@ -254,6 +298,10 @@ impl Expander<'_> {
             // borrow of `self.macros` before recursing.
             let kind = def.kind.clone();
             let body = def.body.clone();
+            let definition = def.def_span;
+            let frame = self.track.then(|| Arc::new(ExpansionFrame {
+                name, definition, invocation: et.tok.span, parent: et.trace.clone(),
+            }));
 
             match kind {
                 MacroKind::Builtin(builtin) => {
@@ -263,13 +311,19 @@ impl Expander<'_> {
                     // hide-set bookkeeping is only defensive.
                     let mut hide = et.hide.clone();
                     hide.insert(name);
-                    let replaced = self.expand_builtin(builtin, &et, hide);
+                    let mut replaced = self.expand_builtin(builtin, &et, hide);
+                    for token in &mut replaced {
+                        if token.trace.is_none() { token.trace = frame.clone(); }
+                    }
                     push_front_all(&mut work, replaced);
                 }
                 MacroKind::ObjectLike => {
                     let mut hide = et.hide.clone();
                     hide.insert(name);
-                    let replaced = self.subst(&body, &[], &[], &hide, false, false, None, et.expansion_site.unwrap_or(et.tok.span));
+                    let mut replaced = self.subst(&body, &[], &[], &hide, false, false, None, et.expansion_site.unwrap_or(et.tok.span));
+                    for token in &mut replaced {
+                        if token.trace.is_none() { token.trace = frame.clone(); }
+                    }
                     push_front_all(&mut work, replaced);
                 }
                 MacroKind::FunctionLike { params, variadic, named_variadic } => {
@@ -313,7 +367,7 @@ impl Expander<'_> {
                     // the caller supplied zero trailing arguments we
                     // synthesise an empty slot so substitution code
                     // can rely on `args.len() == params.len() + 1`.
-                    let args = reconcile_arity(raw_args, params.len(), variadic);
+                    let mut args = reconcile_arity(raw_args, params.len(), variadic);
                     let expected = if variadic { params.len() + 1 } else { params.len() };
                     if args.len() != expected {
                         // Arity mismatch — diagnostic deferred. Skip
@@ -326,12 +380,19 @@ impl Expander<'_> {
                         continue;
                     }
 
+                    // Seed argument prescans with the enclosing invocation.
+                    for token in args.iter_mut().flatten() {
+                        if token.trace.is_none() { token.trace = frame.clone(); }
+                    }
                     // Prosser: HS' = (HS(name) ∩ HS(close-paren)) ∪ {name}.
                     let mut hide: HideSet = et.hide.intersection(&close_hide).copied().collect();
                     hide.insert(name);
 
-                    let replaced =
+                    let mut replaced =
                         self.subst(&body, &params, &args, &hide, true, variadic, named_variadic, et.expansion_site.unwrap_or(et.tok.span));
+                    for token in &mut replaced {
+                        if token.trace.is_none() { token.trace = frame.clone(); }
+                    }
                     push_front_all(&mut work, replaced);
                 }
             }
@@ -479,7 +540,7 @@ impl Expander<'_> {
                 // `#` not followed by a parameter name — C99
                 // §6.10.3.2p1 constraint violation.
                 self.emit_e0024(tok.span, next);
-                out.push(ExpToken { tok, hide: FxHashSet::default(), expansion_site: Some(invocation_site) });
+                out.push(ExpToken { tok, hide: FxHashSet::default(), expansion_site: Some(invocation_site), trace: None });
                 prev_empty = false;
                 i += 1;
                 continue;
@@ -597,7 +658,7 @@ impl Expander<'_> {
                 }
             }
 
-            out.push(ExpToken { tok, hide: FxHashSet::default(), expansion_site: Some(invocation_site) });
+            out.push(ExpToken { tok, hide: FxHashSet::default(), expansion_site: Some(invocation_site), trace: None });
             prev_empty = false;
             i += 1;
         }
@@ -748,7 +809,7 @@ impl Expander<'_> {
                 return Vec::new();
             }
         }
-        vec![ExpToken { tok: *rhs_body_tok, hide: FxHashSet::default(), expansion_site: Some(invocation_site) }]
+        vec![ExpToken { tok: *rhs_body_tok, hide: FxHashSet::default(), expansion_site: Some(invocation_site), trace: None }]
     }
 
     /// Splice a resolved paste RHS into `out`, popping the previously
@@ -835,7 +896,7 @@ impl Expander<'_> {
         let hide: HideSet = lhs.hide.intersection(&rhs.hide).copied().collect();
 
         if tokens.len() == 1 {
-            return vec![ExpToken { tok: tokens[0], hide, expansion_site: Some(invocation_site) }];
+            return vec![ExpToken { tok: tokens[0], hide, expansion_site: Some(invocation_site), trace: None }];
         }
 
         // GNU permissive paste: if all re-lexed tokens together form
@@ -851,13 +912,13 @@ impl Expander<'_> {
             // The most common case: `4` + `.57` = `4.57` which should
             // be a single pp-number. If it isn't, it means our lexer
             // split it. Accept multi-token results silently.
-            return tokens.into_iter().map(|tok| ExpToken { tok, hide: hide.clone(), expansion_site: Some(invocation_site) }).collect();
+            return tokens.into_iter().map(|tok| ExpToken { tok, hide: hide.clone(), expansion_site: Some(invocation_site), trace: None }).collect();
         }
 
         // Ill-formed: emit E0025 and still surface the raw re-lex so
         // later stages don't silently lose the operand texts.
         self.emit_e0025_invalid(lhs.tok.span, rhs.tok.span, hh_span);
-        tokens.into_iter().map(|tok| ExpToken { tok, hide: hide.clone(), expansion_site: Some(invocation_site) }).collect()
+        tokens.into_iter().map(|tok| ExpToken { tok, hide: hide.clone(), expansion_site: Some(invocation_site), trace: None }).collect()
     }
 
     /// Read the source bytes covered by `tok`'s span. Used to
@@ -946,7 +1007,7 @@ impl Expander<'_> {
             leading_ws: false,
             at_line_start: false,
         };
-        Some(ExpToken { tok, hide: FxHashSet::default(), expansion_site: None })
+        Some(ExpToken { tok, hide: FxHashSet::default(), expansion_site: None, trace: None })
     }
 
     /// Expand a dynamic predefined macro (C99 §6.10.8p1) at the
@@ -1034,7 +1095,7 @@ impl Expander<'_> {
             leading_ws: origin.tok.leading_ws,
             at_line_start: origin.tok.at_line_start,
         };
-        vec![ExpToken { tok, hide, expansion_site: Some(origin_span) }]
+        vec![ExpToken { tok, hide, expansion_site: Some(origin_span), trace: None }]
     }
 
     /// Emit E0025 for a paste whose concatenation re-lexed to more

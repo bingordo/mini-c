@@ -52,13 +52,13 @@
     fn native_diagnostics_restore_header_origins_and_raw_columns() {
         let source = "# 1 \"source.c\"\n# 8 \"headers with spaces.h\" 1\nint wrong = ;\n";
         let diagnostic = compile_source_diagnostic(source).unwrap_err();
-        let rendered = format_compiler_error("input.c", source, true, diagnostic);
+        let rendered = format_compiler_error("input.c", source, true, &TokenOrigins::default(), diagnostic);
         assert!(rendered.contains("headers with spaces.h:8"), "{rendered}");
         assert!(rendered.contains("error[S"), "{rendered}");
 
         let source = "int wrong = ;\n";
         let diagnostic = compile_source_diagnostic(source).unwrap_err();
-        let rendered = format_compiler_error("raw.c", source, false, diagnostic);
+        let rendered = format_compiler_error("raw.c", source, false, &TokenOrigins::default(), diagnostic);
         assert!(rendered.contains("raw.c:1:"), "{rendered}");
     }
 
@@ -182,11 +182,11 @@ fn native_warning_promotion_blocks_object_write() {
     let mut policy = WarningPolicy::default();
     assert!(collect_semantic_warnings(source, &policy).unwrap().is_empty());
     policy.apply_flag("-Wall").unwrap();
-    assert!(!emit_semantic_warnings("source.c", source, false, &policy, GnuExtensions::Enabled).unwrap());
+    assert!(!emit_semantic_warnings("source.c", source, false, &TokenOrigins::default(), &policy, GnuExtensions::Enabled).unwrap());
     policy.apply_flag("-Werror").unwrap();
-    assert!(emit_semantic_warnings("source.c", source, false, &policy, GnuExtensions::Enabled).unwrap());
+    assert!(emit_semantic_warnings("source.c", source, false, &TokenOrigins::default(), &policy, GnuExtensions::Enabled).unwrap());
     policy.apply_flag("-Wno-unused-variable").unwrap();
-    assert!(!emit_semantic_warnings("source.c", source, false, &policy, GnuExtensions::Enabled).unwrap());
+    assert!(!emit_semantic_warnings("source.c", source, false, &TokenOrigins::default(), &policy, GnuExtensions::Enabled).unwrap());
 }
 
 #[test]
