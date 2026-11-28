@@ -27,6 +27,7 @@ pub enum BuiltinId {
     AtomicCompareExchangeN,
     AtomicThreadFence,
     AtomicSignalFence,
+    AtomicIsLockFree,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,6 +40,8 @@ pub enum LoweringClass {
     FloatClassify,
     /// Source contract is recognized, but must not use generic call lowering.
     AtomicIrRequired,
+    /// Checked native capability query, not a memory operation.
+    AtomicCapabilityQuery,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,7 +68,7 @@ const fn atomic(id: BuiltinId, name: &'static str, count: usize, order: usize,
 
 /// Fixed spellings and signatures. Unsupported by-address GNU atomic overloads
 /// are intentionally absent; source diagnostics must not infer their ABI.
-pub const REGISTRY: [BuiltinSpec; 29] = [
+pub const REGISTRY: [BuiltinSpec; 30] = [
     BuiltinSpec {
         id: BuiltinId::Ctz32, name: "__builtin_ctz", argument_count: 1,
         memory_order_argument: None, failure_order_argument: None,
@@ -134,6 +137,9 @@ pub const REGISTRY: [BuiltinSpec; 29] = [
         6, 4, Some(5), Some(3)),
     atomic(BuiltinId::AtomicThreadFence, "__atomic_thread_fence", 1, 0, None, None),
     atomic(BuiltinId::AtomicSignalFence, "__atomic_signal_fence", 1, 0, None, None),
+    BuiltinSpec { id: BuiltinId::AtomicIsLockFree, name: "__atomic_c11_is_lock_free", argument_count: 1,
+        memory_order_argument: None, failure_order_argument: None,
+        weak_argument: None, lowering: LoweringClass::AtomicCapabilityQuery },
     // C11 header aliases are canonicalized to the same checked raw operation.
     atomic(BuiltinId::AtomicFetchAdd, "__atomic_c11_fetch_add", 3, 2, None, None),
     atomic(BuiltinId::AtomicFetchSub, "__atomic_c11_fetch_sub", 3, 2, None, None),
@@ -145,7 +151,7 @@ pub const REGISTRY: [BuiltinSpec; 29] = [
 pub fn valid_atomic_orders(id: BuiltinId, success: u8, failure: Option<u8>) -> bool {
     if success > 5 { return false; }
     match id {
-        BuiltinId::Ctz32 | BuiltinId::ByteSwap(_) | BuiltinId::BitCount(..) | BuiltinId::Nan(_) | BuiltinId::IsNan | BuiltinId::IsInfSign => false,
+        BuiltinId::Ctz32 | BuiltinId::ByteSwap(_) | BuiltinId::BitCount(..) | BuiltinId::Nan(_) | BuiltinId::IsNan | BuiltinId::IsInfSign | BuiltinId::AtomicIsLockFree => false,
         BuiltinId::AtomicLoadN => failure.is_none() && matches!(success, 0|1|2|5),
         BuiltinId::AtomicStoreN => failure.is_none() && matches!(success, 0|3|5),
         BuiltinId::AtomicCompareExchangeN => {
@@ -247,6 +253,10 @@ mod tests {
                 assert!(matches!(bits,16|32|64));
                 assert_eq!(spec.argument_count,1);
                 assert_eq!(spec.memory_order_argument,None);
+            } else if spec.id==BuiltinId::AtomicIsLockFree {
+                assert_eq!(spec.argument_count,1);
+                assert_eq!(spec.memory_order_argument,None);
+                assert_eq!(spec.lowering,LoweringClass::AtomicCapabilityQuery);
             } else {
                 assert!(spec.name.starts_with("__atomic_"));
                 assert!(spec.memory_order_argument.is_some());
