@@ -5252,3 +5252,16 @@ fn scalar_members_of_aggregate_calls_are_values_not_lvalues() {
         assert!(check(&format!("{prefix}{body}")).is_err(), "temporary member admitted as lvalue: {body}");
     }
 }
+
+#[test]
+fn defined_internal_builtin_named_helpers_use_checked_calls() {
+    let source = "static inline unsigned long __builtin_clz64(unsigned long v) { return (v >> 32) != 0 ? __builtin_clz(v >> 32) : 32 + __builtin_clz(v); } unsigned long f(unsigned long v) { return __builtin_clz64(v); }";
+    check(source).unwrap();
+    for source in [
+        "unsigned long f(unsigned long v) { return __builtin_clz64(v); }",
+        "extern unsigned long __builtin_clz64(unsigned long); unsigned long f(unsigned long v) { return __builtin_clz64(v); }",
+        "static unsigned long __builtin_clz64(unsigned long); unsigned long f(unsigned long v) { return __builtin_clz64(v); }",
+    ] {
+        assert!(check(source).is_err(), "unresolved intrinsic admitted: {source}");
+    }
+}
