@@ -3447,6 +3447,9 @@ impl Checker {
             return Err(type_error(span, "atomic compare-exchange weak flag must be 0 or 1"));
         }
         let weak = weak.unwrap_or(0) != 0;
+        let by_address=matches!(spec.name,"__atomic_load"|"__atomic_store"|
+            "__atomic_exchange"|"__atomic_compare_exchange");
+        let mut output=None;
         let mut operands = Vec::new();
         let (result_ty, bytes, alignment) =
             if matches!(spec.id, A::AtomicThreadFence | A::AtomicSignalFence) {
@@ -3486,13 +3489,24 @@ impl Checker {
                 let value_ty = pointee.unqualified().clone();
                 operands.push(address);
                 let result_ty = match spec.id {
-                    A::AtomicLoadN => value_ty,
+                    A::AtomicLoadN => {
+                        if by_address {
+                            output=Some(self.atomic_address_operand(&args[1],&value_ty,true,span)?);
+                        }
+                        value_ty
+                    },
                     A::AtomicStoreN | A::AtomicExchangeN |
                     A::AtomicFetchAdd | A::AtomicFetchSub |
                     A::AtomicFetchAnd | A::AtomicFetchOr | A::AtomicFetchXor => {
                         let argument = &args[1];
-                        let checked = self.check_expr(argument,
-                            argument.location().unwrap_or(span))?;
+                        let checked = if by_address {
+                            self.atomic_address_operand(argument,&value_ty,false,span)?.rvalue()
+                        } else {
+                            self.check_expr(argument,argument.location().unwrap_or(span))?
+                        };
+                        if by_address && spec.id==A::AtomicExchangeN {
+                            output=Some(self.atomic_address_operand(&args[2],&value_ty,true,span)?);
+                        }
                         // GNU pointer fetch arithmetic adds raw bytes, unlike
                         // ordinary C pointer arithmetic. Convert the offset
                         // to an integer of the target pointer width.
@@ -3539,8 +3553,11 @@ impl Checker {
                         }
                         operands.push(expected);
                         let argument = &args[2];
-                        let checked = self.check_expr(argument,
-                            argument.location().unwrap_or(span))?;
+                        let checked = if by_address {
+                            self.atomic_address_operand(argument,&value_ty,false,span)?.rvalue()
+                        } else {
+                            self.check_expr(argument,argument.location().unwrap_or(span))?
+                        };
                         operands.push(self.convert_for_assignment(
                             checked, &value_ty, argument, argument.location().unwrap_or(span))?);
                         CType::Integer { rank: IntRank::Bool, unsigned: true }
@@ -3549,11 +3566,42 @@ impl Checker {
                 };
                 (result_ty, bytes, alignment)
             };
-        Ok(CheckedExpr::value(result_ty,
+        let atomic=CheckedExpr::value(result_ty,
             CheckedExprKind::BuiltinAtomic(Box::new(CheckedAtomicBuiltin {
                 builtin: spec.id, operands, bytes, alignment,
                 success_order: success, failure_order: failure, weak,
-            }))))
+            })));
+        // The ordinary destination address is evaluated once before the
+        // atomic operation; the returned value is then stored once. No new
+        // atomic IR form or ordinary access to the atomic object is needed.
+        if let Some(destination)=output {
+            let assigned=CheckedExpr::value(atomic.ty.clone(),
+                CheckedExprKind::Assign(Box::new(destination),Box::new(atomic)));
+            Ok(CheckedExpr::value(CType::Void,
+                CheckedExprKind::Convert(Box::new(assigned))))
+        } else {
+            Ok(atomic)
+        }
+    }
+
+    /// Check a by-address GNU atomic value buffer as ordinary scalar storage.
+    /// Preserve volatile access and prohibit hidden atomic buffer accesses.
+    fn atomic_address_operand(
+        &mut self, expr:&Expr, value_ty:&CType, writable:bool, span:Span,
+    )->Result<CheckedExpr,Diagnostic> {
+        let at=expr.location().unwrap_or(span);
+        let pointer=self.check_expr(expr,at)?.rvalue();
+        let CType::Pointer(pointee)=&pointer.ty else {
+            return Err(type_error(at,"GNU atomic value buffer requires a pointer"));
+        };
+        if pointee.is_atomic() || !pointee.unqualified().same_type(value_ty)
+            || (writable && pointee.is_const()) {
+            return Err(type_error(at,"GNU atomic value buffer requires matching ordinary scalar storage"));
+        }
+        let ty=pointee.as_ref().clone();
+        Ok(CheckedExpr {ty, category:Category::LValue,
+            kind:CheckedExprKind::Unary(UnOp::Deref,Box::new(pointer)),
+            source_span:Some(at)})
     }
 
     fn atomic_builtin_constant_arg(
