@@ -4259,7 +4259,7 @@ fn generated_atomic_cas_order_matrix_both_modes_and_negative_types() {
         ("void f(int *p) { __atomic_store_n(p,7,2); }","invalid C11"),
         ("void f(int *p) { __atomic_load_n(p,3); }","invalid C11"),
         ("void f(int *p) { __atomic_fetch_add(p,7,6); }","invalid C11"),
-        ("void f(int *p) { int order=5; __atomic_load_n(p,order); }","integer constant expression"),
+        ("void f(int *p) { __atomic_load_n(p,1.5); }","integer expression"),
         ("void f(int *p) { __atomic_load_n(7,5); }","requires a pointer"),
         ("void f(void *p) { __atomic_load_n(p,5); }","requires an integer object"),
         ("void f(const int *p) { __atomic_store_n(p,7,5); }","requires a writable"),
@@ -5213,5 +5213,31 @@ fn scalar_gnu_atomic_address_buffers_use_checked_scalar_operations() {
         "void f(int *p,int *expected,short *desired){__atomic_compare_exchange(p,expected,desired,0,5,2);}",
     ] {
         assert!(check(source).is_err(), "invalid atomic buffer accepted: {source}");
+    }
+}
+
+#[test]
+fn runtime_atomic_orders_strengthen_without_dropping_evaluation() {
+    let items = check("int f(int *p,int order){return __atomic_load_n(p,order++);}").unwrap();
+    let CheckedItem::Function(function) = &items[0] else { panic!("function") };
+    let CheckedStmt::Block(statements) = &function.body else { panic!("block") };
+    let CheckedStmt::Return(Some(expr)) = &statements[0] else { panic!("return") };
+    let CheckedExprKind::Comma(_, op) = &expr.kind else { panic!("missing runtime evaluation") };
+    let CheckedExprKind::BuiltinAtomic(atomic) = &op.kind else { panic!("atomic operation") };
+    assert_eq!(atomic.success_order, 5);
+    for source in [
+        "void f(int *p,int o){__atomic_store_n(p,7,o++);}",
+        "void f(int *p,int *out,int o){__atomic_load(p,out,o);}",
+        "int f(int *p,int *e,int o){return __atomic_compare_exchange_n(p,e,7,0,o,2);}",
+        "int f(int *p,int *e,int o){return __atomic_compare_exchange_n(p,e,7,0,5,o);}",
+        "void f(int o){__atomic_thread_fence(o);}",
+    ] {
+        check(source).unwrap_or_else(|e| panic!("{source}: {e:?}"));
+    }
+    for source in [
+        "int f(int *p,int *e,int o){return __atomic_compare_exchange_n(p,e,7,0,o,3);}",
+        "int f(int *p,int *e,int o){return __atomic_compare_exchange_n(p,e,7,0,6,o);}",
+    ] {
+        assert!(check(source).is_err(), "invalid constant order accepted: {source}");
     }
 }
