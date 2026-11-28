@@ -4548,7 +4548,13 @@ impl Checker {
                                 _ => return self.check_atomic_builtin(spec, args, span),
                             }
                         }
-                    } else if builtins::reserved_name(name) {
+                    } else if builtins::reserved_name(name)
+                        && !(name.starts_with("__builtin_") && self.lookup(name).is_some_and(|symbol|
+                            symbol.kind == SymbolKind::Function && symbol.linkage == Linkage::Internal
+                            && symbol.defined)) {
+                        // Unknown reserved names still fail closed. A previously
+                        // defined internal C helper (e.g. mrustc's clz64) has a
+                        // checked body and is not an unresolved intrinsic.
                         return Err(Diagnostic::coded(span,
                             DiagnosticCode::SemanticInvalidOperatorOperands,
                             format!("unsupported compiler builtin {name}; no implicit external call")));
