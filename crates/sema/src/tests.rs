@@ -5241,3 +5241,14 @@ fn runtime_atomic_orders_strengthen_without_dropping_evaluation() {
         assert!(check(source).is_err(), "invalid constant order accepted: {source}");
     }
 }
+
+#[test]
+fn scalar_members_of_aggregate_calls_are_values_not_lvalues() {
+    let prefix = "struct S { int x; int y; }; struct S make(void); ";
+    for body in ["int f(void){return make().y;}", "int f(void){return make().x + make().y;}"] {
+        check(&format!("{prefix}{body}")).unwrap();
+    }
+    for body in ["void f(void){make().x=1;}", "int *f(void){return &make().x;}", "void f(void){make().x++;}"] {
+        assert!(check(&format!("{prefix}{body}")).is_err(), "temporary member admitted as lvalue: {body}");
+    }
+}
