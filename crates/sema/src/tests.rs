@@ -5191,3 +5191,18 @@ fn gnu_typeof_preserves_unevaluated_types_and_atomic_macro_declaration() {
         assert!(check(source).is_err(), "invalid typeof admitted: {source}");
     }
 }
+
+#[test]
+fn c11_lock_free_query_checks_atomic_layout_and_preserves_operand() {
+    for ty in ["_Atomic int","_Atomic long","_Atomic(int*)","const _Atomic short"] {
+        let source=format!("void f({ty} *p){{__atomic_c11_is_lock_free(p);}}");
+        let checked=checked_atomic_in_generated_c(&source);
+        assert_eq!(checked.builtin,builtins::BuiltinId::AtomicIsLockFree);
+        assert_eq!(checked.operands.len(),1);
+        assert!(matches!(checked.bytes,2|4|8));
+        assert!(checked.alignment>=checked.bytes);
+    }
+    reject("int f(int *p){return __atomic_c11_is_lock_free(p);}","pointer to atomic object");
+    reject("int f(void *p){return __atomic_c11_is_lock_free(p);}","pointer to atomic object");
+    reject("int f(void){return __atomic_c11_is_lock_free();}","exactly one argument");
+}
