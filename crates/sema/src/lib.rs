@@ -3430,16 +3430,29 @@ impl Checker {
         &mut self, spec: &builtins::BuiltinSpec, args: &[Expr], span: Span,
     ) -> Result<CheckedExpr, Diagnostic> {
         use builtins::BuiltinId as A;
-        let success = self.atomic_builtin_constant_arg(
+        let mut order_effects = Vec::new();
+        let success = self.atomic_builtin_order_arg(
             &args[spec.memory_order_argument.expect("atomic builtin has order")],
-            span, "memory order")?;
+            span, &mut order_effects)?;
         let failure = spec.failure_order_argument.map(|index|
-            self.atomic_builtin_constant_arg(&args[index], span, "failure memory order")
+            self.atomic_builtin_order_arg(&args[index], span, &mut order_effects)
         ).transpose()?;
-        if !builtins::valid_atomic_orders(spec.id, success, failure) {
+        // Validate known constants even if the other CAS order is dynamic.
+        let legal = (0..=5).any(|s| success.is_none_or(|n| n == s) &&
+            match failure {
+                None => builtins::valid_atomic_orders(spec.id, s, None),
+                Some(f) => (0..=5).any(|n| f.is_none_or(|v| v == n)
+                    && builtins::valid_atomic_orders(spec.id, s, Some(n))),
+            });
+        if !legal {
             return Err(type_error(span, format!(
                 "{} has an invalid C11 success/failure memory-order combination", spec.name)));
         }
+        // GCC admits runtime memory orders using sequential consistency.
+        // Strengthen both CAS orders together to preserve a legal pair.
+        let dynamic_order = !order_effects.is_empty();
+        let success = if dynamic_order { 5 } else { success.unwrap() };
+        let failure = failure.map(|f| if dynamic_order { 5 } else { f.unwrap() });
         let weak = spec.weak_argument.map(|index|
             self.atomic_builtin_constant_arg(&args[index], span, "weak compare-exchange flag")
         ).transpose()?;
@@ -3447,6 +3460,9 @@ impl Checker {
             return Err(type_error(span, "atomic compare-exchange weak flag must be 0 or 1"));
         }
         let weak = weak.unwrap_or(0) != 0;
+        let by_address=matches!(spec.name,"__atomic_load"|"__atomic_store"|
+            "__atomic_exchange"|"__atomic_compare_exchange");
+        let mut output=None;
         let mut operands = Vec::new();
         let (result_ty, bytes, alignment) =
             if matches!(spec.id, A::AtomicThreadFence | A::AtomicSignalFence) {
@@ -3486,13 +3502,24 @@ impl Checker {
                 let value_ty = pointee.unqualified().clone();
                 operands.push(address);
                 let result_ty = match spec.id {
-                    A::AtomicLoadN => value_ty,
+                    A::AtomicLoadN => {
+                        if by_address {
+                            output=Some(self.atomic_address_operand(&args[1],&value_ty,true,span)?);
+                        }
+                        value_ty
+                    },
                     A::AtomicStoreN | A::AtomicExchangeN |
                     A::AtomicFetchAdd | A::AtomicFetchSub |
                     A::AtomicFetchAnd | A::AtomicFetchOr | A::AtomicFetchXor => {
                         let argument = &args[1];
-                        let checked = self.check_expr(argument,
-                            argument.location().unwrap_or(span))?;
+                        let checked = if by_address {
+                            self.atomic_address_operand(argument,&value_ty,false,span)?.rvalue()
+                        } else {
+                            self.check_expr(argument,argument.location().unwrap_or(span))?
+                        };
+                        if by_address && spec.id==A::AtomicExchangeN {
+                            output=Some(self.atomic_address_operand(&args[2],&value_ty,true,span)?);
+                        }
                         // GNU pointer fetch arithmetic adds raw bytes, unlike
                         // ordinary C pointer arithmetic. Convert the offset
                         // to an integer of the target pointer width.
@@ -3539,8 +3566,11 @@ impl Checker {
                         }
                         operands.push(expected);
                         let argument = &args[2];
-                        let checked = self.check_expr(argument,
-                            argument.location().unwrap_or(span))?;
+                        let checked = if by_address {
+                            self.atomic_address_operand(argument,&value_ty,false,span)?.rvalue()
+                        } else {
+                            self.check_expr(argument,argument.location().unwrap_or(span))?
+                        };
                         operands.push(self.convert_for_assignment(
                             checked, &value_ty, argument, argument.location().unwrap_or(span))?);
                         CType::Integer { rank: IntRank::Bool, unsigned: true }
@@ -3549,11 +3579,69 @@ impl Checker {
                 };
                 (result_ty, bytes, alignment)
             };
-        Ok(CheckedExpr::value(result_ty,
+        let atomic=CheckedExpr::value(result_ty,
             CheckedExprKind::BuiltinAtomic(Box::new(CheckedAtomicBuiltin {
                 builtin: spec.id, operands, bytes, alignment,
                 success_order: success, failure_order: failure, weak,
-            }))))
+            })));
+        // The ordinary destination address is evaluated once before the
+        // atomic operation; the returned value is then stored once. No new
+        // atomic IR form or ordinary access to the atomic object is needed.
+        let mut result = if let Some(destination)=output {
+            let assigned=CheckedExpr::value(atomic.ty.clone(),
+                CheckedExprKind::Assign(Box::new(destination),Box::new(atomic)));
+            CheckedExpr::value(CType::Void,
+                CheckedExprKind::Convert(Box::new(assigned)))
+        } else {
+            atomic
+        };
+        // Preserve runtime expression evaluation, including calls and
+        // volatile reads, exactly once before the atomic operation.
+        for effect in order_effects.into_iter().rev() {
+            result = CheckedExpr::value(result.ty.clone(),
+                CheckedExprKind::Comma(Box::new(effect), Box::new(result)));
+        }
+        Ok(result)
+    }
+
+    /// Check an integer order, retaining runtime evaluation for conservative
+    /// sequentially consistent lowering rather than introducing dynamic IR.
+    fn atomic_builtin_order_arg(
+        &mut self, expr: &Expr, span: Span, effects: &mut Vec<CheckedExpr>,
+    ) -> Result<Option<u8>, Diagnostic> {
+        let at = expr.location().unwrap_or(span);
+        let checked = self.check_expr(expr, at)?.rvalue();
+        if !checked.ty.is_integer() {
+            return Err(type_error(at, "atomic memory order requires an integer expression"));
+        }
+        match const_eval::evaluate(&checked, self.target) {
+            Ok(value) => u8::try_from(value).map(Some)
+                .map_err(|_| type_error(at, "atomic memory order is outside the supported constant range")),
+            Err(_) => {
+                effects.push(checked);
+                Ok(None)
+            }
+        }
+    }
+
+    /// Check a by-address GNU atomic value buffer as ordinary scalar storage.
+    /// Preserve volatile access and prohibit hidden atomic buffer accesses.
+    fn atomic_address_operand(
+        &mut self, expr:&Expr, value_ty:&CType, writable:bool, span:Span,
+    )->Result<CheckedExpr,Diagnostic> {
+        let at=expr.location().unwrap_or(span);
+        let pointer=self.check_expr(expr,at)?.rvalue();
+        let CType::Pointer(pointee)=&pointer.ty else {
+            return Err(type_error(at,"GNU atomic value buffer requires a pointer"));
+        };
+        if pointee.is_atomic() || !pointee.unqualified().same_type(value_ty)
+            || (writable && pointee.is_const()) {
+            return Err(type_error(at,"GNU atomic value buffer requires matching ordinary scalar storage"));
+        }
+        let ty=pointee.as_ref().clone();
+        Ok(CheckedExpr {ty, category:Category::LValue,
+            kind:CheckedExprKind::Unary(UnOp::Deref,Box::new(pointer)),
+            source_span:Some(at)})
     }
 
     fn atomic_builtin_constant_arg(
@@ -3786,8 +3874,11 @@ impl Checker {
                         source_span:None,
                     }
                 } else {
-                    if base.category != Category::LValue {
-                        return Err(Diagnostic::coded(span, DiagnosticCode::SemanticInvalidMemberAccess, "dot operator requires an addressable struct"));
+                    // Aggregate calls own a temporary result object. Permit
+                    // read-only member selection without creating a C lvalue.
+                    if base.category != Category::LValue
+                        && !matches!(&base.kind, CheckedExprKind::Call(..)) {
+                        return Err(Diagnostic::coded(span, DiagnosticCode::SemanticInvalidMemberAccess, "dot operator requires an addressable struct or aggregate call"));
                     }
                     base
                 };
@@ -3809,18 +3900,28 @@ impl Checker {
                 let mut field_ty = field.ty.clone();
                 if object.ty.is_const() { field_ty = field_ty.with_const(); }
                 if object.ty.is_volatile() { field_ty = field_ty.with_volatile(); }
+                let temporary = object.category != Category::LValue;
+                if temporary && (!field_ty.is_scalar() || field.bit_field.is_some()) {
+                    return Err(type_error(span, "temporary aggregate member requires a non-bitfield scalar"));
+                }
                 let offset = field.offset;
                 let kind = match field.bit_field {
                     Some(info) => CheckedExprKind::BitFieldMember(
                         Box::new(object), offset, info.shift, info.width),
                     None => CheckedExprKind::Member(Box::new(object), offset),
                 };
-                Ok(CheckedExpr {
+                let member = CheckedExpr {
                     ty: field_ty,
-                    category: Category::LValue,
+                    category: if temporary { Category::Value } else { Category::LValue },
                     kind,
                     source_span:None,
-                })
+                };
+                if temporary {
+                    Ok(CheckedExpr::value(member.ty.unqualified().clone(),
+                        CheckedExprKind::Load(Box::new(member))))
+                } else {
+                    Ok(member)
+                }
             }
             Expr::Index(base, offset) => {
                 // C defines E1[E2] as *((E1) + (E2)); either operand may

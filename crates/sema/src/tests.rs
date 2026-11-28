@@ -4259,7 +4259,7 @@ fn generated_atomic_cas_order_matrix_both_modes_and_negative_types() {
         ("void f(int *p) { __atomic_store_n(p,7,2); }","invalid C11"),
         ("void f(int *p) { __atomic_load_n(p,3); }","invalid C11"),
         ("void f(int *p) { __atomic_fetch_add(p,7,6); }","invalid C11"),
-        ("void f(int *p) { int order=5; __atomic_load_n(p,order); }","integer constant expression"),
+        ("void f(int *p) { __atomic_load_n(p,1.5); }","integer expression"),
         ("void f(int *p) { __atomic_load_n(7,5); }","requires a pointer"),
         ("void f(void *p) { __atomic_load_n(p,5); }","requires an integer object"),
         ("void f(const int *p) { __atomic_store_n(p,7,5); }","requires a writable"),
@@ -4269,7 +4269,7 @@ fn generated_atomic_cas_order_matrix_both_modes_and_negative_types() {
         ("void f(int *p,int *e) { int weak=1; __atomic_compare_exchange_n(p,e,7,weak,5,2); }","integer constant expression"),
         ("void f(int *p) { __atomic_compare_exchange_n(p); }","expects exactly 6 arguments"),
         ("void f(void) { __atomic_thread_fence(); }","expects exactly one argument"),
-        ("void f(int *p) { __atomic_load(p); }","unsupported compiler builtin"),
+        ("void f(int *p) { __atomic_load(p); }","expects exactly 3 arguments"),
         ("void f(int *p) { __sync_fetch_and_add(p,1); }","unsupported compiler builtin"),
     ] {
         reject(source,diagnostic);
@@ -5189,5 +5189,66 @@ fn gnu_typeof_preserves_unevaluated_types_and_atomic_macro_declaration() {
         "int f(void){const int x=1;typeof(x) y=2;y=3;return y;}",
     ] {
         assert!(check(source).is_err(), "invalid typeof admitted: {source}");
+    }
+}
+
+#[test]
+fn scalar_gnu_atomic_address_buffers_use_checked_scalar_operations() {
+    for source in [
+        "void f(int *p,int *out){__atomic_load(p,out,2);}",
+        "void f(int *p,const int *in){__atomic_store(p,in,3);}",
+        "void f(long *p,long *in,long *out){__atomic_exchange(p,in,out,5);}",
+        "int f(int *p,int *expected,int *desired){return __atomic_compare_exchange(p,expected,desired,0,5,2);}",
+        "void f(int **p,int **out){__atomic_load(p,out,5);}",
+        "int f(_Atomic int *p){return ({ __auto_type q=p; __typeof__((void)0,*q) tmp; __atomic_load(q,&tmp,5); tmp; });}",
+    ] {
+        check(source).unwrap_or_else(|e|panic!("{source}: {e:?}"));
+    }
+    for source in [
+        "void f(int *p,short *out){__atomic_load(p,out,5);}",
+        "void f(int *p,const int *out){__atomic_load(p,out,5);}",
+        "void f(int *p,_Atomic int *out){__atomic_load(p,out,5);}",
+        "void f(int *p,int *in){__atomic_store(p,in,2);}",
+        "void f(int *p,int *in,int *out){__atomic_exchange(p,in,out,6);}",
+        "void f(int *p,int *expected,short *desired){__atomic_compare_exchange(p,expected,desired,0,5,2);}",
+    ] {
+        assert!(check(source).is_err(), "invalid atomic buffer accepted: {source}");
+    }
+}
+
+#[test]
+fn runtime_atomic_orders_strengthen_without_dropping_evaluation() {
+    let items = check("int f(int *p,int order){return __atomic_load_n(p,order++);}").unwrap();
+    let CheckedItem::Function(function) = &items[0] else { panic!("function") };
+    let CheckedStmt::Block(statements) = &function.body else { panic!("block") };
+    let CheckedStmt::Return(Some(expr)) = &statements[0] else { panic!("return") };
+    let CheckedExprKind::Comma(_, op) = &expr.kind else { panic!("missing runtime evaluation") };
+    let CheckedExprKind::BuiltinAtomic(atomic) = &op.kind else { panic!("atomic operation") };
+    assert_eq!(atomic.success_order, 5);
+    for source in [
+        "void f(int *p,int o){__atomic_store_n(p,7,o++);}",
+        "void f(int *p,int *out,int o){__atomic_load(p,out,o);}",
+        "int f(int *p,int *e,int o){return __atomic_compare_exchange_n(p,e,7,0,o,2);}",
+        "int f(int *p,int *e,int o){return __atomic_compare_exchange_n(p,e,7,0,5,o);}",
+        "void f(int o){__atomic_thread_fence(o);}",
+    ] {
+        check(source).unwrap_or_else(|e| panic!("{source}: {e:?}"));
+    }
+    for source in [
+        "int f(int *p,int *e,int o){return __atomic_compare_exchange_n(p,e,7,0,o,3);}",
+        "int f(int *p,int *e,int o){return __atomic_compare_exchange_n(p,e,7,0,6,o);}",
+    ] {
+        assert!(check(source).is_err(), "invalid constant order accepted: {source}");
+    }
+}
+
+#[test]
+fn scalar_members_of_aggregate_calls_are_values_not_lvalues() {
+    let prefix = "struct S { int x; int y; }; struct S make(void); ";
+    for body in ["int f(void){return make().y;}", "int f(void){return make().x + make().y;}"] {
+        check(&format!("{prefix}{body}")).unwrap();
+    }
+    for body in ["void f(void){make().x=1;}", "int *f(void){return &make().x;}", "void f(void){make().x++;}"] {
+        assert!(check(&format!("{prefix}{body}")).is_err(), "temporary member admitted as lvalue: {body}");
     }
 }

@@ -1790,7 +1790,14 @@ impl Lower<'_> {
             }
             CheckedExprKind::Member(base, offset) |
             CheckedExprKind::BitFieldMember(base, offset, ..) => {
-                let address = self.place(b, base)?;
+                // Aggregate calls already materialize their ABI result in
+                // a private stack object; read the selected member there.
+                let address = if is_aggregate(&base.ty)
+                    && matches!(&base.kind, CheckedExprKind::Call(..)) {
+                    self.expression(b, base)?
+                } else {
+                    self.place(b, base)?
+                };
                 let offset = i64::try_from(*offset)
                     .map_err(|_| "struct member offset exceeds supported address range")?;
                 Ok(b.ins().iadd_imm_s(address, offset))
