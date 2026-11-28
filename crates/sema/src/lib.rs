@@ -3874,8 +3874,11 @@ impl Checker {
                         source_span:None,
                     }
                 } else {
-                    if base.category != Category::LValue {
-                        return Err(Diagnostic::coded(span, DiagnosticCode::SemanticInvalidMemberAccess, "dot operator requires an addressable struct"));
+                    // Aggregate calls own a temporary result object. Permit
+                    // read-only member selection without creating a C lvalue.
+                    if base.category != Category::LValue
+                        && !matches!(&base.kind, CheckedExprKind::Call(..)) {
+                        return Err(Diagnostic::coded(span, DiagnosticCode::SemanticInvalidMemberAccess, "dot operator requires an addressable struct or aggregate call"));
                     }
                     base
                 };
@@ -3897,18 +3900,28 @@ impl Checker {
                 let mut field_ty = field.ty.clone();
                 if object.ty.is_const() { field_ty = field_ty.with_const(); }
                 if object.ty.is_volatile() { field_ty = field_ty.with_volatile(); }
+                let temporary = object.category != Category::LValue;
+                if temporary && (!field_ty.is_scalar() || field.bit_field.is_some()) {
+                    return Err(type_error(span, "temporary aggregate member requires a non-bitfield scalar"));
+                }
                 let offset = field.offset;
                 let kind = match field.bit_field {
                     Some(info) => CheckedExprKind::BitFieldMember(
                         Box::new(object), offset, info.shift, info.width),
                     None => CheckedExprKind::Member(Box::new(object), offset),
                 };
-                Ok(CheckedExpr {
+                let member = CheckedExpr {
                     ty: field_ty,
-                    category: Category::LValue,
+                    category: if temporary { Category::Value } else { Category::LValue },
                     kind,
                     source_span:None,
-                })
+                };
+                if temporary {
+                    Ok(CheckedExpr::value(member.ty.unqualified().clone(),
+                        CheckedExprKind::Load(Box::new(member))))
+                } else {
+                    Ok(member)
+                }
             }
             Expr::Index(base, offset) => {
                 // C defines E1[E2] as *((E1) + (E2)); either operand may
