@@ -3423,6 +3423,46 @@ impl Checker {
         })
     }
 
+    /// Check the exact scalar representation shared by operations and queries.
+    fn atomic_object_layout(&self, pointee:&CType, name:&str, span:Span)->Result<(u8,u8),Diagnostic> {
+        let width=match pointee.unqualified() {
+            CType::Integer{rank,..}=>self.target.bits(*rank),
+            CType::Pointer(inner) if !matches!(inner.unqualified(),
+                CType::Function{..}|CType::VariadicFunction{..}|CType::UnprototypedFunction{..})=>self.target.pointer_bits,
+            _=>return Err(type_error(span,format!(
+                "{} requires an integer object or data pointer object",name))),
+        };
+        let bytes = u8::try_from(width / 8)
+            .map_err(|_| type_error(span, "unsupported atomic scalar width"))?;
+        let alignment = pointee.align_bytes(self.target)
+            .and_then(|align| u8::try_from(align).ok())
+            .ok_or_else(|| type_error(span, "unsupported atomic scalar alignment"))?;
+        if !matches!(width, 8 | 16 | 32 | 64) ||
+            alignment < bytes || !alignment.is_power_of_two()
+        {
+            return Err(type_error(span, "atomic object requires a naturally aligned 8/16/32/64-bit scalar"));
+        }
+        Ok((bytes,alignment))
+    }
+
+    /// Preserve a checked query as a native-only builtin until the target adapter
+    /// evaluates its pointer argument and supplies the capability result.
+    fn check_atomic_lock_free(&mut self, arg:&Expr, span:Span)->Result<CheckedExpr,Diagnostic> {
+        let address=self.check_expr(arg,arg.location().unwrap_or(span))?.rvalue();
+        let CType::Pointer(pointee)=&address.ty else {
+            return Err(type_error(span,"atomic_is_lock_free requires pointer to atomic object"));
+        };
+        if !pointee.is_atomic() {
+            return Err(type_error(span,"atomic_is_lock_free requires pointer to atomic object"));
+        }
+        let (bytes,alignment)=self.atomic_object_layout(pointee,"atomic_is_lock_free",span)?;
+        Ok(CheckedExpr::value(CType::Integer{rank:IntRank::Bool,unsigned:true},
+            CheckedExprKind::BuiltinAtomic(Box::new(CheckedAtomicBuiltin {
+                builtin:builtins::BuiltinId::AtomicIsLockFree,operands:vec![address],
+                bytes,alignment,success_order:0,failure_order:None,weak:false,
+            }))))
+    }
+
     /// A single checked source entry point for all GNU atomic builtin spellings.
     /// This produces a typed operation plan but never a generic C Call. Target
     /// code generation remains gated until true atomic lowering is available.
@@ -3430,16 +3470,29 @@ impl Checker {
         &mut self, spec: &builtins::BuiltinSpec, args: &[Expr], span: Span,
     ) -> Result<CheckedExpr, Diagnostic> {
         use builtins::BuiltinId as A;
-        let success = self.atomic_builtin_constant_arg(
-            &args[spec.memory_order_argument.expect("atomic builtin has order")],
-            span, "memory order")?;
-        let failure = spec.failure_order_argument.map(|index|
-            self.atomic_builtin_constant_arg(&args[index], span, "failure memory order")
+        let (success, success_eval) = self.atomic_memory_order_arg(
+            &args[spec.memory_order_argument.expect("atomic builtin has order")], span)?;
+        let failure_arg = spec.failure_order_argument.map(|index|
+            self.atomic_memory_order_arg(&args[index], span)
         ).transpose()?;
-        if !builtins::valid_atomic_orders(spec.id, success, failure) {
+        let failure = failure_arg.as_ref().and_then(|(order,_)|*order);
+        // Constant arguments must admit at least one valid order combination.
+        // If any order is dynamic, strengthen both CAS orders together.
+        let valid = (0..=5).any(|s| success.is_none_or(|v|v==s) &&
+            if failure_arg.is_some() {
+                (0..=5).any(|f| failure.is_none_or(|v|v==f)
+                    && builtins::valid_atomic_orders(spec.id,s,Some(f)))
+            } else {
+                builtins::valid_atomic_orders(spec.id,s,None)
+            });
+        if !valid {
             return Err(type_error(span, format!(
                 "{} has an invalid C11 success/failure memory-order combination", spec.name)));
         }
+        let failure_eval=failure_arg.and_then(|(_,eval)|eval);
+        let dynamic=success_eval.is_some() || failure_eval.is_some();
+        let success=if dynamic {5} else {success.expect("constant order")};
+        let failure=spec.failure_order_argument.map(|_|if dynamic {5} else {failure.expect("constant failure order")});
         let weak = spec.weak_argument.map(|index|
             self.atomic_builtin_constant_arg(&args[index], span, "weak compare-exchange flag")
         ).transpose()?;
@@ -3459,25 +3512,9 @@ impl Checker {
                         "{} requires a pointer to a scalar object", spec.name)));
                 };
                 let pointer=matches!(pointee.unqualified(),CType::Pointer(_));
-                let width=match pointee.unqualified() {
-                    CType::Integer{rank,..}=>self.target.bits(*rank),
-                    CType::Pointer(inner) if !matches!(inner.unqualified(),
-                        CType::Function{..}|CType::VariadicFunction{..}|CType::UnprototypedFunction{..})=>self.target.pointer_bits,
-                    _=>return Err(type_error(span,format!(
-                        "{} requires an integer object or data pointer object",spec.name))),
-                };
+                let (bytes,alignment)=self.atomic_object_layout(pointee,spec.name,span)?;
                 if pointer && matches!(spec.id,A::AtomicFetchAnd|A::AtomicFetchOr|A::AtomicFetchXor) {
                     return Err(type_error(span,"atomic bitwise fetch requires an integer object"));
-                }
-                let bytes = u8::try_from(width / 8)
-                    .map_err(|_| type_error(span, "unsupported atomic scalar width"))?;
-                let alignment = pointee.align_bytes(self.target)
-                    .and_then(|align| u8::try_from(align).ok())
-                    .ok_or_else(|| type_error(span, "unsupported atomic scalar alignment"))?;
-                if !matches!(width, 8 | 16 | 32 | 64) ||
-                    alignment < bytes || !alignment.is_power_of_two()
-                {
-                    return Err(type_error(span, "atomic object requires a naturally aligned 8/16/32/64-bit scalar"));
                 }
                 if spec.id != A::AtomicLoadN && pointee.is_const() {
                     return Err(type_error(span, format!(
@@ -3549,11 +3586,35 @@ impl Checker {
                 };
                 (result_ty, bytes, alignment)
             };
-        Ok(CheckedExpr::value(result_ty,
+        let mut result=CheckedExpr::value(result_ty,
             CheckedExprKind::BuiltinAtomic(Box::new(CheckedAtomicBuiltin {
                 builtin: spec.id, operands, bytes, alignment,
                 success_order: success, failure_order: failure, weak,
-            }))))
+            })));
+        // C argument evaluation order is unspecified. Evaluate dynamic order
+        // arguments once before the operation, preserving their side effects
+        // without adding runtime order operands to the shared atomic IR.
+        for eval in [failure_eval,success_eval].into_iter().flatten() {
+            result=CheckedExpr::value(result.ty.clone(),
+                CheckedExprKind::Comma(Box::new(eval),Box::new(result)));
+        }
+        Ok(result)
+    }
+
+    /// Return a validated constant order or a checked runtime expression.
+    fn atomic_memory_order_arg(&mut self, expr:&Expr, span:Span)
+        ->Result<(Option<u8>,Option<CheckedExpr>),Diagnostic> {
+        let at=expr.location().unwrap_or(span);
+        let checked=self.check_expr(expr,at)?.rvalue();
+        if !checked.ty.is_integer() {
+            return Err(type_error(at,"atomic memory order requires an integer expression"));
+        }
+        match const_eval::evaluate(&checked,self.target) {
+            Ok(value)=>Ok((Some(u8::try_from(value).map_err(|_|type_error(at,
+                "atomic memory order is outside the supported constant range"))?),None)),
+            Err("not an integer constant expression")=>Ok((None,Some(checked))),
+            Err(reason)=>Err(type_error(at,format!("invalid atomic memory order: {reason}"))),
+        }
     }
 
     fn atomic_builtin_constant_arg(
@@ -4346,6 +4407,7 @@ impl Checker {
                 if let Expr::Name(name) = callee.without_location() {
                     if let Some(spec) = builtins::lookup(name) {
                         if matches!(spec.lowering, builtins::LoweringClass::AtomicIrRequired
+                            | builtins::LoweringClass::AtomicCapabilityQuery
                             | builtins::LoweringClass::FloatNan
                             | builtins::LoweringClass::FloatClassify)
                             || self.lookup(name).is_none()
@@ -4360,6 +4422,8 @@ impl Checker {
                                     }));
                             }
                             match spec.id {
+                                builtins::BuiltinId::AtomicIsLockFree =>
+                                    return self.check_atomic_lock_free(&args[0],span),
                                 builtins::BuiltinId::IsInfSign => {
                                     let arg=&args[0];
                                     let at=arg.location().unwrap_or(span);
