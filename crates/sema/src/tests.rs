@@ -4259,7 +4259,9 @@ fn generated_atomic_cas_order_matrix_both_modes_and_negative_types() {
         ("void f(int *p) { __atomic_store_n(p,7,2); }","invalid C11"),
         ("void f(int *p) { __atomic_load_n(p,3); }","invalid C11"),
         ("void f(int *p) { __atomic_fetch_add(p,7,6); }","invalid C11"),
-        ("void f(int *p) { int order=5; __atomic_load_n(p,order); }","integer constant expression"),
+        ("void f(int *p) { __atomic_load_n(p,1.0); }","integer expression"),
+        ("void f(int *p,int *e,int order) { __atomic_compare_exchange_n(p,e,7,0,order,3); }","invalid C11"),
+        ("void f(int *p) { __atomic_load_n(p,1/0); }","divides by zero"),
         ("void f(int *p) { __atomic_load_n(7,5); }","requires a pointer"),
         ("void f(void *p) { __atomic_load_n(p,5); }","requires an integer object"),
         ("void f(const int *p) { __atomic_store_n(p,7,5); }","requires a writable"),
@@ -5205,4 +5207,32 @@ fn c11_lock_free_query_checks_atomic_layout_and_preserves_operand() {
     reject("int f(int *p){return __atomic_c11_is_lock_free(p);}","pointer to atomic object");
     reject("int f(void *p){return __atomic_c11_is_lock_free(p);}","pointer to atomic object");
     reject("int f(void){return __atomic_c11_is_lock_free();}","exactly one argument");
+}
+
+#[test]
+fn dynamic_atomic_orders_use_seqcst_and_preserve_evaluation() {
+    use builtins::{BuiltinId as A,LoweringClass,REGISTRY};
+    for spec in REGISTRY.iter().filter(|s|s.lowering==LoweringClass::AtomicIrRequired) {
+        let args=match spec.id {
+            A::AtomicThreadFence|A::AtomicSignalFence=>"order++",
+            A::AtomicLoadN=>"p,order++",
+            A::AtomicCompareExchangeN=>"p,e,7,0,order++,failure++",
+            _=>"p,7,order++",
+        };
+        let source=format!("void f(int *p,int *e,int order,int failure){{{}({args});}}",spec.name);
+        let items=check(&source).unwrap_or_else(|err|panic!("{source}: {err:?}"));
+        let CheckedItem::Function(f)=&items[0] else {panic!("function")};
+        let CheckedStmt::Block(stmts)=&f.body else {panic!("block")};
+        let CheckedStmt::Expr(Some(mut expr))=stmts[0].clone() else {panic!("expr")};
+        let mut evaluations=0;
+        while let CheckedExprKind::Comma(first,second)=&expr.kind {
+            assert!(matches!(first.kind,CheckedExprKind::Update{..}));
+            evaluations+=1;
+            expr=second.as_ref().clone();
+        }
+        let CheckedExprKind::BuiltinAtomic(op)=expr.kind else {panic!("atomic")};
+        assert_eq!(op.success_order,5);
+        assert_eq!(op.failure_order,(spec.id==A::AtomicCompareExchangeN).then_some(5));
+        assert_eq!(evaluations,if spec.id==A::AtomicCompareExchangeN {2}else{1});
+    }
 }
