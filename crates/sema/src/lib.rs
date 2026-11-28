@@ -3430,16 +3430,29 @@ impl Checker {
         &mut self, spec: &builtins::BuiltinSpec, args: &[Expr], span: Span,
     ) -> Result<CheckedExpr, Diagnostic> {
         use builtins::BuiltinId as A;
-        let success = self.atomic_builtin_constant_arg(
+        let mut order_effects = Vec::new();
+        let success = self.atomic_builtin_order_arg(
             &args[spec.memory_order_argument.expect("atomic builtin has order")],
-            span, "memory order")?;
+            span, &mut order_effects)?;
         let failure = spec.failure_order_argument.map(|index|
-            self.atomic_builtin_constant_arg(&args[index], span, "failure memory order")
+            self.atomic_builtin_order_arg(&args[index], span, &mut order_effects)
         ).transpose()?;
-        if !builtins::valid_atomic_orders(spec.id, success, failure) {
+        // Validate known constants even if the other CAS order is dynamic.
+        let legal = (0..=5).any(|s| success.is_none_or(|n| n == s) &&
+            match failure {
+                None => builtins::valid_atomic_orders(spec.id, s, None),
+                Some(f) => (0..=5).any(|n| f.is_none_or(|v| v == n)
+                    && builtins::valid_atomic_orders(spec.id, s, Some(n))),
+            });
+        if !legal {
             return Err(type_error(span, format!(
                 "{} has an invalid C11 success/failure memory-order combination", spec.name)));
         }
+        // GCC admits runtime memory orders using sequential consistency.
+        // Strengthen both CAS orders together to preserve a legal pair.
+        let dynamic_order = !order_effects.is_empty();
+        let success = if dynamic_order { 5 } else { success.unwrap() };
+        let failure = failure.map(|f| if dynamic_order { 5 } else { f.unwrap() });
         let weak = spec.weak_argument.map(|index|
             self.atomic_builtin_constant_arg(&args[index], span, "weak compare-exchange flag")
         ).transpose()?;
@@ -3574,13 +3587,40 @@ impl Checker {
         // The ordinary destination address is evaluated once before the
         // atomic operation; the returned value is then stored once. No new
         // atomic IR form or ordinary access to the atomic object is needed.
-        if let Some(destination)=output {
+        let mut result = if let Some(destination)=output {
             let assigned=CheckedExpr::value(atomic.ty.clone(),
                 CheckedExprKind::Assign(Box::new(destination),Box::new(atomic)));
-            Ok(CheckedExpr::value(CType::Void,
-                CheckedExprKind::Convert(Box::new(assigned))))
+            CheckedExpr::value(CType::Void,
+                CheckedExprKind::Convert(Box::new(assigned)))
         } else {
-            Ok(atomic)
+            atomic
+        };
+        // Preserve runtime expression evaluation, including calls and
+        // volatile reads, exactly once before the atomic operation.
+        for effect in order_effects.into_iter().rev() {
+            result = CheckedExpr::value(result.ty.clone(),
+                CheckedExprKind::Comma(Box::new(effect), Box::new(result)));
+        }
+        Ok(result)
+    }
+
+    /// Check an integer order, retaining runtime evaluation for conservative
+    /// sequentially consistent lowering rather than introducing dynamic IR.
+    fn atomic_builtin_order_arg(
+        &mut self, expr: &Expr, span: Span, effects: &mut Vec<CheckedExpr>,
+    ) -> Result<Option<u8>, Diagnostic> {
+        let at = expr.location().unwrap_or(span);
+        let checked = self.check_expr(expr, at)?.rvalue();
+        if !checked.ty.is_integer() {
+            return Err(type_error(at, "atomic memory order requires an integer expression"));
+        }
+        match const_eval::evaluate(&checked, self.target) {
+            Ok(value) => u8::try_from(value).map(Some)
+                .map_err(|_| type_error(at, "atomic memory order is outside the supported constant range")),
+            Err(_) => {
+                effects.push(checked);
+                Ok(None)
+            }
         }
     }
 
