@@ -63,8 +63,8 @@ const fn atomic(id: BuiltinId, name: &'static str, count: usize, order: usize,
     }
 }
 
-/// Fixed spellings and signatures. Unsupported by-address GNU atomic overloads
-/// are intentionally absent; source diagnostics must not infer their ABI.
+/// Fixed scalar-value spellings and signatures. By-address GNU spellings
+/// share the same canonical operation IDs in ADDRESS_REGISTRY below.
 pub const REGISTRY: [BuiltinSpec; 29] = [
     BuiltinSpec {
         id: BuiltinId::Ctz32, name: "__builtin_ctz", argument_count: 1,
@@ -164,8 +164,18 @@ pub fn valid_atomic_orders(id: BuiltinId, success: u8, failure: Option<u8>) -> b
     }
 }
 
+/// Scalar by-address forms have different source arity but identical atomic
+/// memory semantics. The checker normalizes their ordinary input/output
+/// accesses before constructing the canonical atomic operation.
+pub const ADDRESS_REGISTRY: [BuiltinSpec; 4] = [
+    atomic(BuiltinId::AtomicLoadN, "__atomic_load", 3, 2, None, None),
+    atomic(BuiltinId::AtomicStoreN, "__atomic_store", 3, 2, None, None),
+    atomic(BuiltinId::AtomicExchangeN, "__atomic_exchange", 4, 3, None, None),
+    atomic(BuiltinId::AtomicCompareExchangeN, "__atomic_compare_exchange", 6, 4, Some(5), Some(3)),
+];
+
 pub fn lookup(name: &str) -> Option<&'static BuiltinSpec> {
-    REGISTRY.iter().find(|entry| entry.name == name)
+    REGISTRY.iter().chain(ADDRESS_REGISTRY.iter()).find(|entry| entry.name == name)
 }
 
 /// Unknown compiler-reserved builtin spellings must be diagnosed rather than
@@ -184,7 +194,7 @@ mod tests {
     fn memory_order_matrix_rejects_out_of_range_and_wrong_failure_shapes() {
         // The source checker must reject invalid order encodings before any
         // target-specific legalization or native code generation is attempted.
-        for spec in REGISTRY {
+        for spec in REGISTRY.into_iter().chain(ADDRESS_REGISTRY) {
             if spec.lowering != LoweringClass::AtomicIrRequired {
                 continue;
             }
@@ -252,7 +262,7 @@ mod tests {
                 assert!(spec.memory_order_argument.is_some());
             }
         }
-        for name in ["__atomic_load", "__sync_fetch_and_add", "__builtin_fake"] {
+        for name in ["__atomic_unknown", "__sync_fetch_and_add", "__builtin_fake"] {
             assert!(reserved_name(name));
             assert!(lookup(name).is_none());
         }
